@@ -405,12 +405,34 @@ export function parseCommandEnvelope(line: string): {
           ),
         };
       case "prompt":
+        if (
+          raw.inline_pastes !== undefined &&
+          (!Array.isArray(raw.inline_pastes) ||
+            !raw.inline_pastes.every((entry) => typeof entry === "string"))
+        ) {
+          throw new Error("prompt.inline_pastes must be an array of strings");
+        }
         return {
           command: "prompt",
           session_id: expectString(raw, "session_id", "prompt"),
           message_uuid: expectString(raw, "message_uuid", "prompt"),
           chunks: parsePromptChunks(raw, "prompt"),
+          ...(Array.isArray(raw.inline_pastes)
+            ? { inline_pastes: raw.inline_pastes as string[] }
+            : {}),
         };
+      case "side_question": {
+        const question = expectString(raw, "question", "side_question");
+        if (question.trim().length === 0) {
+          throw new Error("side_question.question must not be empty");
+        }
+        return {
+          command: "side_question",
+          session_id: expectString(raw, "session_id", "side_question"),
+          btw_id: expectString(raw, "btw_id", "side_question"),
+          question,
+        };
+      }
       case "cancel_turn":
         return {
           command: "cancel_turn",
@@ -439,6 +461,17 @@ export function parseCommandEnvelope(line: string): {
           command: "set_agent",
           session_id: expectString(raw, "session_id", "set_agent"),
           agent: expectNonEmptyStringOrNull(raw, "agent", "set_agent"),
+        };
+      case "set_ultracode":
+        return {
+          command: "set_ultracode",
+          session_id: expectString(raw, "session_id", "set_ultracode"),
+          enabled: expectBoolean(raw, "enabled", "set_ultracode"),
+        };
+      case "refresh_ultracode":
+        return {
+          command: "refresh_ultracode",
+          session_id: expectString(raw, "session_id", "refresh_ultracode"),
         };
       case "set_fast_mode":
         return {

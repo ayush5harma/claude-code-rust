@@ -68,6 +68,7 @@ import { handleInteractionCommand } from "./bridge/command_interactions.js";
 import { handleMcpCommand } from "./bridge/command_mcp.js";
 import { handleSessionControlCommand } from "./bridge/command_session_control.js";
 import { handleSessionDataCommand } from "./bridge/command_session_data.js";
+import { dispatchSideQuestion } from "./bridge/side_questions.js";
 
 // Re-exports: all symbols that tests and external consumers import from bridge.js.
 export { AsyncQueue } from "./bridge/shared.js";
@@ -265,8 +266,12 @@ export async function generatePersistedSessionTitle(
 export async function applySessionEffort(
   query: import("@anthropic-ai/claude-agent-sdk").Query,
   effort: EffortLevel,
+  ultracodeEffective = false,
 ): Promise<void> {
-  await query.applyFlagSettings({ effortLevel: effort });
+  await query.applyFlagSettings({
+    effortLevel: effort,
+    ...(ultracodeEffective ? { ultracode: true } : {}),
+  });
 }
 
 export async function applySessionFastMode(
@@ -322,6 +327,9 @@ export function buildPromptUserMessage(
     session_id: sessionId,
     parent_tool_use_id: null,
     origin: { kind: "human" },
+    ...(command.inline_pastes && command.inline_pastes.length > 0
+      ? { inline_pastes: command.inline_pastes }
+      : {}),
     message: {
       role: "user",
       content,
@@ -359,7 +367,7 @@ export function emitAgentConfigOptionUpdate(
   });
 }
 
-const EXPECTED_AGENT_SDK_VERSION = "0.3.270";
+const EXPECTED_AGENT_SDK_VERSION = "0.3.286";
 const require = createRequire(import.meta.url);
 
 export function resolveInstalledAgentSdkVersion(): string | undefined {
@@ -1050,12 +1058,32 @@ async function handleCommand(
         buildRewindConversationPlan,
       });
       return;
+    case "side_question": {
+      const session = sessionById(command.session_id);
+      if (!session || session.closing) {
+        writeEvent({
+          event: "btw_failed",
+          session_id: command.session_id,
+          btw_id: command.btw_id,
+          question: command.question,
+          error: "No active SDK query is available for this side question",
+        });
+        return;
+      }
+      dispatchSideQuestion(command.session_id, session.query, {
+        btwId: command.btw_id,
+        question: command.question,
+      });
+      return;
+    }
     case "prompt":
     case "cancel_turn":
     case "set_model":
     case "set_mode":
     case "set_effort":
     case "set_agent":
+    case "set_ultracode":
+    case "refresh_ultracode":
     case "set_fast_mode":
     case "reload_plugins":
       await handleSessionControlCommand(command, requestId, {

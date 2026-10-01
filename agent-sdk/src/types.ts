@@ -6,6 +6,12 @@ export type Json =
   | Json[]
   | { [key: string]: Json };
 
+/** Open SDK startup vocabulary, including reasons introduced by future runtimes. */
+export interface StartupFailure {
+  reason: string;
+  errors: string[];
+}
+
 export interface PromptChunk {
   kind: string;
   value: Json;
@@ -27,6 +33,8 @@ export interface AvailableCommand {
   name: string;
   description: string;
   input_hint?: string;
+  aliases?: string[];
+  builtin?: boolean;
 }
 
 export type AvailableCommandsSource =
@@ -41,6 +49,12 @@ export interface AvailableAgent {
   description: string;
   model?: string;
 }
+
+export type UltracodeSnapshot = {
+  available: boolean;
+  requested: boolean;
+  effective: boolean;
+};
 
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -247,6 +261,7 @@ export interface TaskMetadata {
   output_file?: string;
   summary?: string;
   terminal_status?: string;
+  terminal_reason?: string;
   blocked?: boolean;
   parent_agent_id?: string;
   ambient?: boolean;
@@ -342,6 +357,13 @@ export interface TaskStateUpdate {
 
 export type SessionUpdate =
   | {
+      type: "conversation_reset";
+      new_conversation_id: string;
+      trigger?: string;
+      timestamp?: string;
+      user_message_uuid?: string;
+    }
+  | {
       type: "agent_message_chunk";
       content: ContentBlock;
       source_message_uuid?: string;
@@ -377,6 +399,10 @@ export type SessionUpdate =
   | { type: "current_mode_update"; current_mode_id: string }
   | { type: "current_model_update"; current_model: CurrentModel }
   | { type: "config_option_update"; option_id: string; value: Json }
+  | {
+      type: "ultracode_update";
+      ultracode: UltracodeSnapshot | null;
+    }
   | {
       type: "fast_mode_update";
       fast_mode_state: FastModeState;
@@ -433,6 +459,7 @@ export interface PermissionRequest {
   tool_call: ToolCall;
   options: PermissionOption[];
   display?: PermissionDisplay;
+  mcp_server?: { name: string; source: string };
 }
 
 export interface PermissionDisplay {
@@ -668,6 +695,7 @@ export interface McpServerStatus {
   error?: string;
   config?: McpServerStatusConfig;
   scope?: string;
+  source?: string;
   tools: McpTool[];
 }
 
@@ -807,6 +835,13 @@ export type BridgeCommand =
       session_id: string;
       message_uuid: string;
       chunks: PromptChunk[];
+      inline_pastes?: string[];
+    }
+  | {
+      command: "side_question";
+      session_id: string;
+      btw_id: string;
+      question: string;
     }
   | {
       command: "cancel_turn";
@@ -831,6 +866,15 @@ export type BridgeCommand =
       command: "set_agent";
       session_id: string;
       agent: string | null;
+    }
+  | {
+      command: "set_ultracode";
+      session_id: string;
+      enabled: boolean;
+    }
+  | {
+      command: "refresh_ultracode";
+      session_id: string;
     }
   | {
       command: "set_fast_mode";
@@ -979,6 +1023,15 @@ export interface RuntimeReloadCacheImpact {
   invalid_server_name_count: number;
 }
 
+export interface SideQuestionMetadata {
+  synthetic: boolean;
+  refusal_fallback?: {
+    original_model: string;
+    fallback_model: string;
+    content: Json;
+  };
+}
+
 export type BridgeEvent =
   | {
       event: "connected";
@@ -989,11 +1042,31 @@ export type BridgeEvent =
       mode: ModeState | null;
       fast_mode_state: FastModeState;
       fast_mode_disabled_reason?: string;
+      ultracode?: UltracodeSnapshot | null;
       history_updates?: SessionUpdate[];
     }
   | { event: "auth_required"; method_name: string; method_description: string }
-  | { event: "connection_failed"; message: string }
+  | {
+      event: "connection_failed";
+      message: string;
+      startup_failure?: StartupFailure;
+    }
   | { event: "session_update"; session_id: string; update: SessionUpdate }
+  | {
+      event: "btw_result";
+      session_id: string;
+      btw_id: string;
+      question: string;
+      answer: string;
+      metadata: SideQuestionMetadata;
+    }
+  | {
+      event: "btw_failed";
+      session_id: string;
+      btw_id: string;
+      question: string;
+      error: string;
+    }
   | {
       event: "permission_request";
       session_id: string;
@@ -1091,6 +1164,7 @@ export type BridgeEvent =
       mode: ModeState | null;
       fast_mode_state: FastModeState;
       fast_mode_disabled_reason?: string;
+      ultracode?: UltracodeSnapshot | null;
       history_updates?: SessionUpdate[];
       restored_input?: string;
     }

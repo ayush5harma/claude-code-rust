@@ -6,12 +6,14 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AppSlashCommand {
     OneMContext,
+    Btw,
     Cancel,
     Compact,
     Config,
     Docs,
     Agent,
     Effort,
+    Ultracode,
     Fast,
     Help,
     Mcp,
@@ -109,6 +111,14 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         args: ONE_M_CONTEXT_ARGS,
     },
     AppSlashCommandSpec {
+        command: AppSlashCommand::Btw,
+        name: "/btw",
+        usage: "Usage: /btw <question>",
+        short_description: "Ask a contextual side question",
+        long_description: "Ask one contextual question without adding it to the main conversation.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
         command: AppSlashCommand::Cancel,
         name: "/cancel",
         usage: "Usage: /cancel",
@@ -155,6 +165,18 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         short_description: "Set session effort",
         long_description: "Change thinking effort for the active session. Max is session-only.",
         args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Ultracode,
+        name: "/ultracode",
+        usage: "Usage: /ultracode <on|off|status>",
+        short_description: "Control session Ultracode",
+        long_description: "Enable, disable, or inspect verified Ultracode state for the active session. Retains thinking effort.",
+        args: &[
+            SlashArgSpec { value: "on", description: "Enable session Ultracode" },
+            SlashArgSpec { value: "off", description: "Disable session Ultracode" },
+            SlashArgSpec { value: "status", description: "Show verified session Ultracode state" },
+        ],
     },
     AppSlashCommandSpec {
         command: AppSlashCommand::Fast,
@@ -278,12 +300,14 @@ impl AppSlashCommand {
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::OneMContext => "/1m-context",
+            Self::Btw => "/btw",
             Self::Cancel => "/cancel",
             Self::Compact => "/compact",
             Self::Config => "/config",
             Self::Docs => "/docs",
             Self::Agent => "/agent",
             Self::Effort => "/effort",
+            Self::Ultracode => "/ultracode",
             Self::Fast => "/fast",
             Self::Help => "/help",
             Self::Mcp => "/mcp",
@@ -307,6 +331,13 @@ impl AppSlashCommand {
 
     pub(crate) fn submission_class(self, args: &[&str]) -> SubmissionClass {
         match self {
+            Self::Btw => {
+                if args.is_empty() {
+                    SubmissionClass::Invalid
+                } else {
+                    SubmissionClass::Informational
+                }
+            }
             Self::Cancel => {
                 if args.is_empty() {
                     SubmissionClass::TurnControl
@@ -352,6 +383,11 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
+            Self::Ultracode => match args {
+                ["status"] => SubmissionClass::Informational,
+                ["on" | "off"] => SubmissionClass::TurnExclusive,
+                _ => SubmissionClass::Invalid,
+            },
             Self::Effort => {
                 if matches!(args, ["low" | "medium" | "high" | "xhigh" | "max"]) {
                     SubmissionClass::TurnExclusive

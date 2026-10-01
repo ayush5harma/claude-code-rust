@@ -77,6 +77,7 @@ fn connected_requests_mcp_snapshot_even_outside_mcp_tab() {
         error: None,
         config: None,
         scope: None,
+        source: None,
         tools: Vec::new(),
     });
     app.mcp.removed_config_servers.insert(
@@ -122,6 +123,7 @@ fn connected_updates_cwd_and_clears_resuming_marker() {
             mode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
+            ultracode: None,
             history_updates: Vec::new(),
         },
     );
@@ -156,6 +158,7 @@ fn connected_reconciles_trust_for_new_cwd() {
             mode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
+            ultracode: None,
             history_updates: Vec::new(),
         },
     );
@@ -472,6 +475,7 @@ fn session_replaced_resets_chat_and_transient_state() {
         error: None,
         config: None,
         scope: None,
+        source: None,
         tools: Vec::new(),
     });
 
@@ -485,6 +489,7 @@ fn session_replaced_resets_chat_and_transient_state() {
             mode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
+            ultracode: None,
             history_updates: Vec::new(),
             restored_input: None,
         },
@@ -535,6 +540,7 @@ fn session_replaced_requests_mcp_snapshot_even_outside_mcp_tab() {
         error: None,
         config: None,
         scope: None,
+        source: None,
         tools: Vec::new(),
     });
 
@@ -548,6 +554,7 @@ fn session_replaced_requests_mcp_snapshot_even_outside_mcp_tab() {
             mode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
+            ultracode: None,
             history_updates: Vec::new(),
             restored_input: None,
         },
@@ -684,6 +691,7 @@ fn connected_snapshot_recovers_fast_mode_dropped_before_authority() {
             mode: None,
             fast_mode_state: model::FastModeState::On,
             fast_mode_disabled_reason: None,
+            ultracode: None,
             history_updates: Vec::new(),
         },
     );
@@ -724,6 +732,7 @@ fn replacement_snapshot_owns_fast_mode_before_and_after_stale_updates() {
             mode: None,
             fast_mode_state: model::FastModeState::Cooldown,
             fast_mode_disabled_reason: None,
+            ultracode: None,
             history_updates: Vec::new(),
             restored_input: None,
         },
@@ -844,6 +853,7 @@ fn stale_mcp_snapshot_for_old_session_is_ignored() {
         error: None,
         config: None,
         scope: None,
+        source: None,
         tools: Vec::new(),
     });
 
@@ -859,6 +869,7 @@ fn stale_mcp_snapshot_for_old_session_is_ignored() {
                 error: None,
                 config: None,
                 scope: None,
+                source: None,
                 tools: Vec::new(),
             }],
             source: Some(crate::agent::types::McpSnapshotSource::McpStatus),
@@ -898,6 +909,7 @@ fn removed_config_mcp_server_is_filtered_from_current_session_snapshot() {
                     error: None,
                     config: None,
                     scope: Some("user".into()),
+                    source: None,
                     tools: Vec::new(),
                 },
                 crate::agent::model::McpServerStatus {
@@ -907,6 +919,7 @@ fn removed_config_mcp_server_is_filtered_from_current_session_snapshot() {
                     error: None,
                     config: None,
                     scope: Some("user".into()),
+                    source: None,
                     tools: Vec::new(),
                 },
             ],
@@ -951,6 +964,7 @@ fn removed_config_mcp_guard_clears_after_matching_source_snapshot_proves_absence
                 error: None,
                 config: None,
                 scope: Some("user".into()),
+                source: None,
                 tools: Vec::new(),
             }],
             source: Some(crate::agent::types::McpSnapshotSource::ReloadPlugins),
@@ -986,6 +1000,7 @@ fn removed_config_mcp_guard_stays_after_matching_source_snapshot_error() {
                 error: None,
                 config: None,
                 scope: Some("user".into()),
+                source: None,
                 tools: Vec::new(),
             }],
             source: Some(crate::agent::types::McpSnapshotSource::ReloadPlugins),
@@ -1655,6 +1670,7 @@ fn resume_does_not_add_confirmation_system_message() {
             mode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
+            ultracode: None,
             history_updates: Vec::new(),
             restored_input: None,
         },
@@ -1688,6 +1704,7 @@ fn resume_history_renders_user_message_chunks() {
             mode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
+            ultracode: None,
             history_updates,
             restored_input: None,
         },
@@ -1745,6 +1762,7 @@ fn session_replaced_restores_input_after_loading_history() {
             mode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
+            ultracode: None,
             history_updates,
             restored_input: Some("selected prompt".to_owned()),
         },
@@ -1754,4 +1772,55 @@ fn session_replaced_restores_input_after_loading_history() {
     assert!(app.turn.pending_command_label.is_none());
     assert!(matches!(app.status, AppStatus::Ready));
     assert!(canonical_messages_contain_text(&app, "assistant reply"));
+}
+
+#[test]
+fn ultracode_lifecycle_preserves_conversation_state_and_rejects_stale_sessions() {
+    let mut app = make_test_app();
+    let on = model::UltracodeState::new(true, true, true);
+    app.session_runtime.ultracode = on;
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::ConversationReset {
+            new_conversation_id: "conversation-2".to_owned(),
+            trigger: None,
+            timestamp: None,
+            user_message_uuid: None,
+        }),
+    );
+    assert_eq!(app.session_runtime.ultracode, on);
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionReplaced {
+            session_id: "replacement-session".into(),
+            cwd: "/replacement".to_owned(),
+            current_model: test_current_model("opus"),
+            available_models: vec![],
+            mode: None,
+            fast_mode_state: model::FastModeState::Off,
+            fast_mode_disabled_reason: None,
+            ultracode: None,
+            history_updates: vec![],
+            restored_input: None,
+        },
+    );
+    assert_eq!(app.session_runtime.ultracode, None);
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::UltracodeUpdate { ultracode: on }),
+    );
+    assert_eq!(
+        app.session_runtime.ultracode, None,
+        "old-session telemetry must not leak into replacement"
+    );
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate {
+            session_id: "replacement-session".to_owned(),
+            update: model::SessionUpdate::UltracodeUpdate { ultracode: on },
+        },
+    );
+    assert_eq!(app.session_runtime.ultracode, on);
+    handle_client_event(&mut app, ClientEvent::ConnectionFailed("closed".to_owned().into()));
+    assert!(app.session_runtime.ultracode.is_none());
 }

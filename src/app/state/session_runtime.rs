@@ -10,6 +10,8 @@ use std::rc::Rc;
 /// State owned by the active SDK session/runtime boundary.
 pub struct SessionRuntimeState {
     pub session_id: Option<model::SessionId>,
+    /// Active SDK conversation mounted inside the session after an explicit reset.
+    pub conversation_id: Option<String>,
     /// Most recently established session, retained across live identity resets for the exit hint.
     last_resumable_session_id: Option<model::SessionId>,
     /// Agent connection handle. `None` while connecting (before bridge is ready).
@@ -24,6 +26,8 @@ pub struct SessionRuntimeState {
     pub login_hint: Option<LoginHint>,
     /// Session-wide usage and cost telemetry from the bridge.
     pub session_usage: SessionUsageState,
+    /// Latest verified SDK Ultracode snapshot; absent when unknown.
+    pub ultracode: Option<model::UltracodeState>,
     /// Fast mode state telemetry from the SDK.
     pub fast_mode_state: model::FastModeState,
     /// Open-set reason reported by the SDK when fast mode cannot activate.
@@ -42,6 +46,7 @@ impl Default for SessionRuntimeState {
     fn default() -> Self {
         Self {
             session_id: None,
+            conversation_id: None,
             last_resumable_session_id: None,
             conn: None,
             session_scope_epoch: 0,
@@ -50,6 +55,7 @@ impl Default for SessionRuntimeState {
             config_options: BTreeMap::new(),
             login_hint: None,
             session_usage: SessionUsageState::default(),
+            ultracode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
             runtime_session_state: None,
@@ -77,8 +83,12 @@ impl SessionRuntimeState {
     }
 
     pub(crate) fn activate_session(&mut self, session_id: model::SessionId) {
+        if self.session_id.as_ref() != Some(&session_id) {
+            self.ultracode = None;
+        }
         self.last_resumable_session_id = Some(session_id.clone());
         self.session_id = Some(session_id);
+        self.conversation_id = None;
     }
 
     /// Return the active or most recently established session that can be resumed after exit.
@@ -88,7 +98,9 @@ impl SessionRuntimeState {
     }
 
     pub fn clear_identity(&mut self) {
+        self.ultracode = None;
         self.session_id = None;
+        self.conversation_id = None;
         self.current_model = None;
         self.mode = None;
         self.fast_mode_state = model::FastModeState::Off;

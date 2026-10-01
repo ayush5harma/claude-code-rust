@@ -13,6 +13,7 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
             mode,
             fast_mode_state,
             fast_mode_disabled_reason,
+            ultracode,
             history_updates,
         } => {
             session::handle_connected_client_event(
@@ -25,6 +26,7 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
                     mode,
                     fast_mode_state,
                     fast_mode_disabled_reason,
+                    ultracode,
                     history_updates,
                 },
             );
@@ -38,6 +40,7 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
             mode,
             fast_mode_state,
             fast_mode_disabled_reason,
+            ultracode,
             history_updates,
             restored_input,
         } => {
@@ -51,6 +54,7 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
                     mode,
                     fast_mode_state,
                     fast_mode_disabled_reason,
+                    ultracode,
                     history_updates,
                     restored_input,
                 },
@@ -63,8 +67,8 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
         ClientEvent::AuthRequired { method_name, method_description } => {
             session::handle_auth_required_event(app, method_name, method_description);
         }
-        ClientEvent::ConnectionFailed(message) => {
-            session::handle_connection_failed_event(app, &message);
+        ClientEvent::ConnectionFailed(failure) => {
+            session::handle_connection_failure(app, &failure);
         }
         ClientEvent::SessionResumeFailed { session_id, operation_id, message } => {
             session::handle_session_resume_failed_event(app, &session_id, &operation_id, &message);

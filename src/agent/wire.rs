@@ -65,6 +65,13 @@ pub enum BridgeCommand {
         session_id: String,
         message_uuid: String,
         chunks: Vec<types::PromptChunk>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        inline_pastes: Vec<String>,
+    },
+    SideQuestion {
+        session_id: String,
+        btw_id: String,
+        question: String,
     },
     CancelTurn {
         session_id: String,
@@ -84,6 +91,13 @@ pub enum BridgeCommand {
     SetAgent {
         session_id: String,
         agent: Option<String>,
+    },
+    SetUltracode {
+        session_id: String,
+        enabled: bool,
+    },
+    RefreshUltracode {
+        session_id: String,
     },
     SetFastMode {
         session_id: String,
@@ -190,11 +204,14 @@ impl BridgeCommand {
             Self::ResumeSession { .. } => "resume_session",
             Self::ResumeSessionAt { .. } => "resume_session_at",
             Self::Prompt { .. } => "prompt",
+            Self::SideQuestion { .. } => "side_question",
             Self::CancelTurn { .. } => "cancel_turn",
             Self::SetModel { .. } => "set_model",
             Self::SetMode { .. } => "set_mode",
             Self::SetEffort { .. } => "set_effort",
             Self::SetAgent { .. } => "set_agent",
+            Self::SetUltracode { .. } => "set_ultracode",
+            Self::RefreshUltracode { .. } => "refresh_ultracode",
             Self::SetFastMode { .. } => "set_fast_mode",
             Self::GenerateSessionTitle { .. } => "generate_session_title",
             Self::RenameSession { .. } => "rename_session",
@@ -226,11 +243,14 @@ impl BridgeCommand {
             Self::ResumeSession { session_id, .. }
             | Self::ResumeSessionAt { session_id, .. }
             | Self::Prompt { session_id, .. }
+            | Self::SideQuestion { session_id, .. }
             | Self::CancelTurn { session_id }
             | Self::SetModel { session_id, .. }
             | Self::SetMode { session_id, .. }
             | Self::SetEffort { session_id, .. }
             | Self::SetAgent { session_id, .. }
+            | Self::SetUltracode { session_id, .. }
+            | Self::RefreshUltracode { session_id }
             | Self::SetFastMode { session_id, .. }
             | Self::GenerateSessionTitle { session_id, .. }
             | Self::RenameSession { session_id, .. }
@@ -266,11 +286,14 @@ impl BridgeCommand {
             | Self::ResumeSession { .. }
             | Self::ResumeSessionAt { .. }
             | Self::Prompt { .. }
+            | Self::SideQuestion { .. }
             | Self::CancelTurn { .. }
             | Self::SetModel { .. }
             | Self::SetMode { .. }
             | Self::SetEffort { .. }
             | Self::SetAgent { .. }
+            | Self::SetUltracode { .. }
+            | Self::RefreshUltracode { .. }
             | Self::SetFastMode { .. }
             | Self::GenerateSessionTitle { .. }
             | Self::RenameSession { .. }
@@ -304,6 +327,13 @@ pub struct EventEnvelope {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SideQuestionMetadata {
+    pub synthetic: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal_fallback: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum BridgeEvent {
     Connected {
@@ -315,6 +345,8 @@ pub enum BridgeEvent {
         mode: Option<types::ModeState>,
         fast_mode_state: types::FastModeState,
         fast_mode_disabled_reason: Option<String>,
+        #[serde(default, deserialize_with = "types::deserialize_ultracode")]
+        ultracode: Option<types::UltracodeState>,
         history_updates: Option<Vec<types::SessionUpdate>>,
     },
     AuthRequired {
@@ -323,10 +355,25 @@ pub enum BridgeEvent {
     },
     ConnectionFailed {
         message: String,
+        #[serde(default)]
+        startup_failure: Option<types::StartupFailure>,
     },
     SessionUpdate {
         session_id: String,
         update: types::SessionUpdate,
+    },
+    BtwResult {
+        session_id: String,
+        btw_id: String,
+        question: String,
+        answer: String,
+        metadata: SideQuestionMetadata,
+    },
+    BtwFailed {
+        session_id: String,
+        btw_id: String,
+        question: String,
+        error: String,
     },
     PermissionRequest {
         session_id: String,
@@ -427,6 +474,8 @@ pub enum BridgeEvent {
         mode: Option<types::ModeState>,
         fast_mode_state: types::FastModeState,
         fast_mode_disabled_reason: Option<String>,
+        #[serde(default, deserialize_with = "types::deserialize_ultracode")]
+        ultracode: Option<types::UltracodeState>,
         history_updates: Option<Vec<types::SessionUpdate>>,
         restored_input: Option<String>,
     },
@@ -482,6 +531,8 @@ impl BridgeEvent {
             Self::AuthRequired { .. } => "auth_required",
             Self::ConnectionFailed { .. } => "connection_failed",
             Self::SessionUpdate { .. } => "session_update",
+            Self::BtwResult { .. } => "btw_result",
+            Self::BtwFailed { .. } => "btw_failed",
             Self::PermissionRequest { .. } => "permission_request",
             Self::QuestionRequest { .. } => "question_request",
             Self::UserDialogRequest { .. } => "user_dialog_request",
@@ -518,6 +569,8 @@ impl BridgeEvent {
         match self {
             Self::Connected { session_id, .. }
             | Self::SessionUpdate { session_id, .. }
+            | Self::BtwResult { session_id, .. }
+            | Self::BtwFailed { session_id, .. }
             | Self::PermissionRequest { session_id, .. }
             | Self::QuestionRequest { session_id, .. }
             | Self::UserDialogRequest { session_id, .. }
@@ -562,6 +615,8 @@ impl BridgeEvent {
             | Self::AuthRequired { .. }
             | Self::ConnectionFailed { .. }
             | Self::SessionUpdate { .. }
+            | Self::BtwResult { .. }
+            | Self::BtwFailed { .. }
             | Self::UserDialogRequest { .. }
             | Self::ElicitationRequest { .. }
             | Self::ElicitationComplete { .. }
@@ -601,6 +656,115 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
+    fn connection_failure_preserves_open_startup_reasons_and_older_messages() {
+        for reason in [
+            None,
+            Some("org_pin_api_key_conflict"),
+            Some("provider_not_allowed"),
+            Some("org_verify_failed"),
+            Some("org_pin_mismatch"),
+            Some("managed_settings_invalid"),
+            Some("remote_settings_required_unavailable"),
+            Some("gateway_signin_required"),
+            Some("gateway_access_denied"),
+            Some("proxy_invalid"),
+            Some("temp_dir_unusable"),
+            Some("cwd_unavailable"),
+            Some("shell_tool_missing"),
+            Some("session_held_by_background"),
+            Some("worktree_resume_refused"),
+            Some("worktree_unverified"),
+            Some("cli_version_too_old"),
+            Some("bypass_root"),
+            Some("future_reason"),
+        ] {
+            let mut json = serde_json::json!({
+                "event": "connection_failed", "message": "startup failed", "request_id": "connect-1",
+            });
+            if let Some(reason) = reason {
+                json["startup_failure"] =
+                    serde_json::json!({ "reason": reason, "errors": ["SDK guidance"] });
+            }
+            let envelope: EventEnvelope = serde_json::from_value(json).expect("connection failure");
+            assert_eq!(envelope.request_id.as_deref(), Some("connect-1"));
+            let BridgeEvent::ConnectionFailed { message, startup_failure } = &envelope.event else {
+                panic!("connection failure")
+            };
+            assert_eq!(message, "startup failed");
+            assert_eq!(startup_failure.as_ref().map(|failure| failure.reason.as_str()), reason);
+            if let Some(failure) = startup_failure {
+                assert_eq!(failure.errors, ["SDK guidance"]);
+            }
+            let round_trip: EventEnvelope =
+                serde_json::from_value(serde_json::to_value(&envelope).expect("serialize"))
+                    .expect("deserialize");
+            assert_eq!(round_trip, envelope);
+        }
+    }
+
+    #[test]
+    fn ultracode_wire_round_trips_and_invalid_snapshots_become_unknown() {
+        for enabled in [true, false] {
+            let command = CommandEnvelope {
+                request_id: Some("u1".to_owned()),
+                command: BridgeCommand::SetUltracode { session_id: "s1".to_owned(), enabled },
+            };
+            let json = serde_json::to_value(&command).expect("serialize");
+            assert_eq!(
+                json,
+                serde_json::json!({"request_id":"u1","command":"set_ultracode","session_id":"s1","enabled":enabled})
+            );
+            assert_eq!(
+                serde_json::from_value::<CommandEnvelope>(json).expect("deserialize"),
+                command
+            );
+        }
+        let refresh = CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::RefreshUltracode { session_id: "s1".to_owned() },
+        };
+        let json = serde_json::to_value(&refresh).expect("serialize");
+        assert_eq!(json, serde_json::json!({"command":"refresh_ultracode","session_id":"s1"}));
+        assert_eq!(serde_json::from_value::<CommandEnvelope>(json).expect("deserialize"), refresh);
+        for available in [false, true] {
+            for requested in [false, true] {
+                for effective in [false, true] {
+                    let event: EventEnvelope = serde_json::from_value(serde_json::json!({"event":"session_update","session_id":"s1","update":{"type":"ultracode_update","ultracode":{"available":available,"requested":requested,"effective":effective}}})).expect("event");
+                    let BridgeEvent::SessionUpdate {
+                        update: types::SessionUpdate::UltracodeUpdate { ultracode },
+                        ..
+                    } = &event.event
+                    else {
+                        panic!("update")
+                    };
+                    assert_eq!(ultracode.is_some(), effective == (available && requested));
+                    assert_eq!(
+                        serde_json::from_value::<EventEnvelope>(
+                            serde_json::to_value(&event).expect("serialize event")
+                        )
+                        .expect("round trip"),
+                        event
+                    );
+                }
+            }
+        }
+        for state in [
+            serde_json::Value::Null,
+            serde_json::json!({}),
+            serde_json::json!({"available":true,"requested":true,"effective":"true"}),
+        ] {
+            let event: EventEnvelope = serde_json::from_value(serde_json::json!({"event":"session_update","session_id":"s1","update":{"type":"ultracode_update","ultracode":state}})).expect("invalid state must not discard the event");
+            assert!(matches!(
+                event.event,
+                BridgeEvent::SessionUpdate {
+                    update: types::SessionUpdate::UltracodeUpdate { ultracode: None },
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
     fn command_envelope_roundtrip_json() {
         let env = CommandEnvelope {
             request_id: Some("req-1".to_owned()),
@@ -625,6 +789,7 @@ mod tests {
                     kind: "text".to_owned(),
                     value: serde_json::json!("next"),
                 }],
+                inline_pastes: vec!["pasted text".to_owned()],
             },
         };
 
@@ -634,9 +799,62 @@ mod tests {
                 "command": "prompt",
                 "session_id": "s1",
                 "message_uuid": "message-1",
-                "chunks": [{ "kind": "text", "value": "next" }]
+                "chunks": [{ "kind": "text", "value": "next" }],
+                "inline_pastes": ["pasted text"]
             })
         );
+    }
+
+    #[test]
+    fn side_question_command_preserves_the_complete_question() {
+        let env = CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::SideQuestion {
+                session_id: "s1".to_owned(),
+                btw_id: "btw-1".to_owned(),
+                question: "Why  two spaces?\nAnd this line?".to_owned(),
+            },
+        };
+
+        assert_eq!(
+            serde_json::to_value(env).expect("serialize"),
+            serde_json::json!({
+                "command": "side_question",
+                "session_id": "s1",
+                "btw_id": "btw-1",
+                "question": "Why  two spaces?\nAnd this line?"
+            })
+        );
+    }
+
+    #[test]
+    fn side_question_result_deserializes_with_correlation_and_metadata() {
+        let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "btw_result",
+            "session_id": "s1",
+            "btw_id": "btw-1",
+            "question": "Question?",
+            "answer": "Answer.",
+            "metadata": {
+                "synthetic": true,
+                "refusal_fallback": {
+                    "original_model": "opus",
+                    "fallback_model": "sonnet",
+                    "content": { "reason": "policy" }
+                }
+            }
+        }))
+        .expect("deserialize side-question result");
+
+        let BridgeEvent::BtwResult { btw_id, question, answer, metadata, .. } = decoded.event
+        else {
+            panic!("expected BTW result");
+        };
+        assert_eq!(btw_id, "btw-1");
+        assert_eq!(question, "Question?");
+        assert_eq!(answer, "Answer.");
+        assert!(metadata.synthetic);
+        assert!(metadata.refusal_fallback.is_some());
     }
 
     #[test]

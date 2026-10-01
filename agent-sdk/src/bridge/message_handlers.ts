@@ -1,3 +1,4 @@
+import { refreshUltracode } from "./ultracode.js";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
   BridgeCommand,
@@ -87,6 +88,8 @@ import {
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import { emitMcpSnapshotFromStatuses } from "./mcp.js";
 import { appendResourceLinks } from "./resource_links.js";
+import { closeSideQuestions } from "./side_questions.js";
+import { redactStartupDetail, startupFailureDetails } from "./startup_failures.js";
 
 export function textFromPrompt(
   command: Extract<BridgeCommand, { command: "prompt" }>,
@@ -174,6 +177,7 @@ function sdkTaskMetadata(
     status && typeof msg.summary === "string" && msg.summary.length > 0
       ? msg.summary
       : undefined;
+  const reason = diagnosticToken(msg.reason);
   const spawnDepth =
     typeof msg.spawn_depth === "number" &&
     Number.isSafeInteger(msg.spawn_depth) &&
@@ -195,6 +199,7 @@ function sdkTaskMetadata(
     ...(outputFile ? { output_file: outputFile } : {}),
     ...(summary ? { summary } : {}),
     ...(status ? { terminal_status: status } : {}),
+    ...(reason ? { terminal_reason: reason } : {}),
     ...(typeof msg.blocked === "boolean" ? { blocked: msg.blocked } : {}),
     ...(typeof msg.is_backgrounded === "boolean"
       ? { is_backgrounded: msg.is_backgrounded }
@@ -480,6 +485,32 @@ function boundedDiagnosticString(value: unknown): string | undefined {
   }
   const trimmed = value.trim();
   return trimmed ? trimmed.slice(0, 1_024) : undefined;
+}
+
+function emitPluginLoadErrors(session: SessionState, value: unknown): void {
+  if (!Array.isArray(value)) {
+    return;
+  }
+  const errors = value.slice(0, 20);
+  for (const entry of errors) {
+    const error = asRecordOrNull(entry);
+    const plugin = boundedDiagnosticString(error?.plugin) ?? "unknown plugin";
+    const category = boundedDiagnosticString(error?.type) ?? "generic-error";
+    const message = boundedDiagnosticString(error?.message) ?? "Unknown plugin load failure";
+    const path = boundedDiagnosticString(error?.path);
+    emitSystemNoticeUpdate(
+      session,
+      "warning",
+      `Plugin ${plugin} failed to load (${category})${path ? ` at ${path}` : ""}: ${message}`,
+    );
+  }
+  if (value.length > errors.length) {
+    emitSystemNoticeUpdate(
+      session,
+      "warning",
+      `${value.length - errors.length} additional plugin load failure(s) were omitted.`,
+    );
+  }
 }
 
 function ensureSentencePunctuation(value: string): string {
@@ -1498,6 +1529,44 @@ export function handleResultMessage(
   session: SessionState,
   message: Record<string, unknown>,
 ): void {
+  if (session.startupFailure) {
+    return;
+  }
+  if (
+    message.type === "result" &&
+    message.subtype === "error_during_execution" &&
+    typeof message.startup_failure_reason === "string" &&
+    message.startup_failure_reason.length > 0
+  ) {
+    const failure = {
+      reason: message.startup_failure_reason,
+      errors: startupFailureDetails(message.errors),
+    };
+    session.startupFailure = failure;
+    session.initializationReady = false;
+    session.initializationError = "Claude Code startup failed.";
+    session.lastAssistantError = undefined;
+    bridgeLogger.error({
+      target: LOG_TARGETS.APP_SESSION,
+      eventName: "sdk_startup_failed",
+      message: "Claude Code startup failed",
+      outcome: "failure",
+      sessionId: session.sessionId,
+      requestId: session.connectRequestId,
+      fields: {
+        startup_failure_reason: redactStartupDetail(failure.reason).slice(0, 1_024),
+        startup_failure_errors: failure.errors,
+        errors_valid: Array.isArray(message.errors) && message.errors.every((entry) => typeof entry === "string"),
+      },
+    });
+    writeEvent({
+      event: "connection_failed",
+      message: session.initializationError,
+      startup_failure: failure,
+    }, session.connectRequestId);
+    session.connectRequestId = undefined;
+    return;
+  }
   if (
     message.parent_tool_use_id === null ||
     message.parent_tool_use_id === undefined
@@ -1638,6 +1707,9 @@ export function handleSdkMessage(
   session: SessionState,
   message: SDKMessage,
 ): void {
+  if (session.startupFailure) {
+    return;
+  }
   const msg = message as unknown as Record<string, unknown>;
   const type = typeof msg.type === "string" ? msg.type : "";
   const subtype =
@@ -1646,6 +1718,30 @@ export function handleSdkMessage(
     cancelPendingWorkerShutdown(session);
   }
   logSdkMessageOrigin(session, msg);
+
+  if (type === "conversation_reset") {
+    const newConversationId = trimmedStringField(msg, "new_conversation_id");
+    if (!newConversationId) {
+      bridgeLogger.warn({
+        target: LOG_TARGETS.APP_SESSION,
+        eventName: "sdk_conversation_reset_invalid",
+        message: "SDK conversation reset omitted its new conversation identifier",
+        outcome: "ignored",
+        sessionId: session.sessionId,
+      });
+      return;
+    }
+    closeSideQuestions(session.sessionId, session.query);
+    void refreshUltracode(session);
+    emitSessionUpdate(session.sessionId, {
+      type: "conversation_reset",
+      new_conversation_id: newConversationId,
+      trigger: trimmedStringField(msg, "trigger"),
+      timestamp: trimmedStringField(msg, "timestamp"),
+      user_message_uuid: trimmedStringField(msg, "user_message_uuid"),
+    });
+    return;
+  }
 
   if (type === "system") {
     if (handleFallbackRetractionMessage(session, subtype, msg)) {
@@ -1832,6 +1928,9 @@ export function handleSdkMessage(
       const incomingSessionId =
         typeof msg.session_id === "string" ? msg.session_id : session.sessionId;
       updateSessionId(session, incomingSessionId);
+      if (session.connected) {
+        void refreshUltracode(session);
+      }
       const modelName =
         typeof msg.model === "string" ? msg.model : session.model;
       session.model = modelName;
@@ -1914,6 +2013,7 @@ export function handleSdkMessage(
           ...settingsError,
         });
       }
+      emitPluginLoadErrors(session, msg.plugin_errors);
       return;
     }
 

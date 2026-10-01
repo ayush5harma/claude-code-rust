@@ -128,6 +128,10 @@ enum BlockSnapshot {
         text: String,
         trailing_spacing: TextBlockSpacing,
     },
+    BtwExchange {
+        question: String,
+        answer: String,
+    },
     Notice {
         severity: SystemSeverity,
         text: String,
@@ -170,6 +174,10 @@ fn block_snapshot(block: &MessageBlock) -> BlockSnapshot {
             text: block.text.clone(),
             trailing_spacing: block.trailing_spacing,
         },
+        MessageBlock::BtwExchange(block) => BlockSnapshot::BtwExchange {
+            question: block.question.clone(),
+            answer: block.answer.clone(),
+        },
         MessageBlock::Notice(block) => {
             BlockSnapshot::Notice { severity: block.severity, text: block.text.text.clone() }
         }
@@ -201,6 +209,7 @@ fn seed_resize_measurements(app: &mut App) {
     app.chat_render.composer = ComposerRenderState {
         width: 90,
         hint_rows: 1,
+        btw_rows: 0,
         editor_rows: 2,
         footer_rows: 1,
         total_rows: 4,
@@ -329,6 +338,9 @@ fn first_block_text(msg: &ChatMessage) -> &str {
     match msg.blocks.first() {
         Some(MessageBlock::Text(block)) => &block.text,
         Some(MessageBlock::Notice(block)) => &block.text.text,
+        Some(MessageBlock::BtwExchange(_)) => {
+            panic!("expected text-like block, found BTW exchange")
+        }
         Some(MessageBlock::ToolCall(_)) => panic!("expected text-like block, found tool call"),
         Some(MessageBlock::Welcome(_)) => panic!("expected text-like block, found welcome"),
         Some(MessageBlock::ImageAttachment(_)) => {
@@ -704,6 +716,9 @@ fn canonical_messages_contain_text(app: &App, expected: &str) -> bool {
         message.blocks.iter().any(|block| match block {
             MessageBlock::Text(text) => text.text == expected,
             MessageBlock::Notice(notice) => notice.text.text == expected,
+            MessageBlock::BtwExchange(exchange) => {
+                exchange.question == expected || exchange.answer == expected
+            }
             MessageBlock::ToolCall(_)
             | MessageBlock::Welcome(_)
             | MessageBlock::ImageAttachment(_)
@@ -741,6 +756,7 @@ fn connected_event(model_name: &str) -> ClientEvent {
         mode: None,
         fast_mode_state: model::FastModeState::Off,
         fast_mode_disabled_reason: None,
+        ultracode: None,
         history_updates: Vec::new(),
     }
 }
@@ -1287,6 +1303,7 @@ fn startup_resume_history_renders_from_canonical_messages() {
             mode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
+            ultracode: None,
             history_updates,
         },
     );
@@ -1339,6 +1356,7 @@ fn startup_resume_history_allows_immediate_prompt_submit() {
             mode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
+            ultracode: None,
             history_updates,
         },
     );
@@ -1386,6 +1404,7 @@ fn resume_history_preserves_turn_order_between_user_and_assistant_messages() {
             mode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
+            ultracode: None,
             history_updates,
             restored_input: None,
         },
@@ -1432,6 +1451,7 @@ fn resume_history_forces_open_tool_calls_to_failed() {
             mode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
+            ultracode: None,
             history_updates: vec![model::SessionUpdate::ToolCall(open_tool)],
             restored_input: None,
         },
@@ -1462,6 +1482,7 @@ fn resume_history_clears_active_turn_owner_after_loading() {
             mode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
+            ultracode: None,
             history_updates: vec![model::SessionUpdate::AgentMessageChunk(
                 model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
                     "assistant reply",
@@ -1492,6 +1513,7 @@ fn resume_history_clears_tool_scope_tracking_after_loading() {
             mode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
+            ultracode: None,
             history_updates: vec![model::SessionUpdate::ToolCall(task_tool)],
             restored_input: None,
         },
@@ -2482,6 +2504,7 @@ fn turn_notice_tracking_clears_on_turn_complete_and_session_reset() {
             mode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
+            ultracode: None,
             history_updates: Vec::new(),
         },
     );
@@ -3054,6 +3077,7 @@ fn update_result_persists_across_session_replaced_reset_without_notice() {
             mode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
+            ultracode: None,
             history_updates: Vec::new(),
             restored_input: None,
         },
@@ -3794,6 +3818,79 @@ fn available_commands_update_replaces_previous_commands() {
         app.sdk_inventory.available_commands,
         vec![model::AvailableCommand::new("/new", "New command").input_hint("<arg>")]
     );
+}
+
+#[test]
+fn conversation_reset_mounts_a_fresh_transcript_without_dropping_session_inventory() {
+    let mut app = make_test_app();
+    app.transcript.messages.push(user_msg("old conversation"));
+    app.recent_sessions = vec![
+        crate::app::RecentSessionInfo {
+            session_id: "test-session".to_owned(),
+            summary: "Old conversation title".to_owned(),
+            last_modified_ms: 1,
+            file_size_bytes: 2,
+            cwd: Some("/test".to_owned()),
+            git_branch: Some("main".to_owned()),
+            custom_title: Some("Old conversation title".to_owned()),
+            first_prompt: Some("prompt Old conversation title".to_owned()),
+        },
+        crate::app::RecentSessionInfo {
+            session_id: "other-session".to_owned(),
+            summary: "Other conversation title".to_owned(),
+            last_modified_ms: 1,
+            file_size_bytes: 2,
+            cwd: Some("/test".to_owned()),
+            git_branch: Some("main".to_owned()),
+            custom_title: Some("Other conversation title".to_owned()),
+            first_prompt: Some("prompt Other conversation title".to_owned()),
+        },
+    ];
+    app.sdk_inventory.available_commands = vec![model::AvailableCommand::new("/remote", "Remote")];
+    app.sdk_inventory.available_agents = vec![model::AvailableAgent::new("reviewer", "Reviews")];
+    app.config.pending_session_title_change =
+        Some(crate::app::config::PendingSessionTitleChangeState {
+            session_id: "test-session".to_owned(),
+            kind: crate::app::config::PendingSessionTitleChangeKind::Generate,
+        });
+
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::ConversationReset {
+            new_conversation_id: "conversation-2".to_owned(),
+            trigger: Some("future-trigger".to_owned()),
+            timestamp: Some("2026-10-01T12:00:00Z".to_owned()),
+            user_message_uuid: None,
+        }),
+    );
+
+    assert_eq!(app.transcript.messages.len(), 1);
+    assert!(!app.transcript.messages.iter().any(|message| {
+        message.blocks.iter().any(|block| {
+            matches!(block, MessageBlock::Text(text) if text.text.contains("old conversation"))
+        })
+    }));
+    assert_eq!(app.sdk_inventory.available_commands.len(), 1);
+    assert_eq!(app.sdk_inventory.available_agents.len(), 1);
+    assert_eq!(app.session_runtime.conversation_id.as_deref(), Some("conversation-2"));
+    let active_session = app
+        .recent_sessions
+        .iter()
+        .find(|session| session.session_id == "test-session")
+        .expect("active session cache");
+    assert!(active_session.custom_title.is_none());
+    assert!(active_session.summary.is_empty());
+    assert!(active_session.first_prompt.is_none());
+    let other_session = app
+        .recent_sessions
+        .iter()
+        .find(|session| session.session_id == "other-session")
+        .expect("unrelated session cache");
+    assert_eq!(other_session.custom_title.as_deref(), Some("Other conversation title"));
+    assert_eq!(other_session.summary, "Other conversation title");
+    assert_eq!(other_session.first_prompt.as_deref(), Some("prompt Other conversation title"));
+    assert!(app.config.pending_session_title_change.is_none());
+    assert_eq!(app.status, AppStatus::Ready);
 }
 
 #[test]

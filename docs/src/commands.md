@@ -9,12 +9,14 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | Command | Usage | Purpose |
 | --- | --- | --- |
 | `/1m-context` | `/1m-context <enable\|disable\|status>` | Enable, disable, or inspect project-local 1M context settings for future sessions. |
+| `/btw` | `/btw <question>` | Ask a contextual side question without adding it to the main conversation. |
 | `/cancel` | `/cancel` | Cancel the active assistant turn. |
 | `/compact` | `/compact` | Ask the active session to compact conversation context. |
 | `/config` | `/config` | Open fullscreen settings. |
 | `/docs` | `/docs <mode\|models\|shortcuts\|commands\|agents>` | Render command, shortcut, model, mode, or subagent help into chat. |
 | `/agent` | `/agent <name\|reset>` | Change the main-thread agent for the active session. Applies on the next turn. |
 | `/effort` | `/effort <low\|medium\|high\|xhigh\|max>` | Change thinking effort for the active session. |
+| `/ultracode` | `/ultracode <on\|off\|status>` | Enable, disable, or inspect Ultracode for the active session. |
 | `/fast` | `/fast` | Enable or disable fast mode for the active session. |
 | `/help` | `/help` | Open the fullscreen Help tab. |
 | `/mcp` | `/mcp` | Open MCP status and authorization. |
@@ -30,6 +32,10 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/resume` | `/resume <session_id>` | Resume a recent or manually supplied session id. |
 | `/rewind` | `/rewind <user_message_uuid> <both\|conversation\|code>` | Restore conversation, code, or both to a previous user message. |
 
+## Side Questions
+
+`/btw` treats the complete non-empty text after the command as one question, including internal spaces and line breaks. Side questions are shown in a separate status field while pending and produce a bordered `Claude · BTW` transcript card only when answered. During an active turn, the card is inserted at the current point in the agent's output, with subsequent output below it; when idle, it is a standalone transcript entry with the same design. You can continue using the normal composer while up to ten side questions are unresolved; Rust queues and dispatches them one at a time in submission order. Each question sees main-conversation context at SDK dispatch time, not a snapshot from submission. Failures free capacity immediately and remain visible briefly as error rows.
+
 ## SDK-Advertised Commands
 
 The active SDK session can advertise additional slash commands. These are not documented as a fixed table here because they can change with SDK behavior, session capabilities, account state, and future upstream changes.
@@ -43,6 +49,10 @@ Use:
 to inspect the current session's full command list. The output includes app-owned commands and SDK-advertised commands, with descriptions when the SDK provides them.
 
 ## Session Commands
+
+`/ultracode on` enables session-scoped dynamic-workflow orchestration while retaining the current thinking effort; `/ultracode off` disables it. Both require an idle turn. `/ultracode status` can be used during a turn and reports the latest verified SDK snapshot: on, available and off, requested but unavailable, unavailable and off, or unknown. Availability depends on SDK session capabilities and model support. The footer shows `Ultracode` only when it is verified as effective. Changing effort preserves active Ultracode, and changing models refreshes its state. This command does not persist a preference or control the one-turn `ultracode` keyword trigger.
+
+If the SDK accepts `/ultracode on` but reports Ultracode unavailable, the command shows an error explaining that the request was saved but Ultracode remains inactive. The verified requested-but-unavailable state remains visible through `/ultracode status`, which reports it as information.
 
 `/fast` changes fast mode only for the active session. It does not rewrite the persisted Fast mode setting. Use the settings surface to choose the fast-mode preference applied when future sessions start.
 

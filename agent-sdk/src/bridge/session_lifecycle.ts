@@ -32,6 +32,7 @@ import type {
   RefusalFallbackPromptPayload,
   SessionLaunchSettings,
   SessionUpdate,
+  StartupFailure,
   TaskItem,
   ToolCall,
   UserDialogOption,
@@ -80,6 +81,7 @@ import {
 } from "./model_metadata.js";
 import { shouldEmitStartupAuthRequiredForAccount } from "./account_metadata.js";
 import type { McpAuthMonitorHandle } from "./mcp_monitor.js";
+import { closeSideQuestions } from "./side_questions.js";
 
 export { mapAvailableModels, resolveCurrentModel } from "./model_metadata.js";
 export { shouldEmitStartupAuthRequiredForAccount } from "./account_metadata.js";
@@ -162,6 +164,7 @@ export type PendingWorkerShutdown = {
 };
 
 export type SessionState = {
+  ultracode?: import("../types.js").UltracodeSnapshot;
   sessionId: string;
   cwd: string;
   model: string;
@@ -180,6 +183,7 @@ export type SessionState = {
   queryConsumerTask?: Promise<void>;
   initializationReady?: boolean;
   initializationError?: string;
+  startupFailure?: StartupFailure;
   deferConnect?: boolean;
   resumeDropsTurn?: string;
   resumeGuardFenceComplete?: boolean;
@@ -366,13 +370,17 @@ export function updateSessionId(
   if (session.sessionId === newSessionId) {
     return;
   }
+  closeSideQuestions(session.sessionId, session.query);
   sessions.delete(session.sessionId);
+  session.ultracode = undefined;
   session.sessionId = newSessionId;
   sessions.set(newSessionId, session);
 }
 
 export function beginSessionClose(session: SessionState): void {
   session.closing = true;
+  session.ultracode = undefined;
+  closeSideQuestions(session.sessionId, session.query);
   for (const monitor of session.mcpAuthMonitors.values()) {
     monitor.controller.abort();
   }
@@ -586,6 +594,16 @@ export async function createSession(params: {
         options.suppressAlwaysAllowRule === true,
       ),
       ...(display ? { display } : {}),
+      ...(options.mcpServer &&
+      typeof options.mcpServer.name === "string" &&
+      typeof options.mcpServer.source === "string"
+        ? {
+            mcp_server: {
+              name: options.mcpServer.name,
+              source: options.mcpServer.source,
+            },
+          }
+        : {}),
     };
     bridgeLogger.info({
       target: LOG_TARGETS.BRIDGE_PERMISSION,
@@ -600,6 +618,8 @@ export async function createSession(params: {
         agent_id: options.agentID,
         blocked_path: options.blockedPath ?? "<none>",
         decision_reason: options.decisionReason ?? "<none>",
+        mcp_server_name: request.mcp_server?.name,
+        mcp_server_source: request.mcp_server?.source,
       },
     });
     emitPermissionRequestEvent(session.sessionId, request);
@@ -779,12 +799,20 @@ export async function createSession(params: {
     },
   });
 
+  startSessionTasks(session, params.requestId);
+  return session;
+}
+
+export function startSessionTasks(session: SessionState, requestId?: string): void {
   // In stream-input mode the SDK may defer init until input arrives.
   // Trigger initialization explicitly so the Rust UI can receive `connected`
   // before the first user prompt.
   session.initializationTask = session.query
     .initializationResult()
     .then(async (result) => {
+      if (session.startupFailure) {
+        return;
+      }
       bridgeLogger.info({
         target: LOG_TARGETS.APP_SESSION,
         eventName: "session_initialization_completed",
@@ -802,11 +830,19 @@ export async function createSession(params: {
           history_update_count: session.resumeUpdates?.length ?? 0,
         },
       });
+      const { refreshUltracode } = await import("./ultracode.js");
+      await refreshUltracode(session, session.connected);
+      if (session.startupFailure) {
+        return;
+      }
       session.availableModels = mapAvailableModels(result.models);
       const currentModelChanged = refreshCurrentModel(session);
       const { buildModeState, refreshSupportedModesForSession } = await import(
         "./commands.js"
       );
+      if (session.startupFailure) {
+        return;
+      }
       refreshSupportedModesForSession(session);
       const fastModeChanged = setFastModeSnapshotIfChanged(
         session,
@@ -848,7 +884,13 @@ export async function createSession(params: {
       emitAvailableAgentsIfChanged(session, mapAvailableAgents(result.agents));
       refreshAvailableAgents(session);
     })
-    .catch((error) => {
+    .catch(async (error) => {
+      // On process exit the SDK queues the result before rejecting initialization.
+      // Let the consumer drain queued frames before reporting a generic failure.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      if (session.startupFailure) {
+        return;
+      }
       if (session.connected) {
         return;
       }
@@ -888,13 +930,13 @@ export async function createSession(params: {
         );
         flushPendingWorkerShutdown(session);
       }
-      if (!session.connected) {
+      if (!session.connected && !session.startupFailure) {
         bridgeLogger.error({
           target: LOG_TARGETS.APP_SESSION,
           eventName: "session_stream_ended_before_connect",
           message: "session stream ended before connect",
           outcome: "failure",
-          ...(params.requestId ? { requestId: params.requestId } : {}),
+          ...(requestId ? { requestId } : {}),
           sessionId: session.sessionId,
         });
         session.initializationError =
@@ -902,11 +944,14 @@ export async function createSession(params: {
         if (!session.deferConnect) {
           failConnection(
             "agent stream ended before session initialization",
-            params.requestId,
+            requestId,
           );
         }
       }
     } catch (error) {
+      if (session.startupFailure) {
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       session.initializationError = message;
       bridgeLogger.error({
@@ -914,17 +959,15 @@ export async function createSession(params: {
         eventName: "session_stream_failed_before_connect",
         message: "session stream failed before connect",
         outcome: "failure",
-        ...(params.requestId ? { requestId: params.requestId } : {}),
+        ...(requestId ? { requestId } : {}),
         sessionId: session.sessionId,
         fields: { error_message: message },
       });
       if (!session.deferConnect) {
-        failConnection(`agent stream failed: ${message}`, params.requestId);
+        failConnection(`agent stream failed: ${message}`, requestId);
       }
     }
   })();
-
-  return session;
 }
 
 export async function awaitSessionInitialization(
@@ -1216,7 +1259,7 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
       signal: AbortSignal;
     }) => {
       const command = resolveClaudeCodeSpawnCommand(options.command);
-      const env = { ...options.env };
+      const env = { ...options.env, CLAUDE_CODE_STARTUP_FAILURE_RESULTS: "1" };
       const spawnOptions = { ...options, command, env };
       logSdkProcessSpawnStarted(spawnOptions, params.enableSpawnDebug);
       const child = spawnChild(command, options.args, {

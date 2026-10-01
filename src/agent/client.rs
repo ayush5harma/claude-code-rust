@@ -591,6 +591,17 @@ impl AgentConnection {
         text: String,
         images: Vec<crate::app::clipboard_image::ImageAttachment>,
     ) -> anyhow::Result<PromptResponse> {
+        self.prompt_with_images_and_pastes(session_id, message_uuid, text, images, Vec::new())
+    }
+
+    pub fn prompt_with_images_and_pastes(
+        &self,
+        session_id: String,
+        message_uuid: String,
+        text: String,
+        images: Vec<crate::app::clipboard_image::ImageAttachment>,
+        inline_pastes: Vec<String>,
+    ) -> anyhow::Result<PromptResponse> {
         let mut chunks = Vec::with_capacity(1 + images.len());
 
         // Add image chunks first (convention: images before text).
@@ -618,7 +629,7 @@ impl AgentConnection {
 
         self.send(CommandEnvelope {
             request_id: None,
-            command: BridgeCommand::Prompt { session_id, message_uuid, chunks },
+            command: BridgeCommand::Prompt { session_id, message_uuid, chunks, inline_pastes },
         })?;
         Ok(PromptResponse { stop_reason: "end_turn".to_owned() })
     }
@@ -630,10 +641,36 @@ impl AgentConnection {
         })
     }
 
+    pub fn ask_side_question(
+        &self,
+        session_id: String,
+        btw_id: String,
+        question: String,
+    ) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::SideQuestion { session_id, btw_id, question },
+        })
+    }
+
     pub fn set_mode(&self, session_id: String, mode: String) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: None,
             command: BridgeCommand::SetMode { session_id, mode },
+        })
+    }
+
+    pub fn set_ultracode(&self, session_id: String, enabled: bool) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::SetUltracode { session_id, enabled },
+        })
+    }
+
+    pub fn refresh_ultracode(&self, session_id: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::RefreshUltracode { session_id },
         })
     }
 

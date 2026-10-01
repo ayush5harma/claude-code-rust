@@ -306,6 +306,10 @@ async fn bridge_event_loop(
     loop {
         match bridge.recv().await {
             Ok(Some(envelope)) => {
+                let startup_failed = matches!(
+                    &envelope.event,
+                    BridgeEvent::ConnectionFailed { startup_failure: Some(_), .. }
+                );
                 handle_bridge_event(
                     &params.event_tx,
                     connection,
@@ -314,6 +318,9 @@ async fn bridge_event_loop(
                     envelope,
                 )
                 .await;
+                if startup_failed {
+                    break;
+                }
             }
             Ok(None) => {
                 tracing::error!(
@@ -349,9 +356,10 @@ async fn bridge_event_loop(
 
 pub(super) async fn emit_connection_failed(
     event_tx: &mpsc::Sender<ClientEvent>,
-    message: String,
+    failure: impl Into<crate::agent::events::ConnectionFailure>,
     app_error: AppError,
 ) {
+    let failure = failure.into();
     tracing::error!(
         target: crate::logging::targets::BRIDGE_LIFECYCLE,
         event_name = "bridge_failure_reported",
@@ -359,9 +367,9 @@ pub(super) async fn emit_connection_failed(
         outcome = "failure",
         error_category = app_error.category_tag(),
         exit_code = app_error.exit_code(),
-        user_message = %message,
+        user_message = %failure.message,
     );
-    let _ = event_tx.send(ClientEvent::ConnectionFailed(message)).await;
+    let _ = event_tx.send(ClientEvent::ConnectionFailed(failure)).await;
     let _ = event_tx.send(ClientEvent::FatalError(app_error)).await;
 }
 
@@ -454,8 +462,8 @@ async fn wait_for_bridge_initialized_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::{
-        ConnectionSlot, StartConnectionParams, handle_bridge_event, run_connection_task,
-        wait_for_bridge_initialized_with_timeout,
+        ConnectionSlot, StartConnectionParams, bridge_event_loop, handle_bridge_event,
+        run_connection_task, wait_for_bridge_initialized_with_timeout,
     };
     use crate::agent::bridge::BridgeLauncher;
     use crate::agent::client::{BridgeClient, BridgeShutdownOutcome};
@@ -467,6 +475,50 @@ mod tests {
     use std::rc::Rc;
     use std::time::Duration;
     use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn startup_failure_stops_event_loop_without_reporting_stdout_closure() {
+        let json = r#"{"event":"connection_failed","request_id":"connect-1","message":"Claude Code startup failed.","startup_failure":{"reason":"future_reason","errors":["SDK guidance"]}}"#;
+        let script = if cfg!(windows) {
+            format!("@echo off\r\necho {json}\r\nexit /b 0\r\n")
+        } else {
+            format!("#!/bin/sh\nprintf '%s\\n' '{json}'\nexit 0\n")
+        };
+        let fixture = RuntimeFixture::new(script).expect("runtime fixture");
+        let mut bridge = BridgeClient::spawn(&fixture.launcher()).expect("spawn bridge");
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<ClientEvent>(8);
+        let params = StartConnectionParams {
+            event_tx,
+            cwd_raw: fixture.script_path.parent().expect("fixture directory").display().to_string(),
+            bridge_script: None,
+            resume_id: None,
+            resume_requested: false,
+            session_launch_settings: SessionLaunchSettings::default(),
+        };
+        let connection = bridge.connection();
+        let mut connected_once = false;
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            bridge_event_loop(&params, &mut bridge, &connection, &mut connected_once),
+        )
+        .await
+        .expect("event loop completes");
+        let ClientEvent::ConnectionFailed(failure) =
+            event_rx.try_recv().expect("connection failure")
+        else {
+            panic!("connection failure")
+        };
+        assert_eq!(failure.request_id.as_deref(), Some("connect-1"));
+        let startup = failure.startup_failure.expect("structured startup failure");
+        assert_eq!(startup.reason, "future_reason");
+        assert_eq!(startup.errors, ["SDK guidance"]);
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(ClientEvent::FatalError(AppError::BridgeSdkFailure))
+        ));
+        assert!(event_rx.try_recv().is_err(), "no second connection failure");
+        bridge.wait().await.expect("reap fixture");
+    }
 
     #[tokio::test]
     async fn bridge_client_recv_returns_none_when_stdout_closes() {
@@ -706,6 +758,125 @@ mod tests {
         }
         let status = bridge.wait().await.expect("wait for bridge");
         assert!(status.success());
+    }
+
+    #[tokio::test]
+    async fn btw_workflow_crosses_real_process_ndjson_and_advances_only_after_host_finalization() {
+        use crate::agent::model;
+        use crate::app::{App, AppStatus, MessageBlock};
+
+        let marker_dir = tempfile::tempdir().expect("marker directory");
+        let marker_path = marker_dir.path().join("btw-commands.ndjson");
+        let fixture = RuntimeFixture::new(side_question_workflow_script(&marker_path))
+            .expect("runtime fixture");
+        let mut bridge = BridgeClient::spawn(&fixture.launcher()).expect("spawn bridge");
+        let connection = bridge.connection();
+        let mut app = App::test_default();
+        app.session_runtime.conn = Some(Rc::new(connection.clone()));
+        app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+        app.status = AppStatus::Running;
+        let stream_text = |app: &mut App, text: &str| {
+            crate::app::events::handle_client_event(
+                app,
+                ClientEvent::SessionUpdate {
+                    session_id: "session-1".to_owned(),
+                    update: model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+                        model::ContentBlock::Text(model::TextContent::new(text)),
+                    )),
+                },
+            );
+        };
+        stream_text(&mut app, "Before the process response.");
+        let owner_id = app.transcript.messages[0].id;
+        let question = "Why  two spaces?\nAnd Unicode: 日本語?";
+        for _ in 0..2 {
+            app.input.set_text(&format!("/btw   {question}  "));
+            crate::app::input_submit::submit_input(&mut app);
+        }
+        let first_capture =
+            wait_for_nonempty_file(&marker_path).await.expect("first command reaches child");
+        assert_eq!(
+            first_capture.lines().count(),
+            1,
+            "Rust must retain the waiting item until processing a terminal event"
+        );
+        let first_command: serde_json::Value =
+            serde_json::from_str(first_capture.trim()).expect("command NDJSON");
+        assert_eq!(first_command["command"], "side_question");
+        assert_eq!(first_command["question"], question);
+        assert_eq!(app.transcript.messages.len(), 1);
+        assert_eq!(app.transcript.messages[0].blocks.len(), 1);
+
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(4);
+        let mut connected_once = true;
+        for expected_event in ["btw_failed", "btw_result"] {
+            let envelope = tokio::time::timeout(Duration::from_secs(5), bridge.recv())
+                .await
+                .expect("child response deadline")
+                .expect("read NDJSON")
+                .expect("terminal event");
+            assert_eq!(envelope.event.event_name(), expected_event);
+            handle_bridge_event(&event_tx, &connection, &mut connected_once, false, envelope).await;
+            let event = event_rx.recv().await.expect("mapped application event");
+            crate::app::events::handle_client_event(&mut app, event);
+            if expected_event == "btw_failed" {
+                assert_eq!(
+                    app.transcript.messages[0].blocks.len(),
+                    1,
+                    "failure must not insert a card"
+                );
+                assert!(app.btw.has_active(), "failure must dispatch the next item");
+            }
+        }
+        let captured = fs::read_to_string(&marker_path).expect("captured commands");
+        let commands = captured
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("command JSON"))
+            .collect::<Vec<_>>();
+        assert_eq!(commands.len(), 2);
+        assert_ne!(commands[0]["btw_id"], commands[1]["btw_id"]);
+        assert_eq!(commands[1]["question"], question);
+        assert_eq!(app.transcript.messages.len(), 1);
+        assert!(
+            matches!(app.transcript.messages[0].blocks.get(1), Some(MessageBlock::BtwExchange(exchange)) if exchange.question == question && exchange.answer == "answer from child")
+        );
+        assert_eq!(app.transcript.messages[0].id, owner_id);
+        stream_text(&mut app, "After the process response.");
+        assert_eq!(app.transcript.messages[0].blocks.len(), 3);
+        let serialized = crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding(
+            &mut app,
+            80,
+            &std::collections::BTreeSet::new(),
+        );
+        let rendered =
+            serialized.rows().iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+        let before = rendered.find("Before the process response.").expect("preceding text");
+        let card = rendered.find("Claude · BTW").expect("process answer card");
+        let after = rendered.find("After the process response.").expect("subsequent text");
+        assert!(
+            before < card && card < after,
+            "the process-backed result must enter the streaming transcript at its arrival point"
+        );
+        assert!(!app.btw.has_active());
+        assert!(app.pending_user_messages.is_empty());
+        assert!(matches!(app.status, AppStatus::Running));
+        assert!(bridge.wait().await.expect("child exit").success());
+    }
+
+    #[cfg(windows)]
+    fn side_question_workflow_script(marker_path: &Path) -> String {
+        let marker = marker_path.display().to_string().replace('\'', "''");
+        format!(
+            "@echo off\r\npowershell -NoProfile -Command \"[Console]::InputEncoding=[Text.UTF8Encoding]::new($false); [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $count=0; while ($count -lt 2) {{ $line=[Console]::ReadLine(); if ($null -eq $line) {{ exit 1 }}; [IO.File]::AppendAllText('{marker}', $line + [Environment]::NewLine); $item=ConvertFrom-Json $line; $event=@{{ session_id=$item.session_id; btw_id=$item.btw_id; question=$item.question }}; if ($count -eq 0) {{ $event.event='btw_failed'; $event.error='test SDK failure' }} else {{ $event.event='btw_result'; $event.answer='answer from child'; $event.metadata=@{{ synthetic=$false }} }}; [Console]::WriteLine(($event | ConvertTo-Json -Compress)); $count++ }}\"\r\n"
+        )
+    }
+
+    #[cfg(not(windows))]
+    fn side_question_workflow_script(marker_path: &Path) -> String {
+        let marker = marker_path.display().to_string().replace('\'', "'\\''");
+        format!(
+            "#!/bin/sh\ncount=0\nwhile [ \"$count\" -lt 2 ]; do\nIFS= read -r line || exit 1\nprintf '%s\\n' \"$line\" >> '{marker}'\nif [ \"$count\" -eq 0 ]; then\nprintf '%s\\n' \"$line\" | sed 's/\"command\":\"side_question\"/\"event\":\"btw_failed\"/;s/}}$/,\"error\":\"test SDK failure\"}}/'\nelse\nprintf '%s\\n' \"$line\" | sed 's/\"command\":\"side_question\"/\"event\":\"btw_result\"/;s/}}$/,\"answer\":\"answer from child\",\"metadata\":{{\"synthetic\":false}}}}/'\nfi\ncount=$((count + 1))\ndone\n"
+        )
     }
 
     struct RuntimeFixture {

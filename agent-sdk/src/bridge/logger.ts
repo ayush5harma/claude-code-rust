@@ -1,4 +1,5 @@
 import type { BridgeCommand, BridgeEvent } from "../types.js";
+import { redactStartupDetail } from "./startup_failures.js";
 
 const LOG_SCHEMA = "claude-rs-log/v1" as const;
 const DIAGNOSTICS_ENABLED = process.env.CLAUDE_RS_BRIDGE_DIAGNOSTICS === "1";
@@ -100,6 +101,7 @@ function commandSessionId(command: BridgeCommand): string | undefined {
     case "resume_session":
     case "resume_session_at":
     case "prompt":
+    case "side_question":
     case "cancel_turn":
     case "set_model":
     case "set_mode":
@@ -142,6 +144,7 @@ function commandToolCallId(command: BridgeCommand): string | undefined {
     case "resume_session":
     case "resume_session_at":
     case "prompt":
+    case "side_question":
     case "cancel_turn":
     case "set_model":
     case "set_mode":
@@ -177,6 +180,8 @@ function eventToolCallId(event: BridgeEvent): string | undefined {
     case "auth_required":
     case "connection_failed":
     case "session_update":
+    case "btw_result":
+    case "btw_failed":
     case "user_dialog_request":
     case "elicitation_request":
     case "elicitation_complete":
@@ -259,6 +264,8 @@ function protocolEventLevel(event: BridgeEvent): LogLevel {
     case "user_message_rejected":
     case "turn_interrupt_receipt":
     case "mcp_snapshot":
+    case "btw_result":
+    case "btw_failed":
       return "debug";
   }
 }
@@ -305,7 +312,7 @@ export function logSdkStderrLine(line: string, sessionId?: string): void {
     message: "SDK stderr line received",
     ...(sessionId ? { sessionId } : {}),
     fields: {
-      preview: previewText(trimmed, 240),
+      preview: previewText(redactStartupDetail(trimmed), 240),
       preview_chars: Math.min(trimmed.length, 240),
       line_chars: trimmed.length,
     },

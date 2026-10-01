@@ -79,7 +79,10 @@ import {
   shouldInvalidateResolvedRuntimeModel,
   shouldEmitStartupAuthRequiredForAccount,
   trackSessionCloseTask,
+  startSessionTasks,
+  updateSessionId,
 } from "./bridge/session_lifecycle.js";
+import { dispatchSideQuestion, closeSideQuestions } from "./bridge/side_questions.js";
 import {
   classifyTurnErrorKind,
   emitAuthRequired,
@@ -112,6 +115,123 @@ import {
   normalizeStructuredUsage,
 } from "./bridge/command_session_data.js";
 import { handleLifecycleCommand } from "./bridge/command_lifecycle.js";
+import { startupFailureDetails } from "./bridge/startup_failures.js";
+
+const STARTUP_REASONS = {
+  org_pin_api_key_conflict: true,
+  provider_not_allowed: true,
+  org_verify_failed: true,
+  org_pin_mismatch: true,
+  managed_settings_invalid: true,
+  remote_settings_required_unavailable: true,
+  gateway_signin_required: true,
+  gateway_access_denied: true,
+  proxy_invalid: true,
+  temp_dir_unusable: true,
+  cwd_unavailable: true,
+  shell_tool_missing: true,
+  session_held_by_background: true,
+  worktree_resume_refused: true,
+  worktree_unverified: true,
+  cli_version_too_old: true,
+  bypass_root: true,
+} satisfies Record<import("@anthropic-ai/claude-agent-sdk").SDKStartupFailureReason, boolean>;
+
+test("startup result reasons remain structured, correlated, and exclusive", () => {
+  for (const reason of [...Object.keys(STARTUP_REASONS), "future_startup_reason"]) {
+    const session = makeSessionState();
+    session.connected = false;
+    session.connectRequestId = "connect-1";
+    session.lastAssistantError = "authentication_failed";
+    const result = {
+      type: "result",
+      subtype: "error_during_execution",
+      startup_failure_reason: reason,
+      errors: ["Please login. Original SDK guidance"],
+    };
+    const events = captureBridgeEvents(() => {
+      handleResultMessage(session, result);
+      handleResultMessage(session, result);
+    });
+    assert.deepEqual(events, [{
+      event: "connection_failed",
+      request_id: "connect-1",
+      message: "Claude Code startup failed.",
+      startup_failure: { reason, errors: result.errors },
+    }]);
+    assert.equal(session.initializationReady, false);
+    assert.equal(session.lastAssistantError, undefined);
+  }
+});
+
+test("startup errors are validated, bounded and redacted", () => {
+  for (const errors of [undefined, null, "stderr", {}, ["valid", 1], []]) {
+    const session = makeSessionState();
+    const events = captureBridgeEvents(() => handleResultMessage(session, {
+      type: "result", subtype: "error_during_execution",
+      startup_failure_reason: "proxy_invalid", errors,
+    }));
+    assert.deepEqual(events[0]?.startup_failure, { reason: "proxy_invalid", errors: [] });
+  }
+  const details = startupFailureDetails(Array.from({ length: 20 }, () =>
+    `ANTHROPIC_API_KEY=private-key Bearer secret-token https://user:password@proxy "accessToken": "private-token" sk-ant-private-key ${"x".repeat(2_000)}`,
+  ));
+  assert.equal(details.length, 8);
+  assert.ok(details.every((detail) => detail.length === 1_024));
+  assert.ok(details.every((detail) => !/private-key|secret-token|user:password|private-token/.test(detail)));
+});
+
+test("only execution result messages recognize startup reasons; older errors retain behavior", () => {
+  for (const result of [
+    { type: "result", subtype: "error_during_execution" },
+    { type: "result", subtype: "error_during_execution", startup_failure_reason: null },
+    { type: "result", subtype: "error_during_execution", startup_failure_reason: 1 },
+    { type: "result", subtype: "error_during_execution", startup_failure_reason: "" },
+    { type: "result", subtype: "error_max_turns", startup_failure_reason: "proxy_invalid" },
+    { type: "assistant", subtype: "error_during_execution", startup_failure_reason: "proxy_invalid" },
+  ]) {
+    const session = makeSessionState();
+    const events = captureBridgeEvents(() => handleResultMessage(session, { ...result, errors: ["ordinary error"] }));
+    assert.equal(events.at(-1)?.event, "turn_error");
+    assert.equal(events.at(-1)?.message, "ordinary error");
+    assert.equal(session.startupFailure, undefined);
+  }
+  const events = captureBridgeEvents(() => handleResultMessage(makeSessionState(), {
+    type: "result", subtype: "success", startup_failure_reason: "proxy_invalid",
+  }));
+  assert.equal(events.at(-1)?.event, "turn_complete");
+});
+
+test("startup failure owns reporting across initialization rejection and stream end or exit error", async () => {
+  for (const rejectFirst of [false, true]) {
+    for (const streamThrows of [false, true]) {
+      const session = makeSessionState();
+      session.connected = false;
+      session.connectRequestId = "connect-race";
+      session.query = {
+        initializationResult: async () => {
+          if (!rejectFirst) await new Promise<void>((resolve) => setImmediate(resolve));
+          throw new Error("generic initialization rejection");
+        },
+        async *[Symbol.asyncIterator]() {
+          if (rejectFirst) await new Promise<void>((resolve) => setImmediate(resolve));
+          yield {
+            type: "result", subtype: "error_during_execution",
+            startup_failure_reason: "gateway_signin_required", errors: ["Please login"],
+          };
+          if (streamThrows) throw new Error("exit code 1");
+        },
+      } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+      const events = await captureBridgeEventsAsync(async () => {
+        startSessionTasks(session, "connect-race");
+        await Promise.all([session.initializationTask, session.queryConsumerTask]);
+      });
+      assert.deepEqual(events.map((event) => event.event), ["connection_failed"]);
+      assert.equal(events[0]?.request_id, "connect-race");
+      assert.equal(session.initializationError, "Claude Code startup failed.");
+    }
+  }
+});
 
 const BRIDGE_RUNTIME_PROCESS_NAME =
   process.platform === "win32"
@@ -582,6 +702,36 @@ test("parseCommandEnvelope requires and preserves prompt message UUID", () => {
         }),
       ),
     /message_uuid/,
+  );
+});
+
+test("parseCommandEnvelope preserves a side question as one complete string", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      command: "side_question",
+      session_id: "session-123",
+      btw_id: "btw-1",
+      question: "Why  two spaces?\nAnd this line?",
+    }),
+  );
+
+  assert.deepEqual(parsed.command, {
+    command: "side_question",
+    session_id: "session-123",
+    btw_id: "btw-1",
+    question: "Why  two spaces?\nAnd this line?",
+  });
+  assert.throws(
+    () =>
+      parseCommandEnvelope(
+        JSON.stringify({
+          command: "side_question",
+          session_id: "session-123",
+          btw_id: "btw-2",
+          question: "  \n  ",
+        }),
+      ),
+    /must not be empty/,
   );
 });
 
@@ -1369,6 +1519,7 @@ test("mapMcpServerStatus preserves latest MCP status config fields", () => {
     } as unknown as NonNullable<
       import("@anthropic-ai/claude-agent-sdk").McpServerStatus["config"]
     >,
+    source: "plugin",
     tools: [],
   });
 
@@ -1388,6 +1539,7 @@ test("mapMcpServerStatus preserves latest MCP status config fields", () => {
       },
     ],
   });
+  assert.equal(mapped.source, "plugin");
 });
 
 test("mapMcpServerStatusConfig maps unknown config types without throwing", () => {
@@ -2722,14 +2874,15 @@ test("buildQueryOptions forwards SDK-provided spawn env without passing top-leve
   const previousParentOnly = process.env.PHASE10_PARENT_ONLY;
   process.env.PHASE10_PARENT_ONLY = "must-not-leak";
   try {
+    const env = Object.freeze({ PHASE10_ENV_CHECK: "forwarded", CLAUDE_CODE_STARTUP_FAILURE_RESULTS: "0", SDK_OTHER: "kept" });
     const child = options.spawnClaudeCodeProcess({
       command: process.execPath,
       args: [
         "-e",
-        "process.stdout.write(JSON.stringify({check:process.env.PHASE10_ENV_CHECK??null,parent:process.env.PHASE10_PARENT_ONLY??null}))",
+        "process.stdout.write(JSON.stringify({check:process.env.PHASE10_ENV_CHECK??null,parent:process.env.PHASE10_PARENT_ONLY??null,startup:process.env.CLAUDE_CODE_STARTUP_FAILURE_RESULTS,other:process.env.SDK_OTHER,timing:process.env.CLAUDE_CODE_EMIT_STARTUP_TIMING??null}))",
       ],
       cwd: process.cwd(),
-      env: { PHASE10_ENV_CHECK: "forwarded" },
+      env,
       signal: new AbortController().signal,
     });
 
@@ -2745,7 +2898,8 @@ test("buildQueryOptions forwards SDK-provided spawn env without passing top-leve
     });
 
     assert.equal(exitCode, 0);
-    assert.deepEqual(JSON.parse(stdout), { check: "forwarded", parent: null });
+    assert.deepEqual(JSON.parse(stdout), { check: "forwarded", parent: null, startup: "1", other: "kept", timing: null });
+    assert.deepEqual(env, { PHASE10_ENV_CHECK: "forwarded", CLAUDE_CODE_STARTUP_FAILURE_RESULTS: "0", SDK_OTHER: "kept" });
   } finally {
     if (previousParentOnly === undefined) {
       delete process.env.PHASE10_PARENT_ONLY;
@@ -5460,6 +5614,7 @@ test("handleTaskSystemMessage maps stopped notifications to terminal task state"
     handleTaskSystemMessage(session, "task_notification", {
       task_id: "task-1",
       status: "stopped",
+      reason: "worker_restart",
       output_file: "C:/tmp/task-1.txt",
       summary: "Stopped background watch",
     });
@@ -5483,6 +5638,7 @@ test("handleTaskSystemMessage maps stopped notifications to terminal task state"
               output_file: "C:/tmp/task-1.txt",
               summary: "Stopped background watch",
               terminal_status: "stopped",
+              terminal_reason: "worker_restart",
             },
           },
         ],
@@ -6878,7 +7034,13 @@ test("handleSdkMessage replaces available commands from commands_changed", () =>
       type: "system",
       subtype: "commands_changed",
       commands: [
-        { name: "/one", description: "First command", argumentHint: "<value>" },
+        {
+          name: "/one",
+          description: "First command",
+          argumentHint: "<value>",
+          aliases: ["/first", "/first", "/one"],
+          builtin: true,
+        },
         { name: "/two", description: undefined, argumentHint: undefined },
       ],
       uuid: "message-commands",
@@ -6892,7 +7054,13 @@ test("handleSdkMessage replaces available commands from commands_changed", () =>
       {
         type: "available_commands_update",
         commands: [
-          { name: "/one", description: "First command", input_hint: "<value>" },
+          {
+            name: "/one",
+            description: "First command",
+            input_hint: "<value>",
+            aliases: ["/first"],
+            builtin: true,
+          },
           { name: "/two", description: "" },
         ],
         source: "commands_changed",
@@ -7095,6 +7263,109 @@ test("handleSdkMessage emits system notices for notifications and plugin failure
       },
     ],
   );
+});
+
+test("handleSdkMessage emits bounded plugin load diagnostics from init", () => {
+  const session = makeSessionState();
+  session.query = {
+    supportedCommands: async () => [],
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "init",
+      session_id: "session-1",
+      model: "haiku",
+      plugin_errors: [
+        {
+          plugin: "inline[0]",
+          type: "manifest-validation-error",
+          message: "Missing name",
+          path: "C:/work/plugin",
+        },
+      ],
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.at(-1)?.update, {
+    type: "system_notice_update",
+    severity: "warning",
+    message:
+      "Plugin inline[0] failed to load (manifest-validation-error) at C:/work/plugin: Missing name",
+  });
+});
+
+for (const boundary of ["close", "identity-change", "conversation-reset"] as const) {
+  test(`side-question ${boundary} aborts SDK work and suppresses late NDJSON results`, async () => {
+    const session = makeSessionState();
+    session.sessionId = `btw-lifecycle-${boundary}`;
+    const originalSessionId = session.sessionId;
+    let resolve!: (result: unknown) => void;
+    let signal: AbortSignal | undefined;
+    const oldResult = new Promise<unknown>((settle) => { resolve = settle; });
+    let calls = 0;
+    session.query = {
+      askSideQuestion(_question: string, options: { signal: AbortSignal }) {
+        calls += 1;
+        if (calls === 1) {
+          signal = options.signal;
+          return oldResult;
+        }
+        return Promise.resolve({ response: "new answer", synthetic: false });
+      },
+    } as unknown as SessionState["query"];
+
+    const events = await captureBridgeEventsAsync(async () => {
+      dispatchSideQuestion(session.sessionId, session.query, { btwId: "old", question: "old question" });
+      assert.equal(signal?.aborted, false);
+      if (boundary === "close") {
+        beginSessionClose(session);
+      } else if (boundary === "identity-change") {
+        updateSessionId(session, `${originalSessionId}-new`);
+      } else {
+        handleSdkMessage(session, {
+          type: "conversation_reset", new_conversation_id: "conversation-2",
+        } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+      }
+      assert.equal(signal?.aborted, true);
+      resolve({ response: "stale answer", synthetic: false });
+      await new Promise((settle) => setImmediate(settle));
+      if (boundary !== "close") {
+        dispatchSideQuestion(session.sessionId, session.query, { btwId: "new", question: "new question" });
+        await new Promise((settle) => setImmediate(settle));
+      }
+    });
+    assert.equal(events.some((event) => event.btw_id === "old"), false);
+    if (boundary !== "close") {
+      assert.deepEqual(events.find((event) => event.btw_id === "new"), {
+        event: "btw_result", session_id: session.sessionId, btw_id: "new",
+        question: "new question", answer: "new answer", metadata: { synthetic: false },
+      });
+    }
+    closeSideQuestions(session.sessionId, session.query);
+    sessions.delete(session.sessionId);
+  });
+}
+
+test("handleSdkMessage forwards conversation reset metadata for unknown triggers", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "conversation_reset",
+      new_conversation_id: "conversation-2",
+      trigger: "future-trigger",
+      timestamp: "2026-10-01T12:00:00Z",
+      user_message_uuid: "user-2",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.at(-1)?.update, {
+    type: "conversation_reset",
+    new_conversation_id: "conversation-2",
+    trigger: "future-trigger",
+    timestamp: "2026-10-01T12:00:00Z",
+    user_message_uuid: "user-2",
+  });
 });
 
 test("handleSdkMessage maps informational system messages to notices by level", () => {
@@ -8000,6 +8271,24 @@ test("buildPromptUserMessage attributes structured keyboard input to a human", (
   assert.equal(message?.message.content.length, 2);
 });
 
+test("buildPromptUserMessage preserves inline paste provenance", () => {
+  const message = buildPromptUserMessage(
+    {
+      command: "prompt",
+      session_id: "session-1",
+      message_uuid: "00000000-0000-4000-8000-000000000003",
+      chunks: [{ kind: "text", value: "pasted text" }],
+      inline_pastes: ["pasted text"],
+    },
+    "session-1",
+  );
+
+  assert.deepEqual(message?.inline_pastes, ["pasted text"]);
+  assert.deepEqual(message?.message.content, [
+    { type: "text", text: "pasted text" },
+  ]);
+});
+
 test("applySessionAgent uses live flag settings for agent switch and reset", async () => {
   const calls: unknown[] = [];
   const query = {
@@ -8368,7 +8657,7 @@ test("looksLikeAuthRequired detects login hints", () => {
 });
 
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.270");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.286");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 
@@ -9993,4 +10282,103 @@ test("handleUserDialogResponse ignores a duplicate response for a resolved reque
   } finally {
     sessions.delete("session-dialog");
   }
+});
+
+
+test("Ultracode commands validate explicit boolean payloads", () => {
+  for (const enabled of [true, false]) {
+    const command = { command: "set_ultracode", session_id: "session-1", enabled };
+    assert.deepEqual(parseCommandEnvelope(JSON.stringify(command)).command, command);
+  }
+  for (const enabled of [undefined, "on", 1, null]) {
+    assert.throws(() => parseCommandEnvelope(JSON.stringify({ command: "set_ultracode", session_id: "session-1", enabled })), /enabled must be a boolean/);
+  }
+  const refresh = { command: "refresh_ultracode", session_id: "session-1" };
+  assert.deepEqual(parseCommandEnvelope(JSON.stringify(refresh)).command, refresh);
+});
+
+test("Ultracode NDJSON control flow preserves effort and refreshes model support", async () => {
+  const session = makeSessionState();
+  let enabled = false;
+  let available = true;
+  const calls: unknown[] = [];
+  session.query = {
+    getSettings: async () => ({ applied: { ultracodeAvailable: available, ultracodeRequested: enabled, ultracode: available && enabled } }),
+    applyFlagSettings: async (settings: Record<string, unknown>) => {
+      calls.push(settings);
+      if ("effortLevel" in settings && !("ultracode" in settings)) enabled = false;
+      if (typeof settings.ultracode === "boolean") enabled = settings.ultracode;
+      return {};
+    },
+    setModel: async () => { available = false; },
+  } as unknown as unknown as SessionState["query"];
+  sessions.set(session.sessionId, session);
+  try {
+    const events = await captureBridgeEventsAsync(async () => {
+      for (const command of [
+        { command: "refresh_ultracode", session_id: session.sessionId },
+        { command: "set_ultracode", session_id: session.sessionId, enabled: true },
+        { command: "set_effort", session_id: session.sessionId, effort: "high" },
+        { command: "set_model", session_id: session.sessionId, model: "haiku" },
+        { command: "set_effort", session_id: session.sessionId, effort: "low" },
+        { command: "set_ultracode", session_id: session.sessionId, enabled: false },
+      ]) {
+        const parsed = parseCommandEnvelope(JSON.stringify(command));
+        await handleSessionControlCommand(parsed.command as Parameters<typeof handleSessionControlCommand>[0], "request-1", promptControlDeps());
+      }
+    });
+    assert.deepEqual(calls, [{ ultracode: true }, { effortLevel: "high", ultracode: true }, { effortLevel: "low" }, { ultracode: false }]);
+    assert.deepEqual(events.filter(e => (e.update as Record<string, unknown>)?.type === "ultracode_update").map(e => (e.update as Record<string, unknown>).ultracode), [
+      { available: true, requested: false, effective: false },
+      { available: true, requested: true, effective: true },
+      { available: true, requested: true, effective: true },
+      { available: false, requested: true, effective: false },
+      { available: false, requested: false, effective: false },
+      { available: false, requested: false, effective: false },
+    ]);
+    assert.equal(events.some(e => e.event === "slash_error"), false);
+  } finally { sessions.delete(session.sessionId); }
+});
+
+test("Ultracode accepted but unverifiable changes emit unknown and a correlated error", async () => {
+  const session = makeSessionState();
+  session.ultracode = { available: true, requested: false, effective: false };
+  session.query = { applyFlagSettings: async () => ({}) } as unknown as SessionState["query"];
+  sessions.set(session.sessionId, session);
+  try {
+    const events = await captureBridgeEventsAsync(async () => {
+      await handleSessionControlCommand({ command: "set_ultracode", session_id: session.sessionId, enabled: true }, "ultracode-1", promptControlDeps());
+    });
+    assert.equal(session.ultracode, undefined);
+    assert.deepEqual(events[0]?.update, { type: "ultracode_update", ultracode: null });
+    assert.equal(events[1]?.event, "slash_error");
+    assert.equal(events[1]?.request_id, "ultracode-1");
+    assert.match(String(events[1]?.message), /accepted.*could not be verified/);
+  } finally { sessions.delete(session.sessionId); }
+});
+
+test("Ultracode connection snapshots, identity changes, conversation reset and close follow SDK session identity", async () => {
+  const session = makeSessionState();
+  const active = { available: true, requested: true, effective: true };
+  session.ultracode = active;
+  session.query = { getSettings: async () => ({ applied: { ultracodeAvailable: true, ultracodeRequested: true, ultracode: true } }) } as unknown as unknown as SessionState["query"];
+  sessions.set(session.sessionId, session);
+  try {
+    for (const kind of ["connected", "session_replaced"] as const) {
+      assert.deepEqual((buildConnectBridgeEvent(session, kind) as unknown as Record<string, unknown>).ultracode, active);
+    }
+    updateSessionId(session, session.sessionId);
+    assert.deepEqual(session.ultracode, active);
+    const events = await captureBridgeEventsAsync(async () => {
+      handleSdkMessage(session, { type: "conversation_reset", new_conversation_id: "conversation-2" } as unknown as Parameters<typeof handleSdkMessage>[1]);
+      assert.deepEqual(session.ultracode, active);
+      await new Promise<void>(resolve => setImmediate(resolve));
+    });
+    assert.ok(events.some(e => (e.update as Record<string, unknown>)?.type === "ultracode_update"));
+    updateSessionId(session, "session-2");
+    assert.equal(session.ultracode, undefined);
+    session.ultracode = active;
+    beginSessionClose(session);
+    assert.equal(session.ultracode, undefined);
+  } finally { sessions.delete(session.sessionId); }
 });

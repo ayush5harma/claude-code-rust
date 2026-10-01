@@ -29,6 +29,7 @@ struct ConnectedEventData {
     mode: Option<types::ModeState>,
     fast_mode_state: types::FastModeState,
     fast_mode_disabled_reason: Option<String>,
+    ultracode: Option<model::UltracodeState>,
     history_updates: Option<Vec<types::SessionUpdate>>,
 }
 
@@ -50,6 +51,7 @@ pub(super) async fn handle_bridge_event(
             mode,
             fast_mode_state,
             fast_mode_disabled_reason,
+            ultracode,
             history_updates,
         } => {
             handle_connected_event(
@@ -63,6 +65,7 @@ pub(super) async fn handle_bridge_event(
                     mode,
                     fast_mode_state,
                     fast_mode_disabled_reason,
+                    ultracode,
                     history_updates,
                 },
             )
@@ -72,13 +75,33 @@ pub(super) async fn handle_bridge_event(
             let _ =
                 event_tx.send(ClientEvent::AuthRequired { method_name, method_description }).await;
         }
-        crate::agent::wire::BridgeEvent::ConnectionFailed { message } => {
-            emit_connection_failed(event_tx, message, AppError::BridgeSdkFailure).await;
+        crate::agent::wire::BridgeEvent::ConnectionFailed { message, startup_failure } => {
+            emit_connection_failed(
+                event_tx,
+                crate::agent::events::ConnectionFailure { message, startup_failure, request_id },
+                AppError::BridgeSdkFailure,
+            )
+            .await;
         }
         crate::agent::wire::BridgeEvent::SessionUpdate { session_id, update } => {
             if let Some(update) = map_session_update(update) {
                 let _ = event_tx.send(ClientEvent::SessionUpdate { session_id, update }).await;
             }
+        }
+        crate::agent::wire::BridgeEvent::BtwResult {
+            session_id,
+            btw_id,
+            question,
+            answer,
+            metadata,
+        } => {
+            let _ = event_tx
+                .send(ClientEvent::BtwResult { session_id, btw_id, question, answer, metadata })
+                .await;
+        }
+        crate::agent::wire::BridgeEvent::BtwFailed { session_id, btw_id, question, error } => {
+            let _ =
+                event_tx.send(ClientEvent::BtwFailed { session_id, btw_id, question, error }).await;
         }
         crate::agent::wire::BridgeEvent::PermissionRequest { session_id, request } => {
             handle_permission_request_event(event_tx, connection, session_id, request).await;
@@ -226,6 +249,7 @@ pub(super) async fn handle_bridge_event(
             mode,
             fast_mode_state,
             fast_mode_disabled_reason,
+            ultracode,
             history_updates,
             restored_input,
         } => {
@@ -243,6 +267,7 @@ pub(super) async fn handle_bridge_event(
                     mode: mode.map(convert_mode_state),
                     fast_mode_state: convert_fast_mode_state(fast_mode_state),
                     fast_mode_disabled_reason,
+                    ultracode,
                     history_updates,
                     restored_input,
                 })
@@ -339,6 +364,7 @@ async fn handle_connected_event(
                 mode,
                 fast_mode_state: convert_fast_mode_state(event.fast_mode_state),
                 fast_mode_disabled_reason: event.fast_mode_disabled_reason,
+                ultracode: event.ultracode,
                 history_updates,
                 restored_input: None,
             })
@@ -354,6 +380,7 @@ async fn handle_connected_event(
                 mode,
                 fast_mode_state: convert_fast_mode_state(event.fast_mode_state),
                 fast_mode_disabled_reason: event.fast_mode_disabled_reason,
+                ultracode: event.ultracode,
                 history_updates,
             })
             .await;
