@@ -2,7 +2,7 @@
 
 ## User Prerequisite
 
-The Claude Code CLI must be installed as fallback for some SDK-unsupported features. See [anthropics/claude-code](https://github.com/anthropics/claude-code) for how to install it.
+Install the Claude Code CLI and keep `claude` on `PATH` for the account and management operations listed in [Claude CLI dependencies](about.md#claude-cli-dependencies). Core sessions use the bundled Agent SDK; the CLI is also an optional usage-data source or fallback. See [anthropics/claude-code](https://github.com/anthropics/claude-code) for how to install it.
 
 The recommended script install includes the application and its runtime dependencies. It does not require a Rust toolchain, Node.js, npm, or a separate Bun installation.
 
@@ -31,9 +31,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubu
 ```text
 ${XDG_DATA_HOME:-$HOME/.local/share}/claude-rs/
 $HOME/.local/bin/claude-rs
+$HOME/.local/share/man/man1/claude-rs*.1
 ```
 
-The app directory contains `claude-rs`, `claude-rs-bridge-bun`, `agent-sdk/`, and `node_modules/`. The file in `$HOME/.local/bin` is a launcher script that executes the app binary.
+The app directory contains `claude-rs`, `claude-rs-bridge-bun`, `agent-sdk/`, and `node_modules/`. The file in `$HOME/.local/bin` is a launcher script that executes the app binary. Unix archives also contain manuals under `share/man/man1/`; the installer links them into the sibling `share/man/man1/` directory beside `bin`. Uninstall removes its own manual links and preserves manuals from other installations. See [Usage](usage.md#man-pages) for viewing manuals and generating them with npm or source installations.
 
 **The default Windows install layout is:**
 
