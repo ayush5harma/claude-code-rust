@@ -135,8 +135,16 @@ pub fn reconcile_terminal_size(app: &mut App, width: u16, height: u16) {
 }
 
 fn should_dispatch_key_event(key: crossterm::event::KeyEvent) -> bool {
+    // ConPTY delivers zero-width text (for example a combining accent) as a
+    // release-only console event. Dropping it changes the user's input payload.
+    let zero_width_text_release = cfg!(windows)
+        && key.kind == KeyEventKind::Release
+        && super::keys::is_printable_text_modifiers(key.modifiers)
+        && matches!(key.code, crossterm::event::KeyCode::Char(ch)
+            if !ch.is_control() && unicode_width::UnicodeWidthChar::width(ch) == Some(0));
     key.kind == KeyEventKind::Press
         || (key.kind == KeyEventKind::Release && super::keys::is_clipboard_paste_shortcut(key))
+        || zero_width_text_release
 }
 
 fn handle_resize(app: &mut App, width: u16, height: u16) -> bool {
@@ -266,6 +274,11 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
         SurfaceMode::Chat => {
             if app.composer_access().can_edit() {
                 reclaim_input_from_inline_prompt_if_needed(app);
+                // A terminal paste follows any characters still held by the
+                // key-burst detector. Flush them before queuing its payload.
+                if let Some(action) = app.paste.burst.on_non_char_key(std::time::Instant::now()) {
+                    super::apply_paste_burst_flush(app, action);
+                }
                 app.queue_paste_text(text);
                 return true;
             }
