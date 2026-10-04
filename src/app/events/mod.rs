@@ -5,6 +5,7 @@ mod api_retry;
 mod client;
 mod compaction;
 mod notices;
+mod notifications;
 mod rate_limit;
 mod retraction;
 mod session;
@@ -32,6 +33,7 @@ use crossterm::event::{Event, KeyEventKind};
 use std::fmt::Write as _;
 
 pub use client::handle_client_event;
+pub(crate) use session::maybe_emit_fast_mode_disabled_notice;
 
 /// Apply the optimistic UI transition after a cancel command has entered the
 /// bridge command queue. This is local input state, not a bridge event.
@@ -97,6 +99,11 @@ pub fn handle_terminal_event(app: &mut App, event: Event) -> TerminalEventOutcom
         return TerminalEventOutcome::ignored();
     }
 
+    if matches!(&event, Event::Key(key) if should_dispatch_key_event(*key))
+        || matches!(&event, Event::Paste(_) | Event::Mouse(_))
+    {
+        super::questions::record_activity(app, std::time::Instant::now());
+    }
     let outcome = match event {
         Event::Key(key) if should_dispatch_key_event(key) => dispatch_key_by_view(app, key),
         Event::Mouse(mouse) => {
@@ -238,6 +245,10 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> Termi
             app.paste.clear_active_session();
             TerminalEventOutcome::from_key_outcome(super::keys::dispatch_key_by_focus(app, key))
         }
+        SurfaceMode::Fullscreen(FullscreenView::Copy) => {
+            super::copy::handle_key(app, key);
+            TerminalEventOutcome::handled(true)
+        }
         SurfaceMode::Fullscreen(FullscreenView::Config) => {
             super::config::handle_key(app, key);
             TerminalEventOutcome::handled(true)
@@ -261,7 +272,12 @@ fn dispatch_mouse_by_view(app: &mut App, mouse: crossterm::event::MouseEvent) {
     match app.surface_mode {
         SurfaceMode::Chat => {
             app.paste.clear_active_session();
-            let _ = mouse;
+            match mouse.kind {
+                crossterm::event::MouseEventKind::ScrollUp => app.chat_render.viewport.scroll(-3),
+                crossterm::event::MouseEventKind::ScrollDown => app.chat_render.viewport.scroll(3),
+                _ => return,
+            }
+            app.request_chat_repaint();
         }
         SurfaceMode::Fullscreen(_) => {
             let _ = mouse;
@@ -286,7 +302,10 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
         }
         SurfaceMode::Fullscreen(FullscreenView::Config) => super::config::handle_paste(app, text),
         SurfaceMode::Fullscreen(
-            FullscreenView::Trusted | FullscreenView::SessionPicker | FullscreenView::Update,
+            FullscreenView::Trusted
+            | FullscreenView::SessionPicker
+            | FullscreenView::Update
+            | FullscreenView::Copy,
         ) => false,
     }
 }
@@ -345,22 +364,32 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             apply_task_state_update(app, update);
         }
         model::SessionUpdate::UserMessageChunk(_) => {}
+        model::SessionUpdate::MessageMetadata { role, timestamp, source_message_uuid } => {
+            crate::app::presentation::apply_message_metadata(
+                app,
+                &role,
+                source_message_uuid.as_deref(),
+                &timestamp,
+            );
+        }
+        model::SessionUpdate::TurnTiming { duration_ms, api_duration_ms } => {
+            if let Some(index) = app.active_turn_assistant_idx() {
+                app.transcript.messages[index]
+                    .timing
+                    .set_sdk_duration(duration_ms, api_duration_ms);
+                app.invalidate_layout(InvalidationLevel::MessageChanged(index));
+            }
+        }
         model::SessionUpdate::ExternalMessageUpdate(update) => {
             handle_external_message_update(app, &update);
         }
-        model::SessionUpdate::AgentThoughtChunk(chunk) => {
-            let chunk_chars = match &chunk.content {
-                model::ContentBlock::Text(text) => text.text.chars().count(),
-                model::ContentBlock::Image(_) => 0,
-            };
-            tracing::trace!(
-                target: crate::logging::targets::APP_SESSION,
-                event_name = "agent_thought_chunk_applied",
-                message = "agent thought chunk applied",
-                outcome = "success",
-                chunk_chars,
-            );
-            app.status = AppStatus::Thinking;
+        model::SessionUpdate::AgentActivityUpdate(phase) => {
+            if matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
+                app.status = match phase {
+                    model::AgentActivityPhase::Working => AppStatus::Running,
+                    model::AgentActivityPhase::Thinking => AppStatus::Thinking,
+                };
+            }
         }
         model::SessionUpdate::AvailableCommandsUpdate(cmds) => {
             tracing::debug!(
@@ -396,26 +425,6 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                 app.session_runtime.mode.as_ref().map(|current| current.current_mode_id.as_str())
                     != Some(mode.current_mode_id.as_str());
             app.session_runtime.mode = Some(mode);
-            if mode_changed {
-                app.invalidate_layout(InvalidationLevel::Global);
-            }
-            if matches!(app.turn.pending_command_ack, Some(PendingCommandAck::CurrentMode)) {
-                session::clear_pending_command(app);
-            }
-        }
-        model::SessionUpdate::CurrentModeUpdate(update) => {
-            let mode_id = update.current_mode_id.to_string();
-            let mut mode_changed = false;
-            if let Some(ref mut mode) = app.session_runtime.mode {
-                mode_changed = mode.current_mode_id != mode_id;
-                if let Some(info) = mode.available_modes.iter().find(|m| m.id == mode_id) {
-                    mode.current_mode_name.clone_from(&info.name);
-                    mode.current_mode_id = mode_id;
-                } else {
-                    mode.current_mode_name.clone_from(&mode_id);
-                    mode.current_mode_id = mode_id;
-                }
-            }
             if mode_changed {
                 app.invalidate_layout(InvalidationLevel::Global);
             }
@@ -503,6 +512,9 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                 compacting = app.turn.compaction.is_active(),
             );
         }
+        model::SessionUpdate::NotificationUpdate { notification, replay } => {
+            notifications::handle_sdk_notification(app, &notification, replay);
+        }
         model::SessionUpdate::SystemNoticeUpdate { severity, message } => {
             let severity = match severity {
                 model::SystemNoticeSeverity::Info => SystemSeverity::Info,
@@ -561,10 +573,12 @@ fn handle_runtime_session_state_update(app: &mut App, state: model::RuntimeSessi
     app.session_runtime.runtime_session_state = Some(state);
     match state {
         model::RuntimeSessionState::Running => {
-            if matches!(app.status, AppStatus::Ready | AppStatus::Thinking | AppStatus::Running)
-                && !app.turn.compaction.is_active()
-            {
+            if app.status == AppStatus::Ready {
                 app.status = AppStatus::Running;
+            }
+            if matches!(app.status, AppStatus::Running | AppStatus::Thinking) {
+                app.begin_turn_activity(std::time::Instant::now());
+                app.session_runtime.runtime_session_state = Some(state);
             }
         }
         model::RuntimeSessionState::RequiresAction => {}
@@ -574,6 +588,7 @@ fn handle_runtime_session_state_update(app: &mut App, state: model::RuntimeSessi
                 && !app.turn.cancel_requested
             {
                 app.status = AppStatus::Ready;
+                app.turn.activity = None;
             }
         }
     }

@@ -125,7 +125,7 @@ impl TerminalTest {
     }
 
     fn start_with_auth(scenario: &str, lines: u16, auth_mode: Option<&str>) -> Self {
-        Self::start_with_options(scenario, lines, auth_mode, &[])
+        Self::start_with_options(scenario, lines, auth_mode, &[], false)
     }
 
     fn start_with_options(
@@ -133,6 +133,7 @@ impl TerminalTest {
         lines: u16,
         auth_mode: Option<&str>,
         args: &[&str],
+        has_initial_prompt: bool,
     ) -> Self {
         let temp = tempfile::tempdir().expect("tempdir");
         let profile = temp.path().join("profile");
@@ -141,7 +142,7 @@ impl TerminalTest {
         let release_file = temp.path().join("release");
         std::fs::create_dir_all(&profile).expect("profile");
         std::fs::create_dir_all(&project).expect("project");
-        if !args.is_empty() {
+        if has_initial_prompt {
             std::fs::write(profile.join("settings.json"), r#"{"model":"haiku","effortLevel":"medium","permissions":{"defaultMode":"default"}}"#).expect("saved settings");
         }
         let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-bridge.js");
@@ -219,13 +220,13 @@ impl TerminalTest {
         let mut test = Self { child, master: pair.master, output, journal, release_file, temp };
         test.wait_screen("Trust this project");
         test.send(b"y");
-        if args.is_empty() {
+        if has_initial_prompt {
+            test.wait_until("initial prompt", |test| !test.prompts().is_empty());
+        } else {
             test.wait_screen("Type a message");
             // The composer is editable during Connecting, but Enter cannot submit
             // until the connected event has been applied and painted.
             test.wait_screen("[READY]");
-        } else {
-            test.wait_until("initial prompt", |test| !test.prompts().is_empty());
         }
         test
     }
@@ -282,6 +283,15 @@ impl TerminalTest {
 
     fn wait_screen(&mut self, needle: &str) {
         self.wait_until(needle, |test| test.screen().contains(needle));
+    }
+
+    fn wait_setting(&mut self, file: &str, pointer: &str, expected: Option<&Value>) {
+        self.wait_until(&format!("persisted {pointer}"), |test| {
+            std::fs::read(test.temp.path().join(file))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .is_some_and(|document| document.pointer(pointer) == expected)
+        });
     }
 
     fn journal(&self) -> Vec<Value> {
@@ -378,7 +388,7 @@ fn interactive_cli_startup_sends_overrides_and_initial_prompt_without_saving_the
         let mut args = common.to_vec();
         args.extend(selection);
         args.push("Review this project");
-        let mut test = TerminalTest::start_with_options("stream", 3, None, &args);
+        let mut test = TerminalTest::start_with_options("stream", 3, None, &args, true);
         test.wait_journal("turn_complete");
         test.assert_prompts(&["Review this project"]);
         assert_eq!(test.prompts()[0]["session_id"], expected_session);
@@ -389,8 +399,8 @@ fn interactive_cli_startup_sends_overrides_and_initial_prompt_without_saving_the
                 entry["command"] == "create_session" || entry["command"] == "resume_session"
             })
             .expect("session launch command");
-        assert_eq!(launch["launch_settings"]["settings"]["model"], "opus");
-        assert_eq!(launch["launch_settings"]["settings"]["permissions"]["defaultMode"], "plan");
+        assert_eq!(launch["launch_settings"]["model"], "opus");
+        assert_eq!(launch["launch_settings"]["permission_mode"], "plan");
         assert_eq!(launch["launch_settings"]["effort"], "max");
         assert_eq!(launch["launch_settings"]["agent"], "reviewer");
         let saved: Value = serde_json::from_str(
@@ -497,6 +507,174 @@ fn concurrent_resize_typing_and_paste_deliver_every_prompt_exactly_once() {
         test.assert_prompts(&expected.iter().map(String::as_str).collect::<Vec<_>>());
     }
     test.shutdown();
+}
+
+#[test]
+fn tips_setting_preserves_immediate_activity_and_heading_through_real_config_saves() {
+    let mut test = TerminalTest::start("hold-activity-off", 3);
+    test.submit("NO_OUTPUT_YET", "NO_OUTPUT_YET");
+    test.wait_journal("reply-held");
+    test.wait_until("disabled tips retain immediate activity and assistant heading", |test| {
+        let screen = test.screen();
+        screen.contains("NO_OUTPUT_YET")
+            && screen.lines().filter(|line| line.trim() == "Claude").count() == 1
+            && screen.lines().any(|line| line.starts_with("│ ◆ "))
+            && !screen.contains("│ Tip:")
+    });
+    let activity_header = test
+        .screen()
+        .lines()
+        .find(|line| line.starts_with("│ ◆ "))
+        .expect("immediate activity header")
+        .trim_end()
+        .to_owned();
+    for (index, enabled) in [true, false, true].into_iter().enumerate() {
+        test.submit("/config", "/config");
+        test.wait_screen("Show tips");
+        if index == 0 {
+            test.send(b"\x1b[B\x1b[B"); // Language -> Reduce motion -> Show tips.
+        }
+        test.send(b" "); // Reopening settings retains the selected control.
+        test.wait_setting(
+            "profile/settings.json",
+            "/spinnerTipsEnabled",
+            Some(&Value::Bool(enabled)),
+        );
+        test.send(b"\x1b");
+        test.wait_until("only tips follow the acknowledged setting", |test| {
+            let screen = test.screen();
+            screen.lines().any(|line| line.trim() == "NO_OUTPUT_YET")
+                && screen.lines().filter(|line| line.trim() == "Claude").count() == 1
+                && screen.lines().any(|line| line.trim_end() == activity_header)
+                && screen.contains("│ Tip:") == enabled
+        });
+        test.resize(25, 61);
+        test.resize(SHORT_ROWS, COLS);
+        test.wait_until("resize retains activity and heading independently of tips", |test| {
+            let screen = test.screen();
+            screen.lines().filter(|line| line.trim() == "Claude").count() == 1
+                && screen.lines().any(|line| line.trim_end() == activity_header)
+                && screen.contains("│ Tip:") == enabled
+        });
+    }
+    std::fs::write(&test.release_file, "requires_action").expect("wait boundary");
+    test.wait_until("waiting hides activity and its empty heading", |test| {
+        let screen = test.screen();
+        !screen.lines().any(|line| line.trim() == "Claude")
+            && !screen.contains(&activity_header)
+            && !screen.contains("│ Tip:")
+    });
+    std::fs::write(&test.release_file, "running").expect("resume boundary");
+    test.wait_screen("│ Tip:");
+    assert_eq!(test.screen().lines().filter(|line| line.trim() == "Claude").count(), 1);
+    assert!(test.screen().contains(&activity_header));
+    std::fs::write(&test.release_file, "done").expect("finish without output");
+    test.wait_screen("[READY]");
+    test.wait_until("completion removes the temporary heading", |test| {
+        let screen = test.screen();
+        !screen.lines().any(|line| line.trim() == "Claude")
+            && !screen.contains(&activity_header)
+            && !screen.contains("│ Tip:")
+    });
+    assert_eq!(test.commands("mutate_setting").len(), 3);
+    assert!(
+        test.commands("mutate_setting")
+            .iter()
+            .all(|command| command["mutation"]["id"] == "spinnerTipsEnabled")
+    );
+    test.assert_prompts(&["NO_OUTPUT_YET"]);
+    test.shutdown();
+}
+
+#[test]
+fn activity_stays_above_queue_and_out_of_scrollback_through_wait_resize_and_completion() {
+    let mut test = TerminalTest::start("hold-activity", 3);
+    test.submit("START_ACTIVITY", "START_ACTIVITY");
+    test.wait_journal("reply-held");
+    test.wait_screen("│ ◆ ");
+    test.wait_screen("│ Tip:");
+    let initial_screen = test.screen();
+    let initial_rows: Vec<_> = initial_screen.lines().map(str::trim_end).collect();
+    let heading =
+        initial_rows.iter().position(|line| *line == "Claude").expect("assistant heading");
+    let activity = initial_rows.iter().position(|line| line.starts_with("│ ◆ ")).expect("activity");
+    assert_eq!(initial_rows.iter().filter(|line| **line == "Claude").count(), 1);
+    assert!(
+        initial_rows.iter().position(|line| line.contains("START_ACTIVITY")).expect("user message")
+            < heading
+    );
+    assert!(heading < activity, "tip text mentioning Claude must not count as the heading");
+    assert!(!initial_screen.contains("Thinking…"));
+    let activity_header = test
+        .screen()
+        .lines()
+        .find(|line| line.starts_with("│ ◆ "))
+        .expect("separate activity header")
+        .trim_end()
+        .to_owned();
+    std::fs::write(&test.release_file, "thinking").expect("thinking boundary");
+    test.wait_screen("◆ Thinking…");
+    assert_eq!(test.screen().matches("Thinking…").count(), 1);
+    assert!(test.screen().contains(&activity_header), "thinking retains the activity verb");
+    test.submit("QUEUED_ACTIVITY", "QUEUED_ACTIVITY");
+    test.paste("DRAFT_ACTIVITY");
+    test.wait_screen("DRAFT_ACTIVITY");
+    test.wait_screen("│ Tip:");
+    let screen = test.screen();
+    assert!(
+        screen.find("Thinking…").expect("assistant thinking")
+            < screen.find(&activity_header).expect("activity")
+    );
+    assert!(
+        screen.find(&activity_header).expect("activity")
+            < screen.find("│ Tip:").expect("grouped tip")
+    );
+    assert!(
+        screen.find("│ Tip:").expect("tip") < screen.find("QUEUED_ACTIVITY").expect("queued field")
+    );
+    test.resize(25, 61);
+    test.wait_screen("◆ Thinking…");
+    {
+        let output = test.output.lock().expect("output");
+        let (row, _) = output.parser.screen().cursor_position();
+        assert!(
+            output
+                .parser
+                .screen()
+                .contents()
+                .lines()
+                .nth(usize::from(row))
+                .is_some_and(|line| line.contains("DRAFT_ACTIVITY")),
+            "cursor remains in editor"
+        );
+    }
+    std::fs::write(&test.release_file, "requires_action").expect("wait boundary");
+    test.wait_until("hidden activity while input is required", |test| {
+        !test.screen().contains("Thinking…") && !test.screen().contains("Tip:")
+    });
+    std::fs::write(&test.release_file, "running").expect("work resumes");
+    test.wait_screen("Thinking…");
+    test.wait_screen("Tip:");
+    std::fs::write(&test.release_file, "working").expect("thinking ends");
+    test.wait_until("ordinary activity after thinking", |test| {
+        !test.screen().contains("Thinking…") && test.screen().contains("Tip:")
+    });
+    assert!(test.screen().contains(&activity_header), "work retains the activity verb");
+    test.resize(SHORT_ROWS, COLS);
+    std::fs::write(&test.release_file, "done").expect("completion");
+    test.wait_screen("[READY]");
+    test.wait_until("activity removed", |test| {
+        !test.screen().contains("Tip:") && !test.screen().contains("Thinking…")
+    });
+    test.wait_screen("DRAFT_ACTIVITY");
+    let output = test.output.lock().expect("output");
+    let mut screen = output.parser.screen().clone();
+    for offset in 0..100 {
+        screen.set_scrollback(offset);
+        assert!(!screen.contents().contains("Thinking…"));
+        assert!(!screen.contents().contains("Tip:"));
+        assert!(!screen.contents().contains(&activity_header));
+    }
 }
 
 #[test]
@@ -679,13 +857,11 @@ fn resizing_a_streamed_reply_preserves_rendering_and_clean_shutdown() {
     test.submit("hello\n\nhow are you", "how are you");
     test.wait_screen("streamed line 5");
     // Terminal padding can leave spaces on visually blank rows.
-    let screen = test.screen();
-    let rows: Vec<_> = screen.lines().map(str::trim_end).collect();
-    assert!(
-        rows.windows(3).any(|rows| rows == ["hello", "", "how are you"]),
-        "submitted paragraph gap disappeared:\n{}",
-        test.diagnostics()
-    );
+    test.wait_until("submitted paragraph gap", |test| {
+        let screen = test.screen();
+        let rows: Vec<_> = screen.lines().map(str::trim_end).collect();
+        rows.windows(3).any(|rows| rows == ["hello", "", "how are you"])
+    });
     test.assert_prompts(&["hello\n\nhow are you"]);
 
     for step in 0..RESIZES {
@@ -744,10 +920,17 @@ fn fullscreen_resize_and_repeated_return_preserve_chat_and_next_submission() {
 
     for (rows, cols) in [(55, 120), (25, 61), (38, 87)] {
         test.submit("/config", "/config");
-        test.wait_screen("Always Thinking");
+        test.wait_screen("Saved in User");
+        test.wait_screen("Description:");
         assert!(test.output.lock().expect("output lock").parser.screen().alternate_screen());
+        test.send(b" ");
+        test.wait_screen("Enter save");
+        test.send(b" draft");
+        test.wait_screen("German draft");
         test.resize(rows, cols);
-        test.wait_screen("Always Thinking");
+        test.wait_screen("German draft");
+        test.send(b"\x1b");
+        test.wait_screen("Saved in User");
         test.send(b"\x1b");
         test.wait_screen("streamed line 8");
         assert!(!test.output.lock().expect("output lock").parser.screen().alternate_screen());
@@ -759,6 +942,104 @@ fn fullscreen_resize_and_repeated_return_preserve_chat_and_next_submission() {
     test.submit("after settings 界", "after settings 界");
     test.wait_screen("reply 2 started");
     test.assert_prompts(&["go", "after settings 界"]);
+    test.shutdown();
+}
+
+#[test]
+fn structured_settings_editor_adds_individual_rules_and_preserves_them_on_resize() {
+    let mut test = TerminalTest::start("hold-success", 8);
+    std::fs::write(
+        test.temp.path().join("profile/settings.json"),
+        r#"{"permissions":{"defaultMode":"default"}}"#,
+    )
+    .expect("initial settings");
+    test.submit("go", "go");
+    test.wait_journal("reply-held");
+    test.submit("/permissions", "/permissions");
+    test.wait_screen("Permissions: deny rules");
+    test.send(b" ");
+    test.wait_screen("Ctrl+S save");
+    test.send(b"a");
+    test.paste("Bash(git push *)");
+    test.send(b"\r");
+    for (rows, cols) in [(18, 61), (38, 87), (55, 120)] {
+        test.resize(rows, cols);
+        test.wait_screen("Bash(git push *)");
+    }
+    test.send(b"\x13");
+    test.wait_until("settings mutation", |test| test.commands("mutate_setting").len() == 1);
+    assert_eq!(
+        test.commands("mutate_setting")[0]["mutation"]["value"],
+        serde_json::json!(["Read(./.env)", "Bash(git push *)"])
+    );
+    test.wait_screen("2 items");
+    let document: Value = serde_json::from_str(
+        &std::fs::read_to_string(test.temp.path().join("profile/settings.json"))
+            .expect("saved file"),
+    )
+    .expect("settings object");
+    assert_eq!(
+        document["permissions"]["deny"],
+        serde_json::json!(["Read(./.env)", "Bash(git push *)"])
+    );
+    assert_eq!(document["permissions"]["defaultMode"], "default");
+    test.send(b"\x1b");
+    test.wait_screen("streamed line 8");
+    test.assert_prompts(&["go"]);
+    test.release();
+    test.wait_journal("turn_complete");
+    test.shutdown();
+}
+
+#[test]
+fn guided_hook_creation_survives_resize_and_saves_a_complete_hook_with_existing_data() {
+    let mut test = TerminalTest::start("hold-hooks", 8);
+    std::fs::write(
+        test.temp.path().join("profile/settings.json"),
+        r#"{"permissions":{"defaultMode":"default"},"unrelated":"keep"}"#,
+    )
+    .expect("initial settings");
+    test.submit("go", "go");
+    test.wait_journal("reply-held");
+    test.submit("/hooks", "/hooks");
+    test.wait_screen("Definitions");
+    test.send(b"\r");
+    test.wait_screen("Stop");
+    test.send(b"a");
+    test.wait_screen("Choose event");
+    test.send(b"\x1b[H\r");
+    test.wait_screen("Matcher (optional)");
+    test.paste("Write|Edit");
+    test.send(b"\r");
+    test.wait_screen("Choose action");
+    test.wait_screen("mcp_tool");
+    test.send(b"\r");
+    test.wait_screen("Command *");
+    test.paste("npm run lint");
+    test.send(b"\r");
+    test.wait_screen("Review");
+    test.send(b"\r\x1b[B");
+    for (rows, cols) in [(16, 42), (38, 87), (55, 120)] {
+        test.resize(rows, cols);
+        test.wait_screen("npm run lint");
+    }
+    test.send(b"\x13");
+    test.wait_until("hook settings mutation", |test| test.commands("mutate_setting").len() == 1);
+    let expected = serde_json::json!({"PreToolUse":[{"matcher":"Write|Edit","hooks":[{"type":"command","command":"npm run lint"}]}],"Stop":[{"hooks":[{"type":"command","command":"keep-original","future":"keep"}]}]});
+    assert_eq!(test.commands("mutate_setting")[0]["mutation"]["value"], expected);
+    test.wait_setting("profile/settings.json", "/hooks", Some(&expected));
+    let saved: Value = serde_json::from_slice(
+        &std::fs::read(test.temp.path().join("profile/settings.json")).expect("saved file"),
+    )
+    .expect("settings JSON");
+    assert_eq!(saved["hooks"], expected);
+    assert_eq!(saved["unrelated"], "keep");
+    assert_eq!(saved["permissions"]["defaultMode"], "default");
+    test.send(b"\x1b");
+    test.wait_screen("streamed line 8");
+    test.assert_prompts(&["go"]);
+    test.release();
+    test.wait_journal("turn_complete");
     test.shutdown();
 }
 
@@ -825,4 +1106,186 @@ fn a_stream_error_preserves_the_next_unsent_draft_through_resize() {
     test.wait_screen("keep this paragraph");
     test.assert_prompts(&["go"]);
     test.shutdown();
+}
+
+#[test]
+fn presentation_clocks_and_copy_picker_navigation_survive_terminal_resize() {
+    let mut test = TerminalTest::start("presentation", 3);
+    test.submit("Clock test", "Clock test");
+    test.wait_screen("Elapsed 2.0s");
+    test.wait_screen("Done ");
+    test.wait_screen("15:02Z");
+    test.submit("/copy", "/copy");
+    test.wait_screen("Copy last response");
+    test.wait_screen("Code block 1 (rust)");
+    test.send(b"\x1b[B");
+    test.resize(24, 42);
+    test.wait_screen("Code block 1 (rust)");
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+    test.submit("Follow up", "Follow up");
+    test.wait_screen("reply 2 started");
+    test.assert_prompts(&["Clock test", "Follow up"]);
+    test.shutdown();
+}
+
+#[test]
+fn reading_output_stays_anchored_through_streaming_resize_and_explicit_return_live() {
+    let mut test = TerminalTest::start("hold-presentation", 80);
+    test.submit("Reading test", "Reading test");
+    test.wait_journal("reading-barrier");
+    test.send(b"\x1b[5~"); // Page Up enters reading mode.
+    test.wait_screen("Reading output");
+    let pinned = test
+        .screen()
+        .lines()
+        .find(|line| line.contains("streamed line"))
+        .expect("visible output anchor")
+        .trim()
+        .to_owned();
+    test.release();
+    test.wait_journal("turn_complete");
+    test.wait_screen(&pinned);
+    assert!(
+        !test.screen().contains("streamed line 80"),
+        "paused output jumped to the tail: {}",
+        test.diagnostics()
+    );
+    test.resize(TALL_ROWS, 64);
+    test.wait_screen(&pinned);
+    test.send(b"\x1b[1;5F"); // Ctrl+End explicitly returns to live output.
+    test.wait_screen("streamed line 80");
+    test.wait_until("following restored", |test| !test.screen().contains("Reading output"));
+    test.shutdown();
+}
+
+#[test]
+fn saved_auto_scroll_off_holds_new_output_until_the_user_returns_live() {
+    let mut test = TerminalTest::start("hold-presentation", 80);
+    test.submit("Saved scroll test", "Saved scroll test");
+    test.wait_journal("reading-barrier");
+    test.submit("/config", "/config");
+    test.wait_screen("Auto-scroll");
+    test.send(b"\x1b[C"); // On -> Off at the selected user scope.
+    test.wait_setting("profile/settings.json", "/autoScrollEnabled", Some(&Value::Bool(false)));
+    test.send(b"\x1b");
+    test.wait_screen("Reading output");
+    let pinned = test
+        .screen()
+        .lines()
+        .find(|line| line.contains("streamed line"))
+        .expect("visible anchor")
+        .trim()
+        .to_owned();
+    test.release();
+    test.wait_journal("turn_complete");
+    test.wait_screen(&pinned);
+    test.send(b"\x1b[1;5F");
+    test.wait_screen("streamed line 80");
+    test.wait_screen("Reading output"); // The saved Off preference still holds after the jump.
+    let saved: Value = serde_json::from_slice(
+        &std::fs::read(test.temp.path().join("profile/settings.json")).expect("saved preferences"),
+    )
+    .expect("settings JSON");
+    assert_eq!(saved["autoScrollEnabled"], false);
+    test.shutdown();
+}
+
+#[allow(clippy::expect_used)]
+fn notification_bells(test: &TerminalTest) -> usize {
+    let output = test.output.lock().expect("captured terminal");
+    let mut in_osc = false;
+    let mut bells = 0;
+    for (index, byte) in output.raw.iter().enumerate() {
+        if *byte == b']' && index > 0 && output.raw[index - 1] == 0x1b {
+            in_osc = true;
+        }
+        if *byte == 7 {
+            if !in_osc {
+                bells += 1;
+            }
+            in_osc = false;
+        }
+        if *byte == b'\\' && index > 0 && output.raw[index - 1] == 0x1b {
+            in_osc = false;
+        }
+    }
+    bells
+}
+
+#[test]
+fn notifications_follow_focus_saved_categories_and_sdk_delivery_provenance_in_a_real_terminal() {
+    let mut test = TerminalTest::start_with_options(
+        "notifications",
+        3,
+        None,
+        &["--diagnostics-preset", "full"],
+        false,
+    );
+    test.send(b"\x1b[O"); // Focus lost.
+    test.submit("Notify test", "Notify test");
+    test.wait_journal("turn_complete");
+    test.wait_until("one proactive bell", |test| notification_bells(test) == 1);
+    test.wait_screen("Native notice 1"); // A visible notice does not imply a desktop alert.
+    test.send(b"\x1b[I"); // Focus gained.
+    test.submit("Focused test", "Focused test");
+    test.wait_screen("reply 2 started");
+    test.wait_until("focused turn finished", |test| {
+        test.journal().iter().filter(|entry| entry["event"] == "turn_complete").count() == 2
+    });
+    assert_eq!(notification_bells(&test), 1);
+    test.submit("/config", "/config");
+    test.wait_screen("Notification method");
+    test.send(b"\x1b[B\x1b[B"); // Pass turn completion and select proactive alerts.
+    test.send(b" "); // On -> Off, immediate acknowledged save.
+    test.wait_setting(
+        "profile/app-settings.json",
+        "/notifications/modelDirected",
+        Some(&Value::Bool(false)),
+    );
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+    test.send(b"\x1b[O");
+    test.submit("Disabled category", "Disabled category");
+    test.wait_until("third turn finished", |test| {
+        test.journal().iter().filter(|entry| entry["event"] == "turn_complete").count() == 3
+    });
+    test.wait_screen("Native notice 3");
+    assert_eq!(notification_bells(&test), 1);
+    let saved: Value = serde_json::from_slice(
+        &std::fs::read(test.temp.path().join("profile/app-settings.json"))
+            .expect("saved categories"),
+    )
+    .expect("category JSON");
+    assert_eq!(saved["notifications"]["modelDirected"], false);
+    assert_eq!(saved["notifications"]["turnComplete"], false);
+    assert_eq!(saved["notifications"]["actionsRequired"], true);
+    test.assert_prompts(&["Notify test", "Focused test", "Disabled category"]);
+    test.shutdown();
+    let diagnostics = std::fs::read_to_string(test.temp.path().join("runtime.log"))
+        .expect("notification diagnostics");
+    let records: Vec<Value> = diagnostics
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("diagnostic JSON"))
+        .collect();
+    for reason in
+        ["duplicate", "replay", "upstream_local_delivery", "terminal_focused", "category_disabled"]
+    {
+        assert!(
+            records
+                .iter()
+                .any(|record| record["target"] == "app.notify" && record["reason"] == reason),
+            "missing {reason}"
+        );
+    }
+    assert!(records.iter().any(|record| record["event_name"] == "notification_focus_observed"
+        && record["terminal_focused"] == false));
+    let bell = records
+        .iter()
+        .find(|record| {
+            record["event_name"] == "notification_transport_result" && record["transport"] == "bell"
+        })
+        .expect("bell result");
+    assert_eq!(bell["outcome"], "success");
+    assert_eq!(bell["span"]["tool_call_id"], "push-1");
 }

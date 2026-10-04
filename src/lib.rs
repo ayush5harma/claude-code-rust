@@ -8,7 +8,9 @@ pub mod cli;
 pub mod error;
 pub mod failure;
 pub mod install_method;
+mod json_file;
 pub mod logging;
+pub mod permission_mode;
 pub mod ui;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -27,17 +29,17 @@ impl DiagnosticsPreset {
     pub fn filter_directives(&self) -> &'static str {
         match self {
             Self::Runtime => {
-                "info,bridge.lifecycle=debug,bridge.protocol=debug,app.session=debug,app.tool=debug,app.command=debug,app.permission=debug,app.network=debug,app.update=debug,app.file_index=debug"
+                "info,bridge.lifecycle=debug,bridge.protocol=debug,app.session=debug,app.tool=debug,app.command=debug,app.permission=debug,app.notify=debug,app.network=debug,app.update=debug,app.file_index=debug"
             }
             Self::Session => {
-                "info,bridge.lifecycle=debug,bridge.protocol=debug,app.session=debug,app.permission=debug,app.command=debug"
+                "info,bridge.lifecycle=debug,bridge.protocol=debug,app.session=debug,app.permission=debug,app.notify=debug,app.command=debug"
             }
             Self::Render => "info,app.render=trace,app.cache=debug,app.input=debug,app.paste=debug",
             Self::Bridge => {
                 "info,bridge.lifecycle=debug,bridge.protocol=debug,bridge.sdk=debug,bridge.permission=debug,bridge.mcp=debug"
             }
             Self::Full => {
-                "info,app.render=trace,bridge.lifecycle=debug,bridge.protocol=debug,bridge.sdk=debug,bridge.permission=debug,bridge.mcp=debug,app.session=debug,app.tool=debug,app.command=debug,app.permission=debug,app.network=debug,app.update=debug,app.cache=debug,app.input=debug,app.paste=debug,app.config=debug,app.auth=debug,app.file_index=debug"
+                "info,app.render=trace,bridge.lifecycle=debug,bridge.protocol=debug,bridge.sdk=debug,bridge.permission=debug,bridge.mcp=debug,app.session=debug,app.tool=debug,app.command=debug,app.permission=debug,app.notify=debug,app.network=debug,app.update=debug,app.cache=debug,app.input=debug,app.paste=debug,app.config=debug,app.auth=debug,app.file_index=debug"
             }
         }
     }
@@ -126,7 +128,7 @@ pub struct SessionOptions {
 
     /// Starting permission mode; does not change saved preferences.
     #[arg(long, global = true, value_enum)]
-    pub permission_mode: Option<app::config::DefaultPermissionMode>,
+    pub permission_mode: Option<permission_mode::DefaultPermissionMode>,
 
     /// Main-thread agent to use for this session.
     #[arg(long, global = true, value_name = "NAME", value_parser = clap::builder::NonEmptyStringValueParser::new())]
@@ -318,6 +320,7 @@ pub struct ConfigExportArgs {
 #[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
 pub enum ConfigFileSelector {
     Settings,
+    ProjectSettings,
     LocalSettings,
     Preferences,
 }

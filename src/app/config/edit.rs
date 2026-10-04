@@ -1,137 +1,134 @@
 // SPDX-License-Identifier: Apache-2.0
-use super::resolve::{language_input_validation_message, normalized_language_value};
 use super::{
-    AddMarketplaceOverlayState, ConfigOverlayState, ConfirmationAction, DEFAULT_MODEL_ALIAS_ID,
-    DefaultPermissionMode, LanguageOverlayState, ModelOverlayState, OutputStyle,
-    OutputStyleOverlayState, PendingSessionTitleChangeKind, PendingSessionTitleChangeState,
-    PreferredNotifChannel, ResolvedChoice, ResolvedSettingValue, SessionRenameOverlayState,
-    SettingFile, SettingId, SettingOptions, SettingSpec, ThinkingEffortOverlayState,
-    resolved_setting, setting_display_value, setting_spec, store,
+    AddMarketplaceOverlayState, ConfigOverlayState, ConfirmationAction,
+    PendingSessionTitleChangeKind, PendingSessionTitleChangeState, SessionRenameOverlayState,
+    SettingOverlayState,
 };
-use crate::agent::model::EffortLevel;
+use crate::agent::settings::{SettingDescriptor, SettingKind, SettingsMutation, SettingsOperation};
 use crate::app::App;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use serde_json::Value;
 
-pub(super) fn activate_setting(app: &mut App, spec: &SettingSpec) {
-    match spec.id {
-        SettingId::AlwaysThinking => {
-            let next = !store::always_thinking_enabled(&app.config.committed_settings_document)
-                .unwrap_or(false);
-            persist_setting_change(app, spec, |document| {
-                store::set_always_thinking_enabled(document, next);
-            });
-        }
-        SettingId::ShowTips => {
-            let next = !store::spinner_tips_enabled(&app.config.committed_local_settings_document)
-                .unwrap_or(true);
-            persist_setting_change(app, spec, |document| {
-                store::set_spinner_tips_enabled(document, next);
-            });
-        }
-        SettingId::TerminalProgressBar => {
-            let next =
-                !store::terminal_progress_bar_enabled(&app.config.committed_preferences_document)
-                    .unwrap_or(true);
-            persist_setting_change(app, spec, |document| {
-                store::set_terminal_progress_bar_enabled(document, next);
-            });
-        }
-        SettingId::ReduceMotion => {
-            let next =
-                !store::prefers_reduced_motion(&app.config.committed_local_settings_document)
-                    .unwrap_or(false);
-            persist_setting_change(app, spec, |document| {
-                store::set_prefers_reduced_motion(document, next);
-            });
-        }
-        SettingId::FastMode => {
-            let next = !store::fast_mode(&app.config.committed_settings_document).unwrap_or(false);
-            persist_setting_change(app, spec, |document| {
-                store::set_fast_mode(document, next);
-            });
-        }
-        SettingId::RespectGitignore => {
-            let next = !store::respect_gitignore(&app.config.committed_preferences_document)
-                .unwrap_or(true);
-            persist_setting_change(app, spec, |document| {
-                store::set_respect_gitignore(document, next);
-            });
-        }
-        SettingId::DefaultPermissionMode => {
-            let current = match super::resolve::resolve_setting_document(
-                &app.config.committed_settings_document,
-                SettingId::DefaultPermissionMode,
-                &[],
-            )
-            .value
-            {
-                ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)) => {
-                    DefaultPermissionMode::from_stored(&value).unwrap_or_default()
-                }
-                ResolvedSettingValue::Bool(_)
-                | ResolvedSettingValue::Choice(ResolvedChoice::Automatic)
-                | ResolvedSettingValue::Text(_) => DefaultPermissionMode::Default,
-            };
-            let next = current.next();
-            persist_setting_change(app, spec, |document| {
-                store::set_default_permission_mode(document, next);
-            });
-        }
-        SettingId::Language => open_language_overlay(app),
-        SettingId::Model => open_model_overlay(app),
-        SettingId::OutputStyle => open_output_style_overlay(app),
-        SettingId::ThinkingEffort => open_thinking_effort_overlay(app),
-        SettingId::CrossSessionInbound
-        | SettingId::Theme
-        | SettingId::Notifications
-        | SettingId::EditorMode => {
-            cycle_static_enum(app, spec, 1);
-        }
+pub(super) fn activate_setting(app: &mut App, setting: &SettingDescriptor) {
+    if !setting.allows_custom {
+        step_setting(app, 1);
+        return;
     }
+    if app.config.pending_settings_request.is_some() {
+        return;
+    }
+    let Some(snapshot) = &app.config.snapshot else {
+        return;
+    };
+    let scope = app.config.selected_scope;
+    if !setting.writable_at(scope) && setting.editor.is_none() {
+        app.config.last_error = Some(
+            setting
+                .unavailable
+                .clone()
+                .unwrap_or_else(|| "This scope is read-only for this setting.".to_owned()),
+        );
+        return;
+    }
+    let Some(value) = snapshot.scoped(&setting.id, scope) else {
+        return;
+    };
+    let initial = value
+        .value
+        .as_ref()
+        .or_else(|| (!setting.kind.is_structured()).then(|| snapshot.value(&setting.id)).flatten());
+    let structured = setting.editor.as_ref().map(|schema| {
+        Box::new(super::StructuredEditor {
+            schema: schema.clone(),
+            path: vec![],
+            selected: 0,
+            input: None,
+            advanced: false,
+            read_only: !setting.writable_at(scope),
+            hook_creation: None,
+        })
+    });
+    let draft = if let Some(form) = &structured {
+        serde_json::to_string_pretty(
+            &initial.cloned().unwrap_or_else(|| super::structured::empty(&form.schema)),
+        )
+        .unwrap_or_default()
+    } else {
+        initial.map_or_else(String::new, |value| {
+            value.as_str().map_or_else(|| value.to_string(), str::to_owned)
+        })
+    };
+    let cursor = draft.chars().count();
+    app.config.replace_overlay(ConfigOverlayState::Setting(SettingOverlayState {
+        setting: Box::new(setting.clone()),
+        scope,
+        context: snapshot.context.clone(),
+        revision: value.revision.clone(),
+        draft,
+        cursor,
+        structured,
+    }));
 }
 
-pub(super) fn step_setting(app: &mut App, spec: &SettingSpec, delta: isize) {
-    match spec.id {
-        SettingId::AlwaysThinking
-        | SettingId::ShowTips
-        | SettingId::TerminalProgressBar
-        | SettingId::ReduceMotion
-        | SettingId::FastMode
-        | SettingId::RespectGitignore => activate_setting(app, spec),
-        SettingId::DefaultPermissionMode => {
-            let current = match super::resolve::resolve_setting_document(
-                &app.config.committed_settings_document,
-                SettingId::DefaultPermissionMode,
-                &[],
-            )
-            .value
-            {
-                ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)) => {
-                    DefaultPermissionMode::from_stored(&value).unwrap_or_default()
-                }
-                ResolvedSettingValue::Bool(_)
-                | ResolvedSettingValue::Choice(ResolvedChoice::Automatic)
-                | ResolvedSettingValue::Text(_) => DefaultPermissionMode::Default,
-            };
-            let next = if delta.is_negative() { current.prev() } else { current.next() };
-            persist_setting_change(app, spec, |document| {
-                store::set_default_permission_mode(document, next);
-            });
-        }
-        SettingId::CrossSessionInbound
-        | SettingId::Theme
-        | SettingId::Notifications
-        | SettingId::EditorMode => {
-            cycle_static_enum(app, spec, delta);
-        }
-        SettingId::Language
-        | SettingId::Model
-        | SettingId::OutputStyle
-        | SettingId::ThinkingEffort => {
-            activate_setting(app, spec);
-        }
+pub(super) fn step_setting(app: &mut App, delta: isize) {
+    if app.config.pending_settings_request.is_some() {
+        return;
     }
+    let Some(snapshot) = &app.config.snapshot else {
+        return;
+    };
+    let Some(setting) = app.config.selected_setting() else {
+        return;
+    };
+    let scope = app.config.selected_scope;
+    if !setting.writable_at(scope) || setting.allows_custom {
+        return;
+    }
+    let Some(scoped) = snapshot.scoped(&setting.id, scope) else {
+        return;
+    };
+    let current = scoped
+        .value
+        .as_ref()
+        .or_else(|| snapshot.value(&setting.id))
+        .map_or_else(String::new, |value| {
+            value.as_str().map_or_else(|| value.to_string(), str::to_owned)
+        });
+    let Some(next) = next_choice(setting, &current, delta) else {
+        return;
+    };
+    let mutation = SettingsMutation {
+        context: snapshot.context.clone(),
+        id: setting.id.clone(),
+        scope,
+        expected_revision: scoped.revision.clone(),
+        operation: SettingsOperation::Set,
+        value: Some(next),
+    };
+    super::service::send_mutation(app, mutation);
+}
+
+fn next_choice(
+    setting: &SettingDescriptor,
+    current: &str,
+    delta: isize,
+) -> Option<serde_json::Value> {
+    if setting.options.is_empty() {
+        return None;
+    }
+    let next = setting
+        .options
+        .iter()
+        .position(|value| {
+            value.as_str().map_or_else(|| value.to_string(), str::to_owned) == current
+        })
+        .map_or(0, |index| {
+            if delta.is_negative() {
+                if index == 0 { setting.options.len() - 1 } else { index - 1 }
+            } else {
+                (index + 1) % setting.options.len()
+            }
+        });
+    setting.options.get(next).cloned()
 }
 
 pub(super) fn handle_overlay_key(app: &mut App, key: KeyEvent) {
@@ -139,27 +136,8 @@ pub(super) fn handle_overlay_key(app: &mut App, key: KeyEvent) {
         return;
     }
     match app.config.overlay.clone() {
-        Some(ConfigOverlayState::Model(_)) => match (key.code, key.modifiers) {
-            (KeyCode::Enter, KeyModifiers::NONE) => confirm_model_overlay(app),
-            (KeyCode::Esc, KeyModifiers::NONE) => app.config.clear_overlay(),
-            (KeyCode::Up, KeyModifiers::NONE) => move_model_overlay_selection(app, -1),
-            (KeyCode::Down, KeyModifiers::NONE) => move_model_overlay_selection(app, 1),
-            _ => {}
-        },
-        Some(ConfigOverlayState::ThinkingEffort(_)) => match (key.code, key.modifiers) {
-            (KeyCode::Enter, KeyModifiers::NONE) => confirm_thinking_effort_overlay(app),
-            (KeyCode::Esc, KeyModifiers::NONE) => app.config.clear_overlay(),
-            (KeyCode::Up, KeyModifiers::NONE) => move_effort_overlay_selection(app, -1),
-            (KeyCode::Down, KeyModifiers::NONE) => move_effort_overlay_selection(app, 1),
-            _ => {}
-        },
-        Some(ConfigOverlayState::OutputStyle(_)) => match (key.code, key.modifiers) {
-            (KeyCode::Enter, KeyModifiers::NONE) => confirm_output_style_overlay(app),
-            (KeyCode::Esc, KeyModifiers::NONE) => app.config.clear_overlay(),
-            (KeyCode::Up, KeyModifiers::NONE) => move_output_style_overlay_selection(app, -1),
-            (KeyCode::Down, KeyModifiers::NONE) => move_output_style_overlay_selection(app, 1),
-            _ => {}
-        },
+        Some(ConfigOverlayState::Setting(_)) => handle_setting_key(app, key),
+        Some(ConfigOverlayState::SessionRename(_)) => handle_session_rename_overlay_key(app, key),
         Some(ConfigOverlayState::InstalledPluginActions(_)) => {
             crate::app::plugins::handle_installed_overlay_key(app, key);
         }
@@ -173,25 +151,28 @@ pub(super) fn handle_overlay_key(app: &mut App, key: KeyEvent) {
             crate::app::plugins::handle_add_marketplace_overlay_key(app, key);
         }
         Some(ConfigOverlayState::Confirmation(_)) => handle_confirmation_overlay_key(app, key),
-        Some(
-            ConfigOverlayState::McpDetails(_)
-            | ConfigOverlayState::McpCallbackUrl(_)
-            | ConfigOverlayState::McpAuthRedirect(_)
-            | ConfigOverlayState::McpElicitation(_),
-        )
-        | None => {}
-        Some(ConfigOverlayState::Language(_)) => handle_language_overlay_key(app, key),
-        Some(ConfigOverlayState::SessionRename(_)) => handle_session_rename_overlay_key(app, key),
+        _ => {}
     }
 }
-
 pub(super) fn handle_overlay_paste(app: &mut App, text: &str) -> bool {
     if super::mcp_edit::handle_overlay_paste(app, text) {
         return true;
     }
     match app.config.overlay {
-        Some(ConfigOverlayState::Language(_)) => {
-            insert_text_str(app.config.language_overlay_mut(), text);
+        Some(ConfigOverlayState::Setting(_)) => {
+            if app.config.pending_settings_request.is_some() {
+                return true;
+            }
+            if super::structured_edit::handle_paste(app, text) {
+                return true;
+            }
+            if setting_accepts_text(app) {
+                if setting_is_multiline(app) {
+                    insert_multiline_text(app.config.setting_overlay_mut(), text);
+                } else {
+                    insert_text_str(app.config.setting_overlay_mut(), text);
+                }
+            }
             true
         }
         Some(ConfigOverlayState::SessionRename(_)) => {
@@ -202,21 +183,160 @@ pub(super) fn handle_overlay_paste(app: &mut App, text: &str) -> bool {
             insert_text_str(app.config.add_marketplace_overlay_mut(), text);
             true
         }
-        Some(
-            ConfigOverlayState::Model(_)
-            | ConfigOverlayState::ThinkingEffort(_)
-            | ConfigOverlayState::OutputStyle(_)
-            | ConfigOverlayState::InstalledPluginActions(_)
-            | ConfigOverlayState::PluginInstallActions(_)
-            | ConfigOverlayState::MarketplaceActions(_)
-            | ConfigOverlayState::McpDetails(_)
-            | ConfigOverlayState::McpCallbackUrl(_)
-            | ConfigOverlayState::McpAuthRedirect(_)
-            | ConfigOverlayState::McpElicitation(_)
-            | ConfigOverlayState::Confirmation(_),
-        )
-        | None => false,
+        _ => false,
     }
+}
+fn handle_setting_key(app: &mut App, key: KeyEvent) {
+    if app.config.pending_settings_request.is_some() {
+        return;
+    }
+    if super::structured_edit::handle_key(app, key) {
+        return;
+    }
+    if app
+        .config
+        .setting_overlay()
+        .and_then(|editor| editor.structured.as_ref())
+        .is_some_and(|form| form.read_only)
+        && !matches!(
+            key.code,
+            KeyCode::Esc
+                | KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Home
+                | KeyCode::End
+        )
+    {
+        return;
+    }
+    match (key.code, key.modifiers) {
+        // Windows terminal pastes can deliver line feed as a modified Enter.
+        (KeyCode::Enter, _) | (KeyCode::Char('j'), KeyModifiers::CONTROL)
+            if setting_is_multiline(app) =>
+        {
+            insert_text_char(app.config.setting_overlay_mut(), '\n');
+        }
+        (KeyCode::Enter, KeyModifiers::NONE) => confirm_setting(app, false),
+        (KeyCode::Char('s'), KeyModifiers::CONTROL) if setting_is_multiline(app) => {
+            confirm_setting(app, false);
+        }
+        (KeyCode::Char('u'), KeyModifiers::CONTROL) if setting_is_multiline(app) => {
+            if let Some(editor) = app.config.setting_overlay_mut() {
+                editor.draft.clear();
+                editor.cursor = 0;
+            }
+        }
+        (KeyCode::Char('r'), KeyModifiers::CONTROL) => confirm_setting(app, true),
+        (KeyCode::Esc, KeyModifiers::NONE) => {
+            if app.config.pending_settings_request.is_none() {
+                app.config.clear_overlay();
+            }
+        }
+        (KeyCode::Left, KeyModifiers::NONE) => {
+            move_text_cursor_left(app.config.setting_overlay_mut());
+        }
+        (KeyCode::Right, KeyModifiers::NONE) => {
+            move_text_cursor_right(app.config.setting_overlay_mut());
+        }
+        (KeyCode::Up, KeyModifiers::NONE) if setting_is_multiline(app) => {
+            move_text_line(app.config.setting_overlay_mut(), false);
+        }
+        (KeyCode::Down, KeyModifiers::NONE) if setting_is_multiline(app) => {
+            move_text_line(app.config.setting_overlay_mut(), true);
+        }
+        (KeyCode::Home, KeyModifiers::NONE) => set_text_cursor(app.config.setting_overlay_mut(), 0),
+        (KeyCode::End, KeyModifiers::NONE) => {
+            move_text_cursor_to_end(app.config.setting_overlay_mut());
+        }
+        (KeyCode::Backspace, KeyModifiers::NONE) => {
+            delete_text_before_cursor(app.config.setting_overlay_mut());
+        }
+        (KeyCode::Delete, KeyModifiers::NONE) => {
+            delete_text_at_cursor(app.config.setting_overlay_mut());
+        }
+        (KeyCode::Char(ch), modifiers) if accepts_text_input(modifiers) => {
+            insert_text_char(app.config.setting_overlay_mut(), ch);
+        }
+        _ => {}
+    }
+}
+fn setting_accepts_text(app: &App) -> bool {
+    app.config.setting_overlay().is_some_and(|overlay| overlay.setting.allows_custom)
+}
+fn setting_kind(app: &App) -> Option<SettingKind> {
+    app.config.setting_overlay().map(|editor| editor.setting.kind)
+}
+fn setting_is_multiline(app: &App) -> bool {
+    setting_kind(app).is_some_and(SettingKind::is_structured)
+}
+pub(super) fn insert_multiline_text<T: TextInputOverlay>(overlay: Option<&mut T>, text: &str) {
+    let Some(overlay) = overlay else {
+        return;
+    };
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let byte = char_to_byte_index(overlay.draft(), overlay.cursor());
+    overlay.draft_mut().insert_str(byte, &normalized);
+    *overlay.cursor_mut() += normalized.chars().count();
+}
+pub(super) fn move_text_line<T: TextInputOverlay>(overlay: Option<&mut T>, down: bool) {
+    let Some(editor) = overlay else {
+        return;
+    };
+    let chars = editor.draft().chars().collect::<Vec<_>>();
+    let cursor = editor.cursor();
+    let start = chars[..cursor].iter().rposition(|ch| *ch == '\n').map_or(0, |index| index + 1);
+    let column = cursor - start;
+    let next_start = if down {
+        let Some(end) = chars[cursor..].iter().position(|ch| *ch == '\n') else {
+            return;
+        };
+        cursor + end + 1
+    } else {
+        if start == 0 {
+            return;
+        }
+        chars[..start - 1].iter().rposition(|ch| *ch == '\n').map_or(0, |index| index + 1)
+    };
+    let len =
+        chars[next_start..].iter().position(|ch| *ch == '\n').unwrap_or(chars.len() - next_start);
+    *editor.cursor_mut() = next_start + column.min(len);
+}
+pub(super) fn confirm_setting(app: &mut App, remove: bool) {
+    let Some(overlay) = app.config.setting_overlay().cloned() else {
+        return;
+    };
+    let value = if remove {
+        None
+    } else {
+        let parsed = if overlay.structured.is_some() {
+            serde_json::from_str(&overlay.draft)
+        } else {
+            match setting_kind(app) {
+                Some(SettingKind::Number) => serde_json::from_str(&overlay.draft),
+                _ => Ok(serde_json::Value::String(overlay.draft)),
+            }
+        };
+        match parsed {
+            Ok(value) => Some(value),
+            Err(error) => {
+                app.config.set_overlay_error(format!("Check the value: {error}"));
+                return;
+            }
+        }
+    };
+    super::service::send_mutation(
+        app,
+        SettingsMutation {
+            context: overlay.context,
+            id: overlay.setting.id,
+            scope: overlay.scope,
+            expected_revision: overlay.revision,
+            operation: if remove { SettingsOperation::Remove } else { SettingsOperation::Set },
+            value,
+        },
+    );
 }
 
 fn handle_confirmation_overlay_key(app: &mut App, key: KeyEvent) {
@@ -319,231 +439,6 @@ fn confirm_confirmation_overlay(app: &mut App) {
     }
 }
 
-pub(crate) fn supported_effort_levels_for_model(app: &App, model_id: &str) -> Vec<EffortLevel> {
-    model_overlay_options(app)
-        .into_iter()
-        .find(|option| option.matches_model_id(model_id))
-        .map_or_else(Vec::new, |option| {
-            if option.supports_effort {
-                option
-                    .supported_effort_levels
-                    .into_iter()
-                    .filter(|level| level.is_persistable_setting())
-                    .collect()
-            } else {
-                Vec::new()
-            }
-        })
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct OverlayModelOption {
-    pub id: String,
-    pub resolved_model: Option<String>,
-    pub display_name: String,
-    pub description: Option<String>,
-    pub supports_effort: bool,
-    pub supported_effort_levels: Vec<EffortLevel>,
-    pub supports_adaptive_thinking: Option<bool>,
-    pub supports_fast_mode: Option<bool>,
-    pub supports_auto_mode: Option<bool>,
-}
-
-impl OverlayModelOption {
-    #[must_use]
-    pub fn matches_model_id(&self, model_id: &str) -> bool {
-        self.id == model_id || self.resolved_model.as_deref() == Some(model_id)
-    }
-}
-
-pub(crate) fn model_overlay_options(app: &App) -> Vec<OverlayModelOption> {
-    let mut options = app
-        .sdk_inventory
-        .available_models
-        .iter()
-        .map(|model| OverlayModelOption {
-            id: model.id.clone(),
-            resolved_model: model.resolved_model.clone(),
-            display_name: model.display_name.clone(),
-            description: model.description.clone(),
-            supports_effort: model.supports_effort,
-            supported_effort_levels: if model.supported_effort_levels.is_empty()
-                && model.supports_effort
-            {
-                EffortLevel::PERSISTABLE_SETTINGS.to_vec()
-            } else {
-                model.supported_effort_levels.clone()
-            },
-            supports_adaptive_thinking: model.supports_adaptive_thinking,
-            supports_fast_mode: model.supports_fast_mode,
-            supports_auto_mode: model.supports_auto_mode,
-        })
-        .collect::<Vec<_>>();
-    options.sort_by(|left, right| {
-        let left_key = left.display_name.to_ascii_lowercase();
-        let right_key = right.display_name.to_ascii_lowercase();
-        left_key.cmp(&right_key).then_with(|| left.id.cmp(&right.id))
-    });
-    options
-}
-
-fn persist_setting_change<F>(app: &mut App, spec: &SettingSpec, edit: F) -> bool
-where
-    F: FnOnce(&mut Value),
-{
-    let Some(path) = app.config.path_for(spec.file).cloned() else {
-        let message = "Settings paths are not available".to_owned();
-        if app.config.overlay.is_some() {
-            app.config.set_overlay_error(message);
-        } else {
-            app.config.last_error = Some(message.clone());
-            app.config.status_message = None;
-        }
-        return false;
-    };
-
-    let previous_respect_gitignore = matches!(spec.id, SettingId::RespectGitignore)
-        .then(|| app.config.respect_gitignore_effective());
-    let mut next_document = app.config.document_for(spec.file).clone();
-    edit(&mut next_document);
-
-    match store::save(&path, &next_document) {
-        Ok(()) => {
-            *app.config.committed_document_for_mut(spec.file) = next_document;
-            if previous_respect_gitignore
-                .is_some_and(|previous| previous != app.config.respect_gitignore_effective())
-            {
-                if app.mention.is_some() {
-                    crate::app::file_index::restart(app);
-                    crate::app::mention::refresh_from_file_index(app);
-                } else {
-                    crate::app::file_index::reset(app);
-                }
-            }
-            app.reconcile_runtime_from_persisted_settings_change();
-            app.config.last_error = None;
-            let value = setting_display_value(app, spec, &resolved_setting(app, spec));
-            app.config.status_message = Some(if spec.id == SettingId::CrossSessionInbound {
-                format!(
-                    "Saved {}: {} for future sessions. The running session is unchanged; resume or start a new session to apply it.",
-                    spec.label, value
-                )
-            } else {
-                format!("Saved {}: {}", spec.label, value)
-            });
-            true
-        }
-        Err(err) => {
-            if app.config.overlay.is_some() {
-                app.config.set_overlay_error(err);
-            } else {
-                app.config.last_error = Some(err);
-                app.config.status_message = None;
-            }
-            false
-        }
-    }
-}
-
-fn cycle_static_enum(app: &mut App, spec: &SettingSpec, delta: isize) {
-    let current = {
-        let document = app.config.document_for(spec.file);
-        match store::read_persisted_setting(document, spec) {
-            Ok(store::PersistedSettingValue::String(value)) => value,
-            _ => default_static_value(spec.id).to_owned(),
-        }
-    };
-
-    let SettingOptions::Static(options) = spec.options else {
-        return;
-    };
-    let current_index =
-        options.iter().position(|option| option.stored == current).unwrap_or_default();
-    let next = options[step_index_wrapped(current_index, delta, options.len())].stored;
-
-    persist_setting_change(app, spec, |document| {
-        if spec.id == SettingId::Notifications {
-            if let Some(channel) = PreferredNotifChannel::from_stored(next) {
-                store::set_preferred_notification_channel(document, channel);
-            }
-        } else {
-            store::write_persisted_setting(
-                document,
-                spec,
-                store::PersistedSettingValue::String(next.to_owned()),
-            );
-        }
-    });
-}
-
-const fn default_static_value(setting_id: SettingId) -> &'static str {
-    match setting_id {
-        SettingId::Theme => "dark",
-        SettingId::OutputStyle => OutputStyle::Default.as_stored(),
-        SettingId::ThinkingEffort => "medium",
-        SettingId::CrossSessionInbound => "refuse",
-        SettingId::Notifications => "iterm2",
-        SettingId::EditorMode => "default",
-        SettingId::AlwaysThinking
-        | SettingId::ReduceMotion
-        | SettingId::ShowTips
-        | SettingId::TerminalProgressBar
-        | SettingId::FastMode
-        | SettingId::DefaultPermissionMode
-        | SettingId::Language
-        | SettingId::RespectGitignore
-        | SettingId::Model => "",
-    }
-}
-
-fn open_model_overlay(app: &mut App) {
-    let options = model_overlay_options(app);
-    let current_model = app
-        .config
-        .model_effective()
-        .and_then(|value| {
-            options
-                .iter()
-                .find(|option| option.matches_model_id(&value))
-                .map(|option| option.id.clone())
-        })
-        .unwrap_or_else(|| DEFAULT_MODEL_ALIAS_ID.to_owned());
-    app.config.replace_overlay(ConfigOverlayState::Model(ModelOverlayState {
-        selected_model: current_model,
-    }));
-    app.config.last_error = None;
-}
-
-fn open_thinking_effort_overlay(app: &mut App) {
-    let current_model = selected_model_for_effort(app);
-    let current_effort = app.config.thinking_effort_effective();
-    let selected_effort = overlay_effort_for_model(app, &current_model, current_effort);
-    app.config.replace_overlay(ConfigOverlayState::ThinkingEffort(ThinkingEffortOverlayState {
-        selected_effort,
-    }));
-    app.config.last_error = None;
-}
-
-fn open_output_style_overlay(app: &mut App) {
-    app.config.replace_overlay(ConfigOverlayState::OutputStyle(OutputStyleOverlayState {
-        selected: app.config.output_style_effective(),
-    }));
-    app.config.last_error = None;
-}
-
-fn open_language_overlay(app: &mut App) {
-    let draft = store::language(&app.config.committed_settings_document)
-        .ok()
-        .flatten()
-        .and_then(|value| normalized_language_value(&value))
-        .unwrap_or_default();
-    app.config.replace_overlay(ConfigOverlayState::Language(text_input_overlay_state(
-        draft,
-        LanguageOverlayState::from_text_input,
-    )));
-    app.config.last_error = None;
-}
-
 pub(super) fn open_session_rename_overlay(app: &mut App) {
     let Some(session_id) = app.session_runtime.session_id.as_ref() else {
         return;
@@ -593,138 +488,6 @@ pub(super) fn generate_session_title(app: &mut App) {
             app.config.last_error = Some(format!("Failed to generate session title: {err}"));
             app.config.status_message = None;
         }
-    }
-}
-
-fn move_model_overlay_selection(app: &mut App, delta: isize) {
-    let Some(overlay) = app.config.model_overlay().cloned() else {
-        return;
-    };
-    let options = model_overlay_options(app);
-    if options.is_empty() {
-        return;
-    }
-    let current_index =
-        options.iter().position(|option| option.id == overlay.selected_model).unwrap_or(0);
-    let next_index = step_index_clamped(current_index, delta, options.len());
-    let next_model = &options[next_index];
-    if let Some(state) = app.config.model_overlay_mut() {
-        state.selected_model.clone_from(&next_model.id);
-    }
-}
-
-fn move_effort_overlay_selection(app: &mut App, delta: isize) {
-    let Some(overlay) = app.config.thinking_effort_overlay().copied() else {
-        return;
-    };
-    let current_model = selected_model_for_effort(app);
-    let levels = supported_effort_levels_for_model(app, &current_model);
-    if levels.is_empty() {
-        return;
-    }
-    let current_index =
-        levels.iter().position(|level| *level == overlay.selected_effort).unwrap_or(0);
-    let next_index = step_index_clamped(current_index, delta, levels.len());
-    if let Some(state) = app.config.thinking_effort_overlay_mut() {
-        state.selected_effort = levels[next_index];
-    }
-}
-
-fn confirm_model_overlay(app: &mut App) {
-    let Some(overlay) = app.config.model_overlay().cloned() else {
-        return;
-    };
-    if persist_model_change(app, &overlay.selected_model) {
-        app.config.clear_overlay();
-    }
-}
-
-fn confirm_thinking_effort_overlay(app: &mut App) {
-    let Some(overlay) = app.config.thinking_effort_overlay().copied() else {
-        return;
-    };
-    let current_model = selected_model_for_effort(app);
-    if supported_effort_levels_for_model(app, &current_model).is_empty() {
-        app.config.clear_overlay();
-        return;
-    }
-    if persist_thinking_effort_change(app, overlay.selected_effort) {
-        app.config.clear_overlay();
-    }
-}
-
-fn move_output_style_overlay_selection(app: &mut App, delta: isize) {
-    let Some(overlay) = app.config.output_style_overlay().copied() else {
-        return;
-    };
-    let current_index =
-        OutputStyle::ALL.iter().position(|style| *style == overlay.selected).unwrap_or_default();
-    let next_index = step_index_clamped(current_index, delta, OutputStyle::ALL.len());
-    if let Some(state) = app.config.output_style_overlay_mut() {
-        state.selected = OutputStyle::ALL[next_index];
-    }
-}
-
-fn confirm_output_style_overlay(app: &mut App) {
-    let Some(overlay) = app.config.output_style_overlay().copied() else {
-        return;
-    };
-    let spec = setting_spec(SettingId::OutputStyle);
-    if persist_setting_change(app, spec, |document| {
-        store::set_output_style(document, overlay.selected);
-    }) {
-        app.config.clear_overlay();
-    }
-}
-
-fn handle_language_overlay_key(app: &mut App, key: KeyEvent) {
-    match (key.code, key.modifiers) {
-        (KeyCode::Enter, KeyModifiers::NONE) => confirm_language_overlay(app),
-        (KeyCode::Esc, KeyModifiers::NONE) => app.config.clear_overlay(),
-        (KeyCode::Left, KeyModifiers::NONE) => {
-            move_text_cursor_left(app.config.language_overlay_mut());
-        }
-        (KeyCode::Right, KeyModifiers::NONE) => {
-            move_text_cursor_right(app.config.language_overlay_mut());
-        }
-        (KeyCode::Home, KeyModifiers::NONE) => {
-            set_text_cursor(app.config.language_overlay_mut(), 0);
-        }
-        (KeyCode::End, KeyModifiers::NONE) => {
-            move_text_cursor_to_end(app.config.language_overlay_mut());
-        }
-        (KeyCode::Backspace, KeyModifiers::NONE) => {
-            delete_text_before_cursor(app.config.language_overlay_mut());
-        }
-        (KeyCode::Delete, KeyModifiers::NONE) => {
-            delete_text_at_cursor(app.config.language_overlay_mut());
-        }
-        (KeyCode::Char(ch), modifiers) if accepts_text_input(modifiers) => {
-            insert_text_char(app.config.language_overlay_mut(), ch);
-        }
-        _ => {}
-    }
-}
-
-pub(super) fn accepts_text_input(modifiers: KeyModifiers) -> bool {
-    modifiers.is_empty() || modifiers == KeyModifiers::SHIFT
-}
-
-fn confirm_language_overlay(app: &mut App) {
-    let Some(overlay) = app.config.language_overlay().cloned() else {
-        return;
-    };
-    let normalized = normalized_language_value(&overlay.draft);
-    if let Some(message) = normalized.as_deref().and_then(language_input_validation_message) {
-        app.config.set_overlay_error(message);
-        return;
-    }
-
-    let spec = setting_spec(SettingId::Language);
-    if persist_setting_change(app, spec, |document| {
-        store::set_language(document, normalized.as_deref());
-    }) {
-        app.config.clear_overlay();
     }
 }
 
@@ -796,69 +559,6 @@ fn confirm_session_rename_overlay(app: &mut App) {
     }
 }
 
-fn persist_model_change(app: &mut App, model: &str) -> bool {
-    let Some(path) = app.config.path_for(SettingFile::Settings).cloned() else {
-        app.config.set_overlay_error("Settings paths are not available");
-        return false;
-    };
-    let mut next_document = app.config.committed_settings_document.clone();
-    store::set_model(&mut next_document, Some(model));
-    match store::save(&path, &next_document) {
-        Ok(()) => {
-            app.config.committed_settings_document = next_document;
-            app.reconcile_runtime_from_persisted_settings_change();
-            app.config.last_error = None;
-            app.config.status_message = None;
-            true
-        }
-        Err(err) => {
-            app.config.set_overlay_error(err);
-            false
-        }
-    }
-}
-
-fn persist_thinking_effort_change(app: &mut App, effort: EffortLevel) -> bool {
-    let Some(path) = app.config.path_for(SettingFile::Settings).cloned() else {
-        app.config.set_overlay_error("Settings paths are not available");
-        return false;
-    };
-    let mut next_document = app.config.committed_settings_document.clone();
-    if store::set_thinking_effort_level(&mut next_document, effort).is_err() {
-        app.config.set_overlay_error(format!(
-            "{} cannot be saved as a default thinking effort. Use /effort {} for the active session.",
-            effort.label(),
-            effort.as_stored()
-        ));
-        return false;
-    }
-    match store::save(&path, &next_document) {
-        Ok(()) => {
-            app.config.committed_settings_document = next_document;
-            app.reconcile_runtime_from_persisted_settings_change();
-            app.config.last_error = None;
-            app.config.status_message = Some(format!("Saved Thinking effort: {}", effort.label()));
-            true
-        }
-        Err(err) => {
-            app.config.set_overlay_error(err);
-            false
-        }
-    }
-}
-
-fn selected_model_for_effort(app: &App) -> String {
-    app.config.model_effective().unwrap_or_else(|| DEFAULT_MODEL_ALIAS_ID.to_owned())
-}
-
-fn overlay_effort_for_model(app: &App, model_id: &str, current: EffortLevel) -> EffortLevel {
-    let supported = supported_effort_levels_for_model(app, model_id);
-    if supported.is_empty() || supported.contains(&current) {
-        return current;
-    }
-    supported.iter().copied().find(|level| *level == EffortLevel::Medium).unwrap_or(supported[0])
-}
-
 pub(super) fn step_index_clamped(current: usize, delta: isize, len: usize) -> usize {
     if len == 0 {
         return 0;
@@ -867,17 +567,6 @@ pub(super) fn step_index_clamped(current: usize, delta: isize, len: usize) -> us
         current.saturating_sub(delta.unsigned_abs()).min(len.saturating_sub(1))
     } else {
         (current + delta.cast_unsigned()).min(len.saturating_sub(1))
-    }
-}
-
-fn step_index_wrapped(current: usize, delta: isize, len: usize) -> usize {
-    if len == 0 {
-        return 0;
-    }
-    if delta.is_negative() {
-        (current + len - (delta.unsigned_abs() % len)) % len
-    } else {
-        (current + delta.cast_unsigned()) % len
     }
 }
 
@@ -946,13 +635,8 @@ pub(super) fn insert_text_char<T: TextInputOverlay>(overlay: Option<&mut T>, ch:
 }
 
 pub(super) fn insert_text_str<T: TextInputOverlay>(overlay: Option<&mut T>, text: &str) {
-    let Some(overlay) = overlay else {
-        return;
-    };
-    let byte_index = char_to_byte_index(overlay.draft(), overlay.cursor());
     let normalized = text.replace("\r\n", "\n").replace('\r', "\n").replace('\n', " ");
-    overlay.draft_mut().insert_str(byte_index, &normalized);
-    *overlay.cursor_mut() += normalized.chars().count();
+    insert_multiline_text(overlay, &normalized);
 }
 
 pub(super) fn delete_text_before_cursor<T: TextInputOverlay>(overlay: Option<&mut T>) {
@@ -986,30 +670,6 @@ pub(super) trait TextInputOverlay {
     fn draft_mut(&mut self) -> &mut String;
     fn cursor(&self) -> usize;
     fn cursor_mut(&mut self) -> &mut usize;
-}
-
-impl TextInputOverlay for LanguageOverlayState {
-    fn draft(&self) -> &str {
-        &self.draft
-    }
-
-    fn draft_mut(&mut self) -> &mut String {
-        &mut self.draft
-    }
-
-    fn cursor(&self) -> usize {
-        self.cursor
-    }
-
-    fn cursor_mut(&mut self) -> &mut usize {
-        &mut self.cursor
-    }
-}
-
-impl LanguageOverlayState {
-    fn from_text_input(draft: String, cursor: usize) -> Self {
-        Self { draft, cursor }
-    }
 }
 
 impl TextInputOverlay for SessionRenameOverlayState {
@@ -1059,3 +719,20 @@ impl AddMarketplaceOverlayState {
         Self { draft, cursor }
     }
 }
+
+impl TextInputOverlay for SettingOverlayState {
+    fn draft(&self) -> &str {
+        &self.draft
+    }
+    fn draft_mut(&mut self) -> &mut String {
+        &mut self.draft
+    }
+    fn cursor(&self) -> usize {
+        self.cursor
+    }
+    fn cursor_mut(&mut self) -> &mut usize {
+        &mut self.cursor
+    }
+}
+
+pub(super) use crate::app::keys::is_printable_text_modifiers as accepts_text_input;

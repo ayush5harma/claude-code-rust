@@ -2,6 +2,7 @@
 // Copyright 2025 Simon Peter Rothgang
 
 mod action_overlay;
+mod common;
 mod help;
 mod input;
 mod mcp;
@@ -9,6 +10,7 @@ mod overlay;
 mod plugin_overlay;
 mod plugins;
 mod settings;
+mod settings_form;
 mod settings_overlay;
 mod status;
 mod usage;
@@ -17,134 +19,152 @@ use crate::app::{App, ConfigTab};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::Color;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
 use unicode_width::UnicodeWidthChar;
 
 use super::theme;
-use overlay::{OverlayChrome, OverlayLayoutSpec, overlay_line_style, render_overlay_shell};
-#[cfg(test)]
-use settings_overlay::{
-    effort_overlay_scroll, model_overlay_lines, model_overlay_scroll, model_overlay_title_line,
-    output_style_overlay_lines,
-};
-
-const SETTINGS_LIMITATION_HINT: &str = "Currently, not all settings are supported by claude-rs. This project uses the official Anthropic Claude Agent SDK, which limits claude-rs implementing all Claude Code settings.";
-const MIN_SETTINGS_PANEL_HEIGHT: u16 = 3;
-
+use common::overlay_line_style;
+use overlay::{OverlayChrome, OverlayLayoutSpec, render_overlay_shell};
 pub fn render(frame: &mut Frame, app: &mut App) {
     let frame_area = frame.area();
+    if (frame_area.width < 30 || frame_area.height < 12)
+        && (app.config.overlay.is_none() || app.config.setting_overlay().is_some())
+    {
+        frame.render_widget(
+            Paragraph::new(if app.config.setting_overlay().is_some() {
+                "Window too small. Resize to view config.\nEsc cancel"
+            } else {
+                "Window too small. Resize to view config.\nEsc close"
+            })
+            .wrap(Wrap { trim: false }),
+            frame_area,
+        );
+        return;
+    }
 
-    let inner = frame_area.inner(Margin { vertical: 1, horizontal: 2 });
+    let compact = frame_area.height < 18;
+    let inner = frame_area.inner(Margin { vertical: u16::from(!compact), horizontal: 2 });
+    let (message, is_error) = if let Some(error) = app.config.last_error.clone() {
+        (error, true)
+    } else if let Some(status) = app.config.status_message.clone() {
+        let status = if app.config.active_tab == ConfigTab::Settings {
+            match status.as_str() {
+                "Saved and applied." | "Saved. Changes apply to the next session." => {
+                    "Saved.".to_owned()
+                }
+                _ => status,
+            }
+        } else {
+            status
+        };
+        (status, false)
+    } else {
+        (String::new(), false)
+    };
+    let help = config_help_text(app, inner.width);
+    let message_height = if message.is_empty() {
+        0
+    } else {
+        common::wrapped_height(message.as_str(), inner.width).clamp(1, (inner.height / 3).max(1))
+    };
+    let help_height = common::wrapped_height(help.as_str(), inner.width).clamp(1, 3);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
+            Constraint::Length(u16::from(!compact)),
             Constraint::Min(3),
-            Constraint::Length(1),
-            Constraint::Length(1),
+            Constraint::Length(message_height),
+            Constraint::Length(help_height),
         ])
         .split(inner);
 
     render_tab_header(frame, chunks[0], app.config.active_tab);
 
     match app.config.active_tab {
-        ConfigTab::Settings => settings::render(frame, chunks[1], app),
-        ConfigTab::Plugins => plugins::render(frame, chunks[1], app),
-        ConfigTab::Status => status::render(frame, chunks[1], app),
-        ConfigTab::Usage => usage::render(frame, chunks[1], app),
-        ConfigTab::Mcp => mcp::render(frame, chunks[1], app),
-        ConfigTab::Help => help::render(frame, chunks[1], app),
+        ConfigTab::Settings => settings::render(frame, chunks[2], app),
+        ConfigTab::Plugins => plugins::render(frame, chunks[2], app),
+        ConfigTab::Status => status::render(frame, chunks[2], app),
+        ConfigTab::Usage => usage::render(frame, chunks[2], app),
+        ConfigTab::Mcp => mcp::render(frame, chunks[2], app),
+        ConfigTab::Help => help::render(frame, chunks[2], app),
     }
 
-    let (message, is_error) = if let Some(error) = app.config.last_error.clone() {
-        (error, true)
-    } else if let Some(status) = app.config.status_message.clone() {
-        (status, false)
-    } else {
-        (String::new(), false)
-    };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             message,
             Style::default().fg(if is_error { theme::STATUS_ERROR } else { theme::DIM }),
-        ))),
-        chunks[2],
+        )))
+        .wrap(Wrap { trim: false }),
+        chunks[3],
     );
 
-    let help = config_help_text(app);
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(help, Style::default().fg(theme::RUST_ORANGE)))),
-        chunks[3],
+        Paragraph::new(help).style(common::help_style()).wrap(Wrap { trim: false }),
+        chunks[4],
     );
 
     render_active_overlay(frame, frame_area, app);
 }
 
-fn config_help_text(app: &App) -> String {
+fn config_help_text(app: &App, width: u16) -> String {
     if app.config.overlay.is_some() {
         return String::new();
     }
 
-    match app.config.active_tab {
-        ConfigTab::Settings => {
-            "Left/Right edit | Space edit | Tab next tab | Shift+Tab prev tab | Enter close | Esc close"
-                .to_owned()
-        }
+    let hints = match app.config.active_tab {
+        ConfigTab::Settings => return settings::help_text(app, width),
         ConfigTab::Plugins => {
-            if crate::app::plugins::search_enabled(app.plugins.active_tab) {
-                if app.plugins.search_focused {
-                    "Left/Right switch list | Down list | Type search | Backspace erase | Del clear | Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
-                } else if matches!(
-                    app.plugins.active_tab,
-                    crate::app::plugins::PluginsViewTab::Installed
-                        | crate::app::plugins::PluginsViewTab::Plugins
-                ) {
-                    "Left/Right switch list | Up search | Up/Down move | Enter actions | Tab next tab | Shift+Tab prev tab | Esc close".to_owned()
-                } else {
-                    "Left/Right switch list | Up search | Up/Down move | Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
-                }
-            } else if matches!(
-                app.plugins.active_tab,
-                crate::app::plugins::PluginsViewTab::Marketplace
-            ) {
-                "Left/Right switch list | Up/Down move | Enter actions | Tab next tab | Shift+Tab prev tab | Esc close".to_owned()
+            if app.plugins.search_focused
+                && crate::app::plugins::search_enabled(app.plugins.active_tab)
+            {
+                vec![
+                    "Type search",
+                    "Down list",
+                    "Tab/Shift+Tab tabs",
+                    "Left/Right switch list",
+                    "Backspace erase",
+                    "Del clear",
+                    "Enter close",
+                ]
             } else {
-                "Left/Right switch list | Up/Down move | Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
+                let mut hints = vec![
+                    "Enter actions",
+                    "Up/Down select",
+                    "Tab/Shift+Tab tabs",
+                    "Left/Right switch list",
+                ];
+                if crate::app::plugins::search_enabled(app.plugins.active_tab) {
+                    hints.push("Up search");
+                }
+                hints.push("r refresh");
+                hints
             }
         }
-        ConfigTab::Usage => {
-            "r refresh | Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
-        }
+        ConfigTab::Usage => vec!["r refresh", "Tab/Shift+Tab tabs", "Enter close"],
         ConfigTab::Mcp => {
-            "Up/Down select | Enter actions | r refresh | Tab next tab | Shift+Tab prev tab | Esc close"
-                .to_owned()
+            vec!["Enter actions", "Up/Down select", "Tab/Shift+Tab tabs", "r refresh"]
         }
         ConfigTab::Help => {
-            "Left/Right switch section | Up/Down scroll | Tab next tab | Shift+Tab prev tab | Enter close | Esc close"
-                .to_owned()
+            vec!["Up/Down select", "Tab/Shift+Tab tabs", "Left/Right switch section", "Enter close"]
         }
         ConfigTab::Status => {
+            let mut hints = vec!["Tab/Shift+Tab tabs"];
             if app.session_runtime.session_id.is_some() {
-                "g generate | r rename | Tab next tab | Shift+Tab prev tab | Enter close | Esc close"
-                    .to_owned()
-            } else {
-                "Tab next tab | Shift+Tab prev tab | Enter close | Esc close".to_owned()
+                hints.extend(["g generate", "r rename"]);
             }
+            hints.push("Enter close");
+            hints
         }
-    }
+    };
+    common::hint_text(hints, width)
 }
 
 fn render_active_overlay(frame: &mut Frame, frame_area: Rect, app: &App) {
-    if app.config.model_overlay().is_some() {
-        settings_overlay::render_model_overlay(frame, frame_area, app);
-    } else if app.config.thinking_effort_overlay().is_some() {
-        settings_overlay::render_thinking_effort_overlay(frame, frame_area, app);
-    } else if app.config.output_style_overlay().is_some() {
-        settings_overlay::render_output_style_overlay(frame, frame_area, app);
-    } else if app.config.language_overlay().is_some() {
-        settings_overlay::render_language_overlay(frame, frame_area, app);
+    if app.config.setting_overlay().is_some() {
+        settings_overlay::render_setting_overlay(frame, frame_area, app);
     } else if app.config.session_rename_overlay().is_some() {
         settings_overlay::render_session_rename_overlay(frame, frame_area, app);
     } else if app.config.installed_plugin_actions_overlay().is_some() {
@@ -192,17 +212,13 @@ fn render_confirmation_overlay(frame: &mut Frame, area: Rect, app: &App) {
         },
     );
     debug_assert!(rendered.rect.width > 0);
-    debug_assert!(rendered.message_area.height <= 1);
-    debug_assert!(rendered.help_area.height <= 1);
     let body_lines = vec![
         Line::from(Span::styled(overlay.body.clone(), Style::default().fg(Color::White))),
         Line::default(),
     ];
-    let body_height = u16::try_from(
-        wrapped_text_height(Text::from(body_lines.clone()), rendered.body_area.width)
-            .min(usize::from(rendered.body_area.height)),
-    )
-    .unwrap_or(rendered.body_area.height);
+    let body_height =
+        common::wrapped_height(Text::from(body_lines.clone()), rendered.body_area.width)
+            .min(rendered.body_area.height);
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(body_height), Constraint::Min(1)])
@@ -223,7 +239,7 @@ fn confirmation_overlay_lines(
         .map(|(index, label)| {
             let selected = index == overlay.selected_index;
             Line::from(Span::styled(
-                format!("{} {label}", if selected { ">" } else { " " }),
+                format!("{} {label}", common::selection_marker(selected)),
                 overlay_line_style(selected, true),
             ))
         })
@@ -308,48 +324,22 @@ fn char_width(ch: char) -> usize {
     UnicodeWidthChar::width(ch).unwrap_or(0)
 }
 
-fn wrapped_text_height(text: Text<'static>, viewport_width: u16) -> usize {
-    Paragraph::new(text).wrap(Wrap { trim: false }).line_count(viewport_width.max(1)).max(1)
-}
-
 fn render_tab_header(frame: &mut Frame, area: Rect, active_tab: ConfigTab) {
-    let mut spans = Vec::new();
-    for (index, tab) in ConfigTab::ALL.iter().copied().enumerate() {
-        if index > 0 {
-            spans.push(Span::styled(" | ", Style::default().fg(theme::DIM)));
-        }
-
-        let style = if tab == active_tab {
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        spans.push(Span::styled(tab.title().to_owned(), style));
-    }
-
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    let labels = ConfigTab::ALL.iter().map(|tab| tab.title().to_owned()).collect::<Vec<_>>();
+    let active = ConfigTab::ALL.iter().position(|tab| *tab == active_tab).unwrap_or(0);
+    frame.render_widget(
+        Paragraph::new(common::tab_line(&labels, active, area.width, common::TabStyle::Primary)),
+        area,
+    );
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        SETTINGS_LIMITATION_HINT, effort_overlay_scroll, model_overlay_lines, model_overlay_scroll,
-        model_overlay_title_line,
-    };
-    use crate::agent::model::{AvailableModel, EffortLevel};
+    use super::{ConfigTab, theme};
     use crate::app::App;
-    use crate::app::config::{
-        ConfigOverlayState, LanguageOverlayState, ModelOverlayState, OutputStyle,
-        OutputStyleOverlayState, SettingId, ThinkingEffortOverlayState, setting_specs,
-        supported_effort_levels_for_model,
-    };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
-    use ratatui::layout::Rect;
-    use ratatui::style::Style;
-    use ratatui::text::{Line, Span, Text};
-    use ratatui::widgets::{Paragraph, Wrap};
 
     fn buffer_text(buffer: &Buffer) -> String {
         let width = usize::from(buffer.area.width);
@@ -409,282 +399,45 @@ mod tests {
         buffer_lines(terminal.backend().buffer())
     }
 
-    fn rendered_model_option_height(
-        option: &crate::app::config::OverlayModelOption,
-        is_last: bool,
-        viewport_width: u16,
-    ) -> usize {
-        let mut lines = vec![model_overlay_title_line(option, " ", false, false)];
-        if let Some(description) = option.description.as_deref() {
-            lines.push(Line::from(Span::styled(
-                format!("  {description}"),
-                Style::default().fg(super::theme::DIM),
-            )));
+    #[test]
+    fn scoped_settings_and_editor_render_the_received_contract() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        for (width, height) in [(80, 24), (140, 40)] {
+            let mut app = App::test_default();
+            app.session_runtime.current_model = None;
+            app.surface_mode =
+                crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+            app.config.snapshot = Some(serde_json::from_value(serde_json::json!({
+                "cwd": app.cwd_raw, "context": "received", "diagnostics": [], "resolution_sources": [], "provenance": {},
+                "categories": [{"id":"general", "label":"General", "short_label":"General"}], "catalog": [{ "id": "language", "label": "Language", "description": "Preferred response language", "key_path": ["language"], "category":"general", "kind": "string", "options": [], "allows_custom": true, "writable_scopes": ["user", "project", "local"], "reset": "Reset removes the saved value here", "application": "next_session" }],
+                "sources": [{ "scope": "user", "path": "profile/settings.json", "status": "valid", "values": [{ "id": "language", "revision": "r1", "value": "German" }] }],
+                "values": [{ "id": "language", "value": "German", "contributors": ["user"], "policy_restricted": false }]
+            })).expect("SDK snapshot"));
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+            terminal.draw(|frame| super::render(frame, &mut app)).expect("draw");
+            let text = buffer_text(terminal.backend().buffer());
+            assert!(text.lines().any(|line| line.contains("Language") && line.contains("German")));
+            crate::app::config::handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+            );
+            terminal.draw(|frame| super::render(frame, &mut app)).expect("editor");
+            let text = buffer_text(terminal.backend().buffer());
+            assert_eq!(app.config.setting_overlay().expect("editor").draft, "German");
+            assert!(
+                text.lines().any(|line| line.contains("German")),
+                "saved value remains visible in the editor"
+            );
+            crate::app::config::handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            );
+            crate::app::config::handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
+            );
+            assert_eq!(app.config.selected_scope, crate::agent::settings::SettingsScope::Project);
         }
-        if !is_last {
-            lines.push(Line::default());
-        }
-        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }).line_count(viewport_width)
-    }
-
-    fn assert_selected_model_visible(app: &App, viewport_height: u16, viewport_width: u16) -> u16 {
-        let options = crate::app::config::model_overlay_options(app);
-        let overlay = app
-            .config
-            .model_overlay()
-            .expect("model overlay should be present for visibility assertions");
-        let selected_index = options
-            .iter()
-            .position(|option| option.id == overlay.selected_model)
-            .expect("selected model index");
-        let selected_start = options
-            .iter()
-            .take(selected_index)
-            .enumerate()
-            .map(|(index, option)| {
-                rendered_model_option_height(option, index + 1 == options.len(), viewport_width)
-            })
-            .sum::<usize>();
-        let selected_height = rendered_model_option_height(
-            &options[selected_index],
-            selected_index + 1 == options.len(),
-            viewport_width,
-        );
-        let scroll = usize::from(model_overlay_scroll(app, viewport_height, viewport_width));
-        let viewport_end = scroll + usize::from(viewport_height);
-        let selected_end = selected_start + selected_height;
-
-        assert!(selected_end > scroll, "selected option should overlap the viewport");
-        assert!(selected_end <= viewport_end, "selected option should fit within the viewport");
-        u16::try_from(scroll).unwrap_or(u16::MAX)
-    }
-
-    #[test]
-    fn model_overlay_scroll_keeps_selected_multiline_model_visible() {
-        let mut app = App::test_default();
-        app.sdk_inventory.available_models = vec![
-            AvailableModel::new("opus", "Opus")
-                .description("Opus 4.7")
-                .supports_effort(true)
-                .supported_effort_levels(vec![
-                    EffortLevel::Low,
-                    EffortLevel::Medium,
-                    EffortLevel::High,
-                ]),
-            AvailableModel::new("opus-1m", "Opus (1M context)")
-                .description("Extra usage")
-                .supports_effort(true)
-                .supported_effort_levels(vec![
-                    EffortLevel::Low,
-                    EffortLevel::Medium,
-                    EffortLevel::High,
-                ]),
-            AvailableModel::new("sonnet", "Sonnet")
-                .description("Everyday tasks")
-                .supports_effort(true)
-                .supported_effort_levels(vec![
-                    EffortLevel::Low,
-                    EffortLevel::Medium,
-                    EffortLevel::High,
-                ]),
-            AvailableModel::new("haiku", "Haiku").description("Fastest").supports_effort(false),
-        ];
-        app.config.overlay = Some(ConfigOverlayState::Model(ModelOverlayState {
-            selected_model: "sonnet".to_owned(),
-        }));
-
-        let scroll = assert_selected_model_visible(&app, 6, 40);
-        assert!(scroll > 0);
-    }
-
-    #[test]
-    fn model_overlay_scroll_accounts_for_wrapped_lines() {
-        let mut app = App::test_default();
-        app.sdk_inventory.available_models = vec![
-            AvailableModel::new("opus", "Opus")
-                .description("1234567890")
-                .supports_effort(true)
-                .supported_effort_levels(vec![
-                    EffortLevel::Low,
-                    EffortLevel::Medium,
-                    EffortLevel::High,
-                ]),
-            AvailableModel::new("haiku", "Haiku").supports_effort(false),
-        ];
-        app.config.overlay = Some(ConfigOverlayState::Model(ModelOverlayState {
-            selected_model: "haiku".to_owned(),
-        }));
-
-        let narrow_scroll = assert_selected_model_visible(&app, 4, 10);
-        let wide_scroll = assert_selected_model_visible(&app, 4, 20);
-        assert!(narrow_scroll >= wide_scroll);
-    }
-
-    #[test]
-    fn model_overlay_scroll_accounts_for_badge_padding_width() {
-        let mut app = App::test_default();
-        app.sdk_inventory.available_models = vec![
-            AvailableModel::new("opus", "Opus")
-                .description("Frontier")
-                .supports_effort(true)
-                .supported_effort_levels(vec![EffortLevel::Low, EffortLevel::Medium])
-                .supports_adaptive_thinking(Some(true))
-                .supports_fast_mode(Some(true))
-                .supports_auto_mode(Some(true)),
-            AvailableModel::new("sonnet", "Sonnet")
-                .description("Everyday tasks")
-                .supports_effort(true)
-                .supported_effort_levels(vec![EffortLevel::Low, EffortLevel::Medium])
-                .supports_adaptive_thinking(Some(true))
-                .supports_fast_mode(Some(true))
-                .supports_auto_mode(Some(true)),
-            AvailableModel::new("haiku", "Haiku")
-                .description("Fastest")
-                .supports_effort(false)
-                .supports_fast_mode(Some(true)),
-        ];
-        app.config.overlay = Some(ConfigOverlayState::Model(ModelOverlayState {
-            selected_model: "haiku".to_owned(),
-        }));
-
-        let narrow_scroll = assert_selected_model_visible(&app, 3, 12);
-        let wide_scroll = assert_selected_model_visible(&app, 3, 40);
-        assert!(narrow_scroll > 0);
-        assert!(narrow_scroll >= wide_scroll);
-    }
-
-    #[test]
-    fn effort_overlay_filters_session_only_max_from_persisted_settings() {
-        let mut app = App::test_default();
-        app.sdk_inventory.available_models = vec![
-            AvailableModel::new("opus", "Opus")
-                .supports_effort(true)
-                .supported_effort_levels(EffortLevel::ALL.to_vec()),
-        ];
-        crate::app::config::store::set_model(
-            &mut app.config.committed_settings_document,
-            Some("opus"),
-        );
-        app.config.overlay = Some(ConfigOverlayState::ThinkingEffort(ThinkingEffortOverlayState {
-            selected_effort: EffortLevel::Low,
-        }));
-
-        assert_eq!(effort_overlay_scroll(&app, 8, 40), 0);
-
-        app.config
-            .thinking_effort_overlay_mut()
-            .expect("thinking effort overlay")
-            .selected_effort = EffortLevel::XHigh;
-
-        assert!(effort_overlay_scroll(&app, 8, 40) > 0);
-        assert_eq!(
-            supported_effort_levels_for_model(&app, "opus"),
-            EffortLevel::PERSISTABLE_SETTINGS.to_vec()
-        );
-    }
-
-    #[test]
-    fn model_overlay_lines_show_positive_capability_badges_only() {
-        let mut app = App::test_default();
-        app.sdk_inventory.available_models = vec![
-            AvailableModel::new("sonnet", "Sonnet")
-                .description("Everyday tasks")
-                .supports_effort(true)
-                .supported_effort_levels(vec![
-                    EffortLevel::Low,
-                    EffortLevel::Medium,
-                    EffortLevel::High,
-                ])
-                .supports_adaptive_thinking(Some(true))
-                .supports_fast_mode(Some(true))
-                .supports_auto_mode(Some(true)),
-            AvailableModel::new("haiku", "Haiku")
-                .description("Fastest")
-                .supports_effort(false)
-                .supports_adaptive_thinking(Some(false))
-                .supports_fast_mode(Some(true))
-                .supports_auto_mode(None),
-        ];
-        app.config.overlay = Some(ConfigOverlayState::Model(ModelOverlayState {
-            selected_model: "sonnet".to_owned(),
-        }));
-
-        let rendered =
-            model_overlay_lines(&app).into_iter().map(|line| line.to_string()).collect::<Vec<_>>();
-
-        let sonnet_line =
-            rendered.iter().find(|line| line.contains("> Sonnet")).expect("sonnet line");
-        assert!(sonnet_line.contains("Effort"));
-        assert!(sonnet_line.contains("Adaptive thinking"));
-        assert!(sonnet_line.contains("Fast mode"));
-        assert!(sonnet_line.contains("Auto mode"));
-
-        let haiku_line = rendered.iter().find(|line| line.contains("  Haiku")).expect("haiku line");
-        assert!(haiku_line.contains("Fast mode"));
-        assert!(!haiku_line.contains("Auto mode"));
-        assert!(rendered.iter().all(|line| !line.contains("no effort")
-            && !line.contains("adaptive false")
-            && !line.contains('[')));
-    }
-
-    #[test]
-    fn model_overlay_title_line_uses_human_badge_labels_without_divider() {
-        let line = model_overlay_title_line(
-            &crate::app::config::OverlayModelOption {
-                id: "sonnet".to_owned(),
-                resolved_model: None,
-                display_name: "Sonnet".to_owned(),
-                description: None,
-                supports_effort: true,
-                supported_effort_levels: vec![EffortLevel::Low, EffortLevel::Medium],
-                supports_adaptive_thinking: Some(true),
-                supports_fast_mode: Some(true),
-                supports_auto_mode: Some(false),
-            },
-            ">",
-            false,
-            false,
-        );
-        let title = line.spans.iter().map(|span| span.content.as_ref()).collect::<String>();
-        let badge_labels = line
-            .spans
-            .iter()
-            .map(|span| span.content.trim())
-            .filter(|content| !content.is_empty())
-            .collect::<Vec<_>>();
-
-        assert!(title.starts_with("> Sonnet"));
-        assert!(badge_labels.contains(&"Effort"));
-        assert!(badge_labels.contains(&"Adaptive thinking"));
-        assert!(badge_labels.contains(&"Fast mode"));
-        assert!(!title.contains("Auto mode"));
-        assert!(!title.contains('['));
-        assert!(!title.contains('|'));
-    }
-
-    #[test]
-    fn output_style_overlay_lists_expected_options() {
-        let mut app = App::test_default();
-        app.config.overlay = Some(ConfigOverlayState::OutputStyle(OutputStyleOverlayState {
-            selected: OutputStyle::Explanatory,
-        }));
-
-        let rendered = super::output_style_overlay_lines(&app)
-            .into_iter()
-            .map(|line| line.to_string())
-            .collect::<Vec<_>>();
-
-        assert!(rendered.iter().any(|line| line.contains("1. Default")));
-        assert!(rendered.iter().any(|line| line.contains("2. Explanatory")));
-        assert!(rendered.iter().any(|line| line.contains("3. Learning")));
-    }
-
-    #[test]
-    fn language_overlay_input_uses_placeholder_when_empty() {
-        let line =
-            super::input::text_input_line("", 0, "e.g. en, Greek, Japanese, Pirate").to_string();
-
-        assert!(line.contains("e.g. en, Greek, Japanese, Pirate"));
     }
 
     #[test]
@@ -694,25 +447,237 @@ mod tests {
         assert!(line.contains("Custom session name"));
     }
 
-    #[test]
-    fn language_overlay_renders_inline_validation_message() {
-        let backend = TestBackend::new(120, 30);
-        let mut terminal = Terminal::new(backend).expect("terminal");
+    fn settings_preview_app() -> App {
         let mut app = App::test_default();
         app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
-        app.config.overlay = Some(ConfigOverlayState::Language(LanguageOverlayState {
-            draft: "E".to_owned(),
-            cursor: 1,
-        }));
+        app.config.snapshot = Some(serde_json::from_value(serde_json::json!({
+            "cwd": app.cwd_raw, "context": "preview", "diagnostics": [], "resolution_sources": [], "provenance": {},
+            "categories": [{"id":"general", "label":"General", "short_label":"General"}], "catalog": [
+                {"id": "alwaysThinkingEnabled", "label": "Thinking", "description": "Prefer thinking where the model permits it.", "key_path": ["alwaysThinkingEnabled"], "category":"general", "kind": "boolean", "options": [true, false], "allows_custom": false, "writable_scopes": ["user", "project", "local"], "reset": "Reset clears this scope's value and uses the other scopes or Default.", "application": "next_session"},
+                {"id": "language", "label": "Language", "description": "Preferred response language or ISO code.", "key_path": ["language"], "category":"general", "kind": "string", "options": [], "allows_custom": true, "writable_scopes": ["user", "project", "local"], "reset": "Reset clears this scope's value and uses the other scopes or Default.", "application": "next_session"}
+            ],
+            "sources": [{"scope": "user", "path": "settings.json", "status": "valid", "values": [{"id": "alwaysThinkingEnabled", "revision": "r", "value": true}, {"id": "language", "revision": "r"}]}],
+            "values": [{"id": "alwaysThinkingEnabled", "value": true, "contributors": ["user"], "policy_restricted": false}]
+        })).expect("snapshot"));
+        app
+    }
 
-        terminal
-            .draw(|frame| {
-                super::render(frame, &mut app);
-            })
-            .expect("draw");
+    #[test]
+    fn settings_render_distinct_values_selection_spacing_and_field_specific_controls() {
+        use crate::agent::settings::*;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use ratatui::style::Modifier;
+        let mut app = settings_preview_app();
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).expect("terminal");
+        terminal.draw(|frame| super::render(frame, &mut app)).expect("list");
+        let buffer = terminal.backend().buffer();
+        let lines = buffer_lines(buffer);
+        let thinking_row =
+            lines.iter().position(|line| line.contains("Thinking")).expect("thinking");
+        let language_row =
+            lines.iter().position(|line| line.contains("Language")).expect("language");
+        assert_eq!(language_row - thinking_row, 2, "rows need breathing space");
+        let thinking_row = u16::try_from(thinking_row).expect("terminal row");
+        let language_row = u16::try_from(language_row).expect("terminal row");
+        let value_column = (0..buffer.area.width)
+            .find(|x| buffer[(*x, thinking_row)].symbol() == "O")
+            .expect("On value");
+        assert_eq!(buffer[(value_column, thinking_row)].fg, super::theme::BTW_ACCENT);
+        assert!(buffer[(value_column, thinking_row)].modifier.contains(Modifier::BOLD));
+        assert_eq!(buffer[(value_column, language_row)].symbol(), "D");
+        assert_eq!(buffer[(value_column, language_row)].fg, super::theme::DIM);
+        assert_eq!(buffer[(value_column, thinking_row)].bg, super::theme::USER_MSG_BG);
+        assert!(lines.iter().any(|line| line.contains("1/2")));
+        crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        terminal.draw(|frame| super::render(frame, &mut app)).expect("selected language");
+        assert!(buffer_text(terminal.backend().buffer()).contains("2/2"));
+        crate::app::config::handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        );
+        assert_eq!(app.config.selected_setting().expect("selected").kind, SettingKind::String);
+        terminal.draw(|frame| super::render(frame, &mut app)).expect("text editor");
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("Enter a value"));
+        for key in ["Enter", "Ctrl+R", "Esc"] {
+            assert!(text.contains(key), "text editor must advertise {key}");
+        }
+        assert!(text.contains("Saved in user: not set"));
+        assert!(!text.contains("Options:"), "free text has no enumerated options");
+        assert!(!text.contains("Up/Down options"), "free text needs its own controls");
+    }
 
-        let rendered = buffer_text(terminal.backend().buffer());
-        assert!(rendered.contains("Language must be at least 2 characters."));
+    #[test]
+    fn compact_settings_keep_the_selected_value_and_close_control_visible() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        for (width, height) in [(30, 16), (50, 20), (80, 24)] {
+            let text = render_config_text(width, height, settings_preview_app());
+            assert!(
+                text.lines().any(|line| line.contains("Thinking") && line.contains("On")),
+                "{text}"
+            );
+            assert!(text.contains("Esc close"), "{text}");
+            assert!(text.contains("Space change"), "{text}");
+            assert!(text.contains("1/2"), "{text}");
+        }
+        let text = render_config_text(28, 10, settings_preview_app());
+        assert!(text.contains("Window too small"));
+        assert!(text.contains("Esc close"));
+        let mut app = settings_preview_app();
+        app.config.settings.select("language".into());
+        crate::app::config::handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(28, 10)).expect("terminal");
+        terminal.draw(|frame| super::render(frame, &mut app)).expect("small editor");
+        assert!(buffer_text(terminal.backend().buffer()).contains("Esc cancel"));
+        crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        terminal.draw(|frame| super::render(frame, &mut app)).expect("small list");
+        assert!(buffer_text(terminal.backend().buffer()).contains("Esc close"));
+    }
+
+    #[test]
+    fn read_only_settings_keep_the_value_visible_and_visually_disabled() {
+        let mut app = settings_preview_app();
+        let setting = &mut app.config.snapshot.as_mut().expect("snapshot").catalog[0];
+        setting.writable_scopes.clear();
+        setting.unavailable = Some("POLICY_RESTRICTION".to_owned());
+        let mut terminal = Terminal::new(TestBackend::new(110, 32)).expect("terminal");
+        terminal.draw(|frame| super::render(frame, &mut app)).expect("read-only");
+        let buffer = terminal.backend().buffer();
+        let lines = buffer_lines(buffer);
+        let row = lines.iter().position(|line| line.contains("Thinking")).expect("setting row");
+        assert!(lines[row].trim_end().ends_with("On"));
+        let label = lines[row][..lines[row].find("Thinking").expect("label")].chars().count();
+        let value = lines[row][..lines[row].rfind("On").expect("value")].chars().count();
+        for column in [label, value] {
+            assert_eq!(
+                buffer[(u16::try_from(column).expect("column"), u16::try_from(row).expect("row"))]
+                    .fg,
+                theme::DIM
+            );
+        }
+        let warning_row = lines
+            .iter()
+            .position(|line| line.contains("POLICY_RESTRICTION"))
+            .expect("restriction warning");
+        assert!(warning_row > row, "restriction belongs below the settings list");
+    }
+
+    #[test]
+    fn setting_save_errors_wrap_without_hiding_the_editor_controls() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = settings_preview_app();
+        app.config.settings.select("language".into());
+        crate::app::config::handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        );
+        app.config.set_overlay_error("The saved value changed while you were editing. Your draft is still here. Review the latest saved value before trying again.");
+        let text = render_config_text(80, 24, app);
+        let words = text.replace('│', " ").split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(words.contains("before trying again."), "{text}");
+        assert!(text.contains("Enter save"));
+        assert!(text.contains("Ctrl+R reset"));
+        assert!(text.contains("Esc cancel"));
+    }
+
+    #[test]
+    fn received_catalog_keeps_the_selected_row_visible_in_a_small_window() {
+        let mut app = App::test_default();
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+        let mut snapshot = crate::agent::settings::SettingsSnapshot::default();
+        for index in 0..22 {
+            snapshot.catalog.push(
+                serde_json::from_value(serde_json::json!({
+                    "id": format!("row-{index}"), "label": format!("Setting {index}"),
+                    "description": "Received setting", "key_path": [format!("row-{index}")],
+                    "category":"general", "kind": "boolean", "options": [true, false], "writable_scopes": ["user"],
+                    "allows_custom": false, "reset": "Reset removes the saved value here",
+                    "application": "next_session"
+                }))
+                .expect("descriptor"),
+            );
+        }
+        app.config.snapshot = Some(snapshot);
+        crate::app::config::handle_key(
+            &mut app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::End,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(80, 16)).expect("terminal");
+        terminal.draw(|frame| super::render(frame, &mut app)).expect("draw");
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.lines().any(|line| line.contains("Setting 21") && line.contains("Default")));
+        assert!(text.contains("22/22"));
+        assert!(text.contains("Up/Down select"));
+        assert!(app.config.settings.position().expect("position").scroll > 0);
+    }
+
+    #[test]
+    fn large_terminal_overlay_is_centered_not_fullscreen() {
+        let mut app = App::test_default();
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+        app.config.overlay = Some(crate::app::config::ConfigOverlayState::SessionRename(
+            crate::app::config::SessionRenameOverlayState {
+                draft: "Review settings".to_owned(),
+                cursor: 15,
+            },
+        ));
+        let rendered = render_config_lines(120, 30, app);
+        let (row, column) = rendered
+            .iter()
+            .enumerate()
+            .find_map(|(row, line)| line.find("Rename session").map(|column| (row, column)))
+            .expect("overlay title");
+        assert!(row > 0);
+        assert!(column > 0);
+    }
+
+    #[test]
+    fn small_terminal_confirmation_covers_footer_status() {
+        let mut app = App::test_default();
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+        app.config.status_message = Some("BACKGROUND FOOTER STATUS".to_owned());
+        app.config.overlay = Some(crate::app::config::ConfigOverlayState::Confirmation(
+            crate::app::config::ConfirmationOverlayState {
+                title: "Tiny Confirm".to_owned(),
+                body: "Keep the dialog readable on a tiny terminal.".to_owned(),
+                confirm_label: "Run".to_owned(),
+                cancel_label: "Cancel".to_owned(),
+                selected_index: 0,
+                action: crate::app::config::ConfirmationAction::MarketplaceRemove,
+                previous: None,
+            },
+        ));
+        let rendered = render_config_text(40, 8, app);
+        assert!(rendered.contains("Tiny Confirm"));
+        assert!(rendered.contains("Up/Down select"));
+        assert!(!rendered.contains("BACKGROUND FOOTER STATUS"));
+    }
+
+    #[test]
+    fn very_short_terminal_confirmation_keeps_title_body_and_help_visible() {
+        let mut app = App::test_default();
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+        app.config.overlay = Some(crate::app::config::ConfigOverlayState::Confirmation(
+            crate::app::config::ConfirmationOverlayState {
+                title: "Confirm".to_owned(),
+                body: "Proceed?".to_owned(),
+                confirm_label: "Proceed".to_owned(),
+                cancel_label: "Cancel".to_owned(),
+                selected_index: 0,
+                action: crate::app::config::ConfirmationAction::MarketplaceRemove,
+                previous: None,
+            },
+        ));
+        let rendered = render_config_text(32, 6, app);
+        assert!(rendered.contains("Confirm"));
+        assert!(rendered.contains("Proceed?"));
+        assert!(rendered.contains("Up/Down select"));
     }
 
     #[test]
@@ -729,220 +694,22 @@ mod tests {
     }
 
     #[test]
-    fn large_terminal_overlay_is_centered_not_fullscreen() {
-        let mut app = App::test_default();
-        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
-        app.config.overlay = Some(ConfigOverlayState::Language(LanguageOverlayState {
-            draft: "German".to_owned(),
-            cursor: 6,
-        }));
-
-        let rendered = render_config_lines(120, 30, app);
-        let (row_index, column_index) = rendered
-            .iter()
-            .enumerate()
-            .find_map(|(row_index, line)| {
-                line.find("Language").map(|column_index| (row_index, column_index))
-            })
-            .expect("language overlay title");
-
-        assert!(row_index > 0);
-        assert!(column_index > 0);
-    }
-
-    #[test]
-    fn small_terminal_overlay_covers_footer_status() {
-        let mut app = App::test_default();
-        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
-        app.config.status_message = Some("BACKGROUND FOOTER STATUS".to_owned());
-        app.config.overlay = Some(crate::app::config::ConfigOverlayState::Confirmation(
-            crate::app::config::ConfirmationOverlayState {
-                title: "Tiny Confirm".to_owned(),
-                body: "Keep the dialog readable on a tiny terminal.".to_owned(),
-                confirm_label: "Run".to_owned(),
-                cancel_label: "Cancel".to_owned(),
-                selected_index: 0,
-                action: crate::app::config::ConfirmationAction::MarketplaceRemove,
-                previous: Some(Box::new(ConfigOverlayState::OutputStyle(
-                    OutputStyleOverlayState { selected: OutputStyle::Default },
-                ))),
-            },
-        ));
-
-        let rendered = render_config_text(40, 8, app);
-
-        assert!(rendered.contains("Tiny Confirm"));
-        assert!(rendered.contains("Up/Down select"));
-        assert!(!rendered.contains("BACKGROUND FOOTER STATUS"));
-    }
-
-    #[test]
-    fn very_short_terminal_overlay_keeps_title_body_and_help_visible() {
-        let mut app = App::test_default();
-        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
-        app.config.overlay = Some(crate::app::config::ConfigOverlayState::Confirmation(
-            crate::app::config::ConfirmationOverlayState {
-                title: "Confirm".to_owned(),
-                body: "Proceed?".to_owned(),
-                confirm_label: "Proceed".to_owned(),
-                cancel_label: "Cancel".to_owned(),
-                selected_index: 0,
-                action: crate::app::config::ConfirmationAction::MarketplaceRemove,
-                previous: Some(Box::new(ConfigOverlayState::OutputStyle(
-                    OutputStyleOverlayState { selected: OutputStyle::Default },
-                ))),
-            },
-        ));
-
-        let rendered = render_config_text(32, 6, app);
-
-        assert!(rendered.contains("Confirm"));
-        assert!(rendered.contains("Proceed?"));
-        assert!(rendered.contains("Up/Down select"));
-    }
-
-    #[test]
-    fn output_style_details_do_not_show_unsupported_warning() {
-        let mut app = App::test_default();
-        app.config.selected_setting_index = setting_specs()
-            .iter()
-            .position(|spec| spec.id == SettingId::OutputStyle)
-            .expect("output style row");
-
-        let rendered = super::settings::setting_detail_lines(&app)
-            .into_iter()
-            .map(|line| line.to_string())
-            .collect::<Vec<_>>();
-
-        assert!(!rendered.iter().any(|line| line.contains("not supported yet")));
-    }
-
-    #[test]
-    fn compact_settings_layout_triggers_for_small_tuis() {
-        assert!(super::settings::compact_settings_layout(Rect::new(0, 0, 89, 25)));
-        assert!(super::settings::compact_settings_layout(Rect::new(0, 0, 100, 19)));
-        assert!(!super::settings::compact_settings_layout(Rect::new(0, 0, 90, 20)));
-    }
-
-    #[test]
-    fn compact_settings_list_does_not_inline_warning_for_supported_output_style() {
-        let backend = TestBackend::new(80, 16);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = App::test_default();
-        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
-        app.config.selected_setting_index = setting_specs()
-            .iter()
-            .position(|spec| spec.id == SettingId::OutputStyle)
-            .expect("output style row");
-
-        terminal
-            .draw(|frame| {
-                super::render(frame, &mut app);
-            })
-            .expect("draw");
-
-        let rendered = buffer_text(terminal.backend().buffer());
-
-        assert!(!rendered.contains("not supported yet"));
-    }
-
-    #[test]
-    fn compact_settings_supported_output_style_does_not_render_warning_lines() {
-        let backend = TestBackend::new(42, 20);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = App::test_default();
-        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
-        app.config.selected_setting_index = setting_specs()
-            .iter()
-            .position(|spec| spec.id == SettingId::OutputStyle)
-            .expect("output style row");
-
-        terminal
-            .draw(|frame| {
-                super::render(frame, &mut app);
-            })
-            .expect("draw");
-
-        let rendered = buffer_lines(terminal.backend().buffer());
-
-        let warning_lines = rendered
-            .iter()
-            .filter(|line| {
-                line.contains("Warning: not supported yet;")
-                    || line.contains("this setting")
-                    || line.contains("affect")
-                    || line.contains("sessions.")
-            })
-            .count();
-
-        assert_eq!(warning_lines, 0);
-    }
-
-    #[test]
-    fn render_updates_settings_scroll_offset_to_keep_selection_visible() {
-        let backend = TestBackend::new(80, 16);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = App::test_default();
-        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
-        app.config.selected_setting_index = setting_specs().len().saturating_sub(1);
-        app.config.settings_scroll_offset = 0;
-
-        terminal
-            .draw(|frame| {
-                super::render(frame, &mut app);
-            })
-            .expect("draw");
-
-        assert!(app.config.settings_scroll_offset > 0);
-    }
-
-    #[test]
-    fn normal_layout_renders_settings_limitation_hint() {
-        let backend = TestBackend::new(180, 30);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = App::test_default();
-        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
-
-        terminal
-            .draw(|frame| {
-                super::render(frame, &mut app);
-            })
-            .expect("draw");
-
-        let rendered = buffer_text(terminal.backend().buffer());
-
-        assert!(rendered.contains("supported by claude-rs"));
-        assert!(rendered.contains("Anthropic Claude Agent SDK"));
-    }
-
-    #[test]
-    fn compact_layout_renders_settings_limitation_hint() {
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = App::test_default();
-        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
-
-        terminal
-            .draw(|frame| {
-                super::render(frame, &mut app);
-            })
-            .expect("draw");
-
-        let rendered = buffer_text(terminal.backend().buffer());
-
-        assert!(rendered.contains("supported by claude-rs"));
-        assert!(rendered.contains("Anthropic Claude Agent SDK"));
-    }
-
-    #[test]
-    fn settings_limitation_hint_wraps_on_narrow_widths() {
-        assert_eq!(super::settings::settings_hint_height(200), 1);
-        assert!(super::settings::settings_hint_height(40) > 1);
-        assert!(
-            super::settings::settings_hint_height(20) > super::settings::settings_hint_height(40)
-        );
-        assert_eq!(super::settings::settings_hint_height(0), 0);
-        assert!(SETTINGS_LIMITATION_HINT.contains("not all settings are supported"));
+    fn unavailable_settings_keep_the_close_action_usable_at_both_sizes() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        for (width, height) in [(180, 30), (80, 24)] {
+            let mut app = App::test_default();
+            app.surface_mode =
+                crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+            terminal.draw(|frame| super::render(frame, &mut app)).expect("unavailable settings");
+            let rendered = buffer_text(terminal.backend().buffer());
+            assert!(rendered.contains("unavailable"), "explain the unavailable state: {rendered}");
+            crate::app::config::handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            );
+            assert_eq!(app.surface_mode, crate::app::SurfaceMode::Chat);
+        }
     }
 
     #[test]
@@ -981,7 +748,7 @@ mod tests {
 
         let rendered = buffer_text(terminal.backend().buffer());
         assert!(!rendered.contains("Space edit"), "Status tab should not show Space edit");
-        assert!(rendered.contains("Tab next tab"), "missing tab navigation hint");
+        assert!(rendered.contains("Tab/Shift+Tab tabs"), "missing tab navigation hint");
         assert!(rendered.contains("Enter close"), "missing Enter close");
     }
 
@@ -1001,27 +768,7 @@ mod tests {
 
         let rendered = buffer_text(terminal.backend().buffer());
         assert!(rendered.contains("r refresh"));
-        assert!(rendered.contains("Shift+Tab prev tab"));
-    }
-
-    #[test]
-    fn settings_tab_help_shows_edit_keys() {
-        let backend = TestBackend::new(100, 24);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = App::test_default();
-        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
-        app.config.active_tab = crate::app::ConfigTab::Settings;
-
-        terminal
-            .draw(|frame| {
-                super::render(frame, &mut app);
-            })
-            .expect("draw");
-
-        let rendered = buffer_text(terminal.backend().buffer());
-        assert!(rendered.contains("Left/Right edit"));
-        assert!(rendered.contains("Space edit"));
-        assert!(rendered.contains("Shift+Tab prev tab"));
+        assert!(rendered.contains("Tab/Shift+Tab tabs"));
     }
 
     #[test]
@@ -1146,7 +893,7 @@ mod tests {
             .expect("draw");
 
         let rendered = buffer_text(terminal.backend().buffer());
-        assert!(rendered.contains("Loading installed plugins..."));
+        assert!(rendered.contains("Loading plugins"));
         assert!(!rendered.contains("No installed plugins found."));
     }
 
@@ -1231,7 +978,7 @@ mod tests {
         let rendered = render_config_text(56, 14, app);
 
         assert!(rendered.contains("..."));
-        assert!(rendered.contains("> Uninstall"));
+        assert!(rendered.contains("› Uninstall"));
     }
 
     #[test]
@@ -1459,5 +1206,302 @@ mod tests {
 
         let rendered = buffer_text(terminal.backend().buffer());
         assert!(rendered.contains("Renaming session..."));
+    }
+    fn config_list_preview(tab: ConfigTab) -> App {
+        use crate::agent::model::{McpServerConnectionStatus, McpServerStatus, SessionId};
+        let mut app = settings_preview_app();
+        app.config.active_tab = tab;
+        app.config.settings.select("language".into());
+        app.session_runtime.session_id = Some(SessionId::new("preview-session"));
+        app.plugins.installed = (0..9)
+            .map(|index| installed_plugin_entry(&format!("p{index}@market"), "user", None))
+            .collect();
+        app.plugins.installed_selected_index = 8;
+        app.mcp.servers = (0..9)
+            .map(|index| McpServerStatus {
+                name: format!("server-{index}"),
+                status: McpServerConnectionStatus::Connected,
+                server_info: None,
+                error: None,
+                config: None,
+                scope: Some("user".to_owned()),
+                source: None,
+                tools: Vec::new(),
+            })
+            .collect();
+        app.config.mcp_selected_server_index = 8;
+        app.config.help_dialog.selected = 1;
+        app
+    }
+
+    #[test]
+    fn every_config_tab_keeps_its_footer_and_selection_visible_at_common_sizes() {
+        for (width, height) in [(80, 24), (40, 16)] {
+            for tab in ConfigTab::ALL {
+                let mut app = config_list_preview(tab);
+                let help_total = crate::ui::help::help_item_count(&app, app.config.help_section);
+                let mut terminal =
+                    Terminal::new(TestBackend::new(width, height)).expect("terminal");
+                terminal.draw(|frame| super::render(frame, &mut app)).expect("draw");
+                let buffer = terminal.backend().buffer();
+                let text = buffer_text(buffer);
+                assert!(
+                    text.split_whitespace().collect::<Vec<_>>().join(" ").contains("Esc close"),
+                    "{tab:?} at {width}x{height}: {text}"
+                );
+                assert!(text.contains("Tab/Shift+Tab tabs"), "{tab:?}: {text}");
+                let counter = match tab {
+                    ConfigTab::Settings => Some("2/2".to_owned()),
+                    ConfigTab::Plugins | ConfigTab::Mcp => Some("9/9".to_owned()),
+                    ConfigTab::Help => Some(format!("2/{help_total}")),
+                    _ => None,
+                };
+                if let Some(counter) = counter {
+                    assert!(text.contains(&counter), "{tab:?}: {text}");
+                    let marker = buffer
+                        .content
+                        .iter()
+                        .find(|cell| cell.symbol() == "\u{203a}")
+                        .expect("selected row marker");
+                    assert_eq!(marker.fg, theme::RUST_ORANGE);
+                    assert_eq!(marker.bg, theme::USER_MSG_BG);
+                }
+                match tab {
+                    ConfigTab::Settings => assert!(text.contains("Language"), "{text}"),
+                    ConfigTab::Plugins => {
+                        assert!(text.contains("P8"), "{text}");
+                        assert!(text.contains("SKILL"), "{text}");
+                        if height == 24 {
+                            assert!(text.contains("Status: enabled"), "{text}");
+                            assert!(text.contains("Scope: user"), "{text}");
+                        }
+                    }
+                    ConfigTab::Mcp => assert!(text.contains("server-8"), "{text}"),
+                    ConfigTab::Status => assert!(text.contains("Session name"), "{text}"),
+                    ConfigTab::Usage => assert!(text.contains("No usage snapshot yet"), "{text}"),
+                    ConfigTab::Help => assert!(app.config.help_visible_count > 0),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_config_tab_wraps_footer_messages_and_handles_tiny_windows() {
+        let message = "Changes saved. This status message wraps across multiple rows. Refresh to see the latest values.";
+        for tab in ConfigTab::ALL {
+            for (width, height) in [(80, 24), (40, 16)] {
+                let mut app = config_list_preview(tab);
+                app.config.status_message = Some(message.to_owned());
+                let text = render_config_text(width, height, app);
+                let words = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                assert!(words.contains(message), "{tab:?}: {text}");
+                assert!(words.contains("Esc close"), "{text}");
+            }
+            let text = render_config_text(28, 10, config_list_preview(tab));
+            assert!(text.contains("Window too small"), "{tab:?}: {text}");
+            assert!(text.contains("Esc close"), "{text}");
+        }
+    }
+
+    #[test]
+    fn plugin_metadata_follows_selection_and_actions_after_resize() {
+        use crate::app::plugins::{MarketplaceEntry, PluginsViewTab};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = config_list_preview(ConfigTab::Plugins);
+        app.plugins.active_tab = PluginsViewTab::Plugins;
+        app.plugins.marketplace = (0..9)
+            .map(|index| MarketplaceEntry {
+                plugin_id: format!("p{index}@market"),
+                name: format!("p{index}"),
+                description: Some(format!("Description for p{index}")),
+                marketplace_name: Some("market".to_owned()),
+                version: Some("1.2.3".to_owned()),
+                install_count: None,
+                source: None,
+            })
+            .collect();
+        app.plugins.plugins_selected_index = 7;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+        terminal.draw(|frame| super::render(frame, &mut app)).expect("draw");
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("Description for p7"), "{text}");
+        assert!(text.contains("Plugin: p7@market"), "{text}");
+        assert!(text.contains("Version: 1.2.3"), "{text}");
+        crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        terminal.draw(|frame| super::render(frame, &mut app)).expect("next plugin");
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("Description for p8"), "{text}");
+        assert!(text.contains("Plugin: p8@market"), "{text}");
+        assert!(text.contains("9/9"));
+        terminal.backend_mut().resize(40, 16);
+        terminal.draw(|frame| super::render(frame, &mut app)).expect("resize");
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("P8"), "{text}");
+        assert!(text.contains("9/9"), "{text}");
+        assert!(text.contains("Plugin: p8@market"), "{text}");
+        crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        terminal.draw(|frame| super::render(frame, &mut app)).expect("actions");
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("Install plugin"), "{text}");
+        assert!(text.contains("Description for p8"), "{text}");
+        assert!(text.contains("\u{203a} Install"), "{text}");
+    }
+
+    #[test]
+    fn plugin_entries_have_metadata_and_gaps_and_search_focus_has_no_selected_marker() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = config_list_preview(ConfigTab::Plugins);
+        app.plugins.installed_selected_index = 0;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+        terminal.draw(|frame| super::render(frame, &mut app)).expect("list");
+        let lines = buffer_lines(terminal.backend().buffer());
+        let first =
+            lines.iter().position(|line| line.contains("P0 From Market")).expect("first row");
+        let second =
+            lines.iter().position(|line| line.contains("P1 From Market")).expect("second entry");
+        assert!(lines[first + 1..second].iter().any(|line| line.contains("Scope: user")));
+        assert!(lines[first + 1..second].iter().any(|line| line.contains("Version: 1.0.0")));
+        assert!(lines[second - 1].trim().is_empty(), "gap between entries: {lines:?}");
+        crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        terminal.draw(|frame| super::render(frame, &mut app)).expect("search");
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(app.plugins.search_focused);
+        assert!(!text.contains('\u{203a}'));
+        assert!(text.contains("Type search"));
+        crate::app::config::handle_paste(&mut app, "p8");
+        crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        terminal.draw(|frame| super::render(frame, &mut app)).expect("filtered list");
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("1/1"), "{text}");
+        assert!(text.contains("\u{203a} P8"), "{text}");
+    }
+    #[test]
+    fn marketplace_details_and_add_row_follow_the_selected_entry() {
+        use crate::app::plugins::{MarketplaceSourceEntry, PluginsViewTab};
+        let mut app = config_list_preview(ConfigTab::Plugins);
+        app.plugins.active_tab = PluginsViewTab::Marketplace;
+        app.plugins.marketplaces = vec![MarketplaceSourceEntry {
+            name: "market".to_owned(),
+            source: Some("github".to_owned()),
+            repo: Some("owner/market".to_owned()),
+        }];
+        for (width, height) in [(80, 24), (40, 16)] {
+            app.plugins.marketplace_selected_index = 0;
+            let text = {
+                let mut preview = config_list_preview(ConfigTab::Plugins);
+                preview.plugins = app.plugins.clone();
+                render_config_text(width, height, preview)
+            };
+            assert!(text.contains("\u{203a} Market"), "{text}");
+            assert!(text.contains("1/2"), "{text}");
+            assert!(text.contains("Repo: owner/market"), "{text}");
+            app.plugins.marketplace_selected_index = 1;
+            let text = {
+                let mut preview = config_list_preview(ConfigTab::Plugins);
+                preview.plugins = app.plugins.clone();
+                render_config_text(width, height, preview)
+            };
+            assert!(text.contains("\u{203a} Add marketplace"), "{text}");
+            assert!(text.contains("2/2"), "{text}");
+        }
+    }
+
+    #[test]
+    fn every_plugin_shows_complete_metadata_without_clipping_long_fields() {
+        use crate::app::plugins::{MarketplaceEntry, PluginsViewTab};
+        let mut app = config_list_preview(ConfigTab::Plugins);
+        app.plugins.active_tab = PluginsViewTab::Plugins;
+        app.plugins.plugins_selected_index = 0;
+        app.plugins.marketplace = (0..2).map(|index| MarketplaceEntry {
+            plugin_id: format!("p{index}@market"),
+            name: format!("p{index}"),
+            description: Some(format!("Description for p{index} wraps across rows and ends with description-tail-{index}")),
+            marketplace_name: Some("market".to_owned()),
+            version: Some(format!("1.2.{index}")),
+            install_count: Some(123 + index),
+            source: Some(serde_json::json!(format!("https://example.com/long/path/to/plugin-{index}/source-tail-{index}"))),
+        }).collect();
+        let mut terminal = Terminal::new(TestBackend::new(60, 48)).expect("terminal");
+        terminal.draw(|frame| super::render(frame, &mut app)).expect("draw");
+        let lines = buffer_lines(terminal.backend().buffer());
+        let entries: Vec<_> = (0..2)
+            .map(|index| {
+                lines
+                    .iter()
+                    .position(|line| line.contains(&format!("P{index}")))
+                    .expect("plugin row")
+            })
+            .collect();
+        for index in 0..2 {
+            let end = entries.get(index + 1).copied().unwrap_or(lines.len());
+            let words = lines[entries[index]..end]
+                .join(" ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            for value in [
+                format!("Plugin: p{index}@market"),
+                format!("description-tail-{index}"),
+                format!("Version: 1.2.{index}"),
+                format!("Installs: {}", 123 + index),
+                format!("source-tail-{index}"),
+                "Marketplace: market".to_owned(),
+            ] {
+                assert!(words.contains(&value), "missing {value}: {words}");
+            }
+            assert!(!words.contains("..."), "plugin metadata must remain complete: {words}");
+        }
+        let second = lines.iter().position(|line| line.contains("P1")).expect("second plugin");
+        assert!(lines[second - 1].trim().is_empty(), "{lines:?}");
+    }
+
+    #[test]
+    fn installed_plugin_shows_inventory_metadata_and_catalog_description() {
+        use crate::app::plugins::MarketplaceEntry;
+        let mut app = config_list_preview(ConfigTab::Plugins);
+        app.cwd_raw = "C:/work/project".to_owned();
+        let mut entry = installed_plugin_entry("p0@market", "project", Some("C:/work/project"));
+        entry.installed_at = Some("2026-09-01".to_owned());
+        entry.last_updated = Some("2026-10-04".to_owned());
+        entry.mcp_server_names = vec!["files".to_owned(), "search".to_owned()];
+        app.plugins.installed = vec![entry];
+        app.plugins.installed_selected_index = 0;
+        app.plugins.marketplace = vec![MarketplaceEntry {
+            plugin_id: "p0@market".to_owned(),
+            name: "p0".to_owned(),
+            description: Some("Tools for this project".to_owned()),
+            marketplace_name: Some("market".to_owned()),
+            version: None,
+            install_count: None,
+            source: None,
+        }];
+        let text = render_config_text(100, 30, app);
+        for field in [
+            "Plugin: p0@market",
+            "Status: enabled",
+            "Scope: project",
+            "Version: 1.0.0",
+            "Project: C:/work/project",
+            "Installed: 2026-09-01",
+            "Updated: 2026-10-04",
+            "MCP servers: files, search",
+            "Description: Tools for this project",
+        ] {
+            assert!(text.contains(field), "missing {field}: {text}");
+        }
+    }
+
+    #[test]
+    fn wrapped_plugin_search_keeps_the_current_query_suffix_visible() {
+        let mut app = config_list_preview(ConfigTab::Plugins);
+        app.plugins.search_focused = true;
+        app.plugins.installed_search_query = format!("{}query-tail", "search ".repeat(40));
+        let text = render_config_text(40, 16, app);
+        assert!(text.contains("query-tail"), "{text}");
+        assert!(text.contains("No plugins"), "{text}");
+        assert!(
+            text.split_whitespace().collect::<Vec<_>>().join(" ").contains("Esc close"),
+            "{text}"
+        );
     }
 }

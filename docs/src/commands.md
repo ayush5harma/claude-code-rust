@@ -8,20 +8,24 @@ Use `/docs commands` in the app to render the live merged command list into chat
 
 | Command | Usage | Purpose |
 | --- | --- | --- |
-| `/1m-context` | `/1m-context <enable\|disable\|status>` | Enable, disable, or inspect project-local 1M context settings for future sessions. |
 | `/btw` | `/btw <question>` | Ask a contextual side question without adding it to the main conversation. |
 | `/cancel` | `/cancel` | Cancel the active assistant turn. |
 | `/compact` | `/compact` | Ask the active session to compact conversation context. |
 | `/config` | `/config` | Open fullscreen settings. |
+| `/memory` | `/memory` | Open the Memory settings pane. |
+| `/permissions` | `/permissions` | Open saved permission defaults, rules and directories. |
+| `/sandbox` | `/sandbox` | Open sandbox settings without toggling sandboxing. |
+| `/hooks` | `/hooks` | Inspect and edit saved hook configuration without executing hooks. |
+| `/copy` | `/copy` | Copy the last completed response, or choose a code block from it. |
 | `/docs` | `/docs <mode\|models\|shortcuts\|commands\|agents>` | Render command, shortcut, model, mode, or subagent help into chat. |
 | `/agent` | `/agent <name\|reset>` | Change the main-thread agent for the active session. Applies on the next turn. |
-| `/effort` | `/effort <low\|medium\|high\|xhigh\|max>` | Change thinking effort for the active session. |
+| `/effort` | `/effort <low\|medium\|high\|xhigh\|max\|reset>` | Change thinking effort for the active session. |
+| `/thinking` | `/thinking <on\|off\|reset>` | Set the thinking preference for the active session or restore its inherited preference. |
 | `/ultracode` | `/ultracode <on\|off\|status>` | Enable, disable, or inspect Ultracode for the active session. |
-| `/fast` | `/fast` | Enable or disable fast mode for the active session. |
+| `/fast` | `/fast [on\|off]` | Toggle fast mode or explicitly enable/disable it for the active session. |
 | `/help` | `/help` | Open the fullscreen Help tab. |
 | `/mcp` | `/mcp` | Open MCP status and authorization. |
 | `/plugins` | `/plugins` | Open plugin management. |
-| `/opus-version` | `/opus-version <4.5\|4.6\|4.7\|4.8\|default\|status>` | Set, clear, or inspect the project-local Opus alias pin for future sessions. |
 | `/status` | `/status` | Open session and account status. |
 | `/usage` | `/usage` | Open quota and usage information. |
 | `/login` | `/login` | Run Claude CLI authentication and reconnect the session. |
@@ -41,6 +45,10 @@ Completing the name of a command with no arguments or optional arguments closes 
 Space inserts a literal separator without accepting the highlighted suggestion. It ends command-name completion and continues argument assistance only when the app requires arguments, or when you explicitly requested argument help. There is no special Space dismissal state. Escape dismisses the current menu; argument edits, cursor movement within arguments, and metadata refreshes keep it closed. Tab requests completion again, and editing the command name starts a new completion interaction. A command is recognized only at the start of the draft, allowing leading whitespace; slashes on later lines remain literal prompt or argument text.
 
 The command menu includes the full merged inventory and scrolls as you move through it. SDK commands remain available after `/clear` changes the session identifier. In SDK sessions that advertise `/clear [name]`, `/new` and `/reset` are aliases; the optional name labels the conversation you are leaving. `/new-session` is the separate app command that starts a fresh bridge session. App command definitions take precedence when the SDK advertises the same name.
+
+## Copying responses
+
+`/copy` copies the last completed assistant response as its original Markdown, without thinking or tool output. Responses loaded from session history can be copied too. If the response contains code blocks, choose Full response or a code block with Up/Down, then Enter; Escape cancels. Enable Skip the /copy picker in `/config` to copy the complete Markdown response directly. Responses without code blocks copy directly. If the clipboard is unavailable, the picker stays open so you can retry. The command can copy an earlier completed response while a new response is still running; it does not submit a model request.
 
 ## Side Questions
 
@@ -64,12 +72,8 @@ to inspect the current session's full command list. The output includes app-owne
 
 If the SDK accepts `/ultracode on` but reports Ultracode unavailable, the command shows an error explaining that the request was saved but Ultracode remains inactive. The verified requested-but-unavailable state remains visible through `/ultracode status`, which reports it as information.
 
-`/fast` changes fast mode only for the active session. It does not rewrite the persisted Fast mode setting. Use the settings surface to choose the fast-mode preference applied when future sessions start.
+`/model`, `/mode`, `/effort`, `/thinking`, `/agent`, `/fast`, and `/ultracode` change the current session; `/config` edits saved defaults for new sessions. Choices are checked against SDK capabilities and acknowledged only after the SDK accepts them. Model, effort, fast mode, and Ultracode show reported runtime results, including caps or fallbacks, rather than echoing requests. The starting permission mode comes from SDK initialization, before the first prompt. Saved permission defaults remain inherited by the native session. Both `/mode` and the mode-cycle shortcut keep the confirmed mode visible while awaiting SDK acceptance; a rejected change leaves it unchanged.
 
-## Project-Local Commands
+`/effort reset` uses the current model's native session default; it does not reload the saved per-model effort. `max` is session-only. `/thinking reset` removes the temporary override and restores the inherited thinking preference. Thinking is a preference, and the model may still require or restrict thinking. `/agent reset` clears the active main-thread agent rather than restoring its saved default.
 
-`/1m-context` and `/opus-version` persist folder-local settings under `./.claude/settings.local.json`. The current session is not restarted automatically, so run `/new-session` after changing either setting.
-
-`/1m-context disable` writes the environment setting used to disable the 1M context window for future sessions in that folder. `enable` clears that override.
-
-`/opus-version <version>` pins the folder-local Opus alias. `default` clears the pin.
+`/fast` changes fast mode only for the active session. It does not rewrite the persisted Fast mode setting. Use the settings surface to choose the fast-mode preference applied when future sessions start. If an accepted change cannot be verified, the footer shows `FAST:?`; retry explicitly with `/fast on` or `/fast off`.

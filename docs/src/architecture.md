@@ -38,6 +38,87 @@ The TypeScript bridge wraps `@anthropic-ai/claude-agent-sdk`. Rust and TypeScrip
 
 Rust sends commands such as session creation, session resume, prompt submission, permission responses, MCP actions, and runtime refresh requests. The bridge sends events such as assistant messages, tool updates, permission requests, question requests, available commands, modes, models, usage, and errors.
 
+## Subsystems
+
+Each subsection names the owner of a concern and the invariants that keep the Rust side and the bridge from holding two versions of the same state.
+
+### Settings and trust
+
+| Concern | Owner | Location |
+| --- | --- | --- |
+| Setting catalog: IDs, labels, kinds, choices, writable scopes, panes, editor schemas | Bridge | `agent-sdk/src/bridge/settings_catalog.ts`, `settings_layout.ts` |
+| Saved-value resolution across scopes | Agent SDK | public `resolveSettings()` |
+| Mutation validation and targeted JSON writes | Bridge | `agent-sdk/src/bridge/settings_service.ts` |
+| Config window, edit drafts, acknowledgement tracking | Rust | `src/app/config/`, `src/ui/config/` |
+| Workspace trust state and store | Rust | `src/app/trust/` |
+| App preferences file and updater state | Rust | `src/app/settings.rs` |
+
+Rust receives catalog descriptors and sanitized snapshots over NDJSON and renders them. It does not merge settings files, mirror scope rules, or supply defaults for unset values. Saved defaults stay separate from active session choices: a settings save never becomes a session flag override. Snapshots and pending drafts are invalidated when the session scope changes. Offline `claude-rs config` inspection is a separate read-only view of the physical files and does not resolve the cascade.
+
+The snapshot is the SDK's raw file cascade. The running session additionally applies trust, managed policy, capability restrictions and explicit session choices, so an observed session value can differ from the saved one. SDK provenance is reported per top-level key, which does not prove that a particular leaf is enforced policy. `resolveSettings()` does not execute `policyHelper`.
+
+The write path has one implementation for every setting, including the app-owned `presentation.*`, `notifications.*` and `updates.*` leaves:
+
+1. The bridge validates the value and the target scope against the catalog immediately before saving. Only the edited leaf is validated through the SDK's resolver, so unknown keys, newer settings and unrelated invalid values survive.
+2. The current file is read and only the target key is patched. Reset removes the key and empty ancestor objects.
+3. A revision of the displayed target detects conflicting edits. Unrelated external edits are incorporated into the fresh document; a conflict refreshes the snapshot and keeps the editor draft.
+4. The write takes a cooperative lock, rechecks the file bytes, and replaces the file atomically. An external editor that ignores the lock can still race between the final recheck and the replacement; this is not a filesystem compare-and-swap.
+5. The acknowledgement is correlated with its originating mutation, so a delayed result cannot close a different editor. A pending save keeps the last acknowledged value visible.
+
+Structured editors and their advanced JSON view share this one mutation and persistence path. Inspection and validation never execute hooks or credential helpers and never resolve secret files or environment variables.
+
+Default effort targets `modelSettings.<canonical model>.effortLevel`. SDK model metadata selects the target: aliases and dated, context and provider spellings are normalized to the canonical key, and unknown model identities stay read-only. Mutation context checks stop an outdated edit from targeting a different model after Default model changes.
+
+Workspace trust never uses the config snapshot as authority. Trust acceptance reads the current preferences document and preserves unrelated authentication and MCP data. Shared atomic file replacement is an I/O mechanism, not a domain resolver.
+
+Automatic updates uses the same catalog and writer for the User-only `updates.autoInstall` leaf, and the Rust updater owns its application. Startup prompt selection skips the manual window when the preference is enabled, background check results return through the app event queue, and a normal post-TUI exit reads fresh saved consent and cached release metadata before selecting the installer. Updater metadata saves omit the editable preference and preserve it, along with the presentation and notification namespaces, under the shared document lock. Checking is independent of installation.
+
+### Presentation and timing
+
+| Concern | Owner | Location |
+| --- | --- | --- |
+| Normalizing SDK wall timestamps, result elapsed and API timing, tool and task elapsed metadata | Bridge | `agent-sdk/src/bridge/presentation_metadata.ts` |
+| Each message's clock and timing provenance, stored on the canonical transcript message | Rust | `src/app/presentation.rs` |
+| One formatter for locale, clock presets, custom patterns and timezone | Rust | `src/app/presentation.rs` |
+
+Presentation preferences are projections of the acknowledged config snapshot; Rust keeps no second presentation store. History replay removes locally observed times and preserves native timestamps without reordering messages. Completed duration rows go through the same scrollback boundary and commit protocol as other transcript rows.
+
+### Transcript reading and `/copy`
+
+Chat reading owns a stable transcript-segment anchor and a rendered-text position; the saved Auto-scroll setting controls only the following policy. Reading suspends scrollback insertion, survives reflow of retained content, and returns to ordinary incremental history commits through an explicit keymap action.
+
+`/copy` derives its material from the canonical response text and the text-joining rule shared with rendering, then writes through the clipboard boundary shared with MCP authorization. Its picker owns only the current selection and retry state.
+
+### Turn activity and thinking
+
+| Concern | Owner | Location |
+| --- | --- | --- |
+| Interpreting the live main-agent activity phase from SDK stream events | Bridge | `agent-sdk/src/bridge/activity.ts` |
+| Presentation decision from the typed `agent_activity_update` phase, turn liveness, pending interactions, compaction and cancellation | Rust | `src/app/activity.rs` |
+
+Only top-level `message_start` and indexed `thinking` or `redacted_thinking` block boundaries select the thinking phase, including blocks with empty or omitted text. A matching block stop, response stop or completion, retry or fallback, result or error, conversation replacement and session close reset it. SDK stream wrapper UUIDs identify individual frames; the API response ID scopes the ordered block stream and correlates completed assistant messages. A per-block assistant frame with a null stop reason keeps that scope open, and only a terminal, aborted or error frame closes its response. Stops carry no response ID and follow the SDK's ordered response boundaries. Subagent frames and completed history never start main-agent thinking. `system/thinking_tokens` estimates stay diagnostics, because they carry neither a response or block identity nor a matching stop.
+
+Rust consumes the typed phases without interpreting SDK content and never infers thinking from text, tools or silence. One derived decision assigns the activity heading to the active assistant, or to the composer for standalone work without an assistant message. SDK thinking appears separately in the active assistant output as a temporary live row that is never committed to history. Waiting or completing without output removes the temporary heading and activity; real assistant output keeps its heading. Composer-only headings and the composer activity block never enter transcript or history output.
+
+A turn keeps one verb and one shuffled traversal of the shared welcome tips, advanced by monotonic deadlines on the TUI wake loop, including under reduced motion. `spinnerTipsEnabled` from the acknowledged snapshot controls only the tip text; activity, its heading and SDK thinking are independent of it.
+
+### Notifications
+
+| Concern | Owner | Location |
+| --- | --- | --- |
+| Focus suppression, category enablement, terminal capability detection, transport selection, SDK delivery identities, external delivery boundary | Rust | `src/app/notify.rs` |
+| Projecting native notices and verified proactive tool results into notification origins | Bridge | `agent-sdk/src/bridge/notifications.ts` |
+| Shared wire and runtime payload | Rust | `src/agent/notifications.rs` |
+| Session provenance validation and presentation of native notices | Rust | `src/app/events/notifications.rs` |
+
+Delivery waits for the first acknowledged settings snapshot, so startup cannot send using guessed preferences. Saved categories are read from that snapshot; there is no mirrored notification configuration struct. Local interaction handlers notify only after accepting a real waiting request, and pending-interaction ownership rejects duplicates. Turn completion sends only for an active, non-cancelled turn and skips SDK abortion reasons.
+
+In the bridge, native key, UUID, session, original priority, color and timeout stay structured metadata. Proactive intent requires the actual `PushNotification` tool with `status: proactive` input, followed by a successful result without non-execution metadata. Delivery-report discovery is shared with tool rendering in `tooling.ts`; strings displayed in the transcript are never parsed to recover delivery decisions. Public `isReplay` provenance is carried through tool-result mapping.
+
+General native notices are transcript-only because the SDK supplies no universal delivery category. Proactive fallback requires an explicit `localSent: false` and no native suppression other than `no_transport`; `pushSent` describes mobile transport and is kept separately. Unknown or missing delivery reports do not authorize another local send.
+
+Replay never delivers. `load_resume_history` observes notifications as replay and primes terminal tool identities, including older histories without delivery reports. The manager keeps a bounded ledger of session/UUID and session/tool-ID identities across reconnects; native replacement keys are not event identities. Live suppression consumes an event instead of queuing it for a later focus change.
+
 ## Packaging
 
 The npm install is split across a root command package and platform payload packages.

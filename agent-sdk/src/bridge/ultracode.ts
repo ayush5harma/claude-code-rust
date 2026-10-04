@@ -3,9 +3,12 @@ import type { UltracodeSnapshot } from "../types.js";
 import { emitSessionUpdate } from "./events.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import type { SessionState } from "./session_lifecycle.js";
+import { readAppliedSettings } from "./query_settings.js";
+import { SessionObservations } from "./session_observations.js";
 
-interface QuerySettingsRuntime {
-  getSettings(): Promise<unknown>;
+const observations = new SessionObservations();
+export function beginUltracodeRead(session: SessionState): () => boolean {
+  return observations.begin(session);
 }
 
 export class UltracodeVerificationError extends Error {
@@ -14,22 +17,8 @@ export class UltracodeVerificationError extends Error {
   }
 }
 
-function hasSettings(query: Query): query is Query & QuerySettingsRuntime {
-  return "getSettings" in query && typeof query.getSettings === "function";
-}
-
-function record(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
 export async function readUltracodeState(query: Query): Promise<UltracodeSnapshot> {
-  if (!hasSettings(query)) {
-    throw new Error("Ultracode status is unavailable with the installed Agent SDK runtime.");
-  }
-  const settings = record(await query.getSettings());
-  const applied = record(settings?.applied);
+  const applied = await readAppliedSettings(query);
   const available = applied?.ultracodeAvailable;
   const requested = applied?.ultracodeRequested;
   const effective = applied?.ultracode;
@@ -53,7 +42,7 @@ export function ultracodeError(error: unknown): string {
   if (model) {
     return `Cannot enable Ultracode: ${model} does not support it.`;
   }
-  if (message === "Ultracode status is unavailable with the installed Agent SDK runtime.") {
+  if (message === "Applied settings are unavailable with the installed Agent SDK runtime.") {
     return message;
   }
   return "Cannot change Ultracode: an Agent SDK bridge/protocol error occurred.";
@@ -95,7 +84,7 @@ export function logUltracodeFailure(session: SessionState, error: unknown): void
 }
 
 export async function refreshUltracode(session: SessionState, emit = true): Promise<boolean> {
-  const sessionId = session.sessionId;
+  const current = beginUltracodeRead(session);
   let state: UltracodeSnapshot | undefined;
   try {
     state = await readUltracodeState(session.query);
@@ -103,7 +92,7 @@ export async function refreshUltracode(session: SessionState, emit = true): Prom
     logUltracodeFailure(session, error);
   }
   // A read from a closing or replaced query cannot establish current state.
-  if (session.closing || session.sessionId !== sessionId) {
+  if (!current()) {
     return false;
   }
   session.ultracode = state;

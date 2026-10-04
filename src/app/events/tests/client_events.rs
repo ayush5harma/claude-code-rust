@@ -144,9 +144,8 @@ fn connected_updates_cwd_and_clears_resuming_marker() {
 fn connected_reconciles_trust_for_new_cwd() {
     let mut app = make_test_app();
     app.trust.status = crate::app::trust::TrustStatus::Trusted;
-    app.config.committed_preferences_document = serde_json::json!({
-        "projects": {}
-    });
+    let fixture = tempfile::tempdir().expect("tempdir");
+    app.trust.preferences_path = Some(fixture.path().join(".claude.json"));
 
     handle_client_event(
         &mut app,
@@ -204,13 +203,10 @@ fn current_model_update_does_not_mutate_welcome_snapshot_after_settings_reconcil
     app.session_runtime.current_model = Some(test_current_model("opus"));
     app.transcript.messages =
         vec![ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "session-1")];
-    crate::app::config::store::set_model(&mut app.config.committed_settings_document, Some("opus"));
-
-    crate::app::config::store::set_model(
-        &mut app.config.committed_settings_document,
-        Some("haiku"),
-    );
-    app.reconcile_runtime_from_persisted_settings_change();
+    app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+        "model",
+        serde_json::json!("haiku"),
+    ));
 
     handle_client_event(
         &mut app,
@@ -341,15 +337,21 @@ fn auth_required_sets_hint_without_prefilling_login_command() {
 }
 
 #[test]
-fn update_available_records_settings_without_transcript_message() {
+fn update_check_result_records_settings_without_transcript_message() {
     let mut app = make_test_app();
     assert!(app.global_settings.updates.last_result.is_none());
 
     handle_client_event(
         &mut app,
-        ClientEvent::UpdateAvailable {
-            latest_version: "0.3.0".into(),
-            current_version: "0.2.0".into(),
+        ClientEvent::UpdateCheckCompleted {
+            result: crate::app::settings::UpdateCheckResult {
+                latest_version: "0.3.0".into(),
+                current_version: "0.2.0".into(),
+                release_url: crate::app::settings::release_url_for_version("0.3.0")
+                    .expect("release URL"),
+                checked_at_unix_secs: 10,
+                source: "github_release".into(),
+            },
         },
     );
 

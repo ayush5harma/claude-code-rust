@@ -29,6 +29,11 @@ impl From<&str> for ConnectionFailure {
 
 /// Messages sent from the backend bridge path to the App/UI layer.
 pub enum ClientEvent {
+    SettingsResultReceived {
+        session_id: String,
+        request_id: Option<String>,
+        result: super::settings::SettingsResult,
+    },
     /// Session update notification (streaming text, tool calls, etc.)
     SessionUpdate { session_id: String, update: model::SessionUpdate },
     /// One side question completed without entering the main conversation.
@@ -60,6 +65,8 @@ pub enum ClientEvent {
         request: model::RequestUserDialogRequest,
         response_tx: tokio::sync::oneshot::Sender<model::RequestUserDialogResponse>,
     },
+    /// The native runtime cancelled or expired a pending interaction.
+    InteractionCancelled { session_id: String, interaction_id: String },
     /// MCP elicitation request that needs auth or other MCP input.
     McpElicitationRequest { session_id: String, request: crate::agent::types::ElicitationRequest },
     /// MCP elicitation completed in the SDK.
@@ -172,8 +179,8 @@ pub enum ClientEvent {
     },
     /// Recent sessions discovered via SDK session listing.
     SessionsListed { sessions: Vec<crate::agent::types::SessionListEntry> },
-    /// Startup update check found a newer published version.
-    UpdateAvailable { latest_version: String, current_version: String },
+    /// Background app update check completed with current release metadata.
+    UpdateCheckCompleted { result: crate::app::settings::UpdateCheckResult },
     /// Startup Claude Code status check detected degraded/outage conditions.
     ServiceStatus { severity: ServiceStatusSeverity, message: String },
     /// /login completed via `claude auth login` -- credentials stored, ready to start a session.
@@ -241,6 +248,7 @@ impl ClientEvent {
             | Self::PermissionRequest { session_id, .. }
             | Self::QuestionRequest { session_id, .. }
             | Self::UserDialogRequest { session_id, .. }
+            | Self::InteractionCancelled { session_id, .. }
             | Self::McpElicitationRequest { session_id, .. }
             | Self::McpElicitationCompleted { session_id, .. }
             | Self::McpElicitationResponseQueued { session_id, .. }
@@ -257,6 +265,7 @@ impl ClientEvent {
             | Self::RuntimeReloadCompleted { session_id }
             | Self::RuntimeReloadHeld { session_id, .. }
             | Self::RuntimeReloadFailed { session_id, .. }
+            | Self::SettingsResultReceived { session_id, .. }
             | Self::StatusSnapshotReceived { session_id, .. }
             | Self::ContextUsageReceived { session_id, .. }
             | Self::StructuredUsageReceived { session_id, .. }
@@ -274,7 +283,7 @@ impl ClientEvent {
             | Self::SessionReplaced { .. }
             | Self::SessionsListed { .. }
             | Self::RewindTargetsReceived { .. }
-            | Self::UpdateAvailable { .. }
+            | Self::UpdateCheckCompleted { .. }
             | Self::ServiceStatus { .. }
             | Self::AuthCompleted { .. }
             | Self::LogoutCompleted

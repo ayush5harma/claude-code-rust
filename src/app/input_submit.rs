@@ -174,14 +174,17 @@ fn send_prompt_turn(
     };
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
 
-    let user_blocks = vec![MessageBlock::Text(TextBlock::from_complete(text))];
+    let user_blocks = vec![MessageBlock::Text(
+        TextBlock::from_complete(text).with_source_message_uuid(Some(&message_uuid)),
+    )];
 
     app.push_message_tracked(ChatMessage::new(MessageRole::User, user_blocks, None));
-    // Create empty assistant message immediately -- message.rs shows thinking indicator
+    // Reserve the assistant output owner immediately after queue admission.
     app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
     app.bind_active_turn_assistant_to_tail();
     app.enforce_history_retention_tracked();
-    app.status = AppStatus::Thinking;
+    app.status = AppStatus::Running;
+    app.begin_turn_activity(std::time::Instant::now());
 
     app.session_runtime.prompt_suggestion = None;
     crate::app::session_runtime::request_context_usage_refresh(app);
@@ -554,6 +557,12 @@ mod tests {
             ));
         }
         assert!(app.active_turn_assistant_idx().is_some());
+        assert_eq!(
+            app.activity_presentation(std::time::Instant::now())
+                .expect("dispatch immediately shows ordinary activity")
+                .label,
+            crate::app::activity::ActivityLabel::Working
+        );
     }
 
     fn deliver_main_text(app: &mut App, text: &str) {
@@ -1100,6 +1109,7 @@ mod tests {
         let images_before = app.pending_images.clone();
 
         submit_input(&mut app);
+        assert!(app.turn.activity.is_none(), "failed queue admission cannot start activity");
 
         assert_eq!(app.input.snapshot(), before);
         assert_eq!(app.pending_images, images_before);
@@ -1298,7 +1308,7 @@ mod tests {
 
         assert!(app.input.text().is_empty());
         assert!(app.session_runtime.prompt_suggestion.is_none());
-        assert!(matches!(app.status, AppStatus::Thinking));
+        assert!(matches!(app.status, AppStatus::Running));
         assert_eq!(app.transcript.messages.len(), 2);
         assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
         assert!(matches!(app.transcript.messages[1].role, MessageRole::Assistant));
@@ -1382,7 +1392,10 @@ mod tests {
         assert!(app.input.text().is_empty());
         assert!(matches!(app.status, AppStatus::Ready));
         assert_eq!(app.session_runtime.prompt_suggestion.as_deref(), Some("Write focused tests"));
-        assert!(rx.try_recv().is_err(), "config open should not dispatch a prompt turn");
+        assert!(matches!(
+            rx.try_recv().expect("settings inspection").command,
+            BridgeCommand::InspectSettings { .. }
+        ));
 
         crate::app::view::set_chat_surface(&mut app);
 
@@ -1393,25 +1406,6 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<String>();
         assert!(hint_text.contains("Suggestion: Write focused tests"));
-    }
-
-    #[test]
-    fn local_custom_slash_submit_is_consumed() {
-        let (mut app, mut rx) = app_with_connection();
-        let dir = tempfile::tempdir().expect("tempdir");
-        app.settings_home_override = Some(dir.path().to_path_buf());
-        app.cwd_raw = dir.path().to_string_lossy().to_string();
-        app.input.set_text("/1m-context status");
-
-        submit_input(&mut app);
-
-        assert!(app.input.text().is_empty());
-        assert!(matches!(app.status, AppStatus::Ready));
-        let Some(last) = app.transcript.messages.last() else {
-            panic!("expected /1m-context status message");
-        };
-        assert!(matches!(last.role, MessageRole::System(Some(super::super::SystemSeverity::Info))));
-        assert!(rx.try_recv().is_err(), "local custom slash command should not dispatch a prompt");
     }
 
     #[test]

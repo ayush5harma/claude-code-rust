@@ -4,6 +4,44 @@
 use super::prelude::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsEditTarget {
+    id: String,
+    scope: crate::agent::settings::SettingsScope,
+    context: String,
+    revision: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingSettingsRequest {
+    Inspection(String),
+    Mutation { request_id: String, target: Box<SettingsEditTarget> },
+}
+impl PendingSettingsRequest {
+    pub fn mutation(
+        request_id: String,
+        mutation: &crate::agent::settings::SettingsMutation,
+    ) -> Self {
+        Self::Mutation {
+            request_id,
+            target: Box::new(SettingsEditTarget {
+                id: mutation.id.clone(),
+                scope: mutation.scope,
+                context: mutation.context.clone(),
+                revision: mutation.expected_revision.clone(),
+            }),
+        }
+    }
+    pub fn request_id(&self) -> &str {
+        match self {
+            Self::Inspection(id) | Self::Mutation { request_id: id, .. } => id,
+        }
+    }
+    pub fn owns_editor(&self, editor: &SettingOverlayState) -> bool {
+        matches!(self, Self::Mutation { target, .. } if target.id == editor.setting.id && target.scope == editor.scope && target.context == editor.context && target.revision == editor.revision)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PendingSessionTitleChangeKind {
     Rename { requested_title: Option<String> },
     Generate,
@@ -18,19 +56,15 @@ pub struct PendingSessionTitleChangeState {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfigState {
     pub active_tab: ConfigTab,
-    pub selected_setting_index: usize,
-    pub settings_scroll_offset: usize,
+    pub settings: Box<super::SettingsBrowse>,
     pub mcp_selected_server_index: usize,
     pub help_section: ConfigHelpSection,
     pub help_dialog: DialogState,
     pub help_visible_count: usize,
     pub overlay: Option<ConfigOverlayState>,
-    pub committed_settings_document: Value,
-    pub committed_local_settings_document: Value,
-    pub committed_preferences_document: Value,
-    pub settings_path: Option<PathBuf>,
-    pub local_settings_path: Option<PathBuf>,
-    pub preferences_path: Option<PathBuf>,
+    pub snapshot: Option<crate::agent::settings::SettingsSnapshot>,
+    pub selected_scope: crate::agent::settings::SettingsScope,
+    pub pending_settings_request: Option<PendingSettingsRequest>,
     pub status_message: Option<String>,
     pub last_error: Option<String>,
     pub overlay_message: Option<OverlayMessage>,
@@ -41,19 +75,15 @@ impl Default for ConfigState {
     fn default() -> Self {
         Self {
             active_tab: ConfigTab::Settings,
-            selected_setting_index: 0,
-            settings_scroll_offset: 0,
+            settings: Box::default(),
             mcp_selected_server_index: 0,
             help_section: ConfigHelpSection::default(),
             help_dialog: DialogState::default(),
             help_visible_count: 0,
             overlay: None,
-            committed_settings_document: Value::Object(serde_json::Map::new()),
-            committed_local_settings_document: Value::Object(serde_json::Map::new()),
-            committed_preferences_document: Value::Object(serde_json::Map::new()),
-            settings_path: None,
-            local_settings_path: None,
-            preferences_path: None,
+            snapshot: None,
+            selected_scope: crate::agent::settings::SettingsScope::User,
+            pending_settings_request: None,
             status_message: None,
             last_error: None,
             overlay_message: None,
@@ -63,91 +93,80 @@ impl Default for ConfigState {
 }
 
 impl ConfigState {
-    #[must_use]
+    pub fn saved_value(&self, id: &str) -> Option<&Value> {
+        self.snapshot.as_ref()?.value(id)
+    }
+    fn saved_bool(&self, id: &str, default: bool) -> bool {
+        self.saved_value(id).and_then(Value::as_bool).unwrap_or(default)
+    }
+    pub fn auto_scroll_effective(&self) -> bool {
+        self.saved_bool("autoScrollEnabled", true)
+    }
+    pub fn show_turn_duration_effective(&self) -> bool {
+        self.saved_bool("showTurnDuration", false)
+    }
+    pub fn show_message_timestamps_effective(&self) -> bool {
+        self.saved_bool("showMessageTimestamps", false)
+    }
+    pub fn copy_full_response_effective(&self) -> bool {
+        self.saved_bool("presentation.copyFullResponse", false)
+    }
+    pub fn status_in_terminal_tab_effective(&self) -> bool {
+        self.saved_bool("presentation.showStatusInTerminalTab", true)
+    }
+    pub(crate) fn notification_enabled(&self, event: crate::app::notify::NotifyEvent) -> bool {
+        use crate::app::notify::NotifyEvent;
+        let (id, default) = match event {
+            NotifyEvent::PermissionRequired | NotifyEvent::QuestionRequired => {
+                ("notifications.actionsRequired", true)
+            }
+            NotifyEvent::TurnComplete => ("notifications.turnComplete", true),
+            NotifyEvent::ModelDirected => ("notifications.modelDirected", true),
+        };
+        self.saved_bool(id, default)
+    }
+    pub fn time_format(&self) -> &str {
+        self.saved_value("timeFormat").and_then(Value::as_str).unwrap_or("auto")
+    }
+    pub fn time_zone(&self) -> Option<&str> {
+        self.snapshot.as_ref()?.time_zone.as_deref()
+    }
     pub fn fast_mode_effective(&self) -> bool {
-        match resolve_setting_document(&self.committed_settings_document, SettingId::FastMode, &[])
-            .value
-        {
-            ResolvedSettingValue::Bool(value) => value,
-            ResolvedSettingValue::Choice(_) | ResolvedSettingValue::Text(_) => false,
-        }
+        self.saved_value("fastMode").and_then(Value::as_bool).unwrap_or(false)
     }
-
-    #[must_use]
-    pub fn always_thinking_effective(&self) -> bool {
-        match resolve_setting_document(
-            &self.committed_settings_document,
-            SettingId::AlwaysThinking,
-            &[],
-        )
-        .value
-        {
-            ResolvedSettingValue::Bool(value) => value,
-            ResolvedSettingValue::Choice(_) | ResolvedSettingValue::Text(_) => false,
-        }
-    }
-
-    #[must_use]
-    pub fn model_effective(&self) -> Option<String> {
-        match resolve_setting_document(&self.committed_settings_document, SettingId::Model, &[])
-            .value
-        {
-            ResolvedSettingValue::Choice(ResolvedChoice::Automatic) => {
-                Some(DEFAULT_MODEL_ALIAS_ID.to_owned())
-            }
-            ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)) => Some(value),
-            ResolvedSettingValue::Bool(_) | ResolvedSettingValue::Text(_) => None,
-        }
-    }
-
-    #[must_use]
-    pub fn thinking_effort_effective(&self) -> EffortLevel {
-        store::thinking_effort_level(&self.committed_settings_document)
-            .unwrap_or(EffortLevel::Medium)
-    }
-
-    #[must_use]
-    pub fn default_permission_mode_effective(&self) -> DefaultPermissionMode {
-        match resolve_setting_document(
-            &self.committed_settings_document,
-            SettingId::DefaultPermissionMode,
-            &[],
-        )
-        .value
-        {
-            ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)) => {
-                DefaultPermissionMode::from_stored(&value).unwrap_or_default()
-            }
-            ResolvedSettingValue::Bool(_)
-            | ResolvedSettingValue::Choice(ResolvedChoice::Automatic)
-            | ResolvedSettingValue::Text(_) => DefaultPermissionMode::Default,
-        }
-    }
-
-    #[must_use]
     pub fn respect_gitignore_effective(&self) -> bool {
-        store::respect_gitignore(&self.committed_preferences_document).unwrap_or(true)
+        self.saved_value("respectGitignore").and_then(Value::as_bool).unwrap_or(true)
     }
-
-    #[must_use]
-    pub fn preferred_notification_channel_effective(&self) -> PreferredNotifChannel {
-        store::preferred_notification_channel(&self.committed_preferences_document)
+    pub fn spinner_tips_enabled_effective(&self) -> bool {
+        self.saved_bool("spinnerTipsEnabled", true)
+    }
+    pub fn prefers_reduced_motion_effective(&self) -> bool {
+        self.saved_value("prefersReducedMotion").and_then(Value::as_bool).unwrap_or(false)
+    }
+    pub fn preferred_notification_channel_effective(
+        &self,
+    ) -> crate::app::notify::PreferredNotifChannel {
+        self.saved_value("preferredNotifChannel")
+            .and_then(Value::as_str)
+            .and_then(crate::app::notify::PreferredNotifChannel::from_stored)
             .unwrap_or_default()
     }
-
-    #[must_use]
-    pub fn prefers_reduced_motion_effective(&self) -> bool {
-        store::prefers_reduced_motion(&self.committed_local_settings_document).unwrap_or(false)
+    pub fn selected_setting(&self) -> Option<&crate::agent::settings::SettingDescriptor> {
+        self.settings.selected(self.snapshot.as_ref()?)
     }
-
-    #[must_use]
-    pub fn output_style_effective(&self) -> OutputStyle {
-        store::output_style(&self.committed_local_settings_document).unwrap_or_default()
+    pub fn setting_overlay(&self) -> Option<&SettingOverlayState> {
+        if let Some(ConfigOverlayState::Setting(overlay)) = &self.overlay {
+            Some(overlay)
+        } else {
+            None
+        }
     }
-
-    #[must_use]
-    pub fn selected_setting_spec(&self) -> Option<&'static SettingSpec> {
-        setting_specs().get(self.selected_setting_index)
+    pub fn setting_overlay_mut(&mut self) -> Option<&mut SettingOverlayState> {
+        if let Some(ConfigOverlayState::Setting(overlay)) = &mut self.overlay {
+            Some(overlay)
+        } else {
+            None
+        }
     }
 
     pub fn replace_overlay(&mut self, overlay: ConfigOverlayState) {
@@ -160,6 +179,17 @@ impl ConfigState {
         self.overlay_message = None;
     }
 
+    pub fn invalidate_session(&mut self) {
+        self.snapshot = None;
+        self.pending_settings_request = None;
+        self.pending_session_title_change = None;
+        self.status_message = None;
+        self.last_error = None;
+        if self.setting_overlay().is_none() {
+            self.clear_overlay();
+        }
+    }
+
     pub fn set_overlay_info(&mut self, message: impl Into<String>) {
         self.overlay_message = Some(OverlayMessage::info(message));
         self.last_error = None;
@@ -170,74 +200,6 @@ impl ConfigState {
         self.overlay_message = Some(OverlayMessage::error(message));
         self.last_error = None;
         self.status_message = None;
-    }
-
-    #[must_use]
-    pub fn model_overlay(&self) -> Option<&ModelOverlayState> {
-        if let Some(ConfigOverlayState::Model(overlay)) = &self.overlay {
-            Some(overlay)
-        } else {
-            None
-        }
-    }
-
-    pub fn model_overlay_mut(&mut self) -> Option<&mut ModelOverlayState> {
-        if let Some(ConfigOverlayState::Model(overlay)) = &mut self.overlay {
-            Some(overlay)
-        } else {
-            None
-        }
-    }
-
-    #[must_use]
-    pub fn thinking_effort_overlay(&self) -> Option<&ThinkingEffortOverlayState> {
-        if let Some(ConfigOverlayState::ThinkingEffort(overlay)) = &self.overlay {
-            Some(overlay)
-        } else {
-            None
-        }
-    }
-
-    pub fn thinking_effort_overlay_mut(&mut self) -> Option<&mut ThinkingEffortOverlayState> {
-        if let Some(ConfigOverlayState::ThinkingEffort(overlay)) = &mut self.overlay {
-            Some(overlay)
-        } else {
-            None
-        }
-    }
-
-    #[must_use]
-    pub fn output_style_overlay(&self) -> Option<&OutputStyleOverlayState> {
-        if let Some(ConfigOverlayState::OutputStyle(overlay)) = &self.overlay {
-            Some(overlay)
-        } else {
-            None
-        }
-    }
-
-    pub fn output_style_overlay_mut(&mut self) -> Option<&mut OutputStyleOverlayState> {
-        if let Some(ConfigOverlayState::OutputStyle(overlay)) = &mut self.overlay {
-            Some(overlay)
-        } else {
-            None
-        }
-    }
-
-    #[must_use]
-    pub fn language_overlay(&self) -> Option<&LanguageOverlayState> {
-        if let Some(ConfigOverlayState::Language(overlay)) = &self.overlay {
-            Some(overlay)
-        } else {
-            None
-        }
-    }
-
-    pub fn language_overlay_mut(&mut self) -> Option<&mut LanguageOverlayState> {
-        if let Some(ConfigOverlayState::Language(overlay)) = &mut self.overlay {
-            Some(overlay)
-        } else {
-            None
-        }
     }
 
     #[must_use]
@@ -343,58 +305,6 @@ impl ConfigState {
             Some(overlay)
         } else {
             None
-        }
-    }
-
-    #[must_use]
-    pub fn path_for(&self, file: SettingFile) -> Option<&PathBuf> {
-        match file {
-            SettingFile::Settings => self.settings_path.as_ref(),
-            SettingFile::LocalSettings => self.local_settings_path.as_ref(),
-            SettingFile::Preferences => self.preferences_path.as_ref(),
-        }
-    }
-
-    #[must_use]
-    pub fn document_for(&self, file: SettingFile) -> &Value {
-        match file {
-            SettingFile::Settings => &self.committed_settings_document,
-            SettingFile::LocalSettings => &self.committed_local_settings_document,
-            SettingFile::Preferences => &self.committed_preferences_document,
-        }
-    }
-
-    pub fn committed_document_for_mut(&mut self, file: SettingFile) -> &mut Value {
-        match file {
-            SettingFile::Settings => &mut self.committed_settings_document,
-            SettingFile::LocalSettings => &mut self.committed_local_settings_document,
-            SettingFile::Preferences => &mut self.committed_preferences_document,
-        }
-    }
-
-    pub(super) fn apply_loaded(
-        &mut self,
-        loaded: store::LoadedSettingsDocuments,
-        notice: Option<String>,
-        preserve_status: bool,
-    ) {
-        self.settings_path = Some(loaded.paths.settings);
-        self.local_settings_path = Some(loaded.paths.local_settings);
-        self.preferences_path = Some(loaded.paths.preferences);
-        self.committed_settings_document = loaded.settings_document;
-        self.committed_local_settings_document = loaded.local_settings_document;
-        self.committed_preferences_document = loaded.preferences_document;
-        self.overlay = None;
-        self.overlay_message = None;
-        self.selected_setting_index =
-            self.selected_setting_index.min(setting_specs().len().saturating_sub(1));
-        self.settings_scroll_offset = self.settings_scroll_offset.min(self.selected_setting_index);
-        self.mcp_selected_server_index = 0;
-        if !preserve_status {
-            self.status_message = notice;
-            self.last_error = None;
-        } else if let Some(notice) = notice {
-            self.status_message = Some(notice);
         }
     }
 }

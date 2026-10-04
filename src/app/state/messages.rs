@@ -52,12 +52,14 @@ impl Default for MessageBlockId {
 pub enum HistoryOutputId {
     Message(ChatMessageId),
     AssistantLabel(ChatMessageId),
-    AssistantIndicator(ChatMessageId),
+    AssistantThinking(ChatMessageId),
+    AssistantDuration(ChatMessageId),
     Block(MessageBlockId),
     ToolCall(String),
 }
 
 pub struct ChatMessage {
+    pub timing: crate::app::presentation::MessageTiming,
     pub id: ChatMessageId,
     pub role: MessageRole,
     pub blocks: Vec<MessageBlock>,
@@ -67,7 +69,13 @@ pub struct ChatMessage {
 impl ChatMessage {
     #[must_use]
     pub fn new(role: MessageRole, blocks: Vec<MessageBlock>, usage: Option<MessageUsage>) -> Self {
-        Self { id: ChatMessageId::new(), role, blocks, usage }
+        Self {
+            id: ChatMessageId::new(),
+            timing: crate::app::presentation::MessageTiming::observed(&role),
+            role,
+            blocks,
+            usage,
+        }
     }
 
     #[must_use]
@@ -121,6 +129,29 @@ pub enum TextBlockSpacing {
 }
 
 impl TextBlockSpacing {
+    pub(crate) fn append_source(self, existing: &mut String, text: &str) {
+        if existing.is_empty() || text.is_empty() {
+            existing.push_str(text);
+            return;
+        }
+
+        if !text.starts_with('\n') {
+            match self {
+                TextBlockSpacing::None if !existing.ends_with('\n') => existing.push('\n'),
+                TextBlockSpacing::ParagraphBreak if !existing.ends_with("\n\n") => {
+                    if existing.ends_with('\n') {
+                        existing.push('\n');
+                    } else {
+                        existing.push_str("\n\n");
+                    }
+                }
+                TextBlockSpacing::None | TextBlockSpacing::ParagraphBreak => {}
+            }
+        }
+
+        existing.push_str(text);
+    }
+
     #[must_use]
     pub fn blank_lines(self) -> usize {
         match self {
@@ -300,9 +331,8 @@ pub struct UserDialogBlock {
     /// Whether this dialog currently has keyboard focus (shows the selection
     /// arrow and accepts navigation/confirm input).
     pub focused: bool,
-    /// Set once the user has answered; the block then renders as resolved and is
-    /// removed from the focus queue.
-    pub answered: bool,
+    /// The resolved choice or cancellation; None means the dialog is pending.
+    pub outcome: Option<model::RequestUserDialogOutcome>,
     pub response_tx: Option<tokio::sync::oneshot::Sender<model::RequestUserDialogResponse>>,
     pub cache: BlockCache,
 }
@@ -320,10 +350,16 @@ impl UserDialogBlock {
             options: request.options,
             selected_index: 0,
             focused: false,
-            answered: false,
+            outcome: None,
             response_tx: Some(response_tx),
             cache: BlockCache::default(),
         }
+    }
+
+    pub fn resolve(&mut self, outcome: model::RequestUserDialogOutcome) {
+        self.outcome = Some(outcome);
+        self.focused = false;
+        self.cache.invalidate();
     }
 }
 

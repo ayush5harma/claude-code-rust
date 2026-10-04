@@ -130,11 +130,12 @@ impl LiveRowBoundary {
 pub(crate) enum LiveRowBoundaryKind {
     Message,
     AssistantLabel,
+    AssistantThinking,
     AssistantText,
     AssistantNotice,
     AssistantBtw,
     AssistantTool,
-    AssistantIndicator,
+    AssistantDuration,
 }
 
 pub(crate) fn ids_are_excluded(

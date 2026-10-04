@@ -4,7 +4,6 @@
 
 - Be precise, concise, and evidence-based. Avoid vague statements and unnecessary long explanations.
 - Inspect the relevant code, configuration, tests, and existing patterns before changing behavior.
-- For any file search or grep in the current Git-indexed directory, **always use the fff MCP tools**  (`find_files`, `grep`, or `multi_grep`) if the fff MCP is available to you.
 - For clear, scoped implementation requests, proceed without asking for another approval.
 - For open-ended feature or design requests with more than one viable approach, present the options and a recommendation before editing.
 - Ask for clarification only when ambiguity materially affects behavior, scope, data, security, or an irreversible/external action.
@@ -93,6 +92,14 @@ Keep cleanup scoped to code made obsolete by the requested change unless broader
 
 - Add regression coverage for changed behavior when appropriate.
 - Prefer tests of the authoritative behavior and real workflow over tests that only exercise isolated helpers.
+- Define each test by the intended user or domain guarantee and the concrete defect it must catch. A passing test must distinguish the required behavior from a plausible broken implementation.
+- Derive expected results from requirements or independent fixtures, not from the production helper or calculation being tested.
+- Assert observable outcomes at the relevant boundary: persisted data, emitted commands, delivered notifications, interaction responses, or the relevant rendered region. Check the actual target and seed the state named by the test.
+- Use exact string assertions when the string itself is required output, such as copied content, time formatting, protocol bytes, or explicitly required UI wording. Do not lock down incidental prose, punctuation, or complete footer text.
+- For rendering tests, verify association, selection, visibility, clipping, and controls in their relevant rows or regions. Whole-screen substring searches alone do not prove those guarantees.
+- Synchronize process tests using correlated events or persisted outcomes when available. Do not use cosmetic success messages or arbitrary sleeps as evidence that an operation completed.
+- Keep fixtures independent between tests. Use the lowest test layer that exercises the required path, and retain functional coverage of important cross-layer workflows. Duplicate coverage at multiple layers must protect distinct boundaries.
+- Preserve meaningful negative guarantees, such as preventing writes, duplicate alerts, or disclosure of private data. Do not add tests solely to prove that removed code or a superseded implementation is absent.
 - Use targeted checks while iterating, then run the relevant broader verification before considering the work complete.
 - Never claim that a test, lint, formatting, generation, build, or other verification step passed unless it was actually run.
 - If a relevant check cannot be run, state that clearly.
@@ -106,8 +113,6 @@ Keep cleanup scoped to code made obsolete by the requested change unless broader
 - Do not consider the work complete while a known reachable defect or duplicated semantic authority remains in the changed behavior.
 
 ## Permissions and Side Effects
-
-Normal local development work requested by the user does not require repeated confirmation. This includes reading files, inspecting code, making local edits, and running non-destructive development checks.
 
 Require explicit user intent before actions with meaningful external, destructive, or irreversible side effects, such as:
 
@@ -172,17 +177,7 @@ Run these only when the change touches the matching area:
 
 ### Diagnostics
 
-- Default TUI diagnostics logs on this Windows workspace are written under `C:\Users\Simon Peter Rothgang\AppData\Local\claude-code-rust\logs\runtime\`.
 - When logging is enabled without `--log-file`, the default filename is timestamped per run: `claude-rs-YYYYMMDDTHHMMSSZ-pPID-rRUN.log`.
-- Legacy append mode without `--log-file` still uses `C:\Users\Simon Peter Rothgang\AppData\Local\claude-code-rust\logs\claude-rs.log`.
-
-### Skills
-
-Detailed skill definitions exist in `.codex/skills/`.
-
-- Start with `rust-router` for Rust tasks.
-- Use `rust-learner` for version and crate-information tasks.
-- Use specialized skills only when their triggers match.
 
 ### Additional project restrictions
 
@@ -222,3 +217,9 @@ chore(agent-sdk): align integration with 0.3.286
 - align CLI rendering and ownership decisions with SDK metadata
 - add Rust and bridge regression coverage for migrated contracts
 ```
+
+## Personalization
+
+Personal, untracked instructions live in `PERSONAL.md` at the repository root. The file is optional and gitignored. If it exists, read it and apply it in addition to this document. It may add personal tooling and preferences; it does not relax the restrictions above.
+
+@PERSONAL.md

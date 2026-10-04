@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { resetMainAgentActivity, type MainAgentResponse } from "./activity.js";
 import { spawn as spawnChild } from "node:child_process";
 import fs from "node:fs";
 import {
   query,
+  resolveSettings,
+  type Settings,
   type CanUseTool,
-  type Options,
   type PermissionMode,
   type PermissionResult,
   type PermissionUpdate,
@@ -38,7 +40,9 @@ import type {
   UserDialogOption,
 } from "../types.js";
 import { bridgeLogger, LOG_TARGETS, logSdkStderrLine } from "./logger.js";
-import { AsyncQueue } from "./shared.js";
+import { AsyncQueue, asRecordOrNull } from "./shared.js";
+import { beginSessionModeRead, observeSessionMode } from "./commands.js";
+import { waitForAnswer } from "./pending_answer.js";
 import {
   permissionOptionsFromSuggestions,
   permissionResultFromOutcome,
@@ -50,6 +54,7 @@ import {
   emitPermissionRequestEvent,
   emitElicitationRequestEvent,
   emitUserDialogRequestEvent,
+  emitInteractionCancelled,
 } from "./events.js";
 import { ensureToolCallVisible, setToolCallStatus } from "./tool_calls.js";
 import { isToolSearchToolName } from "./tooling.js";
@@ -100,7 +105,6 @@ const BRIDGE_RUNTIME_PROCESS_NAME =
 const BRIDGE_RUNTIME_GUARD_PROMPT =
   `Do not terminate the Claude Rust bridge runtime process \`${BRIDGE_RUNTIME_PROCESS_NAME}\`; ` +
   "when cleaning up development servers, only stop processes by explicit PIDs you started in this session.";
-const STARTUP_FALLBACK_MODEL_ALIAS = "fable";
 
 function permissionDisplayFromCanUseOptions(
   options: Parameters<CanUseTool>[2],
@@ -164,10 +168,10 @@ export type PendingWorkerShutdown = {
 };
 
 export type SessionState = {
+  mainAgentResponse?: MainAgentResponse;
   ultracode?: import("../types.js").UltracodeSnapshot;
   sessionId: string;
   cwd: string;
-  model: string;
   requestedModelId?: string;
   resolvedRuntimeModelId?: string;
   currentModel?: CurrentModel;
@@ -210,7 +214,7 @@ export type SessionState = {
   mcpAuthMonitors: Map<string, McpAuthMonitorHandle>;
   hiddenToolUseIds: Set<string>;
   authHintSent: boolean;
-  lastAvailableAgentsSignature?: string;
+  availableAgents?: import("../types.js").AvailableAgent[];
   availableCommands?: AvailableCommandsSnapshot;
   lastAssistantError?: ApiRetryError;
   sessionsToCloseAfterConnect?: SessionState[];
@@ -223,7 +227,6 @@ export const sessions = new Map<string, SessionState>();
 const pendingSessionCloseTasks = new Set<Promise<void>>();
 
 const DEFAULT_SETTING_SOURCES: SettingSource[] = ["user", "project", "local"];
-const DEFAULT_PERMISSION_MODE: PermissionMode = "default";
 
 function isSdkElicitationContentValue(
   value: Json,
@@ -321,44 +324,6 @@ type CloseSessionOptions = {
   requestId?: string;
 };
 
-function settingsObjectFromLaunchSettings(
-  launchSettings: SessionLaunchSettings,
-): Record<string, unknown> | undefined {
-  return launchSettings.settings;
-}
-
-function normalizedSettingsFromLaunchSettings(
-  launchSettings: SessionLaunchSettings,
-): Record<string, unknown> {
-  const settings = settingsObjectFromLaunchSettings(launchSettings) ?? {};
-  // SendFeedback queues a local draft that can only be reviewed, edited, and
-  // discarded through the native /feedback surface. Agent SDK command
-  // snapshots do not expose that command to this host, so enabling drafts
-  // would create content that claude-rs cannot safely let the user approve.
-  const hostSettings = {
-    ...settings,
-    feedbackDrafts: "off" as const,
-  };
-
-  const sandbox =
-    settings.sandbox &&
-    typeof settings.sandbox === "object" &&
-    !Array.isArray(settings.sandbox)
-      ? (settings.sandbox as Record<string, unknown>)
-      : undefined;
-  if (sandbox?.enabled === true && sandbox.failIfUnavailable === undefined) {
-    return {
-      ...hostSettings,
-      sandbox: {
-        ...sandbox,
-        failIfUnavailable: false,
-      },
-    };
-  }
-
-  return hostSettings;
-}
-
 export function sessionById(sessionId: string): SessionState | null {
   return sessions.get(sessionId) ?? null;
 }
@@ -370,6 +335,7 @@ export function updateSessionId(
   if (session.sessionId === newSessionId) {
     return;
   }
+  resetMainAgentActivity(session);
   closeSideQuestions(session.sessionId, session.query);
   sessions.delete(session.sessionId);
   session.ultracode = undefined;
@@ -378,6 +344,7 @@ export function updateSessionId(
 }
 
 export function beginSessionClose(session: SessionState): void {
+  resetMainAgentActivity(session);
   session.closing = true;
   for (const [toolUseId, toolCall] of session.toolCalls) {
     if (toolCall.status === "detached") {
@@ -539,8 +506,7 @@ export async function createSession(params: {
   const provisionalSessionId =
     params.sessionId ??
     (params.resume && !params.forkSession ? params.resume : randomUUID());
-  const initialModel = initialSessionModel(params.launchSettings);
-  const initialMode = initialSessionMode(params.launchSettings);
+  const initialMode = params.launchSettings.permission_mode ?? null;
   const supportsBypassPermissionsMode =
     startupPermissionModeOptions(params.launchSettings)
       .allowDangerouslySkipPermissions === true;
@@ -573,6 +539,7 @@ export async function createSession(params: {
         toolUseId,
         inputData,
         existing,
+        options.signal,
       );
     }
     const existing = ensureToolCallVisible(
@@ -588,6 +555,7 @@ export async function createSession(params: {
         toolUseId,
         inputData,
         existing,
+        options.signal,
       );
     }
 
@@ -627,16 +595,18 @@ export async function createSession(params: {
         mcp_server_source: request.mcp_server?.source,
       },
     });
-    emitPermissionRequestEvent(session.sessionId, request);
-
-    return await new Promise<PermissionResult>((resolve) => {
-      session.pendingPermissions.set(toolUseId, {
+    return await waitForAnswer<PermissionResult, PendingPermission>(
+      session.pendingPermissions, toolUseId, resolve => ({
         resolve,
         toolName,
         inputData: inputData,
         suggestions: options.suggestions,
+      }), () => emitPermissionRequestEvent(session.sessionId, request), options.signal,
+      () => {
+        emitInteractionCancelled(session.sessionId, toolUseId);
+        setToolCallStatus(session, toolUseId, "failed", "Permission cancelled");
+        return { behavior: "deny", message: "Permission cancelled", toolUseID: toolUseId };
       });
-    });
   };
 
   const claudeCodeExecutable = process.env.CLAUDE_CODE_EXECUTABLE;
@@ -674,6 +644,10 @@ export async function createSession(params: {
     },
   });
   try {
+    const { effective: resolvedSettings } = await resolveSettings({
+      cwd: params.cwd,
+      settingSources: DEFAULT_SETTING_SOURCES,
+    });
     queryHandle = query({
       prompt: input,
       options: buildQueryOptions({
@@ -683,6 +657,7 @@ export async function createSession(params: {
         resumeDropsTurn: params.resumeDropsTurn,
         forkSession: params.forkSession,
         launchSettings: params.launchSettings,
+        resolvedSettings,
         provisionalSessionId,
         input,
         canUseTool,
@@ -719,8 +694,7 @@ export async function createSession(params: {
   session = {
     sessionId: provisionalSessionId,
     cwd: params.cwd,
-    model: initialModel,
-    ...(initialModel ? { requestedModelId: initialModel } : {}),
+    ...(params.launchSettings.model ? { requestedModelId: params.launchSettings.model } : {}),
     availableModels: [],
     mode: initialMode,
     supportedModeIds: [],
@@ -812,11 +786,16 @@ export function startSessionTasks(session: SessionState, requestId?: string): vo
   // In stream-input mode the SDK may defer init until input arrives.
   // Trigger initialization explicitly so the Rust UI can receive `connected`
   // before the first user prompt.
+  const modeRead = beginSessionModeRead(session);
   session.initializationTask = session.query
     .initializationResult()
     .then(async (result) => {
-      if (session.startupFailure) {
+      if (session.closing || session.startupFailure) {
         return;
+      }
+      // The pinned runtime reports this field, although the SDK declarations omit it.
+      if (modeRead()) {
+        observeSessionMode(session, asRecordOrNull(result)?.current_permission_mode);
       }
       bridgeLogger.info({
         target: LOG_TARGETS.APP_SESSION,
@@ -835,25 +814,30 @@ export function startSessionTasks(session: SessionState, requestId?: string): vo
           history_update_count: session.resumeUpdates?.length ?? 0,
         },
       });
-      const { refreshUltracode } = await import("./ultracode.js");
-      await refreshUltracode(session, session.connected);
-      if (session.startupFailure) {
-        return;
-      }
-      session.availableModels = mapAvailableModels(result.models);
-      const currentModelChanged = refreshCurrentModel(session);
-      const { buildModeState, refreshSupportedModesForSession } = await import(
-        "./commands.js"
-      );
-      if (session.startupFailure) {
-        return;
-      }
-      refreshSupportedModesForSession(session);
       const fastModeChanged = setFastModeSnapshotIfChanged(
         session,
         result.fast_mode_state,
         result.fast_mode_disabled_reason,
       );
+      const { refreshUltracode } = await import("./ultracode.js");
+      await refreshUltracode(session, session.connected);
+      if (session.closing || session.startupFailure) {
+        return;
+      }
+      session.availableModels = mapAvailableModels(result.models);
+      const { refreshSessionModel } = await import("./session_model.js");
+      try { await refreshSessionModel(session, session.connected); }
+      catch (error) {
+        bridgeLogger.warn({ target: LOG_TARGETS.APP_SESSION, eventName: "model_verification_failed", message: "Current model could not be verified", outcome: "failure", sessionId: session.sessionId, fields: { error_message: String(error) } });
+      }
+      const { buildModeState, refreshSupportedModesForSession } = await import(
+        "./commands.js"
+      );
+      if (session.closing || session.startupFailure) {
+        return;
+      }
+      refreshSupportedModesForSession(session);
+      emitAvailableAgentsIfChanged(session, mapAvailableAgents(result.agents));
       if (
         !session.connected &&
         session.deferConnect &&
@@ -863,21 +847,18 @@ export function startSessionTasks(session: SessionState, requestId?: string): vo
       } else if (!session.connected) {
         emitConnectEvent(session);
       } else {
-        if (currentModelChanged) {
-          emitCurrentModelUpdate(session);
-        }
-        if (session.mode) {
-          emitSessionUpdate(session.sessionId, {
-            type: "mode_state_update",
-            mode: buildModeState(session, session.mode),
-          });
-        }
+        emitSessionUpdate(session.sessionId, {
+          type: "mode_state_update",
+          mode: buildModeState(session, session.mode),
+        });
         if (fastModeChanged) {
           emitFastModeUpdate(session);
         }
       }
       // Proactively detect missing auth from account info so the UI can
       // show the login hint immediately, without waiting for the first prompt.
+      const { refreshSessionEffort } = await import("./effort.js");
+      await refreshSessionEffort(session);
       if (shouldEmitStartupAuthRequiredForAccount(result.account)) {
         emitAuthRequired(session);
       }
@@ -886,14 +867,13 @@ export function startSessionTasks(session: SessionState, requestId?: string): vo
         "session_result_commands",
         mapSdkSlashCommands(result.commands),
       );
-      emitAvailableAgentsIfChanged(session, mapAvailableAgents(result.agents));
       refreshAvailableAgents(session);
     })
     .catch(async (error) => {
       // On process exit the SDK queues the result before rejecting initialization.
       // Let the consumer drain queued frames before reporting a generic failure.
       await new Promise<void>((resolve) => setImmediate(resolve));
-      if (session.startupFailure) {
+      if (session.closing || session.startupFailure) {
         return;
       }
       if (session.connected) {
@@ -933,6 +913,7 @@ export function startSessionTasks(session: SessionState, requestId?: string): vo
         const { flushPendingWorkerShutdown } = await import(
           "./message_handlers.js"
         );
+        resetMainAgentActivity(session);
         flushPendingWorkerShutdown(session);
       }
       if (!session.connected && !session.startupFailure) {
@@ -954,6 +935,7 @@ export function startSessionTasks(session: SessionState, requestId?: string): vo
         }
       }
     } catch (error) {
+      resetMainAgentActivity(session);
       if (session.startupFailure) {
         return;
       }
@@ -1036,6 +1018,7 @@ export function commitDeferredSession(session: SessionState): void {
 
 type QueryOptionsBuilderParams = {
   cwd: string;
+  resolvedSettings: Settings;
   resume?: string;
   resumeSessionAt?: string;
   resumeDropsTurn?: string;
@@ -1115,139 +1098,55 @@ function logSdkProcessExit(
   });
 }
 
-function permissionModeFromSettingsValue(
-  rawMode: unknown,
-): PermissionMode | undefined {
-  if (typeof rawMode !== "string") {
-    return undefined;
-  }
-  switch (rawMode) {
-    case "manual":
-      return "default";
-    case "default":
-    case "auto":
-    case "acceptEdits":
-    case "bypassPermissions":
-    case "plan":
-    case "dontAsk":
-      return rawMode;
-    default:
-      throw new Error(
-        `unsupported launch_settings.settings.permissions.defaultMode: ${rawMode}`,
-      );
-  }
-}
-
-function initialSessionModel(launchSettings: SessionLaunchSettings): string {
-  const settings = settingsObjectFromLaunchSettings(launchSettings);
-  const model =
-    typeof settings?.model === "string" ? settings.model.trim() : "";
-  return model || STARTUP_FALLBACK_MODEL_ALIAS;
-}
-
-function startupModelOption(launchSettings: SessionLaunchSettings): {
-  model?: string;
-} {
-  const settings = settingsObjectFromLaunchSettings(launchSettings);
-  const model =
-    typeof settings?.model === "string" ? settings.model.trim() : "";
-  return model ? { model } : {};
-}
-
-function initialSessionMode(
-  launchSettings: SessionLaunchSettings,
-): PermissionMode {
-  const settings = settingsObjectFromLaunchSettings(launchSettings);
-  const permissions =
-    settings?.permissions &&
-    typeof settings.permissions === "object" &&
-    !Array.isArray(settings.permissions)
-      ? (settings.permissions as Record<string, unknown>)
-      : undefined;
-  return (
-    permissionModeFromSettingsValue(permissions?.defaultMode) ??
-    DEFAULT_PERMISSION_MODE
-  );
-}
-
 function startupPermissionModeOptions(launchSettings: SessionLaunchSettings): {
   permissionMode?: PermissionMode;
   allowDangerouslySkipPermissions?: boolean;
 } {
-  const settings = settingsObjectFromLaunchSettings(launchSettings);
-  const permissions =
-    settings?.permissions &&
-    typeof settings.permissions === "object" &&
-    !Array.isArray(settings.permissions)
-      ? (settings.permissions as Record<string, unknown>)
-      : undefined;
-  const permissionMode = permissionModeFromSettingsValue(
-    permissions?.defaultMode,
-  );
-  if (!permissionMode) {
-    return {};
-  }
+  const permissionMode = launchSettings.permission_mode;
+  if (!permissionMode) return {};
   return permissionMode === "bypassPermissions"
-    ? {
-        permissionMode,
-        allowDangerouslySkipPermissions: true,
-      }
+    ? { permissionMode, allowDangerouslySkipPermissions: true }
     : { permissionMode };
 }
 
-function systemPromptFromLaunchSettings(
-  launchSettings: SessionLaunchSettings,
-): NonNullable<Options["systemPrompt"]> {
-  const language = launchSettings.language?.trim();
-  const appendLines = [BRIDGE_RUNTIME_GUARD_PROMPT];
-
-  if (language) {
-    appendLines.push(
-      `Always respond to the user in ${language} unless the user explicitly asks for a different language. ` +
-        `Keep code, shell commands, file paths, API names, tool names, and raw error text unchanged unless the user explicitly asks for translation.`,
-    );
-  }
-
-  return {
-    type: "preset",
-    preset: "claude_code",
-    append: appendLines.join(" "),
-    // Keep the prompt prefix stable across resume. Updated host language or guard text
-    // intentionally takes effect after SDK compaction or in a new session.
+export function buildQueryOptions(params: QueryOptionsBuilderParams) {
+  const systemPrompt = {
+    type: "preset" as const,
+    preset: "claude_code" as const,
+    append: BRIDGE_RUNTIME_GUARD_PROMPT,
     snapshot: true,
   };
-}
-
-export function buildQueryOptions(params: QueryOptionsBuilderParams) {
-  const systemPrompt = systemPromptFromLaunchSettings(params.launchSettings);
-  const modelOption = startupModelOption(params.launchSettings);
   const permissionModeOptions = startupPermissionModeOptions(
     params.launchSettings,
   );
-  const settings = normalizedSettingsFromLaunchSettings(params.launchSettings);
+  // These are host capability restrictions, not copied user preferences.
+  // Draft review and held peer-message review require native UI surfaces.
+  const settings = {
+    feedbackDrafts: "off" as const,
+    ...(!["accept", "refuse"].includes(params.resolvedSettings.crossSessionInbound ?? "")
+      ? { crossSessionInbound: "refuse" as const }
+      : {}),
+  };
   return {
     cwd: params.cwd,
     includePartialMessages: true,
     promptSuggestions: true,
-    enableFileCheckpointing: true,
+    // SDK sessions need an explicit recording opt-in; their recording gate
+    // otherwise ignores the JSON preference. Claude still applies environment restrictions.
+    enableFileCheckpointing: params.resolvedSettings.fileCheckpointingEnabled ?? true,
+    agentProgressSummaries: true,
     // Proposal tools require native review and lifecycle surfaces that the
     // public headless SDK does not currently expose to this host.
     disallowedTools: ["ProposeSkills", "ProposeGoal"],
     executable: "bun" as const,
     ...(params.resume ? {} : { sessionId: params.provisionalSessionId }),
     settings,
-    ...modelOption,
+    ...(params.launchSettings.model !== undefined ? { model: params.launchSettings.model } : {}),
     ...permissionModeOptions,
     ...(params.launchSettings.effort !== undefined ? { effort: params.launchSettings.effort } : {}),
     ...(params.launchSettings.agent !== undefined ? { agent: params.launchSettings.agent } : {}),
     toolConfig: { askUserQuestion: { previewFormat: "markdown" as const } },
     systemPrompt,
-    ...(params.launchSettings.agent_progress_summaries !== undefined
-      ? {
-          agentProgressSummaries:
-            params.launchSettings.agent_progress_summaries,
-        }
-      : {}),
     ...(params.claudeCodeExecutable
       ? { pathToClaudeCodeExecutable: params.claudeCodeExecutable }
       : {}),
@@ -1369,63 +1268,13 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
           has_url: normalized.url !== undefined,
         },
       });
-      emitElicitationRequestEvent(params.sessionIdForLogs(), normalized);
-      return await new Promise<{
-        action: ElicitationAction;
-        content?: Record<string, string | number | boolean | string[]>;
-      }>((resolve) => {
-        const currentSession = sessions.get(params.sessionIdForLogs());
-        if (!currentSession) {
-          bridgeLogger.warn({
-            target: LOG_TARGETS.BRIDGE_PERMISSION,
-            eventName: "elicitation_request_dropped",
-            message: "elicitation request dropped without an active session",
-            outcome: "dropped",
-            sessionId: params.sessionIdForLogs(),
-            requestId,
-            fields: { reason: "unknown_session" },
-          });
-          resolve({ action: "cancel" });
-          return;
-        }
-        if (currentSession.pendingElicitations.has(requestId)) {
-          bridgeLogger.warn({
-            target: LOG_TARGETS.BRIDGE_PERMISSION,
-            eventName: "elicitation_request_dropped",
-            message: "duplicate elicitation request dropped",
-            outcome: "dropped",
-            sessionId: params.sessionIdForLogs(),
-            requestId,
-            fields: { reason: "duplicate_request_id" },
-          });
-          resolve({ action: "cancel" });
-          return;
-        }
-        let settled = false;
-        const settle = (result: {
-          action: ElicitationAction;
-          content?: Record<string, string | number | boolean | string[]>;
-        }) => {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          currentSession.pendingElicitations.delete(requestId);
-          options.signal.removeEventListener("abort", onAbort);
-          resolve(result);
-        };
-        const onAbort = () => settle({ action: "cancel" });
-        if (options.signal.aborted) {
-          settle({ action: "cancel" });
-          return;
-        }
-        options.signal.addEventListener("abort", onAbort);
-        currentSession.pendingElicitations.set(requestId, {
-          resolve: settle,
-          serverName: normalized.server_name,
-          elicitationId: normalized.elicitation_id,
-        });
-      });
+      const currentSession = sessions.get(params.sessionIdForLogs());
+      if (!currentSession || currentSession.closing || currentSession.pendingElicitations.has(requestId)) return { action: "cancel" as const };
+      return await waitForAnswer<{ action: ElicitationAction; content?: Record<string, string | number | boolean | string[]> }, PendingElicitation>(
+        currentSession.pendingElicitations, requestId,
+        resolve => ({ resolve, serverName: normalized.server_name, elicitationId: normalized.elicitation_id }),
+        () => emitElicitationRequestEvent(params.sessionIdForLogs(), normalized), options.signal,
+        () => ({ action: "cancel" }));
     },
     // The SDK "fails closed" and never emits a dialog kind unless it is declared
     // here. We declare the one refusal-related kind we render: when the API
@@ -1482,55 +1331,12 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
         },
       });
 
-      const choice = await new Promise<
-        RefusalFallbackPromptChoice | "cancelled"
-      >((resolve) => {
-        const currentSession = sessions.get(params.sessionIdForLogs());
-        if (!currentSession) {
-          bridgeLogger.warn({
-            target: LOG_TARGETS.APP_SESSION,
-            eventName: "user_dialog_request_dropped",
-            message: "user dialog request dropped without an active session",
-            outcome: "dropped",
-            sessionId: params.sessionIdForLogs(),
-            requestId,
-            fields: { reason: "unknown_session" },
-          });
-          resolve("cancelled");
-          return;
-        }
-        if (currentSession.pendingUserDialogs.has(requestId)) {
-          bridgeLogger.warn({
-            target: LOG_TARGETS.APP_SESSION,
-            eventName: "user_dialog_request_dropped",
-            message: "duplicate user dialog request dropped",
-            outcome: "dropped",
-            sessionId: params.sessionIdForLogs(),
-            requestId,
-            fields: { reason: "duplicate_request_id" },
-          });
-          resolve("cancelled");
-          return;
-        }
-        let settled = false;
-        const settle = (value: RefusalFallbackPromptChoice | "cancelled") => {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          currentSession.pendingUserDialogs.delete(requestId);
-          options.signal.removeEventListener("abort", onAbort);
-          resolve(value);
-        };
-        const onAbort = () => settle("cancelled");
-        if (options.signal.aborted) {
-          settle("cancelled");
-          return;
-        }
-        options.signal.addEventListener("abort", onAbort);
-        currentSession.pendingUserDialogs.set(requestId, { resolve: settle });
-        emitUserDialogRequestEvent(params.sessionIdForLogs(), dialogRequest);
-      });
+      const currentSession = sessions.get(params.sessionIdForLogs());
+      if (!currentSession || currentSession.closing || currentSession.pendingUserDialogs.has(requestId)) return { behavior: "cancelled" };
+      const choice = await waitForAnswer<RefusalFallbackPromptChoice | "cancelled", PendingUserDialog>(
+        currentSession.pendingUserDialogs, requestId, resolve => ({ resolve }),
+        () => emitUserDialogRequestEvent(params.sessionIdForLogs(), dialogRequest), options.signal,
+        () => { emitInteractionCancelled(currentSession.sessionId, requestId); return "cancelled"; });
 
       return choice === "cancelled"
         ? { behavior: "cancelled" }
@@ -1583,7 +1389,6 @@ export function handlePermissionResponse(
     });
     return;
   }
-  session.pendingPermissions.delete(command.tool_call_id);
 
   const outcome = command.outcome as PermissionOutcome;
   if (resolver.onOutcome) {
@@ -1704,7 +1509,6 @@ export function handleQuestionResponse(
     });
     return;
   }
-  session.pendingQuestions.delete(command.tool_call_id);
   bridgeLogger.info({
     target: LOG_TARGETS.BRIDGE_PERMISSION,
     eventName: "question_response_applied",
@@ -1773,7 +1577,6 @@ export function handleUserDialogResponse(
     });
     return;
   }
-  session.pendingUserDialogs.delete(command.request_id);
   const choice =
     command.outcome.outcome === "selected"
       ? command.outcome.option_id
@@ -1833,7 +1636,6 @@ export function handleElicitationResponse(
     });
     return;
   }
-  session.pendingElicitations.delete(command.elicitation_request_id);
   bridgeLogger.info({
     target: LOG_TARGETS.BRIDGE_PERMISSION,
     eventName: "elicitation_response_applied",
@@ -1855,15 +1657,6 @@ export function handleElicitationResponse(
         }
       : {}),
   });
-}
-export function shouldInvalidateResolvedRuntimeModel(
-  previousRequestedId: string | undefined,
-  previousSessionModel: string,
-  nextRequestedId: string,
-): boolean {
-  const previousRequested =
-    previousRequestedId?.trim() || previousSessionModel.trim();
-  return previousRequested !== nextRequestedId.trim();
 }
 export function emitCurrentModelUpdate(session: SessionState): boolean {
   if (!session.connected || !session.currentModel) {

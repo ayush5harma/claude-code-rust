@@ -63,6 +63,7 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         | ClientEvent::PermissionRequest { .. }
         | ClientEvent::QuestionRequest { .. }
         | ClientEvent::UserDialogRequest { .. }
+        | ClientEvent::InteractionCancelled { .. }
         | ClientEvent::UserMessageQueued { .. }
         | ClientEvent::UserMessageStarted { .. }
         | ClientEvent::UserMessageRejected { .. }
@@ -80,13 +81,13 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         | ClientEvent::McpConfigRemoveSucceeded { .. }
         | ClientEvent::McpConfigRemoveFailed { .. }
         | ClientEvent::McpSnapshotReceived { .. } => ClientEventFamily::Mcp,
-        ClientEvent::Connected { .. }
+        ClientEvent::SettingsResultReceived { .. }
+        | ClientEvent::Connected { .. }
         | ClientEvent::ConnectionFailed(_)
         | ClientEvent::AuthRequired { .. }
         | ClientEvent::SessionResumeFailed { .. }
         | ClientEvent::SessionReplaced { .. }
         | ClientEvent::SessionsListed { .. }
-        | ClientEvent::UpdateAvailable { .. }
         | ClientEvent::ServiceStatus { .. }
         | ClientEvent::AuthCompleted { .. }
         | ClientEvent::LogoutCompleted
@@ -95,7 +96,8 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         | ClientEvent::RewindTargetsReceived { .. }
         | ClientEvent::RewindResultReceived { .. }
         | ClientEvent::FatalError(_) => ClientEventFamily::Session,
-        ClientEvent::TerminalReleasedToChild { .. }
+        ClientEvent::UpdateCheckCompleted { .. }
+        | ClientEvent::TerminalReleasedToChild { .. }
         | ClientEvent::TerminalReturnedFromChild { .. }
         | ClientEvent::RuntimeReloadCompleted { .. }
         | ClientEvent::RuntimeReloadHeld { .. }

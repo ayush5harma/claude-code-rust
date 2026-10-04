@@ -1,4 +1,5 @@
 import type { PermissionMode } from "@anthropic-ai/claude-agent-sdk";
+import { isEffortLevel } from "./effort.js";
 import type {
   BridgeCommand,
   BridgeCommandEnvelope,
@@ -12,11 +13,27 @@ import type {
   RefusalFallbackPromptChoice,
   RewindRestoreMode,
   SessionLaunchSettings,
+  SettingsMutation,
   UserDialogOutcome,
 } from "../types.js";
 import { parseMcpServersRecord } from "./mcp_metadata.js";
 import type { SessionState } from "./session_lifecycle.js";
 import { resolveCurrentModel } from "./session_lifecycle.js";
+import { SessionObservations } from "./session_observations.js";
+
+const modeObservations = new SessionObservations();
+
+export function beginSessionModeRead(session: SessionState): () => boolean {
+  return modeObservations.begin(session);
+}
+
+export function observeSessionMode(session: SessionState, value: unknown): boolean {
+  const mode = typeof value === "string" ? toPermissionMode(value) : null;
+  if (!mode) return false;
+  modeObservations.begin(session);
+  session.mode = mode;
+  return true;
+}
 
 const MODE_NAMES: Record<PermissionMode, string> = {
   default: "Default",
@@ -160,13 +177,7 @@ function expectEffortLevel(
   context: string,
 ): EffortLevel {
   const value = expectString(record, key, context);
-  if (
-    value !== "low" &&
-    value !== "medium" &&
-    value !== "high" &&
-    value !== "xhigh" &&
-    value !== "max"
-  ) {
+  if (!isEffortLevel(value)) {
     throw new Error(
       `${context}.${key} must be one of low, medium, high, xhigh, max`,
     );
@@ -237,23 +248,18 @@ function optionalLaunchSettings(
     return {};
   }
   const parsed = asRecord(value, `${context}.${key}`);
-  const language = optionalString(parsed, "language", `${context}.${key}`);
-  const settings = optionalJsonObject(parsed, "settings", `${context}.${key}`);
+  const model = optionalString(parsed, "model", `${context}.${key}`);
+  const permissionMode = optionalString(parsed, "permission_mode", `${context}.${key}`);
+  if (permissionMode !== undefined && !Object.hasOwn(MODE_NAMES, permissionMode)) {
+    throw new Error(`${context}.${key}.permission_mode is unsupported: ${permissionMode}`);
+  }
   const agent = optionalString(parsed, "agent", `${context}.${key}`);
   const effort = parsed.effort == null ? undefined : expectEffortLevel(parsed, "effort", `${context}.${key}`);
-  const agentProgressSummaries = optionalBoolean(
-    parsed,
-    "agent_progress_summaries",
-    `${context}.${key}`,
-  );
   return {
-    ...(language ? { language } : {}),
-    ...(settings ? { settings } : {}),
+    ...(model ? { model } : {}),
+    ...(permissionMode ? { permission_mode: permissionMode as SessionLaunchSettings["permission_mode"] } : {}),
     ...(agent ? { agent } : {}),
     ...(effort !== undefined ? { effort } : {}),
-    ...(agentProgressSummaries !== undefined
-      ? { agent_progress_summaries: agentProgressSummaries }
-      : {}),
   };
 }
 
@@ -354,6 +360,24 @@ export function parseCommandEnvelope(line: string): {
 
   const command: BridgeCommand = (() => {
     switch (commandName) {
+      case "inspect_settings": {
+        const appSettingsPath = optionalString(raw, "app_settings_path", commandName);
+        return { command: "inspect_settings", session_id: expectString(raw, "session_id", commandName), ...(appSettingsPath ? { app_settings_path: appSettingsPath } : {}) };
+      }
+      case "mutate_setting": {
+        const appSettingsPath = optionalString(raw, "app_settings_path", commandName);
+        const input = asRecord(raw.mutation, "mutate_setting.mutation");
+        const scope = expectString(input, "scope", commandName);
+        const operation = expectString(input, "operation", commandName);
+        if (!["user", "project", "local"].includes(scope) || !["set", "remove"].includes(operation)) throw new Error("Invalid settings scope or operation.");
+        const mutation: SettingsMutation = {
+          context: expectString(input, "context", commandName), id: expectString(input, "id", commandName),
+          scope: scope as SettingsMutation["scope"], operation: operation as SettingsMutation["operation"],
+          expected_revision: expectString(input, "expected_revision", commandName),
+          ...(operation === "set" ? { value: input.value as Json } : {}),
+        };
+        return { command: "mutate_setting", session_id: expectString(raw, "session_id", commandName), mutation, ...(appSettingsPath ? { app_settings_path: appSettingsPath } : {}) };
+      }
       case "initialize":
         return {
           command: "initialize",
@@ -459,7 +483,13 @@ export function parseCommandEnvelope(line: string): {
         return {
           command: "set_effort",
           session_id: expectString(raw, "session_id", "set_effort"),
-          effort: expectEffortLevel(raw, "effort", "set_effort"),
+          effort: raw.effort === null ? null : expectEffortLevel(raw, "effort", "set_effort"),
+        };
+      case "set_thinking":
+        return {
+          command: "set_thinking",
+          session_id: expectString(raw, "session_id", "set_thinking"),
+          enabled: raw.enabled === null ? null : expectBoolean(raw, "enabled", "set_thinking"),
         };
       case "set_agent":
         return {
@@ -773,9 +803,6 @@ function parseQuestionAnnotation(value: unknown): {
 }
 
 export function toPermissionMode(mode: string): PermissionMode | null {
-  if (mode === "manual") {
-    return "default";
-  }
   if (
     mode === "default" ||
     mode === "auto" ||
@@ -791,11 +818,11 @@ export function toPermissionMode(mode: string): PermissionMode | null {
 
 export function buildModeState(
   session: SessionState,
-  mode: PermissionMode,
+  mode: PermissionMode | null,
 ): ModeState {
   return {
-    current_mode_id: mode,
-    current_mode_name: MODE_NAMES[mode],
+    current_mode_id: mode ?? "unknown",
+    current_mode_name: mode ? MODE_NAMES[mode] : "Unknown",
     available_modes: availableModesForSession(session),
   };
 }

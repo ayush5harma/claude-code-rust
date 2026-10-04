@@ -5,27 +5,17 @@ use super::mcp::{
     McpAuthRedirectOverlayState, McpCallbackUrlOverlayState, McpDetailsOverlayState,
     McpElicitationOverlayState,
 };
-use super::prelude::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModelOverlayState {
-    pub selected_model: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ThinkingEffortOverlayState {
-    pub selected_effort: EffortLevel,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OutputStyleOverlayState {
-    pub selected: OutputStyle,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LanguageOverlayState {
+pub struct SettingOverlayState {
+    // Captured metadata keeps the draft inspectable after its session snapshot is invalidated.
+    pub setting: Box<crate::agent::settings::SettingDescriptor>,
+    pub scope: crate::agent::settings::SettingsScope,
+    pub context: String,
+    pub revision: String,
     pub draft: String,
     pub cursor: usize,
+    pub structured: Option<Box<super::StructuredEditor>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,10 +168,7 @@ pub struct ConfirmationOverlayState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfigOverlayState {
-    Model(ModelOverlayState),
-    ThinkingEffort(ThinkingEffortOverlayState),
-    OutputStyle(OutputStyleOverlayState),
-    Language(LanguageOverlayState),
+    Setting(SettingOverlayState),
     SessionRename(SessionRenameOverlayState),
     InstalledPluginActions(InstalledPluginActionOverlayState),
     PluginInstallActions(PluginInstallOverlayState),

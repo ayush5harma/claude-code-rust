@@ -8,11 +8,32 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-const SPINNER_FRAMES: &[char] = &[
-    '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
-    '\u{2807}', '\u{280F}',
-];
 const MAX_PENDING_MESSAGE_PREVIEW_ROWS: usize = 3;
+
+pub(crate) fn reading_hint_rows(app: &App, width: u16) -> Vec<Line<'static>> {
+    use crate::app::keymap::{AppAction, KeyAction, KeyContext};
+    let bindings = app.keymap.help_bindings_for_context(KeyContext::ChatInput);
+    let mut parts = vec!["Reading output".to_owned()];
+    for (action, label) in [
+        (AppAction::ScrollChatUp, "earlier"),
+        (AppAction::ScrollChatDown, "later"),
+        (AppAction::FollowChat, "live"),
+    ] {
+        let keys = bindings
+            .iter()
+            .filter(|binding| binding.action == KeyAction::App(action))
+            .map(|binding| crate::ui::help::format_help_key_spec(&binding.spec))
+            .collect::<Vec<_>>()
+            .join("/");
+        if !keys.is_empty() {
+            parts.push(format!("{keys} {label}"));
+        }
+    }
+    crate::ui::wrap::wrap_lines_to_physical_rows(
+        &[Line::from(Span::styled(parts.join(" · "), Style::default().fg(theme::DIM)))],
+        width,
+    )
+}
 
 pub(crate) fn build_composer_hint_rows(app: &App) -> Vec<Line<'static>> {
     let mut rows = Vec::new();
@@ -26,14 +47,6 @@ pub(crate) fn build_composer_hint_rows(app: &App) -> Vec<Line<'static>> {
             "Type /login to authenticate, or run `claude auth login` in another terminal",
             Style::default().fg(theme::DIM),
         )));
-    }
-
-    if app.turn.cancel_requested {
-        let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
-        rows.push(Line::from(vec![
-            Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
-            Span::styled("Cancelling current turn...", Style::default().fg(theme::DIM)),
-        ]));
     }
 
     if !app.pending_user_messages.is_empty() {
@@ -88,7 +101,7 @@ pub(crate) fn build_btw_status_rows(app: &App, width: u16) -> Vec<Line<'static>>
     for item in ordered.into_iter().take(detail_count) {
         let (icon, icon_style, body, body_style) = match &item.state {
             BtwRequestState::Active => (
-                SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()].to_string(),
+                crate::ui::SpinnerState::for_app(app).icon().to_owned(),
                 Style::default().fg(theme::BTW_ACCENT),
                 item.question.replace(['\r', '\n'], " "),
                 Style::default().fg(theme::DIM),
@@ -178,7 +191,7 @@ pub(crate) fn blocked_input_lines(
 ) -> Vec<Line<'static>> {
     match reason {
         ComposerBlockReason::CommandPending => {
-            let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
+            let spinner_ch = crate::ui::SpinnerState::for_app(app).icon();
             let label =
                 app.turn.pending_command_label.as_deref().unwrap_or("Processing command...");
             vec![Line::from(vec![
@@ -225,6 +238,24 @@ mod tests {
     }
 
     #[test]
+    fn reduced_motion_keeps_command_activity_icon_static() {
+        let mut app = App::test_default();
+        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+            "prefersReducedMotion",
+            serde_json::json!(true),
+        ));
+        app.turn.cancel_requested = true;
+        app.turn.pending_command_label = Some("Switching mode...".to_owned());
+        for frame in [0, 4, 9] {
+            app.spinner_frame = frame;
+            assert_eq!(
+                line_text(&blocked_input_lines(&app, ComposerBlockReason::CommandPending, 80)[0]),
+                "\u{25C6} Switching mode..."
+            );
+        }
+    }
+
+    #[test]
     fn build_composer_hint_rows_preserves_login_hint_content() {
         let mut app = App::test_default();
         app.session_runtime.login_hint = Some(LoginHint {
@@ -238,15 +269,14 @@ mod tests {
     }
 
     #[test]
-    fn build_composer_hint_rows_preserves_cancel_and_suggestion_rows() {
+    fn build_composer_hint_rows_keeps_suggestions_without_cancellation_indicator() {
         let mut app = App::test_default();
         app.turn.cancel_requested = true;
         app.session_runtime.prompt_suggestion = Some("Write tests".to_owned());
 
         let rows = build_composer_hint_rows(&app);
-        assert_eq!(rows.len(), 2);
-        assert!(line_text(&rows[0]).contains("Cancelling current turn"));
-        assert!(line_text(&rows[1]).contains("Suggestion: Write tests"));
+        assert_eq!(rows.len(), 1);
+        assert!(line_text(&rows[0]).contains("Suggestion: Write tests"));
     }
 
     #[test]

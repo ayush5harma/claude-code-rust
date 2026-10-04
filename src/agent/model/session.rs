@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 
 use super::catalog::{AvailableAgent, AvailableCommandsUpdate, CurrentModel};
 use super::content::ContentChunk;
-use super::ids::SessionModeId;
 use super::tasks::TaskStateUpdate;
 use super::tools::{ToolCall, ToolCallUpdate};
 
@@ -69,18 +68,6 @@ impl AvailableAgentsUpdate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CurrentModeUpdate {
-    pub current_mode_id: SessionModeId,
-}
-
-impl CurrentModeUpdate {
-    #[must_use]
-    pub fn new(current_mode_id: impl Into<SessionModeId>) -> Self {
-        Self { current_mode_id: current_mode_id.into() }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CurrentModelUpdate {
     pub current_model: CurrentModel,
 }
@@ -101,6 +88,7 @@ pub struct ConfigOptionUpdate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FastModeState {
+    Unknown,
     Off,
     Cooldown,
     On,
@@ -263,8 +251,25 @@ pub struct ExternalMessageUpdate {
     pub origin: MessageOrigin,
 }
 
+/// Observed live main-agent phase, interpreted by the bridge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentActivityPhase {
+    Working,
+    Thinking,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SessionUpdate {
+    MessageMetadata {
+        role: String,
+        timestamp: String,
+        source_message_uuid: Option<String>,
+    },
+    TurnTiming {
+        duration_ms: f64,
+        api_duration_ms: Option<f64>,
+    },
     ConversationReset {
         new_conversation_id: String,
         trigger: Option<String>,
@@ -274,7 +279,7 @@ pub enum SessionUpdate {
     AgentMessageChunk(ContentChunk),
     UserMessageChunk(ContentChunk),
     ExternalMessageUpdate(ExternalMessageUpdate),
-    AgentThoughtChunk(ContentChunk),
+    AgentActivityUpdate(AgentActivityPhase),
     ToolCall(ToolCall),
     ToolCallUpdate(ToolCallUpdate),
     TranscriptRetraction(TranscriptRetraction),
@@ -282,7 +287,6 @@ pub enum SessionUpdate {
     AvailableCommandsUpdate(AvailableCommandsUpdate),
     AvailableAgentsUpdate(AvailableAgentsUpdate),
     ModeStateUpdate(crate::app::ModeState),
-    CurrentModeUpdate(CurrentModeUpdate),
     CurrentModelUpdate(CurrentModelUpdate),
     ConfigOptionUpdate(ConfigOptionUpdate),
     UltracodeUpdate {
@@ -308,6 +312,10 @@ pub enum SessionUpdate {
         message: String,
     },
     SessionStatusUpdate(SessionStatus),
+    NotificationUpdate {
+        notification: crate::agent::notifications::SdkNotification,
+        replay: bool,
+    },
     SystemNoticeUpdate {
         severity: SystemNoticeSeverity,
         message: String,

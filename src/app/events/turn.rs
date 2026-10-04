@@ -227,8 +227,10 @@ pub(super) fn handle_permission_request_event(
             app.claim_focus_target(FocusTarget::Permission);
         }
         app.notifications.notify(
-            app.config.preferred_notification_channel_effective(),
+            &app.config,
             super::super::notify::NotifyEvent::PermissionRequired,
+            &session_id,
+            Some(&tool_id),
         );
         log_permission_request_applied(
             &session_id,
@@ -421,6 +423,8 @@ pub(super) fn handle_question_request_event(
     {
         let tc = tc.as_mut();
         tc.pending_question = Some(InlineQuestion {
+            idle_timeout: request.idle_timeout_ms.map(std::time::Duration::from_millis),
+            last_activity: std::time::Instant::now(),
             prompt: request.prompt,
             response_tx,
             focused_option_index: 0,
@@ -439,8 +443,10 @@ pub(super) fn handle_question_request_event(
             app.claim_focus_target(FocusTarget::Permission);
         }
         app.notifications.notify(
-            app.config.preferred_notification_channel_effective(),
+            &app.config,
             super::super::notify::NotifyEvent::QuestionRequired,
+            &session_id,
+            Some(&tool_id),
         );
         tracing::info!(
             target: crate::logging::targets::APP_PERMISSION,
@@ -519,8 +525,10 @@ pub(super) fn handle_user_dialog_request_event(
         app.claim_focus_target(FocusTarget::Permission);
     }
     app.notifications.notify(
-        app.config.preferred_notification_channel_effective(),
+        &app.config,
         super::super::notify::NotifyEvent::QuestionRequired,
+        &session_id,
+        Some(&request_id),
     );
     app.sync_render_cache_slot(mi, bi);
     app.recompute_message_retained_bytes(mi);
@@ -567,6 +575,11 @@ fn begin_turn_exit(app: &mut App, emit_manual_compaction_success: bool) -> TurnE
         turn_was_active: matches!(app.status, AppStatus::Thinking | AppStatus::Running),
         cancel_requested: app.turn.cancel_requested,
     };
+    if (state.turn_was_active || state.cancel_requested)
+        && let Some(index) = app.active_turn_assistant_idx()
+    {
+        app.transcript.messages[index].timing.finish();
+    }
     compaction::finish_inferred(app, emit_manual_compaction_success);
     app.turn.cancel_requested = false;
     state
@@ -614,10 +627,21 @@ pub(super) fn handle_turn_complete_event(
     finish_ready_turn_exit(app, exit, tool_status);
     request_post_turn_resize_purge_replay_if_needed(app);
     crate::app::session_runtime::request_context_usage_refresh(app);
-    if turn_was_active {
+    if turn_was_active
+        && !exit.cancel_requested
+        && !matches!(
+            terminal_reason,
+            Some(
+                crate::agent::types::TerminalReason::AbortedStreaming
+                    | crate::agent::types::TerminalReason::AbortedTools
+            )
+        )
+    {
         app.notifications.notify(
-            app.config.preferred_notification_channel_effective(),
+            &app.config,
             super::super::notify::NotifyEvent::TurnComplete,
+            app.session_runtime.session_id.as_ref().map_or("", model::SessionId::as_str),
+            None,
         );
     }
 }
@@ -719,14 +743,22 @@ pub(super) fn handle_user_message_started_event(
 
     let coalesced_message_count = started.len();
     for message in started {
-        app.push_message_tracked(ChatMessage::new(
+        let mut user = ChatMessage::new(
             MessageRole::User,
-            vec![MessageBlock::Text(TextBlock::from_complete(&message.text))],
+            vec![MessageBlock::Text(
+                TextBlock::from_complete(&message.text)
+                    .with_source_message_uuid(Some(&message.uuid)),
+            )],
             None,
-        ));
+        );
+        user.timing.timestamp = message.timestamp;
+        app.push_message_tracked(user);
         app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
         app.bind_active_turn_assistant_to_tail();
-        app.status = AppStatus::Thinking;
+        if !matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
+            app.status = AppStatus::Running;
+        }
+        app.begin_turn_activity(Instant::now());
         app.enforce_history_retention_tracked();
     }
     tracing::info!(
@@ -1211,7 +1243,7 @@ mod tests {
         assert_eq!(message_text(&app.transcript.messages[2]), Some("second"));
         assert!(matches!(app.transcript.messages[3].role, MessageRole::Assistant));
         assert_eq!(app.active_turn_assistant_idx(), Some(3));
-        assert_eq!(app.status, AppStatus::Thinking);
+        assert_eq!(app.status, AppStatus::Running);
 
         handle_user_message_started_event(
             &mut app,

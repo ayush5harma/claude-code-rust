@@ -5,20 +5,25 @@
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AppSlashCommand {
-    OneMContext,
     Btw,
     Cancel,
     Compact,
     Config,
+    Memory,
+    Permissions,
+    Sandbox,
+    Hooks,
+
+    Copy,
     Docs,
     Agent,
     Effort,
+    Thinking,
     Ultracode,
     Fast,
     Help,
     Mcp,
     Plugins,
-    OpusVersion,
     Status,
     Usage,
     Login,
@@ -77,39 +82,7 @@ pub(crate) const DOCS_TOPICS: &[SlashArgSpec] = &[
     SlashArgSpec { value: "agents", description: "Show advertised subagents" },
 ];
 
-pub(crate) const ONE_M_CONTEXT_ARGS: &[SlashArgSpec] = &[
-    SlashArgSpec {
-        value: "disable",
-        description: "Disable 1M context for future sessions in this folder",
-    },
-    SlashArgSpec {
-        value: "enable",
-        description: "Enable 1M context for future sessions in this folder",
-    },
-    SlashArgSpec {
-        value: "status",
-        description: "Show the current 1M context setting for this folder",
-    },
-];
-
-pub(crate) const OPUS_VERSION_ARGS: &[SlashArgSpec] = &[
-    SlashArgSpec { value: "4.5", description: "Claude Opus 4.5" },
-    SlashArgSpec { value: "4.6", description: "Claude Opus 4.6" },
-    SlashArgSpec { value: "4.7", description: "Claude Opus 4.7" },
-    SlashArgSpec { value: "4.8", description: "Claude Opus 4.8" },
-    SlashArgSpec { value: "default", description: "Use Claude default Opus alias" },
-    SlashArgSpec { value: "status", description: "Show current project-local Opus pin" },
-];
-
 pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
-    AppSlashCommandSpec {
-        command: AppSlashCommand::OneMContext,
-        name: "/1m-context",
-        usage: "Usage: /1m-context <enable|disable|status>",
-        short_description: "Manage 1M context for this folder",
-        long_description: "Enable, disable, or inspect project-local 1M context settings for future sessions.",
-        args: ONE_M_CONTEXT_ARGS,
-    },
     AppSlashCommandSpec {
         command: AppSlashCommand::Btw,
         name: "/btw",
@@ -143,6 +116,46 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         args: NO_ARGS,
     },
     AppSlashCommandSpec {
+        command: AppSlashCommand::Memory,
+        name: "/memory",
+        usage: "Usage: /memory",
+        short_description: "Open memory settings",
+        long_description: "Open the memory pane of Settings without changing session choices.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Permissions,
+        name: "/permissions",
+        usage: "Usage: /permissions",
+        short_description: "Open permissions settings",
+        long_description: "Open the permissions pane of Settings without changing session choices.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Sandbox,
+        name: "/sandbox",
+        usage: "Usage: /sandbox",
+        short_description: "Open sandbox settings",
+        long_description: "Open the sandbox pane of Settings without changing session choices.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Hooks,
+        name: "/hooks",
+        usage: "Usage: /hooks",
+        short_description: "Open hooks settings",
+        long_description: "Open the hooks pane of Settings without changing session choices.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Copy,
+        name: "/copy",
+        usage: "Usage: /copy",
+        short_description: "Copy last response",
+        long_description: "Copy the last finished assistant response or choose a code block. Configure Skip the /copy picker to copy the full response directly.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
         command: AppSlashCommand::Docs,
         name: "/docs",
         usage: "Usage: /docs <mode|models|shortcuts|commands|agents>",
@@ -161,10 +174,22 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
     AppSlashCommandSpec {
         command: AppSlashCommand::Effort,
         name: "/effort",
-        usage: "Usage: /effort <low|medium|high|xhigh|max>",
+        usage: "Usage: /effort <low|medium|high|xhigh|max|reset>",
         short_description: "Set session effort",
-        long_description: "Change thinking effort for the active session. Max is session-only.",
+        long_description: "Change effort for the current session; reset uses the model's default. Use /config for saved defaults. Max is session-only.",
         args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Thinking,
+        name: "/thinking",
+        usage: "Usage: /thinking <on|off|reset>",
+        short_description: "Set session thinking preference",
+        long_description: "Change the thinking preference for this session. Model restrictions still apply; reset uses saved defaults.",
+        args: &[
+            SlashArgSpec { value: "on", description: "Prefer thinking for this session" },
+            SlashArgSpec { value: "off", description: "Disable thinking where supported" },
+            SlashArgSpec { value: "reset", description: "Use the saved thinking preference" },
+        ],
     },
     AppSlashCommandSpec {
         command: AppSlashCommand::Ultracode,
@@ -181,10 +206,13 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
     AppSlashCommandSpec {
         command: AppSlashCommand::Fast,
         name: "/fast",
-        usage: "Usage: /fast",
+        usage: "Usage: /fast [on|off]",
         short_description: "Toggle session fast mode",
         long_description: "Enable or disable fast mode for the active session.",
-        args: NO_ARGS,
+        args: &[
+            SlashArgSpec { value: "on", description: "Enable fast mode for this session" },
+            SlashArgSpec { value: "off", description: "Disable fast mode for this session" },
+        ],
     },
     AppSlashCommandSpec {
         command: AppSlashCommand::Help,
@@ -209,14 +237,6 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         short_description: "Open plugins",
         long_description: "Open the fullscreen plugins tab.",
         args: NO_ARGS,
-    },
-    AppSlashCommandSpec {
-        command: AppSlashCommand::OpusVersion,
-        name: "/opus-version",
-        usage: "Usage: /opus-version <4.5|4.6|4.7|4.8|default|status>",
-        short_description: "Pin the Opus alias version for this folder",
-        long_description: "Set, clear, or inspect the project-local Opus alias pin for future sessions.",
-        args: OPUS_VERSION_ARGS,
     },
     AppSlashCommandSpec {
         command: AppSlashCommand::Status,
@@ -299,20 +319,25 @@ impl AppSlashCommand {
 
     pub(crate) fn name(self) -> &'static str {
         match self {
-            Self::OneMContext => "/1m-context",
             Self::Btw => "/btw",
             Self::Cancel => "/cancel",
             Self::Compact => "/compact",
             Self::Config => "/config",
+            Self::Memory => "/memory",
+            Self::Permissions => "/permissions",
+            Self::Sandbox => "/sandbox",
+            Self::Hooks => "/hooks",
+
+            Self::Copy => "/copy",
             Self::Docs => "/docs",
             Self::Agent => "/agent",
             Self::Effort => "/effort",
+            Self::Thinking => "/thinking",
             Self::Ultracode => "/ultracode",
             Self::Fast => "/fast",
             Self::Help => "/help",
             Self::Mcp => "/mcp",
             Self::Plugins => "/plugins",
-            Self::OpusVersion => "/opus-version",
             Self::Status => "/status",
             Self::Usage => "/usage",
             Self::Login => "/login",
@@ -345,9 +370,25 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
-            Self::Config | Self::Help | Self::Mcp | Self::Plugins | Self::Status | Self::Usage => {
+            Self::Config
+            | Self::Memory
+            | Self::Permissions
+            | Self::Sandbox
+            | Self::Hooks
+            | Self::Help
+            | Self::Mcp
+            | Self::Plugins
+            | Self::Status
+            | Self::Usage => {
                 if args.is_empty() {
                     SubmissionClass::Fullscreen
+                } else {
+                    SubmissionClass::Invalid
+                }
+            }
+            Self::Copy => {
+                if args.is_empty() {
+                    SubmissionClass::Informational
                 } else {
                     SubmissionClass::Invalid
                 }
@@ -359,18 +400,22 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
-            Self::OneMContext => match args {
-                ["status"] => SubmissionClass::Informational,
-                ["enable" | "disable"] => SubmissionClass::TurnExclusive,
-                _ => SubmissionClass::Invalid,
-            },
-            Self::OpusVersion => match args {
-                ["status"] => SubmissionClass::Informational,
-                ["4.5" | "4.6" | "4.7" | "4.8" | "default"] => SubmissionClass::TurnExclusive,
-                _ => SubmissionClass::Invalid,
-            },
-            Self::Compact | Self::Fast | Self::Login | Self::Logout | Self::NewSession => {
+            Self::Compact | Self::Login | Self::Logout | Self::NewSession => {
                 if args.is_empty() {
+                    SubmissionClass::TurnExclusive
+                } else {
+                    SubmissionClass::Invalid
+                }
+            }
+            Self::Fast => {
+                if args.is_empty() || matches!(args, ["on" | "off"]) {
+                    SubmissionClass::TurnExclusive
+                } else {
+                    SubmissionClass::Invalid
+                }
+            }
+            Self::Thinking => {
+                if matches!(args, ["on" | "off" | "reset"]) {
                     SubmissionClass::TurnExclusive
                 } else {
                     SubmissionClass::Invalid
@@ -389,7 +434,7 @@ impl AppSlashCommand {
                 _ => SubmissionClass::Invalid,
             },
             Self::Effort => {
-                if matches!(args, ["low" | "medium" | "high" | "xhigh" | "max"]) {
+                if matches!(args, ["low" | "medium" | "high" | "xhigh" | "max" | "reset"]) {
                     SubmissionClass::TurnExclusive
                 } else {
                     SubmissionClass::Invalid

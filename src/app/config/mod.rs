@@ -1,24 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
+mod browse;
 mod controller;
 mod edit;
 mod help;
+pub(crate) mod hooks;
 mod mcp;
 mod mcp_edit;
 mod overlays;
-mod resolve;
-mod settings;
+mod service;
 mod state;
 mod status;
-pub mod store;
+mod structured;
+mod structured_edit;
 mod tabs;
 
-pub(crate) use controller::{activate_tab, refresh_runtime_tabs_for_session_change};
-pub use controller::{handle_key, handle_paste, initialize_shared_state, open};
-pub(crate) use edit::{
-    OverlayModelOption, model_overlay_options, supported_effort_levels_for_model,
-};
+pub use controller::{handle_key, handle_paste, open};
+pub(crate) use controller::{open_category, open_tab, refresh_runtime_tabs_for_session_change};
 pub(crate) use mcp::{
     McpAuthRedirectOverlayState, McpDetailsOverlayState, McpElicitationOverlayState,
     apply_mcp_config_remove_failure, apply_mcp_config_remove_success,
@@ -33,37 +32,32 @@ pub(crate) use mcp::{
     reconcile_stale_plugin_mcp_servers, refresh_mcp_snapshot,
 };
 // Used by the binary UI target, but not by the library target in isolation.
+pub use browse::{SettingsBrowse, SettingsFocus};
 #[allow(unused_imports)]
 pub(crate) use mcp::McpCallbackUrlOverlayState;
 pub use overlays::*;
-pub(crate) use resolve::language_input_validation_message;
-pub(crate) use settings::{
-    DEFAULT_MODEL_ALIAS_ID, DEFAULT_PERMISSION_OPTIONS, LANGUAGE_MAX_CHARS, LANGUAGE_MIN_CHARS,
+pub(crate) use service::{apply_settings_result, request_settings};
+pub use state::{
+    ConfigState, PendingSessionTitleChangeKind, PendingSessionTitleChangeState,
+    PendingSettingsRequest,
 };
-pub use settings::{
-    DefaultPermissionMode, OutputStyle, PreferredNotifChannel, ResolvedChoice, ResolvedSetting,
-    ResolvedSettingValue, RuntimeCatalogKind, SettingFile, SettingId, SettingKind, SettingOptions,
-    SettingSpec, SettingValidation, resolved_setting, setting_detail_options,
-    setting_display_value, setting_invalid_hint, setting_spec, setting_specs,
-};
-pub use state::{ConfigState, PendingSessionTitleChangeKind, PendingSessionTitleChangeState};
+pub(crate) use structured::{FieldInput, FormRow};
+pub use structured::{StructuredEditor, summary as structured_summary};
 pub use tabs::{ConfigHelpSection, ConfigTab};
 
 mod prelude {
     pub(super) use super::overlays::*;
-    pub(super) use super::resolve::resolve_setting_document;
-    pub(super) use super::settings::*;
     pub(super) use super::status::request_status_snapshot_if_needed;
     pub(super) use super::tabs::{ConfigHelpSection, ConfigTab};
-    pub(super) use super::{edit, help, mcp, store};
-    pub(super) use crate::agent::model::EffortLevel;
+    pub(super) use super::{edit, help, mcp};
     pub(super) use crate::app::App;
     pub(super) use crate::app::dialog::DialogState;
     pub(super) use crate::app::view::{self, FullscreenView, SurfaceMode};
     pub(super) use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     pub(super) use serde_json::Value;
-    pub(super) use std::path::PathBuf;
 }
 
+#[cfg(test)]
+mod navigation_tests;
 #[cfg(test)]
 mod tests;

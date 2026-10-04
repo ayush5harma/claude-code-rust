@@ -392,6 +392,12 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
             timestamp,
             user_message_uuid,
         }),
+        types::SessionUpdate::MessageMetadata { role, timestamp, source_message_uuid } => {
+            Some(model::SessionUpdate::MessageMetadata { role, timestamp, source_message_uuid })
+        }
+        types::SessionUpdate::TurnTiming { duration_ms, api_duration_ms } => {
+            Some(model::SessionUpdate::TurnTiming { duration_ms, api_duration_ms })
+        }
         types::SessionUpdate::UserMessageChunk { content, source_message_uuid } => {
             let content = convert_content_block(content)?;
             Some(model::SessionUpdate::UserMessageChunk(
@@ -420,11 +426,8 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
                 model::ContentChunk::new(content).source_message_uuid(source_message_uuid),
             ))
         }
-        types::SessionUpdate::AgentThoughtChunk { content, source_message_uuid } => {
-            let content = convert_content_block(content)?;
-            Some(model::SessionUpdate::AgentThoughtChunk(
-                model::ContentChunk::new(content).source_message_uuid(source_message_uuid),
-            ))
+        types::SessionUpdate::AgentActivityUpdate { phase } => {
+            Some(model::SessionUpdate::AgentActivityUpdate(phase))
         }
         types::SessionUpdate::ToolCall { tool_call } => {
             Some(model::SessionUpdate::ToolCall(convert_tool_call(tool_call)))
@@ -448,11 +451,6 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
         }
         types::SessionUpdate::ModeStateUpdate { mode } => {
             Some(model::SessionUpdate::ModeStateUpdate(convert_mode_state(mode)))
-        }
-        types::SessionUpdate::CurrentModeUpdate { current_mode_id } => {
-            Some(model::SessionUpdate::CurrentModeUpdate(model::CurrentModeUpdate::new(
-                model::SessionModeId::new(current_mode_id),
-            )))
         }
         types::SessionUpdate::CurrentModelUpdate { current_model } => {
             Some(model::SessionUpdate::CurrentModelUpdate(model::CurrentModelUpdate::new(
@@ -538,6 +536,9 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
                 types::SessionStatus::Requesting => model::SessionStatus::Requesting,
                 types::SessionStatus::Idle => model::SessionStatus::Idle,
             }))
+        }
+        types::SessionUpdate::NotificationUpdate { notification, replay } => {
+            Some(model::SessionUpdate::NotificationUpdate { notification, replay })
         }
         types::SessionUpdate::SystemNoticeUpdate { severity, message } => {
             Some(model::SessionUpdate::SystemNoticeUpdate {
@@ -674,7 +675,8 @@ pub(super) fn map_question_request(
             prompt,
             usize::try_from(request.question_index).unwrap_or(0),
             usize::try_from(request.total_questions).unwrap_or(0),
-        ),
+        )
+        .idle_timeout_ms(request.idle_timeout_ms),
         tool_call_id,
     )
 }
@@ -919,6 +921,7 @@ fn convert_tool_output_metadata(
     output_metadata: types::ToolOutputMetadata,
 ) -> model::ToolOutputMetadata {
     model::ToolOutputMetadata::new()
+        .timing(output_metadata.timing)
         .staged(output_metadata.staged)
         .structured_content_omitted(output_metadata.structured_content_omitted)
         .bash(output_metadata.bash.map(|bash| {
@@ -1131,6 +1134,7 @@ pub(super) fn convert_mode_state(mode: types::ModeState) -> ModeState {
 
 pub(super) fn convert_fast_mode_state(state: types::FastModeState) -> model::FastModeState {
     match state {
+        types::FastModeState::Unknown => model::FastModeState::Unknown,
         types::FastModeState::Off => model::FastModeState::Off,
         types::FastModeState::Cooldown => model::FastModeState::Cooldown,
         types::FastModeState::On => model::FastModeState::On,
@@ -1564,6 +1568,7 @@ mod tests {
         let (request, tool_call_id) = map_question_request(
             "session-1",
             types::QuestionRequest {
+                idle_timeout_ms: Some(60_000),
                 tool_call: types::ToolCall {
                     tool_call_id: "tool-1".to_owned(),
                     title: "Pick target".to_owned(),
@@ -1636,6 +1641,7 @@ mod tests {
                 1,
                 3,
             )
+            .idle_timeout_ms(Some(60_000))
         );
     }
 
@@ -1644,6 +1650,7 @@ mod tests {
         let fields = convert_tool_call_update_fields(types::ToolCallUpdateFields {
             status: Some("completed".to_owned()),
             output_metadata: Some(types::ToolOutputMetadata {
+                timing: None,
                 staged: false,
                 structured_content_omitted: true,
                 bash: Some(types::BashOutputMetadata {

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
+use super::common::{help_style, wrapped_height};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use crate::app::config::{OverlayMessage, OverlayMessageKind};
 use crate::ui::theme;
@@ -31,8 +32,6 @@ pub(super) struct OverlayChrome<'a> {
 pub(super) struct RenderedOverlay {
     pub rect: Rect,
     pub body_area: Rect,
-    pub message_area: Rect,
-    pub help_area: Rect,
 }
 
 pub(super) fn render_overlay_shell(
@@ -52,13 +51,16 @@ pub(super) fn render_overlay_shell(
     );
 
     let inner = overlay_area.inner(layout_spec.inner_margin);
+    let message_height =
+        chrome.message.map_or(0, |message| wrapped_height(message.text.as_str(), inner.width));
+    let help_height = chrome.help.map_or(0, |help| wrapped_height(help, inner.width));
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(u16::from(chrome.subtitle.is_some())),
             Constraint::Min(1),
-            Constraint::Length(u16::from(chrome.message.is_some())),
-            Constraint::Length(u16::from(chrome.help.is_some())),
+            Constraint::Length(message_height),
+            Constraint::Length(help_height),
         ])
         .split(inner);
 
@@ -70,7 +72,7 @@ pub(super) fn render_overlay_shell(
     }
     if let Some(help) = chrome.help {
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(help, Style::default().fg(theme::RUST_ORANGE)))),
+            Paragraph::new(Line::from(Span::styled(help, help_style()))).wrap(Wrap { trim: false }),
             sections[3],
         );
     }
@@ -79,27 +81,13 @@ pub(super) fn render_overlay_shell(
             Paragraph::new(Line::from(Span::styled(
                 message.text.clone(),
                 overlay_message_style(message.kind),
-            ))),
+            )))
+            .wrap(Wrap { trim: false }),
             sections[2],
         );
     }
 
-    RenderedOverlay {
-        rect: overlay_area,
-        body_area: sections[1],
-        message_area: sections[2],
-        help_area: sections[3],
-    }
-}
-
-pub(super) fn overlay_line_style(selected: bool, focused: bool) -> Style {
-    if selected && focused {
-        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
-    } else if selected {
-        Style::default().fg(ratatui::style::Color::White).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(ratatui::style::Color::White)
-    }
+    RenderedOverlay { rect: overlay_area, body_area: sections[1] }
 }
 
 pub(super) fn render_overlay_separator(frame: &mut Frame, area: Rect) {
@@ -111,19 +99,6 @@ pub(super) fn render_overlay_separator(frame: &mut Frame, area: Rect) {
         ))),
         area,
     );
-}
-
-pub(super) fn selected_scroll(
-    selected_start: usize,
-    selected_height: usize,
-    viewport_height: u16,
-) -> u16 {
-    let viewport_height = usize::from(viewport_height);
-    if viewport_height == 0 || selected_start + selected_height <= viewport_height {
-        0
-    } else {
-        u16::try_from(selected_start + selected_height - viewport_height).unwrap_or(u16::MAX)
-    }
 }
 
 fn overlay_message_style(kind: OverlayMessageKind) -> Style {
@@ -181,8 +156,15 @@ fn overlay_needs_fullscreen(
 
     let required_inner_height = 1
         + u16::from(chrome.subtitle.is_some())
-        + u16::from(chrome.message.is_some())
-        + u16::from(chrome.help.is_some());
+        + chrome.message.map_or(0, |message| {
+            wrapped_height(
+                message.text.as_str(),
+                candidate.width.saturating_sub(spec.inner_margin.horizontal * 2),
+            )
+        })
+        + chrome.help.map_or(0, |help| {
+            wrapped_height(help, candidate.width.saturating_sub(spec.inner_margin.horizontal * 2))
+        });
     let required_height = required_inner_height
         .saturating_add(spec.inner_margin.vertical.saturating_mul(2))
         .saturating_add(2);

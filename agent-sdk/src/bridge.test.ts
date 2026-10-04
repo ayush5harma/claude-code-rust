@@ -1,4 +1,7 @@
+import { refreshSessionModel } from "./bridge/session_model.js";
+import { applySessionEffort, applySessionAgent, applySessionFastMode, emitAgentConfigOptionUpdate } from "./bridge/session_preferences.js";
 import test from "node:test";
+import { emitEffortConfigOptionUpdate, refreshSessionEffort } from "./bridge/effort.js";
 import assert from "node:assert/strict";
 import {
   AsyncQueue,
@@ -13,11 +16,6 @@ import {
   buildSessionMutationOptions,
   buildSessionListOptions,
   createToolCall,
-  applySessionAgent,
-  applySessionEffort,
-  applySessionFastMode,
-  emitAgentConfigOptionUpdate,
-  emitEffortConfigOptionUpdate,
   handleTaskSystemMessage,
   handleSdkMessage,
   isShellToolName,
@@ -70,13 +68,13 @@ import {
   beginSessionClose,
   closeAllSessions,
   handleUserDialogResponse,
+  handleQuestionResponse,
   closeSession,
   closeSessionsBeforeRegister,
   commitDeferredSession,
   refreshCurrentModel,
   resolveCurrentModel,
   sessions,
-  shouldInvalidateResolvedRuntimeModel,
   shouldEmitStartupAuthRequiredForAccount,
   trackSessionCloseTask,
   startSessionTasks,
@@ -240,9 +238,6 @@ const BRIDGE_RUNTIME_PROCESS_NAME =
 const BRIDGE_RUNTIME_GUARD_PROMPT =
   `Do not terminate the Claude Rust bridge runtime process \`${BRIDGE_RUNTIME_PROCESS_NAME}\`; ` +
   "when cleaning up development servers, only stop processes by explicit PIDs you started in this session.";
-const GERMAN_LANGUAGE_PROMPT =
-  "Always respond to the user in German unless the user explicitly asks for a different language. " +
-  "Keep code, shell commands, file paths, API names, tool names, and raw error text unchanged unless the user explicitly asks for translation.";
 
 function makeSessionState(): SessionState {
   const input = new AsyncQueue<
@@ -251,7 +246,7 @@ function makeSessionState(): SessionState {
   return {
     sessionId: "session-1",
     cwd: "C:/work",
-    model: "haiku",
+    resolvedRuntimeModelId: "haiku",
     availableModels: [],
     mode: null,
     supportedModeIds: [],
@@ -281,6 +276,131 @@ function makeSessionState(): SessionState {
   };
 }
 
+// The SDK assigns a fresh wrapper UUID per frame; message_start.message.id
+// scopes its ordered content-block boundaries to one API response.
+function activityStream(session: SessionState, event: Record<string, unknown>, parent: string | null = null): void {
+  handleSdkMessage(session, {
+    type: "stream_event", uuid: crypto.randomUUID(), session_id: session.sessionId,
+    parent_tool_use_id: parent, event,
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+}
+
+function activityPhases(events: ReturnType<typeof captureBridgeEvents>): string[] {
+  return events.flatMap(event => {
+    const update = event.update as Record<string, unknown> | undefined;
+    return update?.type === "agent_activity_update" ? [String(update.phase)] : [];
+  });
+}
+
+test("live thinking starts at the block boundary with text, omitted text, or redacted content", () => {
+  for (const block of [{ type: "thinking", thinking: "" }, { type: "thinking", thinking: "summary" }, { type: "redacted_thinking", data: "redacted" }]) {
+    const session = makeSessionState();
+    const events = captureBridgeEvents(() => {
+      activityStream(session, { type: "message_start", message: { id: "msg-a" } });
+      activityStream(session, { type: "content_block_start", index: 0, content_block: block });
+      activityStream(session, { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "" } });
+      activityStream(session, { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "signature" } });
+      activityStream(session, { type: "content_block_stop", index: 0 });
+      activityStream(session, { type: "message_stop" });
+    });
+    assert.deepEqual(activityPhases(events), ["thinking", "working"]);
+    assert.equal(session.mainAgentResponse, undefined);
+    assert.ok(events.every(event => (event.update as Record<string, unknown>)?.type !== "agent_thought_chunk"));
+  }
+});
+
+test("thinking boundaries exclude subagents and repeated events; text and tool blocks are working", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    activityStream(session, { type: "message_start", message: { id: "msg-a" } });
+    activityStream(session, { type: "content_block_start", index: 0, content_block: { type: "thinking" } });
+    activityStream(session, { type: "content_block_start", index: 0, content_block: { type: "thinking" } });
+    activityStream(session, { type: "message_start", message: { id: "msg-child" } }, "agent-tool");
+    activityStream(session, { type: "content_block_stop", index: 0 }, "agent-tool");
+    activityStream(session, { type: "message_stop" }, "agent-tool");
+    assert.equal(session.mainAgentResponse?.thinkingBlock, 0);
+    activityStream(session, { type: "content_block_stop", index: 9 });
+    activityStream(session, { type: "content_block_stop", index: 0 });
+    activityStream(session, { type: "content_block_stop", index: 0 });
+    activityStream(session, { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } });
+    activityStream(session, { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "Writing" } });
+    activityStream(session, { type: "content_block_stop", index: 1 });
+    activityStream(session, { type: "content_block_start", index: 2, content_block: { type: "tool_use", id: "read-1", name: "Read", input: {} } });
+    activityStream(session, { type: "message_stop" });
+  });
+  assert.deepEqual(activityPhases(events), ["thinking", "working"]);
+});
+
+test("a new response clears thinking and completed messages only stop their own live response", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    activityStream(session, { type: "message_start", message: { id: "msg-a" } });
+    activityStream(session, { type: "content_block_start", index: 0, content_block: { type: "thinking" } });
+    activityStream(session, { type: "message_start", message: { id: "msg-b" } });
+    activityStream(session, { type: "content_block_start", index: 1, content_block: { type: "thinking" } });
+    for (const [id, parent] of [["msg-a", null], ["msg-b", "child-tool"]]) {
+      handleSdkMessage(session, { type: "assistant", parent_tool_use_id: parent, message: { id, content: [{ type: "thinking", thinking: "finished" }] } } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    }
+    assert.equal(session.mainAgentResponse?.messageId, "msg-b");
+    assert.equal(session.mainAgentResponse?.thinkingBlock, 1);
+    activityStream(session, { type: "content_block_stop", index: 0 });
+    handleSdkMessage(session, { type: "assistant", parent_tool_use_id: null, message: { id: "msg-b", content: [], stop_reason: "end_turn" } } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+  assert.deepEqual(activityPhases(events), ["thinking", "working", "thinking", "working"]);
+  assert.equal(session.mainAgentResponse, undefined);
+});
+
+test("per-block assistant frames keep the response open for subsequent thinking blocks", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    activityStream(session, { type: "message_start", message: { id: "msg-blocks" } });
+    activityStream(session, { type: "content_block_start", index: 0, content_block: { type: "thinking" } });
+    activityStream(session, { type: "content_block_stop", index: 0 });
+    handleSdkMessage(session, { type: "assistant", parent_tool_use_id: null, message: { id: "msg-blocks", stop_reason: null, content: [{ type: "thinking", thinking: "completed block" }] } } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    assert.equal(session.mainAgentResponse?.messageId, "msg-blocks");
+    activityStream(session, { type: "content_block_start", index: 1, content_block: { type: "thinking" } });
+    handleSdkMessage(session, { type: "assistant", parent_tool_use_id: null, aborted: true, message: { id: "msg-blocks", stop_reason: null, content: [] } } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+  assert.deepEqual(activityPhases(events), ["thinking", "working", "thinking", "working"]);
+  assert.equal(session.mainAgentResponse, undefined);
+});
+
+test("redacted thinking token estimates never select a main-agent phase", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    for (const attribution of [{}, { user_message_uuid: "typed-turn" }, { parent_tool_use_id: "child-tool", user_message_uuid: "typed-turn" }]) {
+      handleSdkMessage(session, { type: "system", subtype: "thinking_tokens", estimated_tokens: 120, estimated_tokens_delta: 20, ...attribution } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    }
+    handleSdkMessage(session, { type: "assistant", parent_tool_use_id: null, message: { id: "completed", content: [{ type: "thinking", thinking: "history" }] } } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+  assert.deepEqual(activityPhases(events), []);
+  assert.equal(session.mainAgentResponse, undefined);
+});
+
+test("thinking is reset on stream errors, retry, fallback, conversation replacement, result, and close", () => {
+  const invalidations: Array<(session: SessionState) => void> = [
+    session => activityStream(session, { type: "error", error: { type: "overloaded_error" } }),
+    session => handleSdkMessage(session, { type: "system", subtype: "api_retry", attempt: 1, max_retries: 3, retry_delay_ms: 100 } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage),
+    session => handleSdkMessage(session, { type: "system", subtype: "model_fallback", retracted_message_uuids: ["retracted"], scope: "session" } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage),
+    session => handleSdkMessage(session, { type: "conversation_reset", new_conversation_id: "new-conversation" } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage),
+    session => handleSdkMessage(session, { type: "result", subtype: "success", result: "", is_error: false } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage),
+    session => beginSessionClose(session),
+    session => updateSessionId(session, "replacement-session"),
+  ];
+  for (const invalidate of invalidations) {
+    const session = makeSessionState();
+    const events = captureBridgeEvents(() => {
+      activityStream(session, { type: "message_start", message: { id: "msg-a" } });
+      activityStream(session, { type: "content_block_start", index: 0, content_block: { type: "thinking" } });
+      invalidate(session);
+      activityStream(session, { type: "content_block_stop", index: 0 });
+    });
+    assert.deepEqual(activityPhases(events), ["thinking", "working"]);
+    assert.equal(session.mainAgentResponse, undefined);
+    sessions.delete("replacement-session");
+  }
+});
+
 function promptControlDeps(): Parameters<
   typeof handleSessionControlCommand
 >[2] {
@@ -289,7 +409,6 @@ function promptControlDeps(): Parameters<
     applySessionEffort,
     applySessionAgent,
     applySessionFastMode,
-    emitEffortConfigOptionUpdate,
     emitAgentConfigOptionUpdate,
     handleReloadPluginsCommand,
   };
@@ -470,7 +589,7 @@ test("availableModesForSession omits conditional modes when unsupported", () => 
 test("buildModeState includes auto and bypassPermissions when supported", () => {
   const session = makeSessionState();
   session.mode = "default";
-  session.model = "sonnet";
+  session.resolvedRuntimeModelId = "sonnet";
   session.supportsBypassPermissionsMode = true;
   session.availableModels = [
     {
@@ -493,7 +612,7 @@ test("buildModeState includes auto and bypassPermissions when supported", () => 
 
 test("refreshSupportedModesForSession uses resolved current model for auto-mode eligibility", () => {
   const session = makeSessionState();
-  session.model = "sonnet";
+  session.resolvedRuntimeModelId = "sonnet";
   session.availableModels = [
     {
       id: "sonnet",
@@ -538,7 +657,7 @@ test("refreshSupportedModesForSession retains current mode before capability dat
 
 test("markModeUnavailableForSession prunes rejected runtime mode from session list", () => {
   const session = makeSessionState();
-  session.model = "sonnet";
+  session.resolvedRuntimeModelId = "sonnet";
   session.availableModels = [
     {
       id: "sonnet",
@@ -808,46 +927,16 @@ test("prompt control emits an explicit rejection when SDK input is closed", asyn
   sessions.clear();
 });
 
-test("parseCommandEnvelope validates resume_session command without cwd", () => {
-  const parsed = parseCommandEnvelope(
-    JSON.stringify({
-      request_id: "req-2",
-      command: "resume_session",
-      session_id: "session-123",
-      launch_settings: {
-        language: "German",
-        settings: {
-          alwaysThinkingEnabled: true,
-          model: "haiku",
-          permissions: { defaultMode: "plan" },
-          fastMode: false,
-          effortLevel: "high",
-          outputStyle: "Default",
-          spinnerTipsEnabled: true,
-          terminalProgressBarEnabled: true,
-        },
-        agent_progress_summaries: true,
-      },
-    }),
-  );
+test("parseCommandEnvelope carries explicit launch choices on resume", () => {
+  const parsed = parseCommandEnvelope(JSON.stringify({
+    request_id: "req-2", command: "resume_session", session_id: "session-123",
+    launch_settings: { model: "haiku", permission_mode: "plan", effort: "max", agent: "reviewer" },
+  }));
   assert.equal(parsed.requestId, "req-2");
-  assert.equal(parsed.command.command, "resume_session");
-  if (parsed.command.command !== "resume_session") {
-    throw new Error("unexpected command variant");
-  }
-  assert.equal(parsed.command.session_id, "session-123");
-  assert.equal(parsed.command.launch_settings.language, "German");
-  assert.deepEqual(parsed.command.launch_settings.settings, {
-    alwaysThinkingEnabled: true,
-    model: "haiku",
-    permissions: { defaultMode: "plan" },
-    fastMode: false,
-    effortLevel: "high",
-    outputStyle: "Default",
-    spinnerTipsEnabled: true,
-    terminalProgressBarEnabled: true,
+  assert.deepEqual(parsed.command, {
+    command: "resume_session", session_id: "session-123", metadata: {},
+    launch_settings: { model: "haiku", permission_mode: "plan", effort: "max", agent: "reviewer" },
   });
-  assert.equal(parsed.command.launch_settings.agent_progress_summaries, true);
 });
 
 test("parseCommandEnvelope validates resume_session_at independently from plain resume", () => {
@@ -2039,7 +2128,7 @@ test("parseCommandEnvelope validates rewind command modes", () => {
         target_user_message_id: "user-1",
         restore_mode: restoreMode,
         launch_settings: {
-          language: "German",
+          model: "haiku",
         },
       }),
     );
@@ -2050,7 +2139,7 @@ test("parseCommandEnvelope validates rewind command modes", () => {
       session_id: "session-123",
       target_user_message_id: "user-1",
       restore_mode: restoreMode,
-      launch_settings: { language: "German" },
+      launch_settings: { model: "haiku" },
     });
   }
 });
@@ -2437,76 +2526,12 @@ test("generatePersistedSessionTitle calls sdk query with persist true", async ()
   assert.deepEqual(calls, [{ description: "Current summary", persist: true }]);
 });
 
-test("buildQueryOptions maps launch settings into sdk query options", () => {
-  const input = new AsyncQueue<
-    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
-  >();
-  const options = buildQueryOptions({
-    cwd: "C:/work",
-    launchSettings: {
-      language: "German",
-      settings: {
-        alwaysThinkingEnabled: true,
-        model: "haiku",
-        permissions: { defaultMode: "plan" },
-        fastMode: false,
-        effortLevel: "medium",
-        outputStyle: "Default",
-        spinnerTipsEnabled: true,
-        terminalProgressBarEnabled: true,
-      },
-      agent_progress_summaries: true,
-    },
-    provisionalSessionId: "session-1",
-    input,
-    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
-    enableSdkDebug: false,
-    enableSpawnDebug: false,
-    sessionIdForLogs: () => "session-1",
-  });
-
-  assert.deepEqual(options.settings, {
-    alwaysThinkingEnabled: true,
-    model: "haiku",
-    permissions: { defaultMode: "plan" },
-    fastMode: false,
-    effortLevel: "medium",
-    outputStyle: "Default",
-    spinnerTipsEnabled: true,
-    terminalProgressBarEnabled: true,
-    feedbackDrafts: "off",
-  });
-  assert.deepEqual(options.systemPrompt, {
-    type: "preset",
-    preset: "claude_code",
-    append: `${BRIDGE_RUNTIME_GUARD_PROMPT} ${GERMAN_LANGUAGE_PROMPT}`,
-    snapshot: true,
-  });
-  const _systemPrompt: NonNullable<Options["systemPrompt"]> =
-    options.systemPrompt;
-  assert.ok(_systemPrompt);
-  assert.equal(options.model, "haiku");
-  assert.equal(options.permissionMode, "plan");
-  assert.equal("allowDangerouslySkipPermissions" in options, false);
-  assert.equal("thinking" in options, false);
-  assert.equal("effort" in options, false);
-  assert.equal(options.agentProgressSummaries, true);
-  assert.equal(options.promptSuggestions, true);
-  assert.equal(options.enableFileCheckpointing, true);
-  assert.deepEqual(options.disallowedTools, ["ProposeSkills", "ProposeGoal"]);
-  assert.equal(options.executable, "bun");
-  assert.equal(options.sessionId, "session-1");
-  assert.deepEqual(options.settingSources, ["user", "project", "local"]);
-  assert.deepEqual(options.toolConfig, {
-    askUserQuestion: { previewFormat: "markdown" },
-  });
-});
-
 test("buildQueryOptions includes resumeSessionAt when provided", () => {
   const input = new AsyncQueue<
     import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
   >();
   const options = buildQueryOptions({
+    resolvedSettings: {},
     cwd: "C:/work",
     resume: "session-1",
     resumeSessionAt: "assistant-1",
@@ -2534,81 +2559,16 @@ test("buildQueryOptions includes resumeSessionAt when provided", () => {
   });
 });
 
-test("buildQueryOptions forwards settings and maps startup model and permission mode", () => {
+test("buildQueryOptions applies explicit startup model and plan mode", () => {
   const input = new AsyncQueue<
     import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
   >();
   const options = buildQueryOptions({
+    resolvedSettings: {},
     cwd: "C:/work",
     launchSettings: {
-      settings: {
-        alwaysThinkingEnabled: false,
-        permissions: { defaultMode: "default" },
-        fastMode: true,
-        effortLevel: "high",
-        outputStyle: "Learning",
-        spinnerTipsEnabled: false,
-        terminalProgressBarEnabled: false,
-      },
-    },
-    provisionalSessionId: "session-3",
-    input,
-    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
-    enableSdkDebug: false,
-    enableSpawnDebug: false,
-    sessionIdForLogs: () => "session-3",
-  });
-
-  assert.deepEqual(options.settings, {
-    alwaysThinkingEnabled: false,
-    permissions: { defaultMode: "default" },
-    fastMode: true,
-    effortLevel: "high",
-    outputStyle: "Learning",
-    spinnerTipsEnabled: false,
-    terminalProgressBarEnabled: false,
-    feedbackDrafts: "off",
-  });
-  assert.equal("model" in options, false);
-  assert.equal(options.permissionMode, "default");
-  assert.equal("allowDangerouslySkipPermissions" in options, false);
-  assert.equal("thinking" in options, false);
-  assert.equal("effort" in options, false);
-});
-
-test("buildQueryOptions normalizes manual startup permission mode to default", () => {
-  const input = new AsyncQueue<
-    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
-  >();
-  const options = buildQueryOptions({
-    cwd: "C:/work",
-    launchSettings: {
-      settings: {
-        permissions: { defaultMode: "manual" },
-      },
-    },
-    provisionalSessionId: "session-manual",
-    input,
-    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
-    enableSdkDebug: false,
-    enableSpawnDebug: false,
-    sessionIdForLogs: () => "session-manual",
-  });
-
-  assert.equal(options.permissionMode, "default");
-});
-
-test("buildQueryOptions trims startup model before passing sdk option", () => {
-  const input = new AsyncQueue<
-    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
-  >();
-  const options = buildQueryOptions({
-    cwd: "C:/work",
-    launchSettings: {
-      settings: {
-        model: "  claude-opus-4-7  ",
-        permissions: { defaultMode: "plan" },
-      },
+      model: "claude-opus-4-7",
+      permission_mode: "plan",
     },
     provisionalSessionId: "session-model",
     input,
@@ -2627,11 +2587,10 @@ test("buildQueryOptions maps auto startup permission mode", () => {
     import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
   >();
   const options = buildQueryOptions({
+    resolvedSettings: {},
     cwd: "C:/work",
     launchSettings: {
-      settings: {
-        permissions: { defaultMode: "auto" },
-      },
+      permission_mode: "auto",
     },
     provisionalSessionId: "session-auto",
     input,
@@ -2650,11 +2609,10 @@ test("buildQueryOptions enables dangerous skip flag for bypass permissions start
     import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
   >();
   const options = buildQueryOptions({
+    resolvedSettings: {},
     cwd: "C:/work",
     launchSettings: {
-      settings: {
-        permissions: { defaultMode: "bypassPermissions" },
-      },
+      permission_mode: "bypassPermissions",
     },
     provisionalSessionId: "session-4",
     input,
@@ -2667,63 +2625,6 @@ test("buildQueryOptions enables dangerous skip flag for bypass permissions start
   assert.equal(options.permissionMode, "bypassPermissions");
   assert.equal(options.allowDangerouslySkipPermissions, true);
   assert.equal("canUseTool" in options, true);
-});
-
-test("buildQueryOptions omits optional startup overrides but keeps bridge guard prompt", () => {
-  const input = new AsyncQueue<
-    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
-  >();
-  const options = buildQueryOptions({
-    cwd: "C:/work",
-    launchSettings: {},
-    provisionalSessionId: "session-2",
-    input,
-    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
-    enableSdkDebug: false,
-    enableSpawnDebug: false,
-    sessionIdForLogs: () => "session-2",
-  });
-
-  assert.equal("model" in options, false);
-  assert.equal("permissionMode" in options, false);
-  assert.equal("allowDangerouslySkipPermissions" in options, false);
-  assert.deepEqual(options.systemPrompt, {
-    type: "preset",
-    preset: "claude_code",
-    append: BRIDGE_RUNTIME_GUARD_PROMPT,
-    snapshot: true,
-  });
-  assert.equal("agentProgressSummaries" in options, false);
-  assert.deepEqual(options.settings, { feedbackDrafts: "off" });
-});
-
-test("buildQueryOptions disables feedback drafts without mutating launch settings", () => {
-  const input = new AsyncQueue<
-    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
-  >();
-  const settings = {
-    feedbackDrafts: "notify",
-    spinnerTipsEnabled: true,
-  };
-  const options = buildQueryOptions({
-    cwd: "C:/work",
-    launchSettings: { settings },
-    provisionalSessionId: "session-feedback",
-    input,
-    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
-    enableSdkDebug: false,
-    enableSpawnDebug: false,
-    sessionIdForLogs: () => "session-feedback",
-  });
-
-  assert.deepEqual(options.settings, {
-    feedbackDrafts: "off",
-    spinnerTipsEnabled: true,
-  });
-  assert.deepEqual(settings, {
-    feedbackDrafts: "notify",
-    spinnerTipsEnabled: true,
-  });
 });
 
 test("dispatchCancelTurnCommand interrupts the matching session query", async () => {
@@ -2821,6 +2722,7 @@ test("buildQueryOptions spawn hook remaps bare bun command", async () => {
     import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
   >();
   const options = buildQueryOptions({
+    resolvedSettings: {},
     cwd: "C:/work",
     launchSettings: {},
     provisionalSessionId: "session-spawn-bun",
@@ -2859,6 +2761,7 @@ test("buildQueryOptions forwards SDK-provided spawn env without passing top-leve
     import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
   >();
   const options = buildQueryOptions({
+    resolvedSettings: {},
     cwd: "C:/work",
     launchSettings: {},
     provisionalSessionId: "session-spawn-env",
@@ -2915,6 +2818,7 @@ test("buildQueryOptions leaves Todo tool availability under SDK environment auth
       import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
     >();
     const options = buildQueryOptions({
+      resolvedSettings: {},
       cwd: "C:/work",
       launchSettings: {},
       provisionalSessionId: `session-todo-${explicit ?? "default"}`,
@@ -2951,148 +2855,6 @@ test("buildQueryOptions leaves Todo tool availability under SDK environment auth
   }
 });
 
-test("buildQueryOptions makes sandbox fallback explicit when enabled", () => {
-  const input = new AsyncQueue<
-    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
-  >();
-  const options = buildQueryOptions({
-    cwd: "C:/work",
-    launchSettings: {
-      settings: {
-        sandbox: {
-          enabled: true,
-        },
-      },
-    },
-    provisionalSessionId: "session-sandbox",
-    input,
-    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
-    enableSdkDebug: false,
-    enableSpawnDebug: false,
-    sessionIdForLogs: () => "session-sandbox",
-  });
-
-  assert.deepEqual(options.settings, {
-    feedbackDrafts: "off",
-    sandbox: {
-      enabled: true,
-      failIfUnavailable: false,
-    },
-  });
-});
-
-test("buildQueryOptions preserves explicit sandbox failIfUnavailable setting", () => {
-  const input = new AsyncQueue<
-    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
-  >();
-  const options = buildQueryOptions({
-    cwd: "C:/work",
-    launchSettings: {
-      settings: {
-        sandbox: {
-          enabled: true,
-          failIfUnavailable: true,
-        },
-      },
-    },
-    provisionalSessionId: "session-sandbox-explicit",
-    input,
-    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
-    enableSdkDebug: false,
-    enableSpawnDebug: false,
-    sessionIdForLogs: () => "session-sandbox-explicit",
-  });
-
-  assert.deepEqual(options.settings, {
-    feedbackDrafts: "off",
-    sandbox: {
-      enabled: true,
-      failIfUnavailable: true,
-    },
-  });
-});
-
-test("buildQueryOptions preserves target sandbox network and filesystem fields", () => {
-  const input = new AsyncQueue<
-    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
-  >();
-  const options = buildQueryOptions({
-    cwd: "C:/work",
-    launchSettings: {
-      settings: {
-        sandbox: {
-          network: { strictAllowlist: true },
-          filesystem: { disabled: true },
-        },
-      },
-    },
-    provisionalSessionId: "session-sandbox-target-fields",
-    input,
-    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
-    enableSdkDebug: false,
-    enableSpawnDebug: false,
-    sessionIdForLogs: () => "session-sandbox-target-fields",
-  });
-
-  assert.deepEqual(options.settings?.sandbox, {
-    network: { strictAllowlist: true },
-    filesystem: { disabled: true },
-  });
-});
-
-test("buildQueryOptions preserves nested sandbox credential controls", () => {
-  const input = new AsyncQueue<
-    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
-  >();
-  const credentials = {
-    files: [
-      {
-        path: ".secrets/token",
-        mode: "mask",
-        extract: "token=(.+)",
-        onExtractNoMatch: "deny",
-        decode: "jwt",
-        maskClaims: ["sub"],
-        maskDuplicates: true,
-        injectHosts: ["api.example.test"],
-      },
-    ],
-    envVars: [
-      {
-        name: "API_TOKEN",
-        mode: "mask",
-        decode: "jwt",
-        maskClaims: ["sub"],
-        injectHosts: ["api.example.test"],
-      },
-    ],
-    allowPlaintextInject: false,
-    awsPairs: [
-      {
-        accessKeyIdVar: "AWS_ACCESS_KEY_ID",
-        secretAccessKeyVar: "AWS_SECRET_ACCESS_KEY",
-        sessionTokenVar: "AWS_SESSION_TOKEN",
-      },
-    ],
-    sigv4: { streaming: "deny", presigned: "passthrough", sigv4a: "deny" },
-  };
-  const options = buildQueryOptions({
-    cwd: "C:/work",
-    launchSettings: { settings: { sandbox: { enabled: true, credentials } } },
-    provisionalSessionId: "session-sandbox-credentials",
-    input,
-    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
-    enableSdkDebug: false,
-    enableSpawnDebug: false,
-    sessionIdForLogs: () => "session-sandbox-credentials",
-  });
-
-  assert.deepEqual(options.settings?.sandbox, {
-    enabled: true,
-    failIfUnavailable: false,
-    credentials,
-  });
-});
 
 test("handleTaskSystemMessage prefers task_progress summary over fallback text", () => {
   const session = makeSessionState();
@@ -5752,9 +5514,6 @@ test("the next per-turn init reports the live mode after a mode switch", async (
                 mode?: { current_mode_id?: string };
               }
             | undefined;
-          if (update?.type === "current_mode_update") {
-            return update.current_mode_id ? [update.current_mode_id] : [];
-          }
           if (update?.type === "mode_state_update") {
             return update.mode?.current_mode_id
               ? [update.mode.current_mode_id]
@@ -5935,7 +5694,7 @@ test("handleSdkMessage correlates heartbeat progress to its existing parent tool
     }
   });
 
-  assert.equal(events.length, 1);
+  assert.equal(events.length, 3);
   assert.deepEqual(events[0], {
     event: "session_update",
     session_id: "session-1",
@@ -5943,10 +5702,11 @@ test("handleSdkMessage correlates heartbeat progress to its existing parent tool
       type: "tool_call_update",
       tool_call_update: {
         tool_call_id: "tool-shell-parent",
-        fields: { status: "in_progress" },
+        fields: { status: "in_progress", output_metadata: { timing: { duration_ms: 1000, source: "progress" } } },
       },
     },
   });
+  assert.equal(session.toolCalls.get(parentToolCall.tool_call_id)?.output_metadata?.timing?.duration_ms, 3000);
   assert.equal(session.toolCalls.size, 1);
   assert.equal(
     session.toolCalls.get(parentToolCall.tool_call_id)?.status,
@@ -6019,6 +5779,7 @@ test("handleSdkMessage updates and clears subagent retry progress in place", () 
       tool_call_update: {
         tool_call_id: "tool-agent-retry",
         fields: {
+          output_metadata: { timing: { duration_ms: 5000, source: "progress" } },
           task_metadata: {
             subagent_retry: {
               state: "waiting",
@@ -6067,6 +5828,7 @@ test("handleSdkMessage updates and clears subagent retry progress in place", () 
       tool_call_update: {
         tool_call_id: "tool-agent-retry",
         fields: {
+          output_metadata: { timing: { duration_ms: 7000, source: "progress" } },
           task_metadata: { subagent_retry: { state: "clear" } },
         },
       },
@@ -6106,7 +5868,7 @@ test("handleSdkMessage ignores malformed subagent retry progress", () => {
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
   });
 
-  assert.deepEqual(events, []);
+  assert.deepEqual(events, [{ event: "session_update", session_id: "session-1", update: { type: "tool_call_update", tool_call_update: { tool_call_id: toolCall.tool_call_id, fields: { output_metadata: { timing: { duration_ms: 5000, source: "progress" } } } } } }]);
   assert.equal(
     session.toolCalls.get(toolCall.tool_call_id)?.task_metadata,
     undefined,
@@ -6149,31 +5911,6 @@ test("emitToolResultUpdate clears active subagent retry metadata", () => {
     session.toolCalls.get(toolCall.tool_call_id)?.task_metadata?.subagent_retry,
     undefined,
   );
-});
-
-test("buildQueryOptions trims language before appending system prompt", () => {
-  const input = new AsyncQueue<
-    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
-  >();
-  const options = buildQueryOptions({
-    cwd: "C:/work",
-    launchSettings: {
-      language: "  German  ",
-    },
-    provisionalSessionId: "session-4",
-    input,
-    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
-    enableSdkDebug: false,
-    enableSpawnDebug: false,
-    sessionIdForLogs: () => "session-4",
-  });
-
-  assert.deepEqual(options.systemPrompt, {
-    type: "preset",
-    preset: "claude_code",
-    append: `${BRIDGE_RUNTIME_GUARD_PROMPT} ${GERMAN_LANGUAGE_PROMPT}`,
-    snapshot: true,
-  });
 });
 
 test("parseCommandEnvelope rejects missing required fields", () => {
@@ -6278,6 +6015,59 @@ test("parseCommandEnvelope rejects unsupported user_dialog_response choices", ()
       ),
     /user_dialog_response\.outcome\.option_id must be 'retry_fallback' or 'edit_prompt'/,
   );
+});
+
+test("question workflow uses trusted timing, preserves selected answers and skips untouched questions", async () => {
+  for (const [sources, timeout] of [
+    [[{ source: "projectSettings", settings: { askUserQuestionTimeout: "60s" } }], undefined],
+    [[{ source: "projectSettings", settings: { askUserQuestionTimeout: "never" } }, { source: "userSettings", settings: { askUserQuestionTimeout: "5m" } }], 300_000],
+    [[{ source: "userSettings", settings: { askUserQuestionTimeout: "60s" } }, { source: "policySettings", settings: { askUserQuestionTimeout: "never" } }], undefined],
+  ] as const) {
+    const session = makeSessionState();
+    session.query = { getSettings: async () => ({ sources }) } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+    const base: import("./types.js").ToolCall = { tool_call_id: "timed-question", title: "Questions", kind: "other", status: "in_progress", content: [], locations: [] };
+    sessions.set(session.sessionId, session);
+    const events = await captureBridgeEventsAsync(async () => {
+      const resultPromise = requestAskUserQuestionAnswers(session, base.tool_call_id, { questions: [
+        { question: "Choose target", header: "Target", multiSelect: false, options: [{ label: "Staging", description: "" }, { label: "Production", description: "" }] },
+        { question: "Choose region", header: "Region", multiSelect: false, options: [{ label: "West", description: "" }, { label: "East", description: "" }] },
+      ] }, base);
+      await new Promise(resolve => setImmediate(resolve));
+      handleQuestionResponse({ command: "question_response", session_id: session.sessionId, tool_call_id: base.tool_call_id, outcome: { outcome: "answered", selected_option_ids: ["question_1"], annotation: { notes: "Use production" } } });
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(session.pendingQuestions.size, 1);
+      handleQuestionResponse({ command: "question_response", session_id: session.sessionId, tool_call_id: base.tool_call_id, outcome: { outcome: "answered", selected_option_ids: [] } });
+      const result = await resultPromise;
+      assert.equal(result.behavior, "allow");
+      if (result.behavior !== "allow") throw new Error("expected answered questions");
+      assert.ok(result.updatedInput);
+      assert.deepEqual(result.updatedInput.answers, { "Choose target": "Production" });
+      assert.deepEqual(result.updatedInput.annotations, { "Choose target": { notes: "Use production" } });
+      assert.equal(session.pendingQuestions.size, 0);
+    });
+    sessions.delete(session.sessionId);
+    const requests = events.filter(event => event.event === "question_request");
+    assert.equal(requests.length, 2);
+    for (const event of requests) {
+      assert.equal((event.request as { idle_timeout_ms?: number }).idle_timeout_ms, timeout);
+    }
+  }
+});
+
+test("native cancellation closes a pending question and denies execution", async () => {
+  const session = makeSessionState();
+  session.query = { getSettings: async () => ({ sources: [] }) } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+  const controller = new AbortController();
+  const events = await captureBridgeEventsAsync(async () => {
+    const result = requestAskUserQuestionAnswers(session, "cancelled-question", { questions: [{ question: "Continue?", header: "Choice", multiSelect: false, options: [{ label: "Yes", description: "" }, { label: "No", description: "" }] }] },
+      { tool_call_id: "cancelled-question", title: "Question", kind: "other", status: "in_progress", content: [], locations: [] }, controller.signal);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(session.pendingQuestions.size, 1);
+    controller.abort();
+    assert.equal((await result).behavior, "deny");
+    assert.equal(session.pendingQuestions.size, 0);
+  });
+  assert.ok(events.some(event => event.event === "interaction_cancelled" && event.interaction_id === "cancelled-question"));
 });
 
 test("requestAskUserQuestionAnswers preserves previews and annotations in updated input", async () => {
@@ -7297,7 +7087,7 @@ test("available command registry lets authoritative snapshots remove commands", 
   );
 });
 
-test("handleSdkMessage emits system notices for notifications and plugin failures", () => {
+test("handleSdkMessage preserves native notification metadata separately from plugin diagnostics", () => {
   const session = makeSessionState();
   const events = captureBridgeEvents(() => {
     handleSdkMessage(session, {
@@ -7324,9 +7114,8 @@ test("handleSdkMessage emits system notices for notifications and plugin failure
     events.map((event) => event.update),
     [
       {
-        type: "system_notice_update",
-        severity: "info",
-        message: "Sync completed",
+        type: "notification_update", replay: false,
+        notification: { origin: "sdk_notice", key: "sync", text: "Sync completed", priority: "low", uuid: "message-notification", session_id: "session-1" },
       },
       {
         type: "system_notice_update",
@@ -7666,9 +7455,8 @@ test("handleSdkMessage cancels pending worker shutdown after later SDK activity"
     events.map((event) => event.update),
     [
       {
-        type: "system_notice_update",
-        severity: "info",
-        message: "Still running",
+        type: "notification_update", replay: false,
+        notification: { origin: "sdk_notice", key: "", text: "Still running", priority: "low", uuid: "message-notification", session_id: "session-1" },
       },
     ],
   );
@@ -8220,7 +8008,7 @@ test("applySessionEffort uses live flag settings for xhigh and max", async () =>
     async applyFlagSettings(settings: unknown): Promise<void> {
       calls.push(settings);
     },
-  } as import("@anthropic-ai/claude-agent-sdk").Query;
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
 
   await applySessionEffort(query, "xhigh");
   await applySessionEffort(query, "max");
@@ -8389,6 +8177,26 @@ test("emitEffortConfigOptionUpdate publishes effortLevel config option", () => {
       value: "max",
     },
   });
+});
+
+test("per-turn effort observations supersede an in-flight control read and null clears the level", async () => {
+  const session = makeSessionState();
+  let resolveSettings: ((value: unknown) => void) | undefined;
+  const pending = new Promise(resolve => { resolveSettings = resolve; });
+  session.query = {
+    getSettings: async () => pending,
+    supportedCommands: async () => [],
+    supportedAgents: async () => [],
+  } as unknown as SessionState["query"];
+  const events = await captureBridgeEventsAsync(async () => {
+    const read = refreshSessionEffort(session);
+    handleSdkMessage(session, { type: "system", subtype: "init", session_id: session.sessionId, model: "opus", effort: "xhigh" } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    resolveSettings?.({ applied: { effort: "high", ultracodeAvailable: true, ultracodeRequested: false, ultracode: false } });
+    await read;
+    handleSdkMessage(session, { type: "system", subtype: "init", session_id: session.sessionId, model: "opus", effort: null } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    await new Promise<void>(resolve => setImmediate(resolve));
+  });
+  assert.deepEqual(events.filter(event => (event.update as Record<string, unknown>)?.option_id === "effortLevel").map(event => (event.update as Record<string, unknown>).value), ["xhigh", null]);
 });
 
 test("emitAgentConfigOptionUpdate publishes agent config option", () => {
@@ -10075,7 +9883,6 @@ test("mapAvailableModels preserves Fable models and unknown ids", () => {
 
 test("resolveCurrentModel matches full Fable runtime ids to the fable alias", () => {
   const session = makeSessionState();
-  session.model = "fable";
   session.requestedModelId = "fable";
   session.resolvedRuntimeModelId = "claude-fable-5-20260612";
   session.availableModels = [
@@ -10158,7 +9965,6 @@ test("resolveCurrentModel avoids suffix-insensitive fallback when sibling varian
 
 test("emitCurrentModelUpdate can acknowledge a successful no-op set_model", () => {
   const session = makeSessionState();
-  session.model = "opus";
   session.requestedModelId = "opus";
   session.resolvedRuntimeModelId = "claude-opus-4-7[1m]";
   refreshCurrentModel(session);
@@ -10189,7 +9995,7 @@ test("emitCurrentModelUpdate can acknowledge a successful no-op set_model", () =
 
 test("emitCurrentModelUpdate can publish catalog-enriched current model metadata after connect", () => {
   const session = makeSessionState();
-  session.model = "sonnet";
+  session.resolvedRuntimeModelId = "sonnet";
   refreshCurrentModel(session);
   session.availableModels = [
     {
@@ -10225,24 +10031,8 @@ test("emitCurrentModelUpdate can publish catalog-enriched current model metadata
   });
 });
 
-test("shouldInvalidateResolvedRuntimeModel invalidates stale runtime identity only when the request changes", () => {
-  assert.equal(
-    shouldInvalidateResolvedRuntimeModel("opus", "opus", "sonnet"),
-    true,
-  );
-  assert.equal(
-    shouldInvalidateResolvedRuntimeModel("sonnet", "sonnet", "haiku"),
-    true,
-  );
-  assert.equal(
-    shouldInvalidateResolvedRuntimeModel("opus", "opus", "opus"),
-    false,
-  );
-});
-
 test("resolveCurrentModel strips release date suffix from dated model ids", () => {
   const session = makeSessionState();
-  session.model = "claude-opus-4-5-20251101";
   session.requestedModelId = "claude-opus-4-5-20251101";
   session.resolvedRuntimeModelId = "claude-opus-4-5-20251101";
 
@@ -10252,10 +10042,10 @@ test("resolveCurrentModel strips release date suffix from dated model ids", () =
   assert.equal(currentModel.display_name_long, "Opus 4.5");
 });
 
-test("resolveCurrentModel falls back to the requested model immediately after stale runtime identity is cleared", () => {
+test("resolveCurrentModel uses acknowledged runtime model capabilities", () => {
   const session = makeSessionState();
   session.requestedModelId = "sonnet";
-  session.model = "sonnet";
+  session.resolvedRuntimeModelId = "sonnet";
   session.availableModels = [
     {
       id: "sonnet",
@@ -10276,7 +10066,6 @@ test("resolveCurrentModel falls back to the requested model immediately after st
 
 test("resolveCurrentModel keeps runtime version in short display while using catalog capabilities", () => {
   const session = makeSessionState();
-  session.model = "opus";
   session.requestedModelId = "opus";
   session.resolvedRuntimeModelId = "claude-opus-4-7-20260101";
   session.availableModels = [
@@ -10301,8 +10090,9 @@ function userDialogHandlerForTest(): NonNullable<Options["onUserDialog"]> {
     import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
   >();
   const options = buildQueryOptions({
+    resolvedSettings: {},
     cwd: "C:/work",
-    launchSettings: { language: "English" },
+    launchSettings: {},
     provisionalSessionId: "session-dialog",
     input,
     canUseTool: async () => ({ behavior: "deny", message: "not used" }),
@@ -10508,7 +10298,6 @@ test("handleUserDialogResponse ignores a duplicate response for a resolved reque
   }
 });
 
-
 test("Ultracode commands validate explicit boolean payloads", () => {
   for (const enabled of [true, false]) {
     const command = { command: "set_ultracode", session_id: "session-1", enabled };
@@ -10523,13 +10312,18 @@ test("Ultracode commands validate explicit boolean payloads", () => {
 
 test("Ultracode NDJSON control flow preserves effort and refreshes model support", async () => {
   const session = makeSessionState();
+  session.availableModels = ["opus", "haiku"].map(id => ({ id, display_name: id, supports_effort: id === "opus", supported_effort_levels: id === "opus" ? ["low", "high"] : [] }));
+  session.resolvedRuntimeModelId = "opus";
+  refreshCurrentModel(session);
   let enabled = false;
   let available = true;
+  let effort = "high";
   const calls: unknown[] = [];
   session.query = {
-    getSettings: async () => ({ applied: { ultracodeAvailable: available, ultracodeRequested: enabled, ultracode: available && enabled } }),
+    getSettings: async () => ({ applied: { model: available ? "opus" : "haiku", ultracodeAvailable: available, ultracodeRequested: enabled, ultracode: available && enabled, effort: available ? effort : null } }),
     applyFlagSettings: async (settings: Record<string, unknown>) => {
       calls.push(settings);
+      if (typeof settings.effortLevel === "string") effort = settings.effortLevel;
       if ("effortLevel" in settings && !("ultracode" in settings)) enabled = false;
       if (typeof settings.ultracode === "boolean") enabled = settings.ultracode;
       return {};
@@ -10551,16 +10345,15 @@ test("Ultracode NDJSON control flow preserves effort and refreshes model support
         await handleSessionControlCommand(parsed.command as Parameters<typeof handleSessionControlCommand>[0], "request-1", promptControlDeps());
       }
     });
-    assert.deepEqual(calls, [{ ultracode: true }, { effortLevel: "high", ultracode: true }, { effortLevel: "low" }, { ultracode: false }]);
+    assert.deepEqual(calls, [{ ultracode: true }, { effortLevel: "high", ultracode: true }, { ultracode: false }]);
     assert.deepEqual(events.filter(e => (e.update as Record<string, unknown>)?.type === "ultracode_update").map(e => (e.update as Record<string, unknown>).ultracode), [
       { available: true, requested: false, effective: false },
       { available: true, requested: true, effective: true },
       { available: true, requested: true, effective: true },
       { available: false, requested: true, effective: false },
       { available: false, requested: false, effective: false },
-      { available: false, requested: false, effective: false },
     ]);
-    assert.equal(events.some(e => e.event === "slash_error"), false);
+    assert.ok(events.some(e => e.event === "slash_error" && String(e.message).includes("supported by the current model")));
   } finally { sessions.delete(session.sessionId); }
 });
 
@@ -10605,4 +10398,200 @@ test("Ultracode connection snapshots, identity changes, conversation reset and c
     beginSessionClose(session);
     assert.equal(session.ultracode, undefined);
   } finally { sessions.delete(session.sessionId); }
+});
+
+test("buildQueryOptions adapts resolved checkpoint preferences and keeps host review restrictions", () => {
+  for (const enabled of [undefined, false, true]) {
+    for (const inbound of [undefined, "hold", "accept", "refuse"] as const) {
+      const options = buildQueryOptions({
+        cwd: "C:/work", launchSettings: {},
+        resolvedSettings: { fileCheckpointingEnabled: enabled, crossSessionInbound: inbound },
+        provisionalSessionId: "session-adapters", input: new AsyncQueue(),
+        canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+        enableSdkDebug: false, enableSpawnDebug: false, sessionIdForLogs: () => "session-adapters",
+      });
+      assert.equal(options.enableFileCheckpointing, enabled ?? true);
+      assert.equal(options.agentProgressSummaries, true);
+      assert.equal(options.promptSuggestions, true);
+      assert.deepEqual(options.disallowedTools, ["ProposeSkills", "ProposeGoal"]);
+      assert.deepEqual(options.settings, {
+        feedbackDrafts: "off", ...(["accept", "refuse"].includes(inbound ?? "") ? {} : { crossSessionInbound: "refuse" }),
+      });
+      assert.deepEqual(options.systemPrompt, {
+        type: "preset", preset: "claude_code", append: BRIDGE_RUNTIME_GUARD_PROMPT, snapshot: true,
+      });
+    }
+  }
+});
+
+test("inherited model identity follows SDK initialization metadata", async () => {
+  const session = makeSessionState();
+  session.requestedModelId = undefined;
+  session.resolvedRuntimeModelId = undefined;
+  session.query = {
+    supportedCommands: async () => [],
+    getSettings: async () => ({ applied: { ultracodeAvailable: false, ultracodeRequested: false, ultracode: false } }),
+  } as unknown as SessionState["query"];
+  const pending = resolveCurrentModel(session);
+  assert.equal(pending.display_name_short, "Connecting...");
+  assert.equal(pending.is_authoritative, false);
+  await captureBridgeEventsAsync(async () => {
+    handleSdkMessage(session, {
+      type: "system", subtype: "init", session_id: session.sessionId,
+      model: "claude-haiku-4-5", permissionMode: "plan",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    await new Promise<void>(resolve => setImmediate(resolve));
+  });
+  const initialized = resolveCurrentModel(session);
+  assert.equal(initialized.resolved_id, "claude-haiku-4-5");
+  assert.equal(initialized.display_name_short, "Haiku 4.5");
+  assert.equal(initialized.is_authoritative, true);
+  assert.equal(session.mode, "plan");
+});
+
+test("model change publishes the newer native observation when its applied read returns late", async () => {
+  const session = makeSessionState();
+  session.availableModels = ["opus", "sonnet"].map(id => ({ id, display_name: id, supports_effort: true, supported_effort_levels: [] }));
+  let finishRead: ((value: unknown) => void) | undefined;
+  const pending = new Promise(resolve => { finishRead = resolve; });
+  session.query = { getSettings: async () => pending, supportedCommands: async () => [], supportedAgents: async () => [] } as unknown as SessionState["query"];
+  const events = await captureBridgeEventsAsync(async () => {
+    const read = refreshSessionModel(session);
+    handleSdkMessage(session, { type: "system", subtype: "init", session_id: session.sessionId, model: "sonnet" } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    finishRead?.({ applied: { model: "opus", ultracodeAvailable: true, ultracodeRequested: false, ultracode: false } });
+    await read;
+  });
+  assert.equal(session.currentModel?.resolved_id, "sonnet");
+  const updates = events.filter(event => (event.update as Record<string, unknown>)?.type === "current_model_update");
+  const latest = updates.at(-1);
+  assert.ok(latest);
+  assert.equal((latest.update as { current_model: { resolved_id: string } }).current_model.resolved_id, "sonnet");
+});
+
+test("fast-mode command acknowledges unchanged newer native state instead of replacing it with a late read", async () => {
+  const session = makeSessionState();
+  let finishRead: ((value: unknown) => void) | undefined;
+  let started: (() => void) | undefined;
+  const readStarted = new Promise<void>(resolve => { started = resolve; });
+  const pending = new Promise(resolve => { finishRead = resolve; });
+  session.query = {
+    applyFlagSettings: async () => {}, reinitialize: async () => { started?.(); return pending; },
+    getSettings: async () => ({ applied: { model: "haiku", effort: null, ultracodeAvailable: false, ultracodeRequested: false, ultracode: false } }),
+    supportedCommands: async () => [], supportedAgents: async () => [],
+  } as unknown as SessionState["query"];
+  sessions.set(session.sessionId, session);
+  try {
+    const events = await captureBridgeEventsAsync(async () => {
+      const change = handleSessionControlCommand({ command: "set_fast_mode", session_id: session.sessionId, enabled: true }, "fast-race", promptControlDeps());
+      await readStarted;
+      handleSdkMessage(session, { type: "system", subtype: "init", session_id: session.sessionId, model: "haiku", fast_mode_state: "off" } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+      finishRead?.({ fast_mode_state: "on" });
+      await change;
+    });
+    assert.equal(session.fastModeState, "off");
+    assert.ok(events.some(event => (event.update as Record<string, unknown>)?.type === "fast_mode_update" && (event.update as Record<string, unknown>).fast_mode_state === "off"));
+    assert.ok(events.some(event => event.event === "slash_error" && event.request_id === "fast-race"));
+  } finally { sessions.delete(session.sessionId); }
+});
+
+test("SDK live timestamps and per-turn elapsed/API times survive the production event handler", async () => {
+  const session = makeSessionState();
+  const send = (message: Record<string, unknown>) => handleSdkMessage(session, message as unknown as Parameters<typeof handleSdkMessage>[1]);
+  const events = await captureBridgeEventsAsync(async () => {
+    await send({ type: "user", uuid: "prompt-clock", timestamp: "2026-10-03T15:02:00Z", parent_tool_use_id: null, message: { role: "user", content: [{ type: "text", text: "go" }] } });
+    await send({ type: "stream_event", uuid: "response-clock", event: { type: "content_block_delta", delta: { type: "text_delta", text: "answer" } }, parent_tool_use_id: null });
+    await send({ type: "assistant", uuid: "response-clock", timestamp: "2026-10-03T15:02:01Z", parent_tool_use_id: null, message: { role: "assistant", content: [] } });
+    await send({ type: "result", subtype: "success", duration_ms: 2000, duration_api_ms: 1250 });
+  }) as unknown as import("./types.js").BridgeEvent[];
+  const updates = events.filter(event => event.event === "session_update").map(event => event.update);
+  assert.ok(updates.some(update => update.type === "message_metadata" && update.role === "user" && update.timestamp === "2026-10-03T15:02:00Z"));
+  assert.ok(updates.some(update => update.type === "message_metadata" && update.role === "assistant" && update.source_message_uuid === "response-clock"));
+  assert.deepEqual(updates.find(update => update.type === "turn_timing"), { type: "turn_timing", duration_ms: 2000, api_duration_ms: 1250 });
+  assert.equal(events.at(-1)?.event, "turn_complete");
+  const failure = captureBridgeEvents(() => handleResultMessage(session, { type: "result", subtype: "error_during_execution", duration_ms: 2500, duration_api_ms: 500, errors: ["cancelled"] })) as unknown as import("./types.js").BridgeEvent[];
+  assert.ok(failure.some(event => event.event === "session_update" && event.update.type === "turn_timing" && event.update.duration_ms === 2500));
+});
+
+test("resume keeps original SDK timestamps after the corresponding content", () => {
+  const messages = [
+    { type: "user", uuid: "old-prompt", session_id: "session-1", parent_tool_use_id: null, timestamp: "2025-01-01T10:00:00Z", message: { role: "user", content: [{ type: "text", text: "old question" }] } },
+    { type: "assistant", uuid: "old-answer", session_id: "session-1", parent_tool_use_id: null, message: { timestamp: "2025-01-01T10:00:02Z", role: "assistant", content: [{ type: "text", text: "old answer" }] } },
+  ] as unknown as SessionMessage[];
+  const updates = mapSessionMessagesToUpdates(messages);
+  assert.deepEqual(updates.map(update => update.type), ["user_message_chunk", "message_metadata", "agent_message_chunk", "message_metadata"]);
+  assert.equal((updates[3] as Extract<import("./types.js").SessionUpdate, { type: "message_metadata" }>).timestamp, "2025-01-01T10:00:02Z");
+});
+
+test("tool progress elapsed time survives a final result without becoming turn elapsed time", async () => {
+  const session = makeSessionState();
+  const send = (message: Record<string, unknown>) => handleSdkMessage(session, message as unknown as Parameters<typeof handleSdkMessage>[1]);
+  const events = await captureBridgeEventsAsync(async () => {
+    emitToolCall(session, "timed-tool", "Agent", { description: "Review", prompt: "Review the changes" }, null);
+    await send({ type: "tool_progress", tool_use_id: "timed-tool", tool_name: "Agent", parent_tool_use_id: null, elapsed_time_seconds: 1.25 });
+    emitToolResultUpdate(session, "timed-tool", false, "Done", { resolvedModel: "claude-sonnet-4-7", content: [{ type: "text", text: "Done" }] });
+  }) as unknown as import("./types.js").BridgeEvent[];
+  assert.deepEqual(session.toolCalls.get("timed-tool")?.output_metadata?.timing, { duration_ms: 1250, source: "progress" });
+  const finalUpdate = events.filter(event => event.event === "session_update" && event.update.type === "tool_call_update").at(-1);
+  assert.ok(finalUpdate?.event === "session_update" && finalUpdate.update.type === "tool_call_update");
+  assert.deepEqual(finalUpdate.update.tool_call_update.fields.output_metadata, { timing: { duration_ms: 1250, source: "progress" }, agent: { resolved_model: "claude-sonnet-4-7" } });
+});
+
+
+test("live and replayed proactive tool results carry structured intent and upstream delivery reports", () => {
+  for (const replay of [false, true]) {
+    const session = makeSessionState();
+    const events = captureBridgeEvents(() => {
+      emitToolCall(session, "push-1", "PushNotification", { status: "proactive", message: "Review is ready" });
+      handleSdkMessage(session, {
+        type: "user", session_id: session.sessionId, uuid: "result-1", isReplay: replay,
+        message: { role: "user", content: [{ type: "tool_result", tool_use_id: "push-1", content: "Review is ready" }] },
+        tool_use_result: { data: { message: "Review is ready", pushSent: true, localSent: false, disabledReason: "no_transport", sentAt: "2026-10-04T10:00:00Z" } },
+      } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    });
+    assert.deepEqual(events.at(-1)?.update, {
+      type: "notification_update", replay,
+      notification: { origin: "model_tool", session_id: session.sessionId, tool_use_id: "push-1", text: "Review is ready", push_sent: true, local_sent: false, disabled_reason: "no_transport", sent_at: "2026-10-04T10:00:00Z" },
+    });
+    assert.ok(events.some(event => (event.update as { type?: string })?.type === "tool_call_update"));
+  }
+});
+
+test("native notices preserve original priority, replacement key and presentation hints", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system", subtype: "notification", session_id: session.sessionId,
+      uuid: "notice-1", key: "replaceable", text: "Native notice", priority: "immediate", color: "yellow", timeout_ms: 5000,
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+  assert.deepEqual(events.at(-1)?.update, { type: "notification_update", replay: false, notification: {
+    origin: "sdk_notice", session_id: session.sessionId, uuid: "notice-1", key: "replaceable", text: "Native notice", priority: "immediate", color: "yellow", timeout_ms: 5000,
+  } });
+});
+
+
+test("historical SDK notices retain metadata in the replay projection", () => {
+  const updates = mapSessionMessagesToUpdates([{ type: "system", uuid: "old-notice", session_id: "session-1", message: {
+    type: "system", subtype: "notification", session_id: "session-1", uuid: "old-notice", key: "replaceable", text: "Historical notice", priority: "future-priority", timeout_ms: 0,
+  } }] as unknown as SessionMessage[]);
+  assert.deepEqual(updates, [{ type: "notification_update", replay: true, notification: {
+    origin: "sdk_notice", session_id: "session-1", uuid: "old-notice", key: "replaceable", text: "Historical notice", priority: "future-priority", timeout_ms: 0,
+  } }]);
+});
+
+
+test("failed proactive tool execution remains failed output instead of a local alert request", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "push-failed", "PushNotification", { status: "proactive", message: "Review is ready" });
+    handleSdkMessage(session, {
+      type: "user", session_id: session.sessionId, uuid: "failed-result",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "push-failed", content: "Send failed", is_error: true }] },
+      tool_use_result: { message: "Review is ready", localSent: false },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+  const result = events.at(-1)?.update as { type?: string; tool_call_update?: { fields?: { status?: string } } };
+  assert.equal(result.type, "tool_call_update");
+  assert.equal(result.tool_call_update?.fields?.status, "failed");
+  assert.equal(events.length, 2);
 });

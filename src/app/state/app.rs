@@ -11,6 +11,7 @@ pub(crate) struct PendingSessionResume {
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub surface_mode: SurfaceMode,
+    pub(crate) copy_picker: Option<crate::app::copy::CopyPicker>,
     pub(crate) terminal_lifecycle: TerminalLifecycleState,
     pub(crate) terminal_child_cancel: Option<tokio::sync::oneshot::Sender<()>>,
     pub(crate) surface_dirty: SurfaceDirtyState,
@@ -172,13 +173,12 @@ impl App {
     }
 
     #[must_use]
-    pub fn session_thinking_effort_effective(&self) -> model::EffortLevel {
+    pub fn session_effort(&self) -> Option<model::EffortLevel> {
         self.session_runtime
             .config_options
             .get("effortLevel")
             .and_then(serde_json::Value::as_str)
             .and_then(model::EffortLevel::from_stored)
-            .unwrap_or_else(|| self.config.thinking_effort_effective())
     }
 
     #[must_use]
@@ -250,6 +250,7 @@ impl App {
             recent_sessions: Vec::new(),
             session_picker: SessionPickerState::default(),
             chat_render: ChatRenderState::default(),
+            copy_picker: None,
             mention: None,
             committed_mentions: Vec::new(),
             file_index: file_index::FileIndexState::default(),

@@ -1,4 +1,9 @@
+import { observeMainAgentStream, resetMainAgentActivity } from "./activity.js";
+import { nativeNotification } from "./notifications.js";
+import { elapsedNumber, messageMetadata, turnTiming } from "./presentation_metadata.js";
 import { refreshUltracode } from "./ultracode.js";
+import { observeSessionEffort, refreshSessionEffort } from "./effort.js";
+import { observeSessionModel } from "./session_model.js";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
   BridgeCommand,
@@ -11,7 +16,7 @@ import type {
 } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
 import {
-  toPermissionMode,
+  observeSessionMode,
   buildModeState,
   refreshSupportedModesForSession,
 } from "./commands.js";
@@ -628,10 +633,6 @@ export function flushPendingWorkerShutdown(session: SessionState): void {
   );
 }
 
-function notificationSeverity(priority: unknown): SystemNoticeSeverity {
-  return priority === "high" || priority === "immediate" ? "warning" : "info";
-}
-
 function isTerminalToolStatus(status: ToolCallUpdateFields["status"]): boolean {
   return status === "completed" || status === "failed" || status === "killed";
 }
@@ -792,6 +793,10 @@ export function handleTaskSystemMessage(
     return true;
   }
   applyTaskLifecycleState(session, subtype, msg);
+  const taskDuration = elapsedNumber(asRecordOrNull(msg.usage)?.duration_ms);
+  if (taskDuration !== undefined && Number.isSafeInteger(Math.round(taskDuration))) {
+    emitToolCallUpdate(session, toolUseId, { output_metadata: { ...toolCall.output_metadata, timing: { duration_ms: Math.round(taskDuration), source: "task" } } }, "progress");
+  }
   if (toolCall.status === "pending") {
     emitToolCallUpdate(
       session,
@@ -994,6 +999,7 @@ function handleFallbackRetractionMessage(
   if (subtype !== "model_refusal_fallback" && subtype !== "model_fallback") {
     return false;
   }
+  if (msg.scope !== "subagent" && !msg.parent_tool_use_id) resetMainAgentActivity(session);
   const reason: TranscriptRetractionReason =
     subtype === "model_fallback" ? "model_fallback" : "model_refusal_fallback";
   const messageUuids = dedupeMessageUuids(msg.retracted_message_uuids);
@@ -1141,20 +1147,6 @@ export function handleContentBlock(
     return;
   }
 
-  if (blockType === "thinking") {
-    const text = typeof block.thinking === "string" ? block.thinking : "";
-    if (text) {
-      emitSessionUpdate(session.sessionId, {
-        type: "agent_thought_chunk",
-        content: { type: "text", text },
-        ...(linkage?.sourceMessageUuid
-          ? { source_message_uuid: linkage.sourceMessageUuid }
-          : {}),
-      });
-    }
-    return;
-  }
-
   if (
     blockType === "tool_use" ||
     blockType === "server_tool_use" ||
@@ -1213,6 +1205,7 @@ export function handleStreamEvent(
   parentToolUseId?: string,
   sourceMessageUuid?: string,
 ): void {
+  observeMainAgentStream(session, event, parentToolUseId);
   const eventType = typeof event.type === "string" ? event.type : "";
 
   if (eventType === "content_block_start") {
@@ -1247,17 +1240,6 @@ export function handleStreamEvent(
             : {}),
         });
       }
-    } else if (deltaType === "thinking_delta") {
-      const text = typeof delta.thinking === "string" ? delta.thinking : "";
-      if (text) {
-        emitSessionUpdate(session.sessionId, {
-          type: "agent_thought_chunk",
-          content: { type: "text", text },
-          ...(sourceMessageUuid
-            ? { source_message_uuid: sourceMessageUuid }
-            : {}),
-        });
-      }
     }
   }
 }
@@ -1266,6 +1248,17 @@ export function handleAssistantMessage(
   session: SessionState,
   message: Record<string, unknown>,
 ): void {
+  const response = session.mainAgentResponse;
+  const completed = asRecordOrNull(message.message);
+  // The SDK also emits assistant frames for individual completed blocks with
+  // stop_reason null. Those do not close the response's streaming scope.
+  if (!message.parent_tool_use_id && response &&
+      completed?.id === response.messageId &&
+      (completed.stop_reason != null || message.aborted === true || typeof message.error === "string")) {
+    resetMainAgentActivity(session);
+  }
+  const metadataUpdate = messageMetadata(message, "assistant");
+  if (metadataUpdate) emitSessionUpdate(session.sessionId, metadataUpdate);
   const assistantMessageUuid = sourceMessageUuid(message);
   emitTranscriptRetraction(
     session,
@@ -1520,6 +1513,7 @@ export function handleUserToolResultBlocks(
         messageToolUseResult(message) ?? blockRecord,
         sourceMessageUuid(message),
         nonExecutionByToolUseId.get(toolUseId),
+        message.isReplay === true,
       );
     }
   }
@@ -1595,6 +1589,8 @@ export function handleResultMessage(
       fields: replyDiagnostics,
     });
   }
+  const timing = turnTiming(message);
+  if (timing) emitSessionUpdate(session.sessionId, timing);
   const terminalReason = terminalReasonFromValue(message.terminal_reason);
   const queuedTurnCount = nonNegativeIntegerField(message, "queued_turn_count");
 
@@ -1721,6 +1717,7 @@ export function handleSdkMessage(
   logSdkMessageOrigin(session, msg);
 
   if (type === "conversation_reset") {
+    resetMainAgentActivity(session);
     const newConversationId = trimmedStringField(msg, "new_conversation_id");
     if (!newConversationId) {
       bridgeLogger.warn({
@@ -1734,6 +1731,7 @@ export function handleSdkMessage(
     }
     closeSideQuestions(session.sessionId, session.query);
     void refreshUltracode(session);
+    void refreshSessionEffort(session);
     emitSessionUpdate(session.sessionId, {
       type: "conversation_reset",
       new_conversation_id: newConversationId,
@@ -1769,8 +1767,8 @@ export function handleSdkMessage(
     }
 
     if (subtype === "notification") {
-      const text = typeof msg.text === "string" ? msg.text : "";
-      emitSystemNoticeUpdate(session, notificationSeverity(msg.priority), text);
+      const notification = nativeNotification(msg);
+      if (notification) emitSessionUpdate(session.sessionId, { type: "notification_update", notification, replay: false });
       return;
     }
 
@@ -1888,6 +1886,7 @@ export function handleSdkMessage(
     }
 
     if (subtype === "api_retry") {
+      if (!msg.parent_tool_use_id) resetMainAgentActivity(session);
       const noResponse = asRecordOrNull(msg.no_response);
       if (noResponse) {
         bridgeLogger.debug({
@@ -1932,18 +1931,10 @@ export function handleSdkMessage(
       if (session.connected) {
         void refreshUltracode(session);
       }
-      const modelName =
-        typeof msg.model === "string" ? msg.model : session.model;
-      session.model = modelName;
+      if (typeof msg.model === "string" && msg.model.trim().length > 0) observeSessionModel(session, msg.model);
       const currentModelChanged = refreshCurrentModel(session, false);
 
-      const incomingMode =
-        typeof msg.permissionMode === "string"
-          ? toPermissionMode(msg.permissionMode)
-          : null;
-      if (incomingMode) {
-        session.mode = incomingMode;
-      }
+      const incomingMode = observeSessionMode(session, msg.permissionMode);
       refreshSupportedModesForSession(session);
       const fastModeChanged = setFastModeSnapshotIfChanged(
         session,
@@ -1962,12 +1953,18 @@ export function handleSdkMessage(
         if (incomingMode) {
           emitSessionUpdate(session.sessionId, {
             type: "mode_state_update",
-            mode: buildModeState(session, incomingMode),
+            mode: buildModeState(session, session.mode),
           });
         }
         if (fastModeChanged) {
           emitFastModeUpdate(session);
         }
+      }
+
+      if (msg.effort !== undefined) {
+        observeSessionEffort(session, msg.effort);
+      } else {
+        void refreshSessionEffort(session);
       }
 
       if (Array.isArray(msg.slash_commands)) {
@@ -1987,7 +1984,7 @@ export function handleSdkMessage(
       }
 
       if (
-        session.lastAvailableAgentsSignature === undefined &&
+        session.availableAgents === undefined &&
         Array.isArray(msg.agents)
       ) {
         emitAvailableAgentsIfChanged(
@@ -2019,16 +2016,11 @@ export function handleSdkMessage(
     }
 
     if (subtype === "status") {
-      const mode =
-        typeof msg.permissionMode === "string"
-          ? toPermissionMode(msg.permissionMode)
-          : null;
-      if (mode) {
-        session.mode = mode;
+      if (observeSessionMode(session, msg.permissionMode)) {
         refreshSupportedModesForSession(session);
         emitSessionUpdate(session.sessionId, {
-          type: "current_mode_update",
-          current_mode_id: mode,
+          type: "mode_state_update",
+          mode: buildModeState(session, session.mode),
         });
       }
       if (msg.status === "compacting") {
@@ -2279,6 +2271,7 @@ export function handleSdkMessage(
           ? msg.subagent_type.trim()
           : undefined;
       emitToolProgressUpdate(session, resolvedToolUseId, {
+        elapsedSeconds: elapsedNumber(msg.elapsed_time_seconds),
         ...(subagentRetry
           ? { subagentRetry }
           : hasSubagentRetry
@@ -2394,6 +2387,8 @@ export function handleSdkMessage(
   }
 
   if (type === "user") {
+    const userMetadata = messageMetadata(msg, "user");
+    if (userMetadata) emitSessionUpdate(session.sessionId, userMetadata);
     const notification = parseDetachedToolNotification(msg);
     if (notification && session.toolCalls.has(notification.toolUseId)) {
       const toolCall = session.toolCalls.get(notification.toolUseId);
@@ -2405,6 +2400,8 @@ export function handleSdkMessage(
           notification.output,
           undefined,
           sourceMessageUuid(msg),
+          undefined,
+          msg.isReplay === true,
         );
       }
       return;
@@ -2431,6 +2428,7 @@ export function handleSdkMessage(
         rawToolUseResult,
         sourceMessageUuid(msg),
         parseToolNonExecutionMetadata(msg.tool_result_meta).get(toolUseId),
+        msg.isReplay === true,
       );
     }
     return;
@@ -2451,6 +2449,7 @@ export function handleSdkMessage(
   }
 
   if (type === "result") {
+    resetMainAgentActivity(session);
     handleResultMessage(session, msg);
     return;
   }

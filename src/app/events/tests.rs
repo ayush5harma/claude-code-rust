@@ -208,6 +208,7 @@ fn seed_resize_measurements(app: &mut App) {
     app.chat_render.terminal_width = 90;
     app.chat_render.terminal_height = 30;
     app.chat_render.composer = ComposerRenderState {
+        activity_rows: 0,
         width: 90,
         hint_rows: 1,
         btw_rows: 0,
@@ -659,6 +660,12 @@ fn streaming_long_markdown_table_does_not_leave_raw_pipe_row_tail() {
     let table = format!("| Hassle | What users report | Refs |\n| --- | --- | --- |\n{rows}");
     assert!(table.len() > crate::app::DEFAULT_CACHE_SPLIT_SOFT_LIMIT_BYTES);
     let mut app = make_test_app();
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::RuntimeSessionStateUpdate(
+            model::RuntimeSessionState::Running,
+        )),
+    );
 
     handle_client_event(
         &mut app,
@@ -699,8 +706,6 @@ fn streaming_long_markdown_table_does_not_leave_raw_pipe_row_tail() {
         "live tail must not render raw Markdown table rows: {remaining_text:?}"
     );
 }
-
-// has_in_progress_tool_calls
 
 fn make_test_app() -> App {
     let mut app = App::test_default();
@@ -931,181 +936,6 @@ fn todowrite_tool_call_does_not_mutate_task_state() {
     assert_eq!(app.sdk_inventory.tasks[0].task_id, "task-1");
     assert_eq!(app.sdk_inventory.tasks[0].subject, "Existing task");
     assert_eq!(app.sdk_inventory.tasks[0].status, model::TaskStatus::InProgress);
-}
-
-#[test]
-fn has_in_progress_empty_messages() {
-    let app = make_test_app();
-    assert!(!tool_calls::has_in_progress_tool_calls(&app));
-}
-
-#[test]
-fn has_in_progress_no_tool_calls() {
-    let mut app = make_test_app();
-    app.transcript
-        .messages
-        .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("hello"))]));
-    assert!(!tool_calls::has_in_progress_tool_calls(&app));
-}
-
-#[test]
-fn has_in_progress_with_pending_tool() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-        "tc1",
-        model::ToolCallStatus::Pending,
-    )))]));
-    app.bind_active_turn_assistant_to_tail();
-    assert!(tool_calls::has_in_progress_tool_calls(&app));
-}
-
-#[test]
-fn has_in_progress_with_in_progress_tool() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-        "tc1",
-        model::ToolCallStatus::InProgress,
-    )))]));
-    app.bind_active_turn_assistant_to_tail();
-    assert!(tool_calls::has_in_progress_tool_calls(&app));
-}
-
-#[test]
-fn has_in_progress_all_completed() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-        "tc1",
-        model::ToolCallStatus::Completed,
-    )))]));
-    assert!(!tool_calls::has_in_progress_tool_calls(&app));
-}
-
-#[test]
-fn has_in_progress_all_failed() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-        "tc1",
-        model::ToolCallStatus::Failed,
-    )))]));
-    assert!(!tool_calls::has_in_progress_tool_calls(&app));
-}
-
-// has_in_progress_tool_calls
-
-#[test]
-fn has_in_progress_user_message_last() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(user_msg("hi"));
-    assert!(!tool_calls::has_in_progress_tool_calls(&app));
-}
-
-/// Without an explicit owner, in-progress tools do not count even if the last assistant has them.
-#[test]
-fn has_in_progress_requires_explicit_owner() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-        "tc1",
-        model::ToolCallStatus::InProgress,
-    )))]));
-    app.transcript.messages.push(user_msg("thanks"));
-    assert!(!tool_calls::has_in_progress_tool_calls(&app));
-}
-
-/// The owned assistant decides the result even when another assistant trails later.
-#[test]
-fn has_in_progress_uses_owned_assistant_not_latest_assistant() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-        "tc1",
-        model::ToolCallStatus::InProgress,
-    )))]));
-    app.transcript.messages.push(user_msg("ok"));
-    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-        "tc2",
-        model::ToolCallStatus::Completed,
-    )))]));
-    app.bind_active_turn_assistant(0);
-    assert!(tool_calls::has_in_progress_tool_calls(&app));
-}
-
-#[test]
-fn has_in_progress_mixed_completed_and_pending() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(assistant_msg(vec![
-        MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::Completed))),
-        MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::InProgress))),
-    ]));
-    app.bind_active_turn_assistant_to_tail();
-    assert!(tool_calls::has_in_progress_tool_calls(&app));
-}
-
-/// Text blocks mixed with tool calls - text blocks are correctly skipped.
-#[test]
-fn has_in_progress_text_and_tools_mixed() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(assistant_msg(vec![
-        MessageBlock::Text(TextBlock::from_complete("thinking...")),
-        MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::Completed))),
-        MessageBlock::Text(TextBlock::from_complete("done")),
-    ]));
-    assert!(!tool_calls::has_in_progress_tool_calls(&app));
-}
-
-/// Stress: 100 completed tool calls + 1 pending at the end.
-#[test]
-fn has_in_progress_stress_100_tools_one_pending() {
-    let mut app = make_test_app();
-    let mut blocks: Vec<MessageBlock> = (0..100)
-        .map(|i| {
-            MessageBlock::ToolCall(Box::new(tool_call(
-                &format!("tc{i}"),
-                model::ToolCallStatus::Completed,
-            )))
-        })
-        .collect();
-    blocks.push(MessageBlock::ToolCall(Box::new(tool_call(
-        "tc_pending",
-        model::ToolCallStatus::Pending,
-    ))));
-    app.transcript.messages.push(assistant_msg(blocks));
-    app.bind_active_turn_assistant_to_tail();
-    assert!(tool_calls::has_in_progress_tool_calls(&app));
-}
-
-/// Stress: 100 completed tool calls, none pending.
-#[test]
-fn has_in_progress_stress_100_tools_all_done() {
-    let mut app = make_test_app();
-    let blocks: Vec<MessageBlock> = (0..100)
-        .map(|i| {
-            MessageBlock::ToolCall(Box::new(tool_call(
-                &format!("tc{i}"),
-                model::ToolCallStatus::Completed,
-            )))
-        })
-        .collect();
-    app.transcript.messages.push(assistant_msg(blocks));
-    assert!(!tool_calls::has_in_progress_tool_calls(&app));
-}
-
-/// Mix of Failed and Completed - neither counts as in-progress.
-#[test]
-fn has_in_progress_failed_and_completed_mix() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(assistant_msg(vec![
-        MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::Completed))),
-        MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::Failed))),
-        MessageBlock::ToolCall(Box::new(tool_call("tc3", model::ToolCallStatus::Completed))),
-    ]));
-    assert!(!tool_calls::has_in_progress_tool_calls(&app));
-}
-
-/// Empty assistant message (no blocks at all).
-#[test]
-fn has_in_progress_empty_assistant_blocks() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(assistant_msg(vec![]));
-    assert!(!tool_calls::has_in_progress_tool_calls(&app));
 }
 
 // make_test_app - verify defaults
@@ -2248,7 +2078,10 @@ fn fast_mode_update_sets_state() {
 #[test]
 fn fast_mode_disabled_reason_updates_clears_and_notifies_once_when_requested() {
     let mut app = make_test_app();
-    app.config.committed_settings_document = serde_json::json!({ "fastMode": true });
+    app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+        "fastMode",
+        serde_json::json!(true),
+    ));
 
     let update = model::SessionUpdate::FastModeUpdate {
         state: model::FastModeState::Off,
@@ -2294,7 +2127,10 @@ fn fast_mode_disabled_reason_does_not_warn_when_unrequested_or_cooling_down() {
     assert!(unrequested.transcript.messages.is_empty());
 
     let mut cooling_down = make_test_app();
-    cooling_down.config.committed_settings_document = serde_json::json!({ "fastMode": true });
+    cooling_down.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+        "fastMode",
+        serde_json::json!(true),
+    ));
     handle_client_event(
         &mut cooling_down,
         session_update(model::SessionUpdate::FastModeUpdate {
@@ -3097,9 +2933,15 @@ fn update_result_persists_across_connected_session_reset_without_notice() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::UpdateAvailable {
-            latest_version: "0.11.2".into(),
-            current_version: "0.11.1".into(),
+        ClientEvent::UpdateCheckCompleted {
+            result: crate::app::settings::UpdateCheckResult {
+                latest_version: "0.11.2".into(),
+                current_version: "0.11.1".into(),
+                release_url: crate::app::settings::release_url_for_version("0.11.2")
+                    .expect("release URL"),
+                checked_at_unix_secs: 10,
+                source: "github_release".into(),
+            },
         },
     );
     handle_client_event(&mut app, connected_event("claude-updated"));
@@ -3120,9 +2962,15 @@ fn update_result_persists_across_session_replaced_reset_without_notice() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::UpdateAvailable {
-            latest_version: "0.11.2".into(),
-            current_version: "0.11.1".into(),
+        ClientEvent::UpdateCheckCompleted {
+            result: crate::app::settings::UpdateCheckResult {
+                latest_version: "0.11.2".into(),
+                current_version: "0.11.1".into(),
+                release_url: crate::app::settings::release_url_for_version("0.11.2")
+                    .expect("release URL"),
+                checked_at_unix_secs: 10,
+                source: "github_release".into(),
+            },
         },
     );
     handle_client_event(
@@ -3184,6 +3032,8 @@ fn attach_pending_question(
     let (response_tx, response_rx) = oneshot::channel();
     let mut tc = tool_call(tool_id, model::ToolCallStatus::InProgress);
     tc.pending_question = Some(InlineQuestion {
+        idle_timeout: None,
+        last_activity: std::time::Instant::now(),
         prompt,
         response_tx,
         focused_option_index: 0,
@@ -3616,31 +3466,6 @@ fn mention_owner_releases_back_to_input() {
 }
 
 #[test]
-fn settings_view_routes_space_to_settings_handler_not_chat_input() {
-    let mut app = make_test_app();
-    let dir = tempfile::tempdir().expect("tempdir");
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-    crate::app::config::open(&mut app).expect("open settings");
-    app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Config);
-    app.config.selected_setting_index = crate::app::config::setting_specs()
-        .iter()
-        .position(|spec| spec.id == crate::app::config::SettingId::FastMode)
-        .expect("fast mode setting row");
-    app.input.set_text("seed");
-
-    handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)),
-    );
-
-    assert_eq!(app.input.text(), "seed");
-    assert!(app.pending_submit.is_none());
-    assert!(app.config.fast_mode_effective());
-    assert!(app.config.last_error.is_none());
-}
-
-#[test]
 fn settings_view_routes_enter_to_close_not_chat_submit() {
     let mut app = make_test_app();
     let dir = tempfile::tempdir().expect("tempdir");
@@ -3733,7 +3558,7 @@ fn trusted_view_accept_key_does_not_edit_chat_input() {
     app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Trusted);
     app.input.set_text("seed");
     app.cwd_raw = dir.path().join("project").to_string_lossy().to_string();
-    app.config.preferences_path = Some(path);
+    app.trust.preferences_path = Some(path);
     app.trust.status = crate::app::trust::TrustStatus::Untrusted;
     app.trust.project_key =
         crate::app::trust::store::normalize_project_key(std::path::Path::new(&app.cwd_raw));

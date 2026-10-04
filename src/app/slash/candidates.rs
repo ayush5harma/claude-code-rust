@@ -7,59 +7,11 @@ use super::{
     APP_SLASH_COMMANDS, AppSlashCommand, CompletionRequest, SlashCandidate, SlashCommandToken,
     SlashContext, SlashDetection, SlashState, SubmissionClass, command_spec, normalize_slash_name,
 };
-use crate::agent::model::EffortLevel;
 use crate::app::App;
-use crate::app::config::store;
 use crate::app::dialog::DialogState;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const OPUS_4_5_MODEL_ID: &str = "claude-opus-4-5-20251101";
-const OPUS_4_6_MODEL_ID: &str = "claude-opus-4-6";
-const OPUS_4_7_MODEL_ID: &str = "claude-opus-4-7";
-const OPUS_4_8_MODEL_ID: &str = "claude-opus-4-8";
 const MAX_ARGUMENT_CANDIDATES: usize = 50;
-
-fn opus_version_label_for_model_id(model_id: &str) -> Option<&'static str> {
-    match model_id {
-        OPUS_4_5_MODEL_ID => Some("4.5"),
-        OPUS_4_6_MODEL_ID => Some("4.6"),
-        OPUS_4_7_MODEL_ID => Some("4.7"),
-        OPUS_4_8_MODEL_ID => Some("4.8"),
-        _ => None,
-    }
-}
-
-fn model_candidate_secondary(
-    app: &App,
-    model: &crate::agent::model::AvailableModel,
-) -> Option<String> {
-    let base = model
-        .description
-        .clone()
-        .or_else(|| (model.display_name != model.id).then(|| model.id.clone()));
-
-    if !model.id.eq_ignore_ascii_case("opus") && !model.id.eq_ignore_ascii_case("opus[1m]") {
-        return base;
-    }
-
-    let Some(pinned_model_id) =
-        store::opus_version_pin(&app.config.committed_local_settings_document).ok().flatten()
-    else {
-        return base;
-    };
-    let Some(version) = opus_version_label_for_model_id(&pinned_model_id) else {
-        return base;
-    };
-    let description = base?;
-
-    Some(
-        description
-            .replace("Opus 4.7", &format!("Opus {version}"))
-            .replace("Opus 4.8", &format!("Opus {version}"))
-            .replace("Opus 4.6", &format!("Opus {version}"))
-            .replace("Opus 4.5", &format!("Opus {version}")),
-    )
-}
 
 pub(super) fn detect_argument_at_cursor(
     chars: &[char],
@@ -322,25 +274,27 @@ fn static_argument_candidates(command_name: &str) -> Vec<SlashCandidate> {
 }
 
 fn effort_argument_candidates(app: &App) -> Vec<SlashCandidate> {
-    let mut levels = match app.session_runtime.current_model.as_ref() {
+    let levels = match app.session_runtime.current_model.as_ref() {
         Some(model) if !model.supports_effort => Vec::new(),
         Some(model) if !model.supported_effort_levels.is_empty() => {
             model.supported_effort_levels.clone()
         }
-        _ => EffortLevel::ALL.to_vec(),
+        _ => Vec::new(),
     };
-    if !levels.contains(&EffortLevel::Max) {
-        levels.push(EffortLevel::Max);
-    }
-
-    levels
+    let mut candidates: Vec<_> = levels
         .into_iter()
         .map(|level| SlashCandidate {
             insert_value: level.as_stored().to_owned(),
             primary: level.as_stored().to_owned(),
             secondary: Some(format!("{} - {}", level.label(), level.description())),
         })
-        .collect()
+        .collect();
+    candidates.push(SlashCandidate {
+        insert_value: "reset".to_owned(),
+        primary: "reset".to_owned(),
+        secondary: Some("Use the model's session default".to_owned()),
+    });
+    candidates
 }
 
 fn agent_argument_candidates(app: &App) -> Vec<SlashCandidate> {
@@ -416,9 +370,7 @@ pub(super) fn argument_candidates(
     }
 
     match command_name {
-        "/1m-context" | "/docs" | "/opus-version" | "/ultracode" => {
-            static_argument_candidates(command_name)
-        }
+        "/docs" | "/ultracode" | "/thinking" | "/fast" => static_argument_candidates(command_name),
         "/agent" => agent_argument_candidates(app),
         "/effort" => effort_argument_candidates(app),
         "/resume" => app
@@ -477,7 +429,10 @@ pub(super) fn argument_candidates(
             .map(|model| SlashCandidate {
                 insert_value: model.id.clone(),
                 primary: model.display_name.clone(),
-                secondary: model_candidate_secondary(app, model),
+                secondary: model
+                    .description
+                    .clone()
+                    .or_else(|| (model.display_name != model.id).then(|| model.id.clone())),
             })
             .collect(),
         _ => Vec::new(),

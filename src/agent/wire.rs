@@ -8,11 +8,9 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionLaunchSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub language: Option<String>,
+    pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub settings: Option<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_progress_summaries: Option<bool>,
+    pub permission_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<super::model::EffortLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -22,9 +20,8 @@ pub struct SessionLaunchSettings {
 impl SessionLaunchSettings {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.language.is_none()
-            && self.settings.is_none()
-            && self.agent_progress_summaries.is_none()
+        self.model.is_none()
+            && self.permission_mode.is_none()
             && self.effort.is_none()
             && self.agent.is_none()
     }
@@ -41,6 +38,17 @@ pub struct CommandEnvelope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum BridgeCommand {
+    InspectSettings {
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        app_settings_path: Option<String>,
+    },
+    MutateSetting {
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        app_settings_path: Option<String>,
+        mutation: super::settings::SettingsMutation,
+    },
     Initialize {
         cwd: String,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -94,7 +102,11 @@ pub enum BridgeCommand {
     },
     SetEffort {
         session_id: String,
-        effort: String,
+        effort: Option<String>,
+    },
+    SetThinking {
+        session_id: String,
+        enabled: Option<bool>,
     },
     SetAgent {
         session_id: String,
@@ -217,6 +229,7 @@ impl BridgeCommand {
             Self::SetModel { .. } => "set_model",
             Self::SetMode { .. } => "set_mode",
             Self::SetEffort { .. } => "set_effort",
+            Self::SetThinking { .. } => "set_thinking",
             Self::SetAgent { .. } => "set_agent",
             Self::SetUltracode { .. } => "set_ultracode",
             Self::RefreshUltracode { .. } => "refresh_ultracode",
@@ -228,6 +241,8 @@ impl BridgeCommand {
             Self::QuestionResponse { .. } => "question_response",
             Self::UserDialogResponse { .. } => "user_dialog_response",
             Self::ElicitationResponse { .. } => "elicitation_response",
+            Self::InspectSettings { .. } => "inspect_settings",
+            Self::MutateSetting { .. } => "mutate_setting",
             Self::GetStatusSnapshot { .. } => "get_status_snapshot",
             Self::GetContextUsage { .. } => "get_context_usage",
             Self::GetUsage { .. } => "get_usage",
@@ -256,6 +271,7 @@ impl BridgeCommand {
             | Self::SetModel { session_id, .. }
             | Self::SetMode { session_id, .. }
             | Self::SetEffort { session_id, .. }
+            | Self::SetThinking { session_id, .. }
             | Self::SetAgent { session_id, .. }
             | Self::SetUltracode { session_id, .. }
             | Self::RefreshUltracode { session_id }
@@ -266,6 +282,8 @@ impl BridgeCommand {
             | Self::QuestionResponse { session_id, .. }
             | Self::UserDialogResponse { session_id, .. }
             | Self::ElicitationResponse { session_id, .. }
+            | Self::InspectSettings { session_id, .. }
+            | Self::MutateSetting { session_id, .. }
             | Self::GetStatusSnapshot { session_id }
             | Self::GetContextUsage { session_id }
             | Self::GetUsage { session_id }
@@ -299,6 +317,7 @@ impl BridgeCommand {
             | Self::SetModel { .. }
             | Self::SetMode { .. }
             | Self::SetEffort { .. }
+            | Self::SetThinking { .. }
             | Self::SetAgent { .. }
             | Self::SetUltracode { .. }
             | Self::RefreshUltracode { .. }
@@ -308,6 +327,8 @@ impl BridgeCommand {
             | Self::NewSession { .. }
             | Self::UserDialogResponse { .. }
             | Self::ElicitationResponse { .. }
+            | Self::InspectSettings { .. }
+            | Self::MutateSetting { .. }
             | Self::GetStatusSnapshot { .. }
             | Self::GetContextUsage { .. }
             | Self::GetUsage { .. }
@@ -344,6 +365,10 @@ pub struct SideQuestionMetadata {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum BridgeEvent {
+    SettingsResult {
+        session_id: String,
+        result: super::settings::SettingsResult,
+    },
     Connected {
         session_id: String,
         cwd: String,
@@ -366,6 +391,7 @@ pub enum BridgeEvent {
         #[serde(default)]
         startup_failure: Option<types::StartupFailure>,
     },
+    // Presentation metadata (SDK timestamps and per-turn timings) travels in the typed update.
     SessionUpdate {
         session_id: String,
         update: types::SessionUpdate,
@@ -394,6 +420,10 @@ pub enum BridgeEvent {
     UserDialogRequest {
         session_id: String,
         request: types::UserDialogRequest,
+    },
+    InteractionCancelled {
+        session_id: String,
+        interaction_id: String,
     },
     ElicitationRequest {
         session_id: String,
@@ -544,6 +574,7 @@ impl BridgeEvent {
             Self::PermissionRequest { .. } => "permission_request",
             Self::QuestionRequest { .. } => "question_request",
             Self::UserDialogRequest { .. } => "user_dialog_request",
+            Self::InteractionCancelled { .. } => "interaction_cancelled",
             Self::ElicitationRequest { .. } => "elicitation_request",
             Self::ElicitationComplete { .. } => "elicitation_complete",
             Self::McpAuthRedirect { .. } => "mcp_auth_redirect",
@@ -563,6 +594,7 @@ impl BridgeEvent {
             Self::SessionReplaced { .. } => "session_replaced",
             Self::Initialized { .. } => "initialized",
             Self::SessionsListed { .. } => "sessions_listed",
+            Self::SettingsResult { .. } => "settings_result",
             Self::StatusSnapshot { .. } => "status_snapshot",
             Self::ContextUsage { .. } => "context_usage",
             Self::UsageSnapshot { .. } => "usage_snapshot",
@@ -582,6 +614,7 @@ impl BridgeEvent {
             | Self::PermissionRequest { session_id, .. }
             | Self::QuestionRequest { session_id, .. }
             | Self::UserDialogRequest { session_id, .. }
+            | Self::InteractionCancelled { session_id, .. }
             | Self::ElicitationRequest { session_id, .. }
             | Self::ElicitationComplete { session_id, .. }
             | Self::McpAuthRedirect { session_id, .. }
@@ -599,6 +632,7 @@ impl BridgeEvent {
             | Self::RuntimeReloadHeld { session_id, .. }
             | Self::RuntimeReloadFailed { session_id, .. }
             | Self::SessionReplaced { session_id, .. }
+            | Self::SettingsResult { session_id, .. }
             | Self::StatusSnapshot { session_id, .. }
             | Self::ContextUsage { session_id, .. }
             | Self::UsageSnapshot { session_id, .. }
@@ -626,6 +660,7 @@ impl BridgeEvent {
             | Self::BtwResult { .. }
             | Self::BtwFailed { .. }
             | Self::UserDialogRequest { .. }
+            | Self::InteractionCancelled { .. }
             | Self::ElicitationRequest { .. }
             | Self::ElicitationComplete { .. }
             | Self::McpAuthRedirect { .. }
@@ -645,6 +680,7 @@ impl BridgeEvent {
             | Self::SessionReplaced { .. }
             | Self::Initialized { .. }
             | Self::SessionsListed { .. }
+            | Self::SettingsResult { .. }
             | Self::StatusSnapshot { .. }
             | Self::ContextUsage { .. }
             | Self::UsageSnapshot { .. }
@@ -662,6 +698,20 @@ mod tests {
     };
     use crate::agent::types;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn notification_payload_round_trips_original_sdk_metadata_and_replay_provenance() {
+        let payload = serde_json::json!({
+            "event": "session_update", "session_id": "s1",
+            "update": { "type": "notification_update", "replay": true,
+                "notification": { "origin": "sdk_notice", "session_id": "s1", "uuid": "n1",
+                    "key": "replaceable", "text": "Ready", "priority": "immediate", "color": "yellow", "timeout_ms": 5000.0 }
+            }
+        });
+        let envelope: EventEnvelope =
+            serde_json::from_value(payload.clone()).expect("notification event");
+        assert_eq!(serde_json::to_value(envelope).expect("serialize notification"), payload);
+    }
 
     #[test]
     fn sdk_result_alignment_metadata_survives_the_wire() {
@@ -988,7 +1038,7 @@ mod tests {
             request_id: None,
             command: BridgeCommand::SetEffort {
                 session_id: "s1".to_owned(),
-                effort: "max".to_owned(),
+                effort: Some("max".to_owned()),
             },
         };
 
@@ -1146,7 +1196,7 @@ mod tests {
                 target_user_message_id: "user-1".to_owned(),
                 restore_mode: types::RewindRestoreMode::Both,
                 launch_settings: SessionLaunchSettings {
-                    language: Some("German".to_owned()),
+                    model: Some("haiku".to_owned()),
                     ..SessionLaunchSettings::default()
                 },
             },
@@ -1162,7 +1212,7 @@ mod tests {
                 "target_user_message_id": "user-1",
                 "restore_mode": "both",
                 "launch_settings": {
-                    "language": "German"
+                    "model": "haiku"
                 }
             })
         );
@@ -1600,20 +1650,82 @@ mod tests {
     }
 
     #[test]
-    fn session_launch_settings_serializes_agent_progress_summaries() {
+    fn session_launch_choices_roundtrip() {
         let settings = SessionLaunchSettings {
-            settings: Some(serde_json::json!({ "model": "haiku" })),
-            agent_progress_summaries: Some(true),
-            ..SessionLaunchSettings::default()
+            model: Some("haiku".to_owned()),
+            permission_mode: Some("plan".to_owned()),
+            effort: Some(super::super::model::EffortLevel::Max),
+            agent: Some("reviewer".to_owned()),
         };
-
         let json = serde_json::to_value(&settings).expect("serialize");
         assert_eq!(
             json,
             serde_json::json!({
-                "settings": { "model": "haiku" },
-                "agent_progress_summaries": true
+                "model": "haiku", "permission_mode": "plan", "effort": "max", "agent": "reviewer"
             })
+        );
+        assert_eq!(
+            serde_json::from_value::<SessionLaunchSettings>(json).expect("deserialize"),
+            settings
+        );
+    }
+
+    #[test]
+    fn observed_activity_phase_roundtrips_without_thinking_content() {
+        for (name, expected) in [
+            ("working", super::super::model::AgentActivityPhase::Working),
+            ("thinking", super::super::model::AgentActivityPhase::Thinking),
+        ] {
+            let raw = serde_json::json!({"type":"agent_activity_update", "phase":name});
+            let decoded: types::SessionUpdate =
+                serde_json::from_value(raw.clone()).expect("activity update");
+            assert!(
+                matches!(decoded, types::SessionUpdate::AgentActivityUpdate { phase } if phase == expected)
+            );
+            assert_eq!(serde_json::to_value(decoded).expect("encode activity"), raw);
+        }
+    }
+
+    #[test]
+    fn settings_categories_and_recursive_forms_cross_the_settings_result_wire() {
+        let mut snapshot: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/settings-ui-catalog.json"))
+                .expect("catalog fixture");
+        snapshot["cwd"] = serde_json::json!("/project");
+        snapshot["context"] = serde_json::json!("context");
+        snapshot["sources"] = serde_json::json!([]);
+        snapshot["values"] = serde_json::json!([]);
+        snapshot["resolution_sources"] = serde_json::json!([]);
+        snapshot["provenance"] = serde_json::json!({});
+        snapshot["diagnostics"] = serde_json::json!([]);
+        let envelope: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event":"settings_result", "session_id":"session", "request_id":"inspect",
+            "result":{"persistence":"not_requested", "application":"blocked", "snapshot":snapshot}
+        }))
+        .expect("settings event");
+        let BridgeEvent::SettingsResult { result, .. } = envelope.event else {
+            panic!("settings result");
+        };
+        let snapshot = result.snapshot.expect("snapshot");
+        assert_eq!(snapshot.categories.len(), 6);
+        let hook = snapshot.catalog.iter().find(|setting| setting.id == "hooks").expect("hooks");
+        let encoded = serde_json::to_value(hook).expect("descriptor");
+        assert_eq!(encoded["category"], "hooks");
+        assert_eq!(
+            encoded["editor"]["item"]["item"]["fields"][1]["schema"]["item"]["variants"]["command"]
+                ["fields"][0]["key"],
+            "command"
+        );
+        assert_eq!(
+            encoded["editor"]["item"]["item"]["fields"][1]["schema"]["item"]["variants"]["command"]
+                ["fields"][0]["required"],
+            true
+        );
+        assert!(
+            encoded["editor"]["item"]["item"]["fields"][1]["schema"]["item"]["variants"]["command"]
+                ["fields"][0]["schema"]["description"]
+                .as_str()
+                .is_some()
         );
     }
 }

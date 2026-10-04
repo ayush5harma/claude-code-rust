@@ -495,7 +495,7 @@ pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplace
     );
 }
 
-pub(super) fn maybe_emit_fast_mode_disabled_notice(app: &mut App, previous_reason: Option<&str>) {
+pub(crate) fn maybe_emit_fast_mode_disabled_notice(app: &mut App, previous_reason: Option<&str>) {
     if !app.config.fast_mode_effective()
         || !matches!(app.session_runtime.fast_mode_state, model::FastModeState::Off)
     {
@@ -605,43 +605,6 @@ fn rewind_result_message(result: &model::RewindResult) -> String {
             "Code was restored, but the conversation could not be rewound.".to_owned()
         }),
     }
-}
-
-pub(super) fn handle_update_available_event(
-    app: &mut App,
-    latest_version: &str,
-    current_version: &str,
-) {
-    let Some(release_url) = crate::app::settings::release_url_for_version(latest_version) else {
-        return;
-    };
-    crate::app::settings::record_update_check_result(
-        &mut app.global_settings,
-        current_version,
-        latest_version,
-        &release_url,
-        crate::app::update_check::unix_now_secs().unwrap_or(0),
-    );
-    if let Some(path) = app.global_settings_path.as_ref()
-        && let Err(err) = crate::app::settings::save_global_settings(path, &app.global_settings)
-    {
-        tracing::warn!(
-            target: crate::logging::targets::APP_UPDATE,
-            event_name = "update_available_settings_save_failed",
-            message = "failed to persist update availability",
-            outcome = "failure",
-            settings_path = %path.display(),
-            error_message = %err,
-        );
-    }
-    tracing::info!(
-        target: crate::logging::targets::APP_UPDATE,
-        event_name = "update_available_applied",
-        message = "update availability applied",
-        outcome = "success",
-        latest_version = %latest_version,
-        current_version = %current_version,
-    );
 }
 
 pub(super) fn handle_service_status_event(

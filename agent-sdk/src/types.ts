@@ -56,7 +56,8 @@ export type UltracodeSnapshot = {
   effective: boolean;
 };
 
-export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 
 export interface AvailableModel {
   id: string;
@@ -84,7 +85,7 @@ export interface CurrentModel {
   is_authoritative: boolean;
 }
 
-export type FastModeState = "off" | "cooldown" | "on";
+export type FastModeState = "unknown" | "off" | "cooldown" | "on";
 export interface FastModeSnapshot {
   state: FastModeState;
   disabled_reason?: string;
@@ -144,6 +145,13 @@ export type ApiRetryError =
 
 export type RuntimeSessionState = "idle" | "running" | "requires_action";
 export type SystemNoticeSeverity = "info" | "warning" | "error";
+
+/** Native notices have no delivery category. Proactive intent comes from the tool. */
+export type SdkNotification =
+  | { origin: "sdk_notice"; session_id: string; uuid: string; key: string; text: string;
+      priority: string; color?: string; timeout_ms?: number }
+  | { origin: "model_tool"; session_id: string; tool_use_id: string; text: string;
+      push_sent?: boolean; local_sent?: boolean; disabled_reason?: string; sent_at?: string };
 
 export interface SettingsParseErrorUpdate {
   file?: string;
@@ -226,6 +234,7 @@ export interface ToolNonExecutionMetadata {
 }
 
 export interface ToolOutputMetadata {
+  timing?: { duration_ms: number; source: "progress" | "task" };
   staged?: boolean;
   structured_content_omitted?: boolean;
   bash?: BashOutputMetadata;
@@ -358,6 +367,8 @@ export interface TaskStateUpdate {
 }
 
 export type SessionUpdate =
+  | { type: "message_metadata"; role: "user" | "assistant"; timestamp: string; source_message_uuid?: string }
+  | { type: "turn_timing"; duration_ms: number; api_duration_ms?: number }
   | {
       type: "conversation_reset";
       new_conversation_id: string;
@@ -382,9 +393,8 @@ export type SessionUpdate =
       origin: MessageOrigin;
     }
   | {
-      type: "agent_thought_chunk";
-      content: ContentBlock;
-      source_message_uuid?: string;
+      type: "agent_activity_update";
+      phase: "working" | "thinking";
     }
   | { type: "tool_call"; tool_call: ToolCall }
   | { type: "tool_call_update"; tool_call_update: ToolCallUpdate }
@@ -398,7 +408,6 @@ export type SessionUpdate =
     }
   | { type: "available_agents_update"; agents: AvailableAgent[] }
   | { type: "mode_state_update"; mode: ModeState }
-  | { type: "current_mode_update"; current_mode_id: string }
   | { type: "current_model_update"; current_model: CurrentModel }
   | { type: "config_option_update"; option_id: string; value: Json }
   | {
@@ -423,6 +432,7 @@ export type SessionUpdate =
   | { type: "runtime_session_state_update"; state: RuntimeSessionState }
   | ({ type: "settings_parse_error" } & SettingsParseErrorUpdate)
   | { type: "session_status_update"; status: "requesting" | "idle" }
+  | { type: "notification_update"; notification: SdkNotification; replay: boolean }
   | {
       type: "system_notice_update";
       severity: SystemNoticeSeverity;
@@ -491,6 +501,7 @@ export interface QuestionPrompt {
 }
 
 export interface QuestionRequest {
+  idle_timeout_ms?: number;
   tool_call: ToolCall;
   prompt: QuestionPrompt;
   question_index: number;
@@ -714,9 +725,8 @@ export type McpSnapshotSource =
   | "init";
 
 export interface SessionLaunchSettings {
-  language?: string;
-  settings?: { [key: string]: Json };
-  agent_progress_summaries?: boolean;
+  model?: string;
+  permission_mode?: import("@anthropic-ai/claude-agent-sdk").PermissionMode;
   effort?: EffortLevel;
   agent?: string;
 }
@@ -809,7 +819,46 @@ export interface BridgeCommandEnvelope {
   [key: string]: unknown;
 }
 
+export type SettingsScope = "user" | "project" | "local";
+export interface SettingsCategory { id: string; label: string; short_label: string }
+export interface SettingsEditorSchema {
+  description?: string;
+  type: "string" | "number" | "boolean" | "object" | "array" | "map" | "variant" | "json";
+  fields?: Array<{ key: string; label: string; schema: SettingsEditorSchema; required?: boolean }>;
+  item?: SettingsEditorSchema;
+  options?: Json[];
+  keys?: string[];
+  variants?: Record<string, SettingsEditorSchema>;
+}
+export interface SettingDescriptor {
+  id: string; label: string; description: string; key_path: string[];
+  category: string; editor?: SettingsEditorSchema;
+  kind: "boolean" | "string" | "string_list" | "number" | "json"; options: Json[]; writable_scopes: SettingsScope[];
+  allows_custom: boolean; reset: string; application: "host" | "next_session"; unavailable?: string;
+}
+export interface SettingsSnapshot {
+  categories: SettingsCategory[];
+  cwd: string; context: string; catalog: SettingDescriptor[];
+  sources: Array<{ scope: SettingsScope; path: string; status: string; error?: string; values: Array<{ id: string; revision: string; value?: Json }> }>;
+  values: Array<{ id: string; value?: Json; contributors: string[]; policy_restricted: boolean }>;
+  resolution_sources: Array<{ source: string; path?: string; policy_origin?: string }>;
+  provenance: Record<string, { source: string; path?: string; policy_origin?: string }>;
+  diagnostics: string[];
+  time_zone?: string;
+}
+export interface SettingsMutation {
+  context: string; id: string; scope: SettingsScope; expected_revision: string;
+  operation: "set" | "remove"; value?: Json;
+}
+export interface SettingsResult {
+  persistence: "saved" | "unchanged" | "conflict" | "failure" | "not_requested";
+  application: "host" | "next_session" | "blocked";
+  snapshot?: SettingsSnapshot; error?: string;
+}
+
 export type BridgeCommand =
+  | { command: "inspect_settings"; session_id: string; app_settings_path?: string }
+  | { command: "mutate_setting"; session_id: string; app_settings_path?: string; mutation: SettingsMutation }
   | {
       command: "initialize";
       cwd: string;
@@ -865,7 +914,12 @@ export type BridgeCommand =
   | {
       command: "set_effort";
       session_id: string;
-      effort: EffortLevel;
+      effort: EffortLevel | null;
+    }
+  | {
+      command: "set_thinking";
+      session_id: string;
+      enabled: boolean | null;
     }
   | {
       command: "set_agent";
@@ -1038,6 +1092,7 @@ export interface SideQuestionMetadata {
 }
 
 export type BridgeEvent =
+  | { event: "settings_result"; session_id: string; result: SettingsResult }
   | {
       event: "connected";
       session_id: string;
@@ -1078,6 +1133,7 @@ export type BridgeEvent =
       request: PermissionRequest;
     }
   | { event: "question_request"; session_id: string; request: QuestionRequest }
+  | { event: "interaction_cancelled"; session_id: string; interaction_id: string }
   | {
       event: "user_dialog_request";
       session_id: string;

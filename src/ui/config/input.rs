@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
+use super::common;
 use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use unicode_width::UnicodeWidthChar;
 
 pub(super) fn text_input_line(draft: &str, cursor: usize, placeholder: &str) -> Line<'static> {
-    let cursor_style =
-        Style::default().fg(Color::Black).bg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD);
+    let cursor_style = common::cursor_style();
     let text_style = Style::default().fg(Color::White);
     let placeholder_style = Style::default().fg(theme::DIM);
 
@@ -42,6 +42,65 @@ pub(super) fn text_input_line(draft: &str, cursor: usize, placeholder: &str) -> 
     Line::from(spans)
 }
 
+pub(super) fn search_field_line(
+    query: &str,
+    cursor: Option<usize>,
+    placeholder: &str,
+) -> Line<'static> {
+    cursor.map_or_else(
+        || {
+            Line::styled(
+                if query.is_empty() { placeholder } else { query }.to_owned(),
+                Style::default().fg(if query.is_empty() { theme::DIM } else { Color::White }),
+            )
+        },
+        |cursor| text_input_line(query, cursor, placeholder),
+    )
+}
+
+pub(super) fn search_height(query: &str, cursor: Option<usize>, width: u16) -> u16 {
+    common::wrapped_height(
+        search_field_line(query, cursor, "Type to filter this list"),
+        width.saturating_sub(2),
+    )
+    .saturating_add(2)
+}
+
+pub(super) fn render_search_field(
+    frame: &mut Frame,
+    area: Rect,
+    query: &str,
+    cursor: Option<usize>,
+) {
+    let focused = cursor.is_some();
+    let prefix =
+        query.chars().take(cursor.unwrap_or_else(|| query.chars().count())).collect::<String>();
+    let cursor_line = common::wrapped_height(
+        search_field_line(&prefix, cursor.map(|_| prefix.chars().count()), ""),
+        area.width.saturating_sub(2),
+    )
+    .saturating_sub(1);
+    frame.render_widget(
+        Paragraph::new(search_field_line(query, cursor, "Type to filter this list"))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(if focused { " Search " } else { " Search (Up to focus) " })
+                    .border_style(Style::default().fg(if focused {
+                        theme::RUST_ORANGE
+                    } else {
+                        theme::DIM
+                    })),
+            )
+            .wrap(Wrap { trim: false })
+            .scroll((
+                common::selected_scroll(usize::from(cursor_line), 1, area.height.saturating_sub(2)),
+                0,
+            )),
+        area,
+    );
+}
+
 pub(super) fn render_text_input_field(
     frame: &mut Frame,
     area: Rect,
@@ -52,13 +111,40 @@ pub(super) fn render_text_input_field(
     let content_width = area.width.saturating_sub(2);
     let content = text_input_line_for_width(draft, cursor, placeholder, content_width);
     let mut spans = Vec::with_capacity(content.spans.len().saturating_add(2));
-    spans.push(Span::styled(" ", Style::default().bg(theme::USER_MSG_BG)));
+    spans.push(Span::styled(" ", common::input_style()));
     spans.extend(content.spans);
-    spans.push(Span::styled(" ", Style::default().bg(theme::USER_MSG_BG)));
-    frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme::USER_MSG_BG)),
-        area,
-    );
+    spans.push(Span::styled(" ", common::input_style()));
+    frame.render_widget(Paragraph::new(Line::from(spans)).style(common::input_style()), area);
+}
+
+pub(super) fn render_multiline_input_field(
+    frame: &mut Frame,
+    area: Rect,
+    draft: &str,
+    cursor: usize,
+) {
+    let cursor = cursor.min(draft.chars().count());
+    let prefix = draft.chars().take(cursor).collect::<String>();
+    let cursor_line = prefix.chars().filter(|ch| *ch == '\n').count();
+    let cursor_column = prefix.rsplit('\n').next().map_or(0, |line| line.chars().count());
+    let height = usize::from(area.height);
+    let offset = cursor_line.saturating_sub(height.saturating_sub(1));
+    for (index, line) in draft.split('\n').enumerate().skip(offset).take(height) {
+        let row = Rect::new(
+            area.x,
+            area.y.saturating_add(u16::try_from(index - offset).unwrap_or(0)),
+            area.width,
+            1,
+        );
+        if index == cursor_line {
+            render_text_input_field(frame, row, line, cursor_column, "");
+        } else {
+            frame.render_widget(
+                Paragraph::new(format!(" {line}")).style(common::input_style()),
+                row,
+            );
+        }
+    }
 }
 
 fn text_input_line_for_width(
@@ -74,8 +160,7 @@ fn text_input_line_for_width(
         return text_input_line(draft, cursor, placeholder);
     }
 
-    let cursor_style =
-        Style::default().fg(Color::Black).bg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD);
+    let cursor_style = common::cursor_style();
     let text_style = Style::default().fg(Color::White);
     let overflow_style = Style::default().fg(theme::DIM);
     let chars = draft.chars().collect::<Vec<_>>();

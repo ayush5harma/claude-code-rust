@@ -112,6 +112,11 @@ pub(super) async fn handle_bridge_event(
         crate::agent::wire::BridgeEvent::UserDialogRequest { session_id, request } => {
             handle_user_dialog_request_event(event_tx, connection, session_id, request).await;
         }
+        crate::agent::wire::BridgeEvent::InteractionCancelled { session_id, interaction_id } => {
+            let _ = event_tx
+                .send(ClientEvent::InteractionCancelled { session_id, interaction_id })
+                .await;
+        }
         crate::agent::wire::BridgeEvent::ElicitationRequest { session_id, request } => {
             handle_elicitation_request_event(event_tx, &session_id, request).await;
         }
@@ -277,6 +282,11 @@ pub(super) async fn handle_bridge_event(
             let _ = event_tx.send(ClientEvent::SessionsListed { sessions }).await;
         }
         crate::agent::wire::BridgeEvent::Initialized { .. } => {}
+        crate::agent::wire::BridgeEvent::SettingsResult { session_id, result } => {
+            let _ = event_tx
+                .send(ClientEvent::SettingsResultReceived { session_id, request_id, result })
+                .await;
+        }
         crate::agent::wire::BridgeEvent::StatusSnapshot { session_id, account } => {
             let _ = event_tx
                 .send(ClientEvent::StatusSnapshotReceived {

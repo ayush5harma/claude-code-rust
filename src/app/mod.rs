@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
+pub(crate) mod activity;
 pub(crate) mod auth;
 mod btw;
 mod cache_policy;
 pub(crate) mod claude_cli;
+pub(crate) mod clipboard;
 pub(crate) mod clipboard_image;
 pub(crate) mod config;
 mod connect;
+pub(crate) mod copy;
 mod dialog;
 mod events;
 pub(crate) mod file_index;
@@ -25,6 +28,7 @@ mod notify;
 pub(crate) mod paste_burst;
 mod permissions;
 pub(crate) mod plugins;
+pub(crate) mod presentation;
 mod questions;
 mod service_status_check;
 pub(crate) mod session_picker;
@@ -86,7 +90,7 @@ pub(crate) use state::{
     BtwRequestState, BtwRequests, PendingUserMessage, PendingUserMessageInsertError,
 };
 pub use trust::TrustSelection;
-pub use update_check::start_update_check;
+pub use update_check::{automatic_update_action, start_update_check};
 pub(crate) use update_prompt::actions_for as update_prompt_actions;
 pub use view::{FullscreenView, SurfaceMode};
 
@@ -117,7 +121,6 @@ use std::time::{Duration, Instant};
 use terminal_runtime::TerminalInput;
 
 const SPINNER_FRAME_INTERVAL_NORMAL: Duration = Duration::from_millis(30);
-const SPINNER_FRAME_INTERVAL_REDUCED: Duration = Duration::from_millis(120);
 const EVENT_LOOP_TICK_INTERVAL: Duration = Duration::from_millis(16);
 /// Maximum number of ready-event rounds handled between frames.
 ///
@@ -256,6 +259,8 @@ async fn run_tui_loop(
         if !app.shutdown_requested() {
             app.tick_git_context(now);
             session_runtime::tick_context_usage_refresh(app, now);
+            questions::tick_idle_timeout(app, now);
+            app.tick_activity(now);
             if app.btw.expire_failed(now) {
                 app.request_active_surface_repaint();
             }
@@ -285,24 +290,23 @@ async fn run_tui_loop(
 
         // Phase 3: render once (only when something changed)
         let is_animating = !app.shutdown_requested()
-            && (matches!(
-                app.status,
-                AppStatus::Connecting
-                    | AppStatus::CommandPending
-                    | AppStatus::Thinking
-                    | AppStatus::Running
-            ) || app.turn.compaction.is_active()
-                || app.btw.has_active());
+            && !app.config.prefers_reduced_motion_effective()
+            && (app.activity_presentation(now).is_some()
+                || matches!(app.status, AppStatus::Connecting | AppStatus::CommandPending)
+                || app.btw.has_active()
+                || app.transcript.messages.iter().flat_map(|message| &message.blocks).any(|block| {
+                    matches!(block, MessageBlock::ToolCall(tool) if !tool.hidden_unless_focused_interaction() && matches!(tool.status, model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending))
+                }));
         if is_animating {
             advance_spinner_frame(app, Instant::now());
-            tab_title::update_tab_title(&app.status, app.spinner_frame, &app.cwd);
+            tab_title::update_tab_title(app);
             app.request_active_surface_repaint();
         } else {
             app.spinner_last_advance_at = None;
         }
         // Update tab title on non-animating state transitions (Ready, Error).
         if !is_animating && app.surface_dirty.active_surface_needs_draw(app.terminal_lifecycle) {
-            tab_title::update_tab_title(&app.status, app.spinner_frame, &app.cwd);
+            tab_title::update_tab_title(app);
         }
         let (width, height) =
             crossterm::terminal::size().context("failed to read terminal size before draw")?;
@@ -362,7 +366,7 @@ fn suspend_tui_process(
     let resumed_runtime = terminal_runtime::TerminalRuntime::bootstrap_with_input_reader(app)
         .context("failed to restore terminal after process resume")?;
     *terminal_runtime = resumed_runtime;
-    tab_title::update_tab_title(&app.status, app.spinner_frame, &app.cwd);
+    tab_title::update_tab_title(app);
     app.request_active_surface_repaint();
 
     suspend_result
@@ -537,14 +541,12 @@ async fn shutdown_connection_with_interrupts(app: &mut App, events: &mut Termina
 }
 
 fn advance_spinner_frame(app: &mut App, now: Instant) {
-    let interval = if app.config.prefers_reduced_motion_effective() {
-        SPINNER_FRAME_INTERVAL_REDUCED
-    } else {
-        SPINNER_FRAME_INTERVAL_NORMAL
-    };
-
+    if app.config.prefers_reduced_motion_effective() {
+        app.spinner_last_advance_at = None;
+        return;
+    }
     match app.spinner_last_advance_at {
-        Some(last_advance) if now.duration_since(last_advance) < interval => {}
+        Some(last_advance) if now.duration_since(last_advance) < SPINNER_FRAME_INTERVAL_NORMAL => {}
         Some(_) | None => {
             app.spinner_frame = app.spinner_frame.wrapping_add(1);
             app.spinner_last_advance_at = Some(now);

@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
+pub(crate) mod activity_rows;
 mod autocomplete;
 mod config;
+mod copy;
 mod diff;
 mod document_table;
 pub(crate) mod footer_rows;
 pub(crate) mod help;
 mod highlight;
+pub(crate) mod host_tips;
 pub(crate) mod inline_chat_rows;
 pub(crate) mod input;
 pub(crate) mod input_rows;
@@ -16,7 +19,7 @@ mod markdown;
 mod message;
 mod message_rows;
 mod session_picker;
-mod spinner_verbs;
+pub(crate) mod spinner_verbs;
 pub mod theme;
 mod tool_call;
 pub(crate) mod tool_display;
@@ -40,6 +43,7 @@ pub fn render_fullscreen_surface(frame: &mut Frame, app: &mut App) {
             session_picker::render(frame, app);
         }
         SurfaceMode::Fullscreen(FullscreenView::Update) => update::render(frame, app),
+        SurfaceMode::Fullscreen(FullscreenView::Copy) => copy::render(frame, app),
         SurfaceMode::Chat => {
             debug_assert!(false, "chat is rendered by the inline terminal session");
         }

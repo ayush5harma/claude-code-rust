@@ -132,18 +132,25 @@ fn resolved_submission_is_the_active_turn_policy_authority() {
     let classify = |input: &str| ResolvedSubmission::resolve(input.to_owned()).class();
 
     assert_eq!(classify("/cancel"), SubmissionClass::TurnControl);
-    for input in ["/config", "/help", "/mcp", "/plugins", "/status", "/usage"] {
+    for input in [
+        "/config",
+        "/memory",
+        "/permissions",
+        "/sandbox",
+        "/hooks",
+        "/help",
+        "/mcp",
+        "/plugins",
+        "/status",
+        "/usage",
+    ] {
         assert_eq!(classify(input), SubmissionClass::Fullscreen, "unexpected class for {input}");
     }
-    for input in ["/docs commands", "/1m-context status", "/opus-version status"] {
-        assert_eq!(classify(input), SubmissionClass::Informational, "unexpected class for {input}");
-    }
+    assert_eq!(classify("/docs commands"), SubmissionClass::Informational);
     for input in [
         "next prompt",
         "/remote-command",
         "/compact",
-        "/1m-context enable",
-        "/opus-version 4.8",
         "/agent reviewer",
         "/effort high",
         "/fast",
@@ -230,14 +237,12 @@ fn login_logout_appear_in_candidates_as_builtins() {
     let app = App::test_default();
     let names: Vec<String> =
         supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
-    assert!(names.iter().any(|n| n == "/1m-context"), "missing /1m-context");
     assert!(names.iter().any(|n| n == "/agent"), "missing /agent");
     assert!(names.iter().any(|n| n == "/config"), "missing /config");
     assert!(names.iter().any(|n| n == "/docs"), "missing /docs");
     assert!(names.iter().any(|n| n == "/login"), "missing /login");
     assert!(names.iter().any(|n| n == "/logout"), "missing /logout");
     assert!(names.iter().any(|n| n == "/mcp"), "missing /mcp");
-    assert!(names.iter().any(|n| n == "/opus-version"), "missing /opus-version");
     assert!(names.iter().any(|n| n == "/plugins"), "missing /plugins");
     assert!(names.iter().any(|n| n == "/rewind"), "missing /rewind");
     assert!(names.iter().any(|n| n == "/usage"), "missing /usage");
@@ -342,6 +347,45 @@ fn app_config_shadows_advertised_config_command() {
 }
 
 #[test]
+fn settings_shortcuts_own_completion_and_route_to_their_pane_during_an_active_turn() {
+    for (name, category) in [
+        ("/config", "general"),
+        ("/memory", "memory"),
+        ("/permissions", "permissions"),
+        ("/sandbox", "sandbox"),
+        ("/hooks", "hooks"),
+    ] {
+        let mut app = App::test_default();
+        app.sdk_inventory.available_commands =
+            vec![model::AvailableCommand::new(name, "SDK command").input_hint("<action>")];
+        app.input.set_text(name);
+        let _ = app.input.set_cursor(0, name.chars().count());
+        let suggestions = requested_slash_state(&app).expect("suggestions");
+        assert_eq!(
+            suggestions.candidates.iter().filter(|candidate| candidate.primary == name).count(),
+            1
+        );
+        app.config.settings.query = "old query".into();
+        app.config.selected_scope = crate::agent::settings::SettingsScope::Local;
+        app.status = AppStatus::Thinking;
+        assert!(try_handle_submit(&mut app, name));
+        assert_eq!(app.config.settings.category, category);
+        assert!(app.config.settings.query.is_empty());
+        assert_eq!(app.config.settings.focus, crate::app::config::SettingsFocus::Content);
+        assert_eq!(app.config.selected_scope, crate::agent::settings::SettingsScope::Local);
+        assert_eq!(app.status, AppStatus::Thinking);
+        assert!(app.pending_submit.is_none());
+        assert_eq!(
+            app.surface_mode,
+            super::super::SurfaceMode::Fullscreen(super::super::FullscreenView::Config)
+        );
+        assert!(try_handle_submit(&mut app, &format!("{name} extra")));
+        let message = app.transcript.messages.last().expect("usage feedback");
+        assert!(message.blocks.iter().any(|block|matches!(block, crate::app::MessageBlock::Text(text) if text.text == format!("Usage: {name}"))));
+    }
+}
+
+#[test]
 fn app_config_candidate_ignores_advertised_config_metadata() {
     let mut app = App::test_default();
     app.sdk_inventory.available_commands =
@@ -437,21 +481,6 @@ async fn app_fast_shadows_advertised_command_and_toggles_authoritative_state() {
         .await;
 }
 
-#[test]
-fn fast_capability_check_blocks_enable() {
-    let unsupported_model = model::CurrentModel::new("model", "Model", "Model")
-        .supports_fast_mode(Some(false))
-        .authoritative(true);
-    let mut app = App::test_default();
-    let mut rx = attach_test_connection(&mut app);
-    app.session_runtime.session_id = Some(model::SessionId::new("sess-1"));
-    app.session_runtime.current_model = Some(unsupported_model);
-
-    assert!(try_handle_submit(&mut app, "/fast"));
-    assert!(rx.try_recv().is_err());
-    assert!(!matches!(app.status, AppStatus::CommandPending));
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn fast_capability_check_still_allows_disable() {
     tokio::task::LocalSet::new()
@@ -479,12 +508,12 @@ async fn fast_capability_check_still_allows_disable() {
 }
 
 #[test]
-fn fast_rejects_arguments_without_dispatching() {
+fn fast_rejects_invalid_arguments_without_dispatching() {
     let mut app = App::test_default();
     let mut rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(model::SessionId::new("sess-1"));
 
-    let consumed = try_handle_submit(&mut app, "/fast on");
+    let consumed = try_handle_submit(&mut app, "/fast invalid");
 
     assert!(consumed);
     assert!(rx.try_recv().is_err());
@@ -493,7 +522,7 @@ fn fast_rejects_arguments_without_dispatching() {
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
         panic!("expected text block");
     };
-    assert_eq!(block.text, "Usage: /fast");
+    assert_eq!(block.text, "Usage: /fast [on|off]");
 }
 
 #[test]
@@ -526,321 +555,6 @@ fn config_with_extra_args_returns_usage_message() {
         panic!("expected text block");
     };
     assert_eq!(block.text, "Usage: /config");
-}
-
-#[test]
-fn one_m_context_disable_persists_folder_local_override_and_hints_new_session() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-    let consumed = try_handle_submit(&mut app, "/1m-context disable");
-
-    assert!(consumed);
-    let settings_path = dir.path().join(".claude").join("settings.local.json");
-    let raw = std::fs::read_to_string(settings_path).expect("read settings.local.json");
-    assert!(raw.contains("\"CLAUDE_CODE_DISABLE_1M_CONTEXT\": \"1\""));
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected success message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert!(block.text.contains("Disabled 1M context"));
-    assert!(block.text.contains("/new-session"));
-}
-
-#[test]
-fn one_m_context_enable_removes_folder_local_override_and_hints_new_session() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let local_settings = dir.path().join(".claude").join("settings.local.json");
-    std::fs::create_dir_all(local_settings.parent().expect("settings parent")).expect("create dir");
-    std::fs::write(
-            &local_settings,
-            "{\n  \"env\": {\n    \"CLAUDE_CODE_DISABLE_1M_CONTEXT\": \"1\",\n    \"KEEP_ME\": \"yes\"\n  }\n}\n",
-        )
-        .expect("write settings");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-    let consumed = try_handle_submit(&mut app, "/1m-context enable");
-
-    assert!(consumed);
-    let raw = std::fs::read_to_string(local_settings).expect("read settings.local.json");
-    assert!(!raw.contains("CLAUDE_CODE_DISABLE_1M_CONTEXT"));
-    assert!(raw.contains("\"KEEP_ME\": \"yes\""));
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected success message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert!(block.text.contains("Enabled 1M context"));
-    assert!(block.text.contains("/new-session"));
-}
-
-#[test]
-fn one_m_context_status_reports_disabled_folder_local_override() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let local_settings = dir.path().join(".claude").join("settings.local.json");
-    std::fs::create_dir_all(local_settings.parent().expect("settings parent")).expect("create dir");
-    std::fs::write(
-        &local_settings,
-        "{\n  \"env\": {\n    \"CLAUDE_CODE_DISABLE_1M_CONTEXT\": \"1\"\n  }\n}\n",
-    )
-    .expect("write settings");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-    let consumed = try_handle_submit(&mut app, "/1m-context status");
-
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected status message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert!(block.text.contains("1M context is disabled"));
-    assert!(block.text.contains(".claude/settings.local.json"));
-}
-
-#[test]
-fn opus_version_argument_candidates_are_static() {
-    let app = App::test_default();
-    let candidates = argument_candidates(&app, "/opus-version", 0);
-    assert!(candidates.iter().any(|c| c.insert_value == "4.5"));
-    assert!(candidates.iter().any(|c| {
-        c.insert_value == "4.5"
-            && c.primary == "4.5"
-            && c.secondary.as_deref() == Some("Claude Opus 4.5")
-    }));
-    assert!(candidates.iter().any(|c| c.insert_value == "4.6"));
-    assert!(candidates.iter().any(|c| c.insert_value == "4.7"));
-    assert!(candidates.iter().any(|c| {
-        c.insert_value == "4.8"
-            && c.primary == "4.8"
-            && c.secondary.as_deref() == Some("Claude Opus 4.8")
-    }));
-    assert!(candidates.iter().any(|c| {
-        c.insert_value == "default"
-            && c.primary == "default"
-            && c.secondary.as_deref() == Some("Use Claude default Opus alias")
-    }));
-    assert!(candidates.iter().any(|c| {
-        c.insert_value == "status"
-            && c.primary == "status"
-            && c.secondary.as_deref() == Some("Show current project-local Opus pin")
-    }));
-}
-
-#[test]
-fn opus_version_45_persists_folder_local_override_and_hints_new_session() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-    let consumed = try_handle_submit(&mut app, "/opus-version 4.5");
-
-    assert!(consumed);
-    let settings_path = dir.path().join(".claude").join("settings.local.json");
-    let raw = std::fs::read_to_string(settings_path).expect("read settings.local.json");
-    assert!(raw.contains("\"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-5-20251101\""));
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected success message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert!(block.text.contains("Pinned Opus to 4.5"));
-    assert!(block.text.contains("/new-session"));
-}
-
-#[test]
-fn opus_version_46_persists_folder_local_override() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-    let consumed = try_handle_submit(&mut app, "/opus-version 4.6");
-
-    assert!(consumed);
-    let settings_path = dir.path().join(".claude").join("settings.local.json");
-    let raw = std::fs::read_to_string(settings_path).expect("read settings.local.json");
-    assert!(raw.contains("\"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-6\""));
-}
-
-#[test]
-fn opus_version_47_persists_folder_local_override() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-    let consumed = try_handle_submit(&mut app, "/opus-version 4.7");
-
-    assert!(consumed);
-    let settings_path = dir.path().join(".claude").join("settings.local.json");
-    let raw = std::fs::read_to_string(settings_path).expect("read settings.local.json");
-    assert!(raw.contains("\"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-7\""));
-}
-
-#[test]
-fn opus_version_48_persists_folder_local_override() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-    let consumed = try_handle_submit(&mut app, "/opus-version 4.8");
-
-    assert!(consumed);
-    let settings_path = dir.path().join(".claude").join("settings.local.json");
-    let raw = std::fs::read_to_string(settings_path).expect("read settings.local.json");
-    assert!(raw.contains("\"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-8\""));
-}
-
-#[test]
-fn opus_version_default_removes_folder_local_override_and_preserves_neighbor_keys() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let local_settings = dir.path().join(".claude").join("settings.local.json");
-    std::fs::create_dir_all(local_settings.parent().expect("settings parent")).expect("create dir");
-    std::fs::write(
-            &local_settings,
-            "{\n  \"env\": {\n    \"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-7\",\n    \"KEEP_ME\": \"yes\"\n  }\n}\n",
-        )
-        .expect("write settings");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-    let consumed = try_handle_submit(&mut app, "/opus-version default");
-
-    assert!(consumed);
-    let raw = std::fs::read_to_string(local_settings).expect("read settings.local.json");
-    assert!(!raw.contains("ANTHROPIC_DEFAULT_OPUS_MODEL"));
-    assert!(raw.contains("\"KEEP_ME\": \"yes\""));
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected success message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert!(block.text.contains("Cleared the project-local Opus version pin"));
-    assert!(block.text.contains("/new-session"));
-}
-
-#[test]
-fn opus_version_status_reports_known_folder_local_override() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let local_settings = dir.path().join(".claude").join("settings.local.json");
-    std::fs::create_dir_all(local_settings.parent().expect("settings parent")).expect("create dir");
-    std::fs::write(
-        &local_settings,
-        "{\n  \"env\": {\n    \"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-6\"\n  }\n}\n",
-    )
-    .expect("write settings");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-    let consumed = try_handle_submit(&mut app, "/opus-version status");
-
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected status message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert!(block.text.contains("Opus is pinned to 4.6"));
-    assert!(block.text.contains(".claude/settings.local.json"));
-}
-
-#[test]
-fn opus_version_status_reports_default_when_unset() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-    let consumed = try_handle_submit(&mut app, "/opus-version status");
-
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected status message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert!(block.text.contains("Opus is using the default alias resolution"));
-}
-
-#[test]
-fn opus_version_with_missing_arg_returns_usage_message() {
-    let mut app = App::test_default();
-
-    let consumed = try_handle_submit(&mut app, "/opus-version");
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected system usage message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Usage: /opus-version <4.5|4.6|4.7|4.8|default|status>");
-}
-
-#[test]
-fn opus_version_with_extra_args_returns_usage_message() {
-    let mut app = App::test_default();
-
-    let consumed = try_handle_submit(&mut app, "/opus-version 4.7 extra");
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected system usage message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Usage: /opus-version <4.5|4.6|4.7|4.8|default|status>");
-}
-
-#[test]
-fn opus_version_with_unknown_arg_returns_usage_message() {
-    let mut app = App::test_default();
-
-    let consumed = try_handle_submit(&mut app, "/opus-version 9.9");
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected system usage message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Usage: /opus-version <4.5|4.6|4.7|4.8|default|status>");
-}
-
-#[test]
-fn opus_version_requires_trusted_project_for_mutation() {
-    let mut app = App::test_default();
-    app.trust.status = crate::app::trust::TrustStatus::Untrusted;
-
-    let consumed = try_handle_submit(&mut app, "/opus-version 4.7");
-
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected error message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert!(block.text.contains("Project trust must be accepted"));
 }
 
 #[test]
@@ -1017,29 +731,6 @@ fn model_argument_candidates_include_sdk_default_option() {
     assert!(candidates.iter().any(|c| c.secondary.as_deref() == Some("Default (recommended)")));
     assert!(candidates.iter().any(|c| c.insert_value == "sonnet"));
     assert!(candidates.iter().any(|c| c.insert_value == "opus"));
-}
-
-#[test]
-fn model_argument_candidates_rewrite_opus_secondary_from_project_pin() {
-    let mut app = App::test_default();
-    app.config.committed_local_settings_document = json!({
-        "env": {
-            "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-5-20251101"
-        }
-    });
-    app.sdk_inventory.available_models = vec![
-        crate::agent::model::AvailableModel::new("opus", "Opus")
-            .description("Opus 4.7 · Most capable for complex work"),
-    ];
-
-    let candidates = argument_candidates(&app, "/model", 0);
-
-    assert_eq!(candidates.len(), 1);
-    assert_eq!(candidates[0].insert_value, "opus");
-    assert_eq!(
-        candidates[0].secondary.as_deref(),
-        Some("Opus 4.5 · Most capable for complex work")
-    );
 }
 
 #[test]
@@ -1251,6 +942,7 @@ fn effort_argument_candidates_include_session_only_max() {
                 crate::agent::model::EffortLevel::Medium,
                 crate::agent::model::EffortLevel::High,
                 crate::agent::model::EffortLevel::XHigh,
+                crate::agent::model::EffortLevel::Max,
             ]),
     );
 
@@ -1258,7 +950,7 @@ fn effort_argument_candidates_include_session_only_max() {
 
     assert_eq!(
         candidates.iter().map(|candidate| candidate.insert_value.as_str()).collect::<Vec<_>>(),
-        vec!["low", "medium", "high", "xhigh", "max"]
+        vec!["low", "medium", "high", "xhigh", "max", "reset"]
     );
     assert!(candidates.iter().any(|candidate| {
         candidate.insert_value == "max"
@@ -1358,8 +1050,7 @@ fn docs_commands_reuse_help_rows() {
         panic!("expected text block");
     };
     assert!(block.text.contains("| Command | Description |"));
-    assert!(block.text.contains("/1m-context"));
-    assert!(block.text.contains("project-local 1M context"));
+    assert!(block.text.contains("Ask one contextual question"));
     assert!(block.text.contains("/cancel"));
     assert!(block.text.contains("/compact"));
     assert!(block.text.contains("/config"));
@@ -1721,11 +1412,11 @@ async fn mode_sets_command_pending_and_mode_update_restores_ready() {
             let _rx = attach_test_connection(&mut app);
             app.session_runtime.session_id = Some("sess-1".into());
             app.session_runtime.mode = Some(super::super::ModeState {
-                current_mode_id: "code".to_owned(),
-                current_mode_name: "Code".to_owned(),
+                current_mode_id: "default".to_owned(),
+                current_mode_name: "Default".to_owned(),
                 available_modes: vec![
                     super::super::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
-                    super::super::ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
+                    super::super::ModeInfo { id: "default".to_owned(), name: "Default".to_owned() },
                 ],
             });
 
@@ -1741,13 +1432,20 @@ async fn mode_sets_command_pending_and_mode_update_restores_ready() {
             // Simulate mode-update ack arriving from bridge.
             super::super::events::handle_client_event(
                 &mut app,
-                session_update(crate::agent::model::SessionUpdate::CurrentModeUpdate(
-                    crate::agent::model::CurrentModeUpdate::new("plan"),
+                session_update(crate::agent::model::SessionUpdate::ModeStateUpdate(
+                    super::super::ModeState {
+                        current_mode_id: "plan".to_owned(),
+                        current_mode_name: "Plan".to_owned(),
+                        available_modes: vec![super::super::ModeInfo {
+                            id: "plan".to_owned(),
+                            name: "Plan".to_owned(),
+                        }],
+                    },
                 )),
             );
             assert!(
                 matches!(app.status, AppStatus::Ready),
-                "expected Ready after CurrentModeUpdate ack, got {:?}",
+                "expected Ready after ModeStateUpdate ack, got {:?}",
                 app.status
             );
             assert!(app.turn.pending_command_label.is_none());
@@ -1832,7 +1530,7 @@ async fn effort_sets_command_pending_and_config_option_ack_restores_ready() {
                 envelope.command,
                 crate::agent::wire::BridgeCommand::SetEffort {
                     session_id: "sess-1".to_owned(),
-                    effort: "xhigh".to_owned(),
+                    effort: Some("xhigh".to_owned()),
                 }
             );
 
@@ -1850,10 +1548,7 @@ async fn effort_sets_command_pending_and_config_option_ack_restores_ready() {
                 app.session_runtime.config_options.get("effortLevel"),
                 Some(&serde_json::json!("xhigh"))
             );
-            assert_eq!(
-                app.session_thinking_effort_effective(),
-                crate::agent::model::EffortLevel::XHigh
-            );
+            assert_eq!(app.session_effort(), Some(crate::agent::model::EffortLevel::XHigh));
         })
         .await;
 }
@@ -1884,7 +1579,7 @@ async fn effort_accepts_session_only_max() {
                 envelope.command,
                 crate::agent::wire::BridgeCommand::SetEffort {
                     session_id: "sess-1".to_owned(),
-                    effort: "max".to_owned(),
+                    effort: Some("max".to_owned()),
                 }
             );
         })
@@ -1964,7 +1659,7 @@ async fn agent_reset_sends_null_agent() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn agent_allows_unadvertised_name_when_agent_catalog_is_empty() {
+async fn agent_command_routes_selection_to_the_bridge_for_validation() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut app = App::test_default();
@@ -1985,28 +1680,6 @@ async fn agent_allows_unadvertised_name_when_agent_catalog_is_empty() {
             );
         })
         .await;
-}
-
-#[test]
-fn agent_rejects_unknown_when_available_agents_are_populated() {
-    let mut app = App::test_default();
-    let mut rx = attach_test_connection(&mut app);
-    app.session_runtime.session_id = Some("sess-1".into());
-    app.sdk_inventory.available_agents =
-        vec![crate::agent::model::AvailableAgent::new("reviewer", "Review code")];
-
-    let consumed = try_handle_submit(&mut app, "/agent planner");
-
-    assert!(consumed);
-    assert!(rx.try_recv().is_err());
-    assert!(!matches!(app.status, AppStatus::CommandPending));
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected system message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Unknown agent: planner");
 }
 
 #[test]
@@ -2042,31 +1715,9 @@ fn effort_invalid_arguments_return_usage() {
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
             panic!("expected text block");
         };
-        assert_eq!(block.text, "Usage: /effort <low|medium|high|xhigh|max>");
+        assert_eq!(block.text, "Usage: /effort <low|medium|high|xhigh|max|reset>");
         assert!(!matches!(app.status, AppStatus::CommandPending));
     }
-}
-
-#[test]
-fn effort_rejects_models_without_effort_support() {
-    let mut app = App::test_default();
-    let mut rx = attach_test_connection(&mut app);
-    app.session_runtime.session_id = Some("sess-1".into());
-    app.session_runtime.current_model = Some(
-        crate::agent::model::CurrentModel::new("haiku", "Haiku", "Haiku").supports_effort(false),
-    );
-
-    let consumed = try_handle_submit(&mut app, "/effort high");
-
-    assert!(consumed);
-    assert!(rx.try_recv().is_err());
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected system message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Cannot switch effort: current model does not support effort.");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2248,7 +1899,6 @@ fn single_argument_builtin_selection_closes_autocomplete() {
         ("/effort", "xhigh"),
         ("/mode", "plan"),
         ("/model", "sonnet"),
-        ("/opus-version", "4.7"),
         ("/resume", "session-1"),
     ] {
         let mut app = App::test_default();
@@ -2408,7 +2058,7 @@ async fn ultracode_composer_wire_events_status_and_footer_workflow() {
         app.input.set_text("/effort low");
         crate::app::input_submit::submit_input(&mut app);
         tokio::task::yield_now().await;
-        assert!(matches!(commands.try_recv().expect("effort").command, wire::BridgeCommand::SetEffort { effort, .. } if effort == "low"));
+        assert!(matches!(commands.try_recv().expect("effort").command, wire::BridgeCommand::SetEffort { effort, .. } if effort.as_deref() == Some("low")));
         crate::app::handle_client_event(&mut app, session_update(model::SessionUpdate::UltracodeUpdate { ultracode: on }));
         assert_eq!(app.status, AppStatus::CommandPending, "Ultracode telemetry must not acknowledge effort");
         crate::app::handle_client_event(&mut app, session_update(model::SessionUpdate::ConfigOptionUpdate(model::ConfigOptionUpdate { option_id: "effortLevel".to_owned(), value: json!("low") })));
@@ -2473,4 +2123,91 @@ async fn ultracode_composer_wire_events_status_and_footer_workflow() {
         assert_eq!(status.text, "Ultracode is requested but unavailable for this session.");
         assert!(commands.try_recv().is_err(), "status must not retry activation");
     })).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn effort_reset_and_thinking_wait_for_session_acknowledgement() {
+    tokio::task::LocalSet::new()
+        .run_until(Box::pin(async {
+            use crate::agent::wire::BridgeCommand;
+            let mut app = App::test_default();
+            let mut commands = attach_test_connection(&mut app);
+            app.session_runtime.session_id = Some("sess-1".into());
+            app.session_runtime.config_options.insert("effortLevel".to_owned(), json!("max"));
+            app.session_runtime
+                .config_options
+                .insert("alwaysThinkingEnabled".to_owned(), json!(true));
+            for (input, expected, option, acknowledged) in [
+                (
+                    "/effort reset",
+                    BridgeCommand::SetEffort { session_id: "sess-1".to_owned(), effort: None },
+                    "effortLevel",
+                    json!("high"),
+                ),
+                (
+                    "/thinking off",
+                    BridgeCommand::SetThinking {
+                        session_id: "sess-1".to_owned(),
+                        enabled: Some(false),
+                    },
+                    "alwaysThinkingEnabled",
+                    json!(false),
+                ),
+                (
+                    "/thinking reset",
+                    BridgeCommand::SetThinking { session_id: "sess-1".to_owned(), enabled: None },
+                    "alwaysThinkingEnabled",
+                    json!(true),
+                ),
+            ] {
+                let previous = app.session_runtime.config_options.get(option).cloned();
+                app.input.set_text(input);
+                crate::app::input_submit::submit_input(&mut app);
+                assert_eq!(app.status, AppStatus::CommandPending);
+                assert_eq!(app.session_runtime.config_options.get(option), previous.as_ref());
+                tokio::task::yield_now().await;
+                assert_eq!(commands.try_recv().expect("session choice").command, expected);
+                crate::app::handle_client_event(
+                    &mut app,
+                    session_update(model::SessionUpdate::ConfigOptionUpdate(
+                        model::ConfigOptionUpdate {
+                            option_id: option.to_owned(),
+                            value: acknowledged.clone(),
+                        },
+                    )),
+                );
+                assert_eq!(app.status, AppStatus::Ready);
+                assert_eq!(app.session_runtime.config_options.get(option), Some(&acknowledged));
+            }
+        }))
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn explicit_fast_retry_recovers_unknown_state_after_acknowledgement() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut app = App::test_default();
+            let mut commands = attach_test_connection(&mut app);
+            app.session_runtime.session_id = Some("sess-1".into());
+            app.session_runtime.fast_mode_state = model::FastModeState::Unknown;
+            assert!(try_handle_submit(&mut app, "/fast off"));
+            assert_eq!(app.status, AppStatus::CommandPending);
+            assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::Unknown);
+            tokio::task::yield_now().await;
+            assert!(matches!(
+                commands.try_recv().expect("retry").command,
+                crate::agent::wire::BridgeCommand::SetFastMode { enabled: false, .. }
+            ));
+            crate::app::handle_client_event(
+                &mut app,
+                session_update(model::SessionUpdate::FastModeUpdate {
+                    state: model::FastModeState::Off,
+                    disabled_reason: None,
+                }),
+            );
+            assert_eq!(app.status, AppStatus::Ready);
+            assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::Off);
+        })
+        .await;
 }

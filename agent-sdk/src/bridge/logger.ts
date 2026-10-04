@@ -104,6 +104,13 @@ function commandSessionId(command: BridgeCommand): string | undefined {
     case "cancel_turn":
     case "set_model":
     case "set_mode":
+    case "set_effort":
+    case "set_thinking":
+    case "set_agent":
+    case "set_ultracode":
+    case "refresh_ultracode":
+    case "inspect_settings":
+    case "mutate_setting":
     case "set_fast_mode":
     case "generate_session_title":
     case "rename_session":
@@ -147,6 +154,13 @@ function commandToolCallId(command: BridgeCommand): string | undefined {
     case "cancel_turn":
     case "set_model":
     case "set_mode":
+    case "set_effort":
+    case "set_thinking":
+    case "set_agent":
+    case "set_ultracode":
+    case "refresh_ultracode":
+    case "inspect_settings":
+    case "mutate_setting":
     case "set_fast_mode":
     case "generate_session_title":
     case "rename_session":
@@ -202,6 +216,8 @@ function eventToolCallId(event: BridgeEvent): string | undefined {
     case "initialized":
     case "sessions_listed":
     case "status_snapshot":
+    case "settings_result":
+    case "interaction_cancelled":
     case "context_usage":
     case "usage_snapshot":
     case "rewind_targets":
@@ -244,6 +260,7 @@ function protocolEventLevel(event: BridgeEvent): LogLevel {
     case "session_update":
     case "permission_request":
     case "question_request":
+    case "interaction_cancelled":
     case "user_dialog_request":
     case "elicitation_request":
     case "elicitation_complete":
@@ -253,6 +270,7 @@ function protocolEventLevel(event: BridgeEvent): LogLevel {
       return "trace";
     case "sessions_listed":
     case "status_snapshot":
+    case "settings_result":
     case "context_usage":
     case "usage_snapshot":
     case "rewind_targets":

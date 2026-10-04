@@ -64,8 +64,6 @@ pub(super) fn reset_for_conversation(
     app.clear_tool_call_index();
     app.sdk_inventory.tasks.clear();
     app.focus = super::super::FocusManager::default();
-    app.config.clear_overlay();
-    app.config.pending_session_title_change = None;
     clear_cached_active_session_title(app);
     reset_messages_for_new_session(app, false);
     app.chat_render.reset();
@@ -162,8 +160,6 @@ fn reset_interaction_state_for_new_session(app: &mut App) {
     app.focus = super::super::FocusManager::default();
     app.sdk_inventory.available_commands.clear();
     app.sdk_inventory.available_agents.clear();
-    app.config.clear_overlay();
-    app.config.pending_session_title_change = None;
 }
 
 fn reset_render_state_for_new_session(app: &mut App) {
@@ -231,13 +227,35 @@ pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::Sessi
     app.push_message_tracked(welcome);
     app.sync_welcome_snapshot();
     for update in history_updates {
+        let completed_tool = match update {
+            model::SessionUpdate::ToolCall(tool) if tool.status.is_terminal() => {
+                Some(tool.tool_call_id.as_str())
+            }
+            model::SessionUpdate::ToolCallUpdate(tool)
+                if tool.fields.status.is_some_and(model::ToolCallStatus::is_terminal) =>
+            {
+                Some(tool.tool_call_id.as_str())
+            }
+            _ => None,
+        };
+        if let Some(tool_id) = completed_tool
+            && let Some(session_id) = &app.session_runtime.session_id
+        {
+            app.notifications.observe_history_tool(session_id.as_str(), tool_id);
+        }
         match update {
+            model::SessionUpdate::NotificationUpdate { notification, .. } => {
+                super::notifications::handle_sdk_notification(app, notification, true);
+            }
             model::SessionUpdate::UserMessageChunk(chunk) => {
                 app.clear_active_turn_assistant();
                 append_resume_user_message_chunk(app, chunk);
             }
             _ => super::handle_session_update(app, update.clone()),
         }
+    }
+    for message in &mut app.transcript.messages {
+        message.timing.discard_replay_observations();
     }
     app.finalize_session_runtime_artifacts(model::ToolCallStatus::Failed);
     app.clear_active_turn_assistant();
