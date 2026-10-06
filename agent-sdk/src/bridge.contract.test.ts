@@ -1,12 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import readline from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { SettingsMutation, SettingsResult, SettingsSnapshot } from "./types.js";
+import type { SessionUpdate } from "./types.js";
 
 type BridgeEnvelope = Record<string, unknown>;
 
@@ -160,6 +161,228 @@ function assertProtocolEvent(
 ): asserts envelope is BridgeEnvelope & { event: string } {
   assert.equal(envelope.event, eventName);
 }
+
+test("bridge process keeps initial and later background tasks linked across turns and settles actual outcomes", async () => {
+  for (const toolName of ["Bash", "Agent"]) {
+    for (const initiallyBackgrounded of [true, false]) {
+    for (const outcome of ["completed", "failed", "stopped"]) {
+      const toolId = "primary-tool";
+      const taskId = "primary-task";
+      const system = (subtype: string, fields: BridgeEnvelope) => ({ type: "system", subtype, uuid: crypto.randomUUID(), task_id: taskId, ...fields });
+      const toolResult = (raw: BridgeEnvelope) => ({ type: "user", uuid: crypto.randomUUID(), tool_use_result: raw, message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolId, content: "Launch acknowledgement" }] } });
+      const turnEnd = { type: "result", subtype: "success", is_error: false, duration_ms: 1, num_turns: 1, result: "Foreground finished", usage: {}, modelUsage: {}, permission_denials: [] };
+      const fixture = {
+        start: [
+          { type: "assistant", message: { id: "assistant-1", role: "assistant", content: [{ type: "tool_use", id: toolId, name: toolName, input: toolName === "Bash" ? { command: "long command", run_in_background: initiallyBackgrounded } : { description: "Investigate", prompt: "Investigate", run_in_background: initiallyBackgrounded } }] } },
+          system("task_started", { tool_use_id: toolId, description: "Investigate", task_type: toolName === "Bash" ? "local_bash" : "local_agent", is_backgrounded: initiallyBackgrounded }),
+          ...(!initiallyBackgrounded ? [system("task_updated", { patch: { status: "running", is_backgrounded: true } })] : []),
+          toolResult(toolName === "Bash" ? { stdout: "", stderr: "", interrupted: false, backgroundTaskId: taskId, ...(!initiallyBackgrounded ? { timedOutAfterMs: 120000 } : {}) } : { status: "async_launched", isAsync: true, agentId: taskId, description: "Investigate", prompt: "Investigate", outputFile: "task.output" }),
+          system("task_progress", { description: "Still working", usage: { total_tokens: 1, tool_uses: 1, duration_ms: 10 } }),
+          ...(toolName === "Agent" ? [
+            { type: "assistant", parent_tool_use_id: toolId, message: { role: "assistant", content: [{ type: "tool_use", id: "nested-agent", name: "Agent", input: { description: "Nested reviewer", prompt: "Review" } }] } },
+            { type: "assistant", parent_tool_use_id: "nested-agent", message: { role: "assistant", content: [{ type: "tool_use", id: "nested-bash", name: "Bash", input: { command: "Nested command" } }] } },
+          ] : []),
+          { ...turnEnd, subtype: "error_during_execution", is_error: true, errors: ["Interrupted by user"] },
+        ],
+        finish: [
+          ...(toolName === "Agent" ? [
+            { type: "user", parent_tool_use_id: "nested-agent", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "nested-bash", content: "Nested command finished" }] } },
+            { type: "user", parent_tool_use_id: toolId, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "nested-agent", content: "Nested review finished" }] } },
+          ] : []),
+          system("task_updated", { patch: { status: outcome === "stopped" ? "killed" : outcome, end_time: 10 } }),
+          system("task_notification", { status: outcome, summary: "Actual task result", output_file: "task.output" }),
+          system("task_notification", { status: outcome, summary: "Actual task result", output_file: "task.output" }),
+          toolResult(toolName === "Bash" ? { backgroundTaskId: taskId } : { status: "async_launched", isAsync: true, agentId: taskId }),
+          // A queued progress event must never revive a settled task.
+          system("task_progress", { description: "Stale progress", usage: { total_tokens: 1, tool_uses: 1, duration_ms: 11 } }),
+          turnEnd,
+        ],
+        rejected: [
+          { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "rejected-launch", name: toolName, input: { command: "rejected", run_in_background: true } }] } },
+          { type: "user", tool_use_result: { backgroundTaskId: "rejected-task" }, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "rejected-launch", is_error: true, content: "Permission denied" }] } },
+          turnEnd,
+        ],
+        requested: [
+          { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "requested-only", name: toolName, input: { command: "requested", run_in_background: true } }] } },
+          { type: "system", subtype: "task_started", task_id: "requested-task", tool_use_id: "requested-only", is_backgrounded: false, description: "Foreground execution" },
+          turnEnd,
+        ],
+      };
+      const { bridge, cleanup } = ultracodeFixtureBridge({ BACKGROUND_TASK_FIXTURE: JSON.stringify(fixture) });
+      try {
+        bridge.writeCommand({ command: "create_session", cwd: process.cwd(), launch_settings: {} });
+        const connected = await nextMatching(bridge, event => event.event === "connected");
+        const collect = async (step: string) => {
+          bridge.writeCommand({ command: "prompt", session_id: connected.session_id, message_uuid: crypto.randomUUID(), chunks: [{ kind: "text", value: `fixture task ${step}` }] });
+          const events: BridgeEnvelope[] = [];
+          while (true) {
+            const event = await bridge.nextEnvelope(5_000);
+            events.push(event);
+            if (event.event === "turn_complete" || event.event === "turn_error") return events;
+          }
+        };
+        const fields = (events: BridgeEnvelope[]) => events.flatMap(event => {
+          const update = event.update as SessionUpdate | undefined;
+          return update?.type === "tool_call_update" && update.tool_call_update.tool_call_id === toolId ? [update.tool_call_update.fields] : [];
+        });
+        const launchEvents = await collect("start");
+        const launchUpdates = fields(launchEvents);
+        if (toolName === "Agent") {
+          for (const id of ["nested-agent", "nested-bash"]) {
+            const updates = launchEvents.flatMap(event => {
+              const update = event.update as SessionUpdate | undefined;
+              return update?.type === "tool_call_update" && update.tool_call_update.tool_call_id === id ? [update.tool_call_update.fields] : [];
+            });
+            assert.ok(!updates.some(update => ["completed", "failed", "killed"].includes(update.status ?? "")), "foreground interruption must not finalize descendants of a background agent");
+          }
+        }
+        assert.ok(launchUpdates.some(update => update.status === "detached"), `${toolName}: confirmed launch must detach`);
+        const detachment = launchUpdates.findIndex(update => update.status === "detached");
+        assert.ok(launchUpdates.slice(detachment).every(update => update.status === undefined || update.status === "detached"), `${toolName}: launch/progress/interruption must not settle or reattach`);
+        const completionEvents = await collect("finish");
+        const completionUpdates = fields(completionEvents);
+        if (toolName === "Agent") {
+          for (const id of ["nested-agent", "nested-bash"]) {
+            const updates = completionEvents.flatMap(event => {
+              const update = event.update as SessionUpdate | undefined;
+              return update?.type === "tool_call_update" && update.tool_call_update.tool_call_id === id ? [update.tool_call_update.fields] : [];
+            });
+            assert.equal(updates.filter(update => update.status === "completed").length, 1);
+            assert.ok(updates.some(update => update.raw_output?.includes("finished")), "the real descendant result must remain deliverable");
+          }
+        }
+        const inventory = completionEvents.flatMap(event => {
+          const update = event.update as SessionUpdate | undefined;
+          return update?.type === "task_state_update" ? update.tasks.filter(task => task.task_id === taskId) : [];
+        });
+        assert.equal(inventory.at(-1)?.status, "completed", "stale progress and duplicate launch acknowledgements must not revive task inventory");
+        assert.equal(completionUpdates.filter(update => update.status === (outcome === "stopped" ? "killed" : outcome)).length, 1, `${toolName}: duplicate notifications must produce one terminal outcome on the original tool`);
+        assert.ok(!completionUpdates.slice(completionUpdates.findIndex(update => update.status === (outcome === "stopped" ? "killed" : outcome))).some(update => update.status === "in_progress" || update.status === "detached"), `${toolName}: stale progress must not revive completion`);
+        assert.ok(completionUpdates.some(update => update.raw_output?.includes("Actual task result")), `${toolName}: render actual completion, not the launch placeholder`);
+        for (const step of ["rejected", "requested"]) {
+          const id = step === "rejected" ? "rejected-launch" : "requested-only";
+          const events = await collect(step);
+          const updates = events.flatMap(event => {
+            const update = event.update as SessionUpdate | undefined;
+            return update?.type === "tool_call_update" && update.tool_call_update.tool_call_id === id ? [update.tool_call_update.fields] : [];
+          });
+          assert.ok(!updates.some(update => update.status === "detached"), "requesting background execution or rejecting a launch must not detach");
+          if (step === "rejected") assert.ok(updates.some(update => update.status === "failed"));
+          else assert.ok(updates.some(update => update.status === "in_progress"));
+        }
+      } finally {
+        await cleanup();
+      }
+    }
+  }
+  }
+});
+
+test("bridge announces an autonomous completion reply before streaming text without another prompt", async () => {
+  const response = (event: BridgeEnvelope) => ({ type: "stream_event", uuid: crypto.randomUUID(), parent_tool_use_id: null, event });
+  const turnEnd = { type: "result", subtype: "success", is_error: false, duration_ms: 1, num_turns: 1, result: "", usage: {}, modelUsage: {}, permission_denials: [] };
+  const fixture = { start: [
+    { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "independent-tool", name: "Bash", input: { command: "background work" } }] } },
+    { type: "user", tool_use_result: { backgroundTaskId: "independent-task" }, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "independent-tool", content: "Launch acknowledgement" }] } },
+    turnEnd,
+    { type: "system", subtype: "task_notification", task_id: "independent-task", tool_use_id: "independent-tool", status: "completed", summary: "Background command completed" },
+    response({ type: "message_start", message: { id: "autonomous-response" } }),
+    response({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+    response({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "The" } }),
+    response({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: " task finished completely." } }),
+    response({ type: "message_stop" }),
+    { ...turnEnd, origin: { kind: "task-notification" } },
+  ] };
+  const { bridge, cleanup } = ultracodeFixtureBridge({ BACKGROUND_TASK_FIXTURE: JSON.stringify(fixture) });
+  try {
+    bridge.writeCommand({ command: "create_session", cwd: process.cwd(), launch_settings: {} });
+    const connected = await nextMatching(bridge, event => event.event === "connected");
+    bridge.writeCommand({ command: "prompt", session_id: connected.session_id, message_uuid: crypto.randomUUID(), chunks: [{ kind: "text", value: "fixture task start" }] });
+    await nextMatching(bridge, event => event.event === "turn_complete");
+    const events: BridgeEnvelope[] = [];
+    while (true) {
+      const event = await bridge.nextEnvelope(5_000);
+      events.push(event);
+      if (event.event === "turn_complete") break;
+    }
+    const updates = events.flatMap(event => event.update ? [event.update as SessionUpdate] : []);
+    const activity = updates.findIndex(update => update.type === "agent_response_started");
+    const text = updates.findIndex(update => update.type === "agent_message_chunk");
+    assert.ok(activity >= 0 && activity < text, "main response activation must precede text on NDJSON");
+    assert.deepEqual(updates.flatMap(update => update.type === "agent_message_chunk" ? [update.content] : []), [{ type: "text", text: "The" }, { type: "text", text: " task finished completely." }]);
+    assert.ok(!events.some(event => event.event === "user_message_started"), "an autonomous reply must not fabricate another user turn");
+    assert.equal(updates.filter(update => update.type === "tool_call_update" && update.tool_call_update.fields.status === "completed").length, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("resume restores background acknowledgements and routes task-only outcomes to their original tools", async () => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "claude-rs-background-resume-")));
+  const cwd = process.cwd();
+  const configDir = join(directory, "config");
+  const projectDir = join(configDir, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+  mkdirSync(projectDir, { recursive: true });
+  const sessionId = "22222222-2222-4222-8222-222222222222";
+  const records: BridgeEnvelope[] = [];
+  const append = (type: string, message: unknown, extra: BridgeEnvelope = {}) => {
+    records.push({ uuid: `record-${records.length}`, parentUuid: records.at(-1)?.uuid ?? null, type, message, sessionId, cwd, timestamp: "2026-10-06T10:55:30.787Z", ...extra });
+  };
+  append("user", { role: "user", content: "Launch background work" });
+  append("assistant", { id: "launch", role: "assistant", content: [
+    { type: "tool_use", id: "completed-shell", name: "Bash", input: { command: "saved command", run_in_background: true } },
+    { type: "tool_use", id: "pending-agent", name: "Agent", input: { description: "Saved agent", prompt: "Work", run_in_background: true } },
+  ] });
+  append("user", { role: "user", content: [{ type: "tool_result", tool_use_id: "completed-shell", content: "Launch acknowledgement" }] }, { toolUseResult: { stdout: "partial stdout", stderr: "", backgroundTaskId: "saved-shell" } });
+  append("user", { role: "user", content: [{ type: "tool_result", tool_use_id: "pending-agent", content: "Agent launch acknowledgement" }] }, { toolUseResult: { status: "async_launched", isAsync: true, agentId: "saved-agent", description: "Saved agent", outputFile: "saved.output" } });
+  append("user", { role: "user", content: "<task-notification><task-id>saved-shell</task-id><status>completed</status><summary>Saved command result</summary></task-notification>" }, { origin: { kind: "task-notification", producer: "session-task" } });
+  append("assistant", { id: "after-launch", role: "assistant", content: [{ type: "text", text: "Foreground continued" }] });
+  const transcriptPath = join(projectDir, `${sessionId}.jsonl`);
+  const transcript = `${records.map(record => JSON.stringify(record)).join("\n")}\n`;
+  writeFileSync(transcriptPath, transcript);
+  const completion = { type: "system", subtype: "task_notification", task_id: "saved-agent", status: "stopped", summary: "Saved agent stopped", output_file: "saved.output" };
+  const { bridge, cleanup } = ultracodeFixtureBridge({
+    CLAUDE_CONFIG_DIR: configDir, CLAUDE_CODE_PROJECT_DIR_NAME: undefined, RESUME_TRANSCRIPT_FIXTURE: "1",
+    STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId, cwd, lastModified: 1 }]),
+    BACKGROUND_TASK_FIXTURE: JSON.stringify({ finish: [completion, completion,
+      { type: "system", subtype: "task_progress", task_id: "saved-agent", description: "Stale resumed progress" },
+      { type: "result", subtype: "success", is_error: false, duration_ms: 1, num_turns: 1, result: "Finished", usage: {}, modelUsage: {}, permission_denials: [] },
+    ] }),
+  });
+  try {
+    bridge.writeCommand({ command: "resume_session", session_id: sessionId, launch_settings: {} });
+    const connected = await nextMatching(bridge, event => event.event === "connected" || event.event === "slash_command_error");
+    assertProtocolEvent(connected, "connected");
+    const history = connected.history_updates as SessionUpdate[];
+    const statuses = (id: string) => history.flatMap(update => update.type === "tool_call" && update.tool_call.tool_call_id === id ? [update.tool_call.status]
+      : update.type === "tool_call_update" && update.tool_call_update.tool_call_id === id && update.tool_call_update.fields.status ? [update.tool_call_update.fields.status] : []);
+    assert.deepEqual(statuses("completed-shell"), ["in_progress", "detached", "completed"]);
+    assert.deepEqual(statuses("pending-agent"), ["in_progress", "detached"]);
+    const shellResult = history.slice().reverse().find(update => update.type === "tool_call_update" && update.tool_call_update.tool_call_id === "completed-shell");
+    assert.ok(shellResult?.type === "tool_call_update");
+    assert.match(shellResult.tool_call_update.fields.raw_output ?? "", /partial stdout/);
+    assert.match(shellResult.tool_call_update.fields.raw_output ?? "", /Saved command result/);
+    assert.ok(!history.some(update => update.type === "user_message_chunk" && update.content.type === "text" && update.content.text.includes("<task-notification>")));
+    bridge.writeCommand({ command: "prompt", session_id: sessionId, message_uuid: crypto.randomUUID(), chunks: [{ kind: "text", value: "fixture task finish" }] });
+    const results: SessionUpdate[] = [];
+    while (true) {
+      const event = await bridge.nextEnvelope(5_000);
+      if (event.event === "session_update") results.push(event.update as SessionUpdate);
+      if (event.event === "turn_complete" || event.event === "turn_error") break;
+    }
+    const outcomes = results.filter(update => update.type === "tool_call_update" && update.tool_call_update.tool_call_id === "pending-agent");
+    assert.equal(outcomes.length, 1, "duplicate and stale resumed notifications must not create another result");
+    assert.ok(outcomes[0]?.type === "tool_call_update");
+    assert.equal(outcomes[0].tool_call_update.fields.status, "killed");
+    assert.equal(outcomes[0].tool_call_update.fields.raw_output, "Saved agent stopped");
+    assert.ok(!results.some(update => update.type === "tool_call"), "resume must not invent a replacement Agent for an existing shell or agent");
+    assert.equal(readFileSync(transcriptPath, "utf8"), transcript);
+  } finally {
+    await cleanup();
+    assert.equal(dirname(directory), realpathSync(tmpdir()));
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("bridge process emits connection_failed for malformed JSON", async () => {
   const bridge = new SpawnedBridge();
@@ -378,6 +601,7 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
     export * from ${JSON.stringify(sdkPath)};
     import { appendFileSync } from "node:fs";
     import { resolveSettings as sdkResolveSettings } from ${JSON.stringify(sdkPath)};
+    import { getSessionMessages as sdkGetSessionMessages, importSessionToStore as sdkImportSessionToStore } from ${JSON.stringify(sdkPath)};
     export async function resolveSettings(options) {
       const managedSettings = process.env.SETTINGS_POLICY_FIXTURE;
       return sdkResolveSettings({ ...options, ...(managedSettings ? { serverManagedSettings: JSON.parse(managedSettings) } : {}) });
@@ -388,7 +612,8 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
       const seeded = JSON.parse(process.env.STARTUP_SESSIONS_FIXTURE ?? "[]");
       return [...seeded, ...[...saved.keys()].map((sessionId, index) => ({ sessionId, cwd: saved.get(sessionId).cwd, lastModified: index + 1 }))].filter(entry => !options?.dir || entry.cwd === options.dir);
     }
-    export async function getSessionMessages() { return []; }
+    export async function getSessionMessages(...args) { return process.env.RESUME_TRANSCRIPT_FIXTURE === "1" ? sdkGetSessionMessages(...args) : []; }
+    export async function importSessionToStore(...args) { if (process.env.RESUME_TRANSCRIPT_FIXTURE === "1") await sdkImportSessionToStore(...args); }
     const saved = new Map();
     export function query({ prompt, options }) {
       record({ type: "query", cwd: options.cwd, resume: options.resume, model: options.model, effort: options.effort, permissionMode: options.permissionMode, agent: options.agent });
@@ -414,6 +639,10 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
       void (async () => {
         for await (const message of prompt) {
           const text = message.message?.content?.filter(block => block.type === "text").map(block => block.text).join("").trim();
+          if (process.env.BACKGROUND_TASK_FIXTURE && text.startsWith("fixture task ")) {
+            const steps = JSON.parse(process.env.BACKGROUND_TASK_FIXTURE);
+            for (const event of steps[text.slice("fixture task ".length)] ?? []) push(event);
+          }
           if (commandFixture && text === "/fixture-refresh-commands") {
             push({ type: "system", subtype: "commands_changed", commands: currentCommands });
           }
@@ -505,6 +734,90 @@ async function nextUltracode(bridge: SpawnedBridge): Promise<unknown> {
   const event = await nextMatching(bridge, event => (event.update as BridgeEnvelope)?.type === "ultracode_update");
   return (event.update as BridgeEnvelope).ultracode;
 }
+
+test("resume command restores the screenshot conversation without internal task XML", async () => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "claude-rs-resume-")));
+  const cwd = process.cwd();
+  const configDir = join(directory, "config");
+  const projectDir = join(configDir, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+  mkdirSync(projectDir, { recursive: true });
+  const sessionId = "f96f66ae-b5d4-4bc2-b5a3-08336cf4e850";
+  const completed = `<task-notification>
+<task-id>bbwikd6z7</task-id>
+<tool-use-id>toolu_01DExEGoUHANdvdafPRrG1ks</tool-use-id>
+<output-file>/fixture/tasks/bbwikd6z7.output</output-file>
+<status>completed</status>
+
+<summary>Background command "Check docs references to render events and read the fake auth CLI" completed (exit code 0)</summary>
+</task-notification>`;
+  const stopped = `<task-notification>
+<task-id>bdxdmq200</task-id>
+<tool-use-id>toolu_01CeX92NEHVLshRmsFsVRMX5</tool-use-id>
+<status>stopped</status>
+<summary>Background shell command didn't finish before the previous session ended</summary>
+<note>No completion record was found for it in the previous session. It may have been stopped (via the UI, Monitor timeout, or agent teardown — these leave no transcript marker), or it may have been running when the previous Claude Code process exited. Check the output file for partial results before assuming it completed.</note>
+</task-notification>`;
+  const records: Record<string, unknown>[] = [];
+  const add = (uuid: string, parentUuid: string | null, type: string, message: unknown, extra = {}) => {
+    records.push({ uuid, parentUuid, type, message, sessionId, cwd, timestamp: `2026-10-06T11:07:${String(records.length).padStart(2, "0")}.000Z`, ...extra });
+  };
+  add("earlier-user", null, "user", { role: "user", content: [{ type: "text", text: "Earlier conversation" }] });
+  add("earlier-answer", "earlier-user", "assistant", { id: "earlier", role: "assistant", content: [{ type: "text", text: "Earlier response" }] });
+  add("boundary", null, "system", undefined, { subtype: "compact_boundary", logicalParentUuid: "earlier-answer" });
+  add("compact-summary", "boundary", "user", { role: "user", content: "Internal compaction summary" }, { isCompactSummary: true });
+  add("check", "compact-summary", "user", { role: "user", content: "any other places/test that had this place useless sloppy issue?" }, { origin: { kind: "human" } });
+  add("tool", "check", "assistant", { id: "read", role: "assistant", content: [{ type: "tool_use", id: "read-source", name: "Read", input: { file_path: "fixture.xml" } }] });
+  add("tool-result", "tool", "user", { role: "user", content: [{ type: "tool_result", tool_use_id: "read-source", content: "<source>legitimate XML tool output</source>" }] });
+  add("completed", "tool-result", "user", { role: "user", content: completed }, { origin: { kind: "task-notification", producer: "session-task" } });
+  add("interrupted", "completed", "user", { role: "user", content: [{ type: "text", text: "[Request interrupted by user]" }] });
+  add("no-response", "interrupted", "assistant", { id: "interrupted-response", role: "assistant", content: [{ type: "text", text: "No response requested." }] });
+  add("stopped", "no-response", "user", { role: "user", content: stopped }, { origin: { kind: "task-notification" } });
+  add("hello", "stopped", "user", { role: "user", content: [{ type: "text", text: "hello? does this session onyl hold two messages?" }] }, { origin: { kind: "human" } });
+  add("answer", "hello", "assistant", { id: "answer", role: "assistant", content: [{ type: "text", text: "No, the session holds everything." }] });
+  add("user-xml", "answer", "user", { role: "user", content: [{ type: "text", text: "<task-notification>user-provided XML</task-notification>" }] }, { origin: { kind: "human" } });
+  const transcriptPath = join(projectDir, `${sessionId}.jsonl`);
+  const transcript = `${records.map(record => JSON.stringify(record)).join("\n")}\n`;
+  writeFileSync(transcriptPath, transcript);
+  const { bridge, cleanup } = ultracodeFixtureBridge({
+    CLAUDE_CONFIG_DIR: configDir,
+    CLAUDE_CODE_PROJECT_DIR_NAME: undefined,
+    RESUME_TRANSCRIPT_FIXTURE: "1",
+    STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId, cwd, lastModified: 1 }]),
+  });
+  try {
+    bridge.writeCommand({ command: "resume_session", session_id: sessionId, request_id: "resume-screenshot", launch_settings: {} });
+    const connected = await nextMatching(bridge, event => event.event === "connected" || event.event === "slash_command_error");
+    assertProtocolEvent(connected, "connected");
+    assert.equal(connected.session_id, sessionId);
+    assert.equal(connected.request_id, "resume-screenshot");
+    const updates = connected.history_updates as SessionUpdate[];
+    const text = updates.filter(update => update.type === "user_message_chunk" || update.type === "agent_message_chunk");
+    assert.deepEqual(text.map(update => [update.type, update.source_message_uuid, update.content]), [
+      ["user_message_chunk", "earlier-user", { type: "text", text: "Earlier conversation" }],
+      ["agent_message_chunk", "earlier-answer", { type: "text", text: "Earlier response" }],
+      ["user_message_chunk", "check", { type: "text", text: "any other places/test that had this place useless sloppy issue?" }],
+      ["user_message_chunk", "interrupted", { type: "text", text: "[Request interrupted by user]" }],
+      ["agent_message_chunk", "no-response", { type: "text", text: "No response requested." }],
+      ["user_message_chunk", "hello", { type: "text", text: "hello? does this session onyl hold two messages?" }],
+      ["agent_message_chunk", "answer", { type: "text", text: "No, the session holds everything." }],
+      ["user_message_chunk", "user-xml", { type: "text", text: "<task-notification>user-provided XML</task-notification>" }],
+    ]);
+    assert.deepEqual(updates.filter(update => update.type === "message_metadata").map(update => update.source_message_uuid), ["earlier-user", "earlier-answer", "check", "tool", "tool-result", "interrupted", "no-response", "hello", "answer", "user-xml"]);
+    const tools = updates.filter(update => update.type === "tool_call");
+    assert.equal(tools.length, 1);
+    assert.equal(tools[0].tool_call.tool_call_id, "read-source");
+    assert.equal(tools[0].tool_call.status, "in_progress");
+    const result = updates.find(update => update.type === "tool_call_update" && update.tool_call_update.tool_call_id === "read-source");
+    assert.ok(result?.type === "tool_call_update");
+    assert.equal(result.tool_call_update.fields.status, "completed");
+    assert.equal(result.tool_call_update.fields.raw_output, "<source>legitimate XML tool output</source>");
+    assert.equal(readFileSync(transcriptPath, "utf8"), transcript);
+  } finally {
+    await cleanup();
+    assert.equal(dirname(directory), realpathSync(tmpdir()));
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("spawned bridge restores normalized command inventory after repeated clear and a new session", async () => {
   const { bridge, cleanup } = ultracodeFixtureBridge({ SLASH_COMMANDS_FIXTURE: "1" });

@@ -1,28 +1,72 @@
 import { messageMetadata } from "./presentation_metadata.js";
 import { nativeNotification } from "./notifications.js";
+import { getSessionMessages, importSessionToStore } from "@anthropic-ai/claude-agent-sdk";
 import type {
   SDKSessionInfo,
   SessionMessage,
+  SessionStore,
+  SessionStoreEntry,
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
-  Json,
   SessionListEntry,
   SessionUpdate,
   TaskItem,
-  TaskStatus,
   ToolCall,
 } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
+import { applyFieldsToBase, normalizeToolCallUpdateFields, toolAcceptsTaskLifecycle, toolNameFromMeta } from "./tool_calls.js";
+import { taskLifecyclePatch, upsertTask } from "./tasks.js";
+import { linkTaskToolUse } from "./task_links.js";
+import type { SessionState } from "./session_lifecycle.js";
+import { taskSystemToolFields } from "./message_handlers.js";
 import {
   applyToolNonExecutionMetadata,
   TOOL_RESULT_TYPES,
   buildToolResultFields,
+  backgroundToolLaunchTaskIdFromResult,
   createToolCall,
   isToolSearchToolName,
   isToolSearchToolResultType,
   isToolUseBlockType,
   parseToolNonExecutionMetadata,
 } from "./tooling.js";
+
+/** Load display history across compactions without changing the model's saved context. */
+export async function getSessionTranscriptMessages(
+  sessionId: string,
+  options: { dir?: string } = {},
+): Promise<SessionMessage[]> {
+  const entries: SessionStoreEntry[] = [];
+  const store: SessionStore = {
+    append: async (_key, batch) => { entries.push(...batch); },
+    load: async () => {
+      const uuids = new Set(entries.map(entry => entry.uuid));
+      return entries.map(entry => {
+        if (
+          entry.type !== "system" || entry.subtype !== "compact_boundary" ||
+          typeof entry.logicalParentUuid !== "string" || !uuids.has(entry.logicalParentUuid)
+        ) {
+          return entry;
+        }
+        // Preserved messages already occur in the original transcript chain.
+        // Reparenting them after the summary would create a cycle across this link.
+        const compactMetadata = { ...asRecordOrNull(entry.compactMetadata) };
+        delete compactMetadata.preservedMessages;
+        delete compactMetadata.preservedSegment;
+        return { ...entry, parentUuid: entry.logicalParentUuid, compactMetadata };
+      });
+    },
+  };
+  // Import streams the complete file, including history before the SDK's large-file cutoff.
+  await importSessionToStore(sessionId, store, { ...options, includeSubagents: false });
+  const messages = await getSessionMessages(sessionId, { ...options, includeSystemMessages: true, sessionStore: store });
+  const records = new Map(entries.map(entry => [entry.uuid, entry]));
+  return messages.map(message => {
+    const record = records.get(message.uuid);
+    const rawResult = record?.toolUseResult ?? record?.tool_use_result;
+    return rawResult === undefined ? message : { ...message, tool_use_result: rawResult };
+  });
+}
 
 function nonEmptyTrimmed(value: unknown): string | undefined {
   if (typeof value !== "string") {
@@ -45,112 +89,11 @@ function messageCandidates(raw: unknown): Record<string, unknown>[] {
   return candidates;
 }
 
-function jsonValue(value: unknown): Json | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  try {
-    const text = JSON.stringify(value);
-    if (text === undefined) {
-      return undefined;
-    }
-    return JSON.parse(text) as Json;
-  } catch {
-    return undefined;
-  }
-}
-
-function mergeTaskMetadata(
-  existing: Json | undefined,
-  patch: Record<string, Json> | undefined,
-): Json | undefined {
-  if (!patch) {
-    return existing;
-  }
-  const existingRecord =
-    existing && typeof existing === "object" && !Array.isArray(existing)
-      ? { ...(existing as Record<string, Json>) }
-      : {};
-  for (const [key, value] of Object.entries(patch)) {
-    if (value === null) {
-      delete existingRecord[key];
-    } else {
-      existingRecord[key] = value;
-    }
-  }
-  return Object.keys(existingRecord).length > 0 ? existingRecord : null;
-}
-
-function normalizeLifecycleTaskStatus(value: unknown): TaskStatus | undefined {
-  switch (value) {
-    case "pending":
-      return "pending";
-    case "running":
-    case "in_progress":
-      return "in_progress";
-    case "completed":
-    case "failed":
-    case "killed":
-    case "stopped":
-      return "completed";
-    default:
-      return undefined;
-  }
-}
-
-function taskSystemMetadata(
-  msg: Record<string, unknown>,
-  patch: Record<string, unknown> | undefined,
-): Record<string, Json> | undefined {
-  const metadata: Record<string, Json> = {};
-  const copyValue = (
-    from: Record<string, unknown> | undefined,
-    key: string,
-  ): void => {
-    if (!from || !Object.hasOwn(from, key)) {
-      return;
-    }
-    const value = jsonValue(from[key]);
-    if (value !== undefined) {
-      metadata[key] = value;
-    }
-  };
-
-  for (const key of [
-    "error",
-    "is_backgrounded",
-    "spawn_depth",
-    "request_id",
-    "subagent_type",
-    "task_description",
-    "task_type",
-    "workflow_name",
-    "prompt",
-    "output_file",
-    "summary",
-    "end_time",
-    "total_paused_ms",
-  ]) {
-    copyValue(msg, key);
-    copyValue(patch, key);
-  }
-  const terminalStatus =
-    nonEmptyTrimmed(msg.status) ?? nonEmptyTrimmed(patch?.status);
-  if (
-    terminalStatus === "completed" ||
-    terminalStatus === "failed" ||
-    terminalStatus === "killed" ||
-    terminalStatus === "stopped"
-  ) {
-    metadata.terminal_status = terminalStatus;
-  }
-  return Object.keys(metadata).length > 0 ? metadata : undefined;
-}
-
 function pushResumeTaskSystemUpdate(
   updates: SessionUpdate[],
   tasksById: Map<string, TaskItem>,
   taskToolUseIds: Map<string, string>,
+  toolCalls: Map<string, ToolCall>,
   msg: Record<string, unknown>,
 ): boolean {
   const subtype = nonEmptyTrimmed(msg.subtype);
@@ -171,66 +114,22 @@ function pushResumeTaskSystemUpdate(
   if (explicitToolUseId) {
     taskToolUseIds.set(taskId, explicitToolUseId);
   }
+  const toolUseId = explicitToolUseId ?? taskToolUseIds.get(taskId);
+  const tool = toolUseId ? toolCalls.get(toolUseId) : undefined;
+  if (tool && toolUseId && toolAcceptsTaskLifecycle(tool)) {
+    const fields = taskSystemToolFields(tool, subtype, msg);
+    if (!normalizeToolCallUpdateFields(tool, fields ?? {}, subtype as "task_started" | "task_progress" | "task_updated" | "task_notification")) return true;
+    if (fields) {
+      applyFieldsToBase(tool, fields);
+      updates.push({ type: "tool_call_update", tool_call_update: { tool_call_id: toolUseId, fields } });
+    }
+  }
 
-  const existing = tasksById.get(taskId);
-  const patch = asRecordOrNull(msg.patch) ?? undefined;
-  const status =
-    normalizeLifecycleTaskStatus(msg.status) ??
-    normalizeLifecycleTaskStatus(patch?.status) ??
-    (subtype === "task_started" || subtype === "task_progress"
-      ? "in_progress"
-      : undefined);
-  const description =
-    nonEmptyTrimmed(patch?.description) ??
-    nonEmptyTrimmed(msg.description) ??
-    nonEmptyTrimmed(msg.summary);
-  const activeForm =
-    nonEmptyTrimmed(patch?.activeForm) ?? nonEmptyTrimmed(patch?.active_form);
-  const subject =
-    nonEmptyTrimmed(patch?.subject) ??
-    nonEmptyTrimmed(msg.subject) ??
-    existing?.subject ??
-    nonEmptyTrimmed(msg.workflow_name) ??
-    nonEmptyTrimmed(msg.task_description) ??
-    description ??
-    taskId;
-  const metadata = mergeTaskMetadata(
-    existing?.metadata,
-    taskSystemMetadata(msg, patch),
-  );
-  const sourceToolCallId =
-    taskToolUseIds.get(taskId) ?? existing?.source_tool_call_id;
-
-  const task: TaskItem = {
-    task_id: taskId,
-    subject,
-    ...(description !== undefined
-      ? { description }
-      : existing?.description !== undefined
-        ? { description: existing.description }
-        : {}),
-    ...(activeForm !== undefined
-      ? { active_form: activeForm }
-      : existing?.active_form !== undefined
-        ? { active_form: existing.active_form }
-        : {}),
-    status: status ?? existing?.status ?? "pending",
-    ...(existing?.owner !== undefined ? { owner: existing.owner } : {}),
-    blocks: existing ? [...existing.blocks] : [],
-    blocked_by: existing ? [...existing.blocked_by] : [],
-    ...(metadata !== undefined ? { metadata } : {}),
-    ...(sourceToolCallId !== undefined
-      ? { source_tool_call_id: sourceToolCallId }
-      : {}),
-  };
-  tasksById.set(taskId, task);
-  updates.push({
-    type: "task_state_update",
-    source: "task_lifecycle",
-    tasks: [task],
-    removed_task_ids: [],
-    is_complete_snapshot: false,
-  });
+  const patch = taskLifecyclePatch(tasksById.get(taskId), subtype, msg, toolUseId);
+  if (patch) {
+    const task = upsertTask({ tasksById, taskOrder: [] }, patch);
+    updates.push({ type: "task_state_update", source: "task_lifecycle", tasks: [task], removed_task_ids: [], is_complete_snapshot: false });
+  }
   return true;
 }
 
@@ -284,7 +183,7 @@ function pushResumeToolUse(
     toolCall.source_message_uuid = sourceMessageUuid;
   }
   toolCalls.set(toolUseId, toolCall);
-  updates.push({ type: "tool_call", tool_call: toolCall });
+  updates.push({ type: "tool_call", tool_call: structuredClone(toolCall) });
 }
 
 function pushResumeToolResult(
@@ -296,7 +195,10 @@ function pushResumeToolResult(
     string,
     import("../types.js").ToolNonExecutionMetadata
   >,
-  sourceMessageUuid?: string,
+  sourceMessageUuid: string | undefined,
+  rawResult: unknown,
+  taskToolUseIds: Map<string, string>,
+  tasksById: Map<string, TaskItem>,
 ): void {
   const toolUseId =
     typeof block.tool_use_id === "string" ? block.tool_use_id : "";
@@ -313,8 +215,19 @@ function pushResumeToolResult(
   }
   const isError = Boolean(block.is_error);
   const base = toolCalls.get(toolUseId);
-  const fields = buildToolResultFields(isError, block.content, base, block);
+  const fields = buildToolResultFields(isError, block.content, base, rawResult ?? block);
   applyToolNonExecutionMetadata(fields, nonExecutionByToolUseId.get(toolUseId));
+  if (!normalizeToolCallUpdateFields(base, fields, "result")) return;
+  const taskId = !isError ? backgroundToolLaunchTaskIdFromResult(
+    toolNameFromMeta(base?.meta) ?? "", rawResult ?? block, block.content,
+  ) : undefined;
+  if (taskId) {
+    taskToolUseIds.set(taskId, toolUseId);
+    const patch = taskLifecyclePatch(tasksById.get(taskId), "task_started", {
+      task_id: taskId, description: base?.title, is_backgrounded: true,
+    }, toolUseId);
+    if (patch) updates.push({ type: "task_state_update", source: "task_lifecycle", tasks: [upsertTask({ tasksById, taskOrder: [] }, patch)], removed_task_ids: [], is_complete_snapshot: false });
+  }
   updates.push({
     type: "tool_call_update",
     tool_call_update: {
@@ -327,16 +240,7 @@ function pushResumeToolResult(
   if (!base) {
     return;
   }
-  base.status = fields.status ?? base.status;
-  if (fields.raw_output) {
-    base.raw_output = fields.raw_output;
-  }
-  if (fields.content) {
-    base.content = fields.content;
-  }
-  if (fields.output_metadata) {
-    base.output_metadata = fields.output_metadata;
-  }
+  applyFieldsToBase(base, fields);
 }
 
 function summaryFromSession(info: SDKSessionInfo): string {
@@ -397,6 +301,20 @@ export function mapSessionMessagesToUpdates(
   const taskToolUseIds = new Map<string, string>();
 
   for (const entry of messages) {
+    const record = asRecordOrNull(entry);
+    const origin = asRecordOrNull(record?.origin);
+    // Background-task inputs belong to Claude's context, not the visible user transcript.
+    // Peer and scheduled messages carry a subkind and remain eligible for display.
+    if (record?.isCompactSummary === true) continue;
+    if (
+      entry.type === "user" && origin?.kind === "task-notification" &&
+      origin.subkind === undefined &&
+      (origin.producer === undefined || origin.producer === "session-task")
+    ) {
+      const notification = resumedTaskNotification(entry.message);
+      if (notification) pushResumeTaskSystemUpdate(updates, tasksById, taskToolUseIds, toolCalls, notification);
+      continue;
+    }
     const fallbackRole = entry.type === "assistant" ? "assistant" : "user";
     const entrySourceMessageUuid =
       typeof entry.uuid === "string" ? entry.uuid : undefined;
@@ -413,6 +331,7 @@ export function mapSessionMessagesToUpdates(
             updates,
             tasksById,
             taskToolUseIds,
+            toolCalls,
             message,
           )
         ) {
@@ -438,7 +357,9 @@ export function mapSessionMessagesToUpdates(
             ? message.parent_tool_use_id
             : null;
 
-      const content = Array.isArray(message.content) ? message.content : [];
+      const content = typeof message.content === "string"
+        ? [{ type: "text", text: message.content }]
+        : Array.isArray(message.content) ? message.content : [];
       const nonExecutionByToolUseId = parseToolNonExecutionMetadata(
         Object.hasOwn(entry, "tool_result_meta")
           ? (entry as unknown as Record<string, unknown>).tool_result_meta
@@ -476,6 +397,9 @@ export function mapSessionMessagesToUpdates(
             block,
             nonExecutionByToolUseId,
             sourceMessageUuid,
+            record?.tool_use_result ?? record?.toolUseResult,
+            taskToolUseIds,
+            tasksById,
           );
           continue;
         }
@@ -489,4 +413,49 @@ export function mapSessionMessagesToUpdates(
   }
 
   return updates;
+}
+
+/** Restore runtime correlations from the same chronological updates shown by the UI. */
+export function restoreResumedToolState(session: SessionState, updates: SessionUpdate[]): void {
+  for (const update of updates) {
+    if (update.type === "tool_call") session.toolCalls.set(update.tool_call.tool_call_id, structuredClone(update.tool_call));
+    if (update.type === "tool_call_update") {
+      const base = session.toolCalls.get(update.tool_call_update.tool_call_id);
+      if (base) applyFieldsToBase(base, structuredClone(update.tool_call_update.fields));
+    }
+    if (update.type === "task_state_update") {
+      for (const task of update.tasks) upsertTask(session, structuredClone(task));
+      for (const id of update.removed_task_ids) session.tasksById.delete(id);
+    }
+  }
+  for (const task of session.tasksById.values()) {
+    const tool = task.source_tool_call_id ? session.toolCalls.get(task.source_tool_call_id) : undefined;
+    if (tool && !["completed", "failed", "killed"].includes(tool.status)) linkTaskToolUse(session, task.task_id, tool.tool_call_id);
+  }
+}
+
+// Literal searches avoid retrying overlapping suffixes when a closing tag is missing.
+function notificationTagContent(text: string, name: string): string | undefined {
+  const opening = `<${name}>`;
+  const start = text.indexOf(opening);
+  if (start === -1) return undefined;
+  const bodyStart = start + opening.length;
+  const end = text.indexOf(`</${name}>`, bodyStart);
+  return end === -1 ? undefined : text.slice(bodyStart, end);
+}
+
+function resumedTaskNotification(raw: unknown): Record<string, unknown> | undefined {
+  for (const message of messageCandidates(raw)) {
+    const content = typeof message.content === "string" ? message.content : Array.isArray(message.content)
+      ? message.content.map(block => asRecordOrNull(block)?.text ?? "").join("\n") : "";
+    const body = notificationTagContent(content, "task-notification");
+    if (!body) continue;
+    const field = (name: string) => notificationTagContent(body, name)?.trim();
+    const taskId = field("task-id");
+    const status = field("status");
+    if (taskId && (status === "completed" || status === "failed" || status === "stopped")) {
+      return { subtype: "task_notification", task_id: taskId, status, tool_use_id: field("tool-use-id"), summary: field("summary"), output_file: field("output-file") };
+    }
+  }
+  return undefined;
 }

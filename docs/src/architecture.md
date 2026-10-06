@@ -75,6 +75,8 @@ Automatic updates uses the same catalog and writer for the User-only `updates.au
 
 ### Presentation and timing
 
+Tool titles share a one-line display projection and a source-keyed inline cache in the existing block cache. Shell command titles render literally; other tool titles retain Markdown styling. Full titles and command inputs remain canonical data. Spinner/status chrome, metadata badges and width clipping stay live, while unchanged title content survives body updates and resize. Inline cache bytes participate in the existing render budget and eviction workflow.
+
 | Concern | Owner | Location |
 | --- | --- | --- |
 | Normalizing SDK wall timestamps, result elapsed and API timing, tool and task elapsed metadata | Bridge | `agent-sdk/src/bridge/presentation_metadata.ts` |
@@ -86,6 +88,8 @@ Presentation preferences are projections of the acknowledged config snapshot; Ru
 ### Transcript reading and `/copy`
 
 Chat reading owns a stable transcript-segment anchor and a rendered-text position; the saved Auto-scroll setting controls only the following policy. Reading suspends scrollback insertion, survives reflow of retained content, and returns to ordinary incremental history commits through an explicit keymap action.
+
+Shutdown redraws the live viewport without resetting committed history. Reading returns to live output so its viewport copy does not remain beside native scrollback. The terminal owner finishes pending resize recovery and transcript replay before restoration; an explicit force interrupt can stop that recovery.
 
 `/copy` derives its material from the canonical response text and the text-joining rule shared with rendering, then writes through the clipboard boundary shared with MCP authorization. Its picker owns only the current selection and retry state.
 
@@ -101,6 +105,14 @@ Only top-level `message_start` and indexed `thinking` or `redacted_thinking` blo
 Rust consumes the typed phases without interpreting SDK content and never infers thinking from text, tools or silence. One derived decision assigns the activity heading to the active assistant, or to the composer for standalone work without an assistant message. SDK thinking appears separately in the active assistant output as a temporary live row that is never committed to history. Waiting or completing without output removes the temporary heading and activity; real assistant output keeps its heading. Composer-only headings and the composer activity block never enter transcript or history output.
 
 A turn keeps one verb and one shuffled traversal of the shared welcome tips, advanced by monotonic deadlines on the TUI wake loop, including under reduced motion. `spinnerTipsEnabled` from the acknowledged snapshot controls only the tip text; activity, its heading and SDK thinking are independent of it.
+
+### Background tool execution
+
+The bridge normalizes confirmed launch results and SDK task lifecycle events into the existing `Detached` tool status. Requested background flags and host elapsed time do not confirm a handoff. Task-to-tool correlation survives foreground turn completion and resume; stale progress and repeated launch acknowledgements cannot reopen terminal execution. Live and replay use the same task adapters and transition rules.
+
+Rust keeps execution state on the original `ToolCallInfo`. Its history projection freezes the launch at its creation position with the fixed `↗` icon, allowing the transcript prefix to enter terminal history while the task runs independently. Actual completion, failure or stopping appends one separately identified result linked to that tool. The session owns pending interactions; foreground turn reset preserves background controls, which remain mutable at the end of the live region during transcript replay after resize. Cache and retention accounting include the frozen projections without adding them to the execution index or foreground activity set.
+
+The bridge announces each live top-level SDK response through the typed `agent_response_started` update before sending its text. A response triggered by a background completion receives a fresh mutable assistant owner even when no user prompt is pending; history replay does not activate live responses. The renderer groups consecutive visible assistant messages under one speaker label, carrying speaker context across content already inserted into terminal history. Streaming ownership, message identities and tool insertion order remain separate from that visual grouping.
 
 ### Notifications
 

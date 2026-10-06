@@ -111,6 +111,98 @@ const model = {
 function streamReply(messageUuid) {
   send({ event: 'user_message_started', session_id: SESSION, message_uuid: messageUuid, source: 'command_lifecycle' });
   replyNumber++;
+  if (SCENARIO === 'background-replies') {
+    const update = update => send({ event: 'session_update', session_id: SESSION, update });
+    const text = text => update({ type: 'agent_message_chunk', content: { type: 'text', text } });
+    if (replyNumber === 1) {
+      for (let i = 1; i <= 3; i++) update({ type: 'tool_call', tool_call: {
+        tool_call_id: `completion-${i}`, title: `LAUNCH_${i}`, kind: 'execute', status: 'detached',
+        content: [], raw_input: { command: `LAUNCH_${i}` }, locations: [], meta: { claudeCode: { toolName: 'Bash' } },
+      } });
+      text('Foreground reply is complete.');
+      send({ event: 'turn_complete', session_id: SESSION });
+      let previous = '';
+      // Independent completions continue after the foreground turn has ended.
+      setInterval(() => {
+        const step = fs.existsSync(RELEASE_FILE) ? fs.readFileSync(RELEASE_FILE, 'utf8') : '';
+        if (step === previous) return;
+        previous = step;
+        const match = /^(result|prefix|finish)-([123])$/.exec(step);
+        if (!match) return;
+        const [, action, number] = match;
+        if (action === 'result') {
+          for (let i = 0; i < 2; i++) update({ type: 'tool_call_update', tool_call_update: {
+            tool_call_id: `completion-${number}`, fields: { status: 'completed', title: `RESULT_${number}`, raw_output: `OUTPUT_${number}` },
+          } });
+        } else if (action === 'prefix') {
+          update({ type: 'agent_response_started' });
+          text(number === '1' ? 'The' : 'Short task 2 (`');
+        } else {
+          text(number === '1' ? ' first background task finished completely.' : 'task-two`) finished with exit code 0.');
+          send({ event: 'turn_complete', session_id: SESSION });
+        }
+        record({ type: 'barrier', name: step });
+      }, INTERVAL_MS);
+    } else if (replyNumber === 2) {
+      update({ type: 'agent_response_started' });
+      text('Normal conversation continues completely.');
+      send({ event: 'turn_complete', session_id: SESSION });
+    } else {
+      active = { timer: setInterval(() => {}, 1000) };
+      update({ type: 'agent_activity_update', phase: 'thinking' });
+      record({ type: 'barrier', name: 'cancellable-turn-started' });
+    }
+    return;
+  }
+  if (SCENARIO.startsWith('background-')) {
+    const update = update => send({ event: 'session_update', session_id: SESSION, update });
+    update({ type: 'message_metadata', role: 'user', timestamp: '2026-10-06T10:41:54.067Z', source_message_uuid: messageUuid });
+    const fields = fields => update({ type: 'tool_call_update', tool_call_update: { tool_call_id: 'background-primary', fields } });
+    const tool = (id, command, status) => {
+      const agent = id === 'background-primary' && SCENARIO.includes('agent');
+      update({ type: 'tool_call', tool_call: {
+        tool_call_id: id, title: command, kind: agent ? 'other' : 'execute', status, content: [],
+        raw_input: agent ? { description: command, prompt: 'Work independently' } : { command },
+        raw_output: null, locations: [], meta: { claudeCode: { toolName: agent ? 'Agent' : 'Bash' } },
+      } });
+    };
+    if (replyNumber === 1 && SCENARIO !== 'background-resume') {
+      tool('background-primary', 'PRIMARY_TASK', 'in_progress');
+      if (SCENARIO.endsWith('-initial')) fields({ status: 'detached' });
+    }
+    let previous = fs.existsSync(RELEASE_FILE) ? fs.readFileSync(RELEASE_FILE, 'utf8') : '';
+    const timer = setInterval(() => {
+      const step = fs.existsSync(RELEASE_FILE) ? fs.readFileSync(RELEASE_FILE, 'utf8') : '';
+      if (step === previous) return;
+      previous = step;
+      if (step === 'detach') fields({ status: 'detached' });
+      if (step === 'followers') {
+        for (let i = 1; i <= LINES; i++) tool(`follower-${i}`, `FOLLOWUP_${String(i).padStart(3, '0')}`, 'completed');
+        record({ type: 'barrier', name: 'followers-created' });
+      }
+      if (step === 'progress') {
+        fields({ status: 'detached', title: 'MUTATED_LAUNCH', raw_output: 'BACKGROUND_PROGRESS_ONLY' });
+        tool('progress-fence', 'PROGRESS_FENCE', 'completed');
+      }
+      if (step === 'permission') {
+        send({ event: 'permission_request', session_id: SESSION, request: {
+          tool_call: { tool_call_id: 'background-primary', title: 'PRIMARY_TASK', kind: 'execute', status: 'detached', content: [], locations: [], meta: { claudeCode: { toolName: 'Bash' } } },
+          options: [
+            { option_id: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+            { option_id: 'deny-once', name: 'Deny once', kind: 'reject_once' },
+          ], display: null, mcp_server: null,
+        } });
+      }
+      if (['completed', 'failed', 'killed'].includes(step)) {
+        for (let i = 0; i < 2; i++) fields({ status: step, title: 'PRIMARY_RESULT_TASK', raw_output: 'PRIMARY_FINAL_OUTPUT', content: [{ type: 'content', content: { type: 'text', text: 'PRIMARY_FINAL_OUTPUT' } }] });
+        tool('result-fence', 'RESULT_FENCE', 'completed');
+      }
+      if (step === 'turn-end') finish({ event: 'turn_complete', session_id: SESSION });
+    }, INTERVAL_MS);
+    active = { timer };
+    record({ type: 'barrier', name: `background-turn-${replyNumber}-held` });
+    return;
+  }
   if (!activityScenario || replyNumber !== 1) send({
     event: 'session_update',
     session_id: SESSION,
@@ -133,7 +225,7 @@ function streamReply(messageUuid) {
     alert({ ...proactive, tool_use_id: `upstream-${replyNumber}`, local_sent: true });
     send({ event: 'session_update', session_id: SESSION, update: { type: 'notification_update', notification: { ...proactive, tool_use_id: `replay-${replyNumber}` }, replay: true } });
   }
-  if (SCENARIO === 'resize-replay') {
+  if (SCENARIO.startsWith('resize-replay')) {
     const text = Array.from({ length: LINES }, (_, index) => `${index + 1}. streamed line ${index + 1}\n`).join('');
     send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text }, source_message_uuid: null } });
     send({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'completed', queued_turn_count: 0 });
@@ -263,10 +355,14 @@ readline
           mode: null,
           fast_mode_state: 'off',
           fast_mode_disabled_reason: null,
-          history_updates: null,
+          history_updates: SCENARIO === 'background-resume' ? [
+            { type: 'user_message_chunk', content: { type: 'text', text: 'Resumed background launch' }, source_message_uuid: 'saved-user' },
+            { type: 'tool_call', tool_call: { tool_call_id: 'background-primary', title: 'PRIMARY_TASK', kind: 'execute', status: 'in_progress', content: [], raw_input: { command: 'PRIMARY_TASK' }, locations: [], meta: { claudeCode: { toolName: 'Bash' } } } },
+            { type: 'tool_call_update', tool_call_update: { tool_call_id: 'background-primary', fields: { status: 'detached' } } },
+          ] : null,
           restored_input: null,
         });
-        if (SCENARIO.startsWith('resize-')) send({ event: 'status_snapshot', session_id: SESSION, account: { subscription_type: 'Fixture subscription' } });
+        if (SCENARIO.startsWith('resize-') || SCENARIO.startsWith('background-')) send({ event: 'status_snapshot', session_id: SESSION, account: { subscription_type: 'Fixture subscription' } });
         if (SCENARIO === 'disconnect-during-auth' && message.command === 'create_session') {
           const timer = setInterval(() => {
             if (fs.existsSync(RELEASE_FILE)) {
@@ -321,7 +417,13 @@ readline
         break;
       case 'permission_response':
       case 'question_response':
-        if (!active || message.tool_call_id !== 'fixture-tool') throw new Error('Unexpected interaction response');
+        if (SCENARIO.startsWith('background-') && message.tool_call_id === 'background-primary') {
+          record({ type: 'barrier', name: 'background-permission-answered' });
+          break;
+        }
+        if (message.tool_call_id !== 'fixture-tool') throw new Error('Unexpected interaction response');
+        // Like the real bridge, tolerate a resolver disappearing on cancellation.
+        if (!active) break;
         send({ event: 'session_update', session_id: SESSION, update: {
           type: 'tool_call_update', tool_call_update: {
             tool_call_id: 'fixture-tool', source_message_uuid: null,
@@ -331,7 +433,14 @@ readline
         finish({ event: 'turn_complete', session_id: SESSION });
         break;
       case 'shutdown':
-        process.exit(0);
+        if (SCENARIO === 'resize-replay-shutdown-held') {
+          record({ type: 'barrier', name: 'shutdown-held' });
+          setInterval(() => {
+            if (fs.existsSync(RELEASE_FILE) && fs.readFileSync(RELEASE_FILE, 'utf8') === 'close') process.exit(0);
+          }, INTERVAL_MS);
+        } else {
+          process.exit(0);
+        }
     }
   })
   .on('close', () => process.exit(0));

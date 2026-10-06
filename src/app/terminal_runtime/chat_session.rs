@@ -193,7 +193,11 @@ impl ChatTerminalSession {
         let width = screen_size.0.max(1);
         let terminal_height = screen_size.1.max(1);
 
-        if !app.config.auto_scroll_effective() {
+        if app.shutdown_requested() {
+            // Reading displays a copy of committed history in the live viewport.
+            // Remove that copy before leaving the transcript to the terminal.
+            app.chat_render.viewport.resume();
+        } else if !app.config.auto_scroll_effective() {
             app.chat_render.viewport.pause();
         }
         let base_excluded_ids = self.base_history_excluded_ids();
@@ -1398,7 +1402,7 @@ mod tests {
         let mut app = App::test_default();
         app.input.set_text("hello");
         let _ = app.input.set_cursor(0, 5);
-        app.turn.pending_interaction_ids.push("perm-1".to_owned());
+        app.pending_interaction_ids.push("perm-1".to_owned());
         app.claim_focus_target(FocusTarget::Permission);
 
         let backend = render_textarea_to_test_backend(&mut app, Rect::new(0, 0, 20, 3));
