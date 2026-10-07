@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.1-fork.1] - 2026-10-07
+
+A build of 0.15.1 from the ayush5harma fork, carrying one fix that is not yet released upstream (srothgan/claude-code-rust#430).
+
+### Fixes
+
+- **Clipboard images on macOS and Linux** (#430): Ctrl+V now attaches a clipboard image on the key press outside Windows, where terminals never report the key release the handler waited for.
+
 ## [0.15.1] - 2026-10-06 [Changes][v0.15.1]
 
 ### Fixes
