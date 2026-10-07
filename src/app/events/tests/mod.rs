@@ -3583,6 +3583,7 @@ fn settings_view_ignores_paste_events() {
 }
 
 #[test]
+#[cfg(windows)]
 fn clipboard_paste_shortcut_dispatches_on_release() {
     let key = crossterm::event::KeyEvent {
         code: KeyCode::Char('v'),
@@ -3624,6 +3625,20 @@ fn conpty_release_only_accent_survives_input_and_prompt_dispatch() {
     };
     assert_eq!(chunks[0].value.as_str(), Some("e\u{301}"));
     assert!(app.input.is_empty());
+}
+
+#[test]
+#[cfg(not(windows))]
+fn clipboard_paste_shortcut_release_is_ignored_outside_windows() {
+    // The press already attached the image; dispatching a release a terminal
+    // might still send would attach it a second time.
+    let key = crossterm::event::KeyEvent {
+        code: KeyCode::Char('v'),
+        modifiers: KeyModifiers::CONTROL,
+        kind: KeyEventKind::Release,
+        state: crossterm::event::KeyEventState::NONE,
+    };
+    assert!(!should_dispatch_key_event(key));
 }
 
 #[test]

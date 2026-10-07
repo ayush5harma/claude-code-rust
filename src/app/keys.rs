@@ -603,10 +603,7 @@ fn handle_mode_cycle(app: &mut App) -> bool {
 }
 
 fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
-    if !is_clipboard_paste_shortcut(key) {
-        return false;
-    }
-    if key.kind != KeyEventKind::Release {
+    if !is_clipboard_paste_trigger(key) {
         return false;
     }
 
@@ -663,8 +660,15 @@ fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
     }
 }
 
-pub(super) fn is_clipboard_paste_shortcut(key: KeyEvent) -> bool {
-    is_ctrl_char_shortcut(key, 'v')
+/// The Ctrl+V event that reads an image from the clipboard. Windows consoles
+/// deliver the shortcut on release. Other terminals report presses only: the
+/// app never requests release reporting (`REPORT_EVENT_TYPES`, see
+/// `terminal_runtime/modes.rs`), so waiting for a release there never attaches.
+const CLIPBOARD_PASTE_TRIGGER_KIND: KeyEventKind =
+    if cfg!(windows) { KeyEventKind::Release } else { KeyEventKind::Press };
+
+pub(super) fn is_clipboard_paste_trigger(key: KeyEvent) -> bool {
+    key.kind == CLIPBOARD_PASTE_TRIGGER_KIND && is_ctrl_char_shortcut(key, 'v')
 }
 
 pub(super) fn reclaim_input_from_inline_prompt_if_needed(app: &mut App) {
@@ -977,6 +981,30 @@ mod tests {
     fn ctrl_shortcut_accepts_raw_control_character_encoding() {
         let key = KeyEvent::new(KeyCode::Char('\u{16}'), KeyModifiers::NONE);
         assert!(is_ctrl_char_shortcut(key, 'v'));
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn clipboard_paste_reads_the_clipboard_on_ctrl_v_press() {
+        // Outside Windows the terminal reports Ctrl+V as a press only; a
+        // release never arrives, so a release-only trigger never attaches.
+        for code in [KeyCode::Char('v'), KeyCode::Char('\u{16}')] {
+            let modifiers =
+                if code == KeyCode::Char('v') { KeyModifiers::CONTROL } else { KeyModifiers::NONE };
+            let press = KeyEvent::new_with_kind(code, modifiers, KeyEventKind::Press);
+            let release = KeyEvent::new_with_kind(code, modifiers, KeyEventKind::Release);
+            assert!(is_clipboard_paste_trigger(press), "{code:?} press");
+            assert!(!is_clipboard_paste_trigger(release), "{code:?} release");
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn clipboard_paste_reads_the_clipboard_on_ctrl_v_release() {
+        let ctrl_v =
+            |kind| KeyEvent::new_with_kind(KeyCode::Char('v'), KeyModifiers::CONTROL, kind);
+        assert!(is_clipboard_paste_trigger(ctrl_v(KeyEventKind::Release)));
+        assert!(!is_clipboard_paste_trigger(ctrl_v(KeyEventKind::Press)));
     }
 
     #[test]
