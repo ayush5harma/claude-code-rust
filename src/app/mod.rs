@@ -2,6 +2,7 @@
 // Copyright 2025 Simon Peter Rothgang
 
 pub(crate) mod activity;
+pub(crate) mod agent_view;
 pub(crate) mod auth;
 mod btw;
 mod cache_policy;
@@ -52,6 +53,7 @@ mod view;
 pub(crate) const AUTOCOMPLETE_VISIBLE_ROWS: usize = 5;
 
 // Re-export all public types so `crate::app::App`, `crate::app::BlockCache`, etc. still work.
+pub use agent_view::start_status_poller as start_agent_status_poller;
 pub use cache_policy::{
     CacheSplitPolicy, DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES, DEFAULT_CACHE_SPLIT_SOFT_LIMIT_BYTES,
     DEFAULT_TOOL_PREVIEW_LIMIT_BYTES, TextSplitDecision, TextSplitKind, default_cache_split_policy,

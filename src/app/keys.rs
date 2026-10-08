@@ -309,11 +309,7 @@ fn execute_app_action(app: &mut App, action: AppAction) -> KeyOutcome {
 }
 
 fn clear_input_or_quit(app: &mut App) -> bool {
-    let has_local_input = !app.input.is_empty()
-        || !app.pending_images.is_empty()
-        || app.paste.has_pending_text()
-        || app.pending_submit.is_some();
-    if !has_local_input {
+    if !app.has_local_input() {
         app.request_shutdown();
         return true;
     }

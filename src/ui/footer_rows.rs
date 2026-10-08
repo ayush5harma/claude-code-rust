@@ -17,6 +17,7 @@ const SECONDARY_ROW_LEFT_MIN_WIDTH: u16 = 28;
 const MIN_CONTEXT_LOCATION_WIDTH: usize = 10;
 const MIN_CONTEXT_BRANCH_WIDTH: usize = 4;
 const FOOTER_CONTEXT_VALUE: Color = Color::Gray;
+const AGENT_STATUS_GAP: &str = "  ";
 
 type FooterItem = Option<(String, Color)>;
 
@@ -25,12 +26,17 @@ pub(crate) struct SerializedFooterRows {
 }
 
 pub(crate) fn serialize_footer_rows(app: &App, total_width: u16) -> SerializedFooterRows {
-    let first_row = compose_footer_row(
-        build_primary_line(app),
-        footer_primary_hint(app),
+    let first_hint = footer_primary_hint(app);
+    let first_left_width = footer_row_widths(
         total_width,
+        first_hint.as_ref().map(|(text, _)| text.as_str()),
         PRIMARY_ROW_LEFT_MIN_WIDTH,
-    );
+    )
+    .0;
+    let mut first_left = build_primary_line(app);
+    append_agent_status(&mut first_left, app, usize::from(first_left_width));
+    let first_row =
+        compose_footer_row(first_left, first_hint, total_width, PRIMARY_ROW_LEFT_MIN_WIDTH);
 
     let second_hint = footer_secondary_hint(app);
     let second_left_width = footer_row_widths(
@@ -47,6 +53,47 @@ pub(crate) fn serialize_footer_rows(app: &App, total_width: u16) -> SerializedFo
     );
 
     SerializedFooterRows { rows: [first_row, second_row] }
+}
+
+/// Stock Claude Code shows `← N agents` after its mode hint while the prompt
+/// is empty; the badges row is claude-rs's mode row. Segments that do not fit
+/// beside the badges are dropped whole, last first, never cut mid-word.
+fn append_agent_status(line: &mut Line<'static>, app: &App, max_width: usize) {
+    let segments = agent_status_segments(app);
+    let mut width = line.width() + UnicodeWidthStr::width(AGENT_STATUS_GAP);
+    let mut spans = Vec::new();
+    for (text, color) in segments {
+        width += UnicodeWidthStr::width(text.as_str());
+        if width > max_width {
+            break;
+        }
+        spans.push(Span::styled(text, Style::default().fg(color)));
+    }
+    if !spans.is_empty() {
+        line.spans.push(Span::raw(AGENT_STATUS_GAP));
+        line.spans.extend(spans);
+    }
+}
+
+fn agent_status_segments(app: &App) -> Vec<(String, Color)> {
+    if app.has_local_input() {
+        return Vec::new();
+    }
+    let Some(status) = app.agent_view.status.filter(|status| status.background > 0) else {
+        return Vec::new();
+    };
+    let noun = if status.background == 1 { "agent" } else { "agents" };
+    let mut segments = vec![(format!("\u{2190} {} {noun}", status.background), theme::DIM)];
+    if status.awaiting_input > 0 {
+        segments.push((
+            format!(" \u{b7} {} awaiting input", status.awaiting_input),
+            theme::STATUS_WARNING,
+        ));
+    }
+    if status.working > 0 {
+        segments.push((format!(" \u{b7} {} working", status.working), theme::DIM));
+    }
+    segments
 }
 
 fn footer_primary_hint(app: &App) -> FooterItem {
@@ -716,5 +763,77 @@ mod tests {
         let serialized = serialize_footer_rows(&app, 24);
         let text = line_text(&serialized.rows[1]);
         assert!(text.contains("Loc:"));
+    }
+
+    fn app_with_agents(background: usize, awaiting_input: usize, working: usize) -> App {
+        let mut app = app_with_mode();
+        app.agent_view.status =
+            Some(crate::app::agent_view::AgentStatus { background, awaiting_input, working });
+        app
+    }
+
+    fn span_color(line: &Line<'_>, needle: &str) -> Option<Color> {
+        line.spans.iter().find(|span| span.content.contains(needle)).and_then(|span| span.style.fg)
+    }
+
+    #[test]
+    fn agent_status_follows_the_badges_on_the_first_row_while_input_is_empty() {
+        let app = app_with_agents(2, 1, 1);
+        let serialized = serialize_footer_rows(&app, 120);
+        let first = line_text(&serialized.rows[0]);
+
+        let badges_end = first.find("[FAST:OFF]").expect("fast badge") + "[FAST:OFF]".len();
+        let agents_at = first.find("\u{2190} 2 agents").expect("agent hint on the badge row");
+        assert!(agents_at > badges_end, "{first:?}");
+        assert!(first.contains("\u{2190} 2 agents \u{b7} 1 awaiting input \u{b7} 1 working"));
+        assert!(!line_text(&serialized.rows[1]).contains("agent"));
+        assert_eq!(span_color(&serialized.rows[0], "awaiting input"), Some(theme::STATUS_WARNING));
+        assert_eq!(span_color(&serialized.rows[0], "2 agents"), Some(theme::DIM));
+    }
+
+    #[test]
+    fn agent_status_uses_the_singular_and_omits_zero_counts() {
+        let app = app_with_agents(1, 0, 0);
+        let first = line_text(&serialize_footer_rows(&app, 120).rows[0]);
+
+        assert!(first.contains("\u{2190} 1 agent"));
+        assert!(!first.contains("agents"));
+        assert!(!first.contains("awaiting input"));
+        assert!(!first.contains("working"));
+    }
+
+    #[test]
+    fn agent_status_is_hidden_with_input_without_agents_or_without_a_listing() {
+        let mut typing = app_with_agents(2, 1, 0);
+        typing.input.set_text("draft");
+        let no_agents = app_with_agents(0, 0, 0);
+        let mut no_listing = app_with_agents(2, 0, 0);
+        no_listing.agent_view.status = None;
+
+        for app in [&typing, &no_agents, &no_listing] {
+            let first = line_text(&serialize_footer_rows(app, 120).rows[0]);
+            assert!(!first.contains('\u{2190}'), "{first:?}");
+        }
+    }
+
+    #[test]
+    fn narrow_first_row_drops_whole_agent_segments_before_the_badges() {
+        let app = app_with_agents(3, 2, 1);
+        let full = line_text(&serialize_footer_rows(&app, 120).rows[0]);
+        let badges_width = full.find("  \u{2190}").expect("agent hint");
+        let hint_width = UnicodeWidthStr::width("  \u{2190} 3 agents");
+        let attention_width = UnicodeWidthStr::width(" \u{b7} 2 awaiting input");
+
+        let fits_attention =
+            u16::try_from(badges_width + hint_width + attention_width).expect("width");
+        let first = line_text(&serialize_footer_rows(&app, fits_attention).rows[0]);
+        assert!(first.contains("\u{2190} 3 agents \u{b7} 2 awaiting input"), "{first:?}");
+        assert!(!first.contains("working"), "{first:?}");
+
+        let too_narrow = u16::try_from(badges_width + hint_width - 1).expect("width");
+        let first = line_text(&serialize_footer_rows(&app, too_narrow).rows[0]);
+        assert!(first.contains("[FAST:OFF]"), "{first:?}");
+        assert!(!first.contains('\u{2190}'), "{first:?}");
+        assert!(!first.contains("agent"), "{first:?}");
     }
 }

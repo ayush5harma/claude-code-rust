@@ -8,6 +8,16 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
         ClientEvent::UpdateCheckCompleted { result } => {
             crate::app::update_check::apply_check_result(app, &result);
         }
+        ClientEvent::AgentStatusUpdated { status } => {
+            app.agent_view.status = status;
+        }
+        ClientEvent::AgentViewFailed { message } => {
+            crate::app::events::push_system_message_with_severity(
+                app,
+                Some(crate::app::SystemSeverity::Error),
+                &message,
+            );
+        }
         ClientEvent::TerminalReleasedToChild { reason, ready_tx, cancel_tx } => {
             app.terminal_lifecycle = crate::app::TerminalLifecycleState::ReleasedToChild(reason);
             app.surface_dirty.clear_for_child_release();

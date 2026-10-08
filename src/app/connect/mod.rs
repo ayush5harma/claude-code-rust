@@ -176,6 +176,7 @@ pub fn create_app(cli: &Cli) -> App {
         cache_metrics: CacheMetrics::default(),
         startup: StartupState::from_cli(cli),
         bridge_task: None,
+        agent_view: crate::app::agent_view::AgentViewState::default(),
     };
 
     app.rebuild_history_retention_accounting();
