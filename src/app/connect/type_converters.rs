@@ -378,7 +378,6 @@ pub(super) fn convert_account_info(account: types::AccountInfo) -> model::Accoun
     }
 }
 
-#[allow(clippy::too_many_lines)]
 fn map_session_color(color: types::SessionColor) -> model::SessionColor {
     match color {
         types::SessionColor::Red => model::SessionColor::Red,
@@ -392,6 +391,7 @@ fn map_session_color(color: types::SessionColor) -> model::SessionColor {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::SessionUpdate> {
     match update {
         types::SessionUpdate::ConversationReset {
