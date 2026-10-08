@@ -1,6 +1,6 @@
 import type { SessionStoreEntry } from "@anthropic-ai/claude-agent-sdk";
 import type { SessionColor } from "../types.js";
-import { emitSessionUpdate } from "./events.js";
+import { emitSessionUpdate, refreshSessionsList } from "./events.js";
 import type { SessionState } from "./session_lifecycle.js";
 
 // The colours Claude Code 2.1.293's /color accepts besides "default"
@@ -94,6 +94,8 @@ export function handleSessionTitleChanged(
       type: "session_title_update",
       title: msg.title,
     });
+    // The resume picker lists sessions by their title.
+    refreshSessionsList();
   }
 }
 
