@@ -47,7 +47,7 @@ The fullscreen settings surface has its own keys for tabs, panes, search and edi
 
 ### Agent View
 
-As in Claude Code, `Left` on an empty prompt opens the agent view: claude-rs hands the terminal to `claude agents` (the stock list of background sessions, where you can peek, attach, reply, dispatch and stop them) and comes back when it exits. Press `Esc`, or `Ctrl+C` twice, in the agent view to return. A `Ctrl+C` pressed while the view is still starting closes the view and leaves claude-rs and its session running. Repeated `Left` presses open the view once.
+As in Claude Code, `Left` on an empty prompt opens the agent view: claude-rs hands the terminal to `claude agents` (the stock list of background sessions, where you can peek, attach, reply, dispatch and stop them) and comes back when it exits. Press `Esc`, or `Ctrl+C` twice, in the agent view to return. A `Ctrl+C` pressed while the view is still starting never quits claude-rs or its session: it closes the view, or is dropped if claude-rs had not handed over the terminal yet. Repeated `Left` presses open the view once.
 
 Your claude-rs session keeps running while the agent view is open. A turn in progress continues and its output appears when you return. Permission prompts and questions wait in the transcript for you, but their timers keep running: a question with a configured timeout can time out and continue while the view is open. Notifications are still delivered as usual: the terminal can ring its bell or show a desktop notification over the agent view.
 

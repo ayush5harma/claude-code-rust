@@ -991,6 +991,29 @@ fn ctrl_c_while_the_agent_view_starts_leaves_the_session_running() {
     test.shutdown();
 }
 
+/// Left and Ctrl+C in one read reach claude-rs before it releases the
+/// terminal; the Ctrl+C was typed for the view and must not quit claude-rs.
+#[test]
+fn ctrl_c_batched_with_left_does_not_quit_claude_rs() {
+    let mut test = TerminalTest::start_with_auth("stream", 3, Some("agent-view"));
+
+    test.send(b"\x1b[D\x03");
+    test.wait_screen("AGENT_VIEW_READY");
+    test.send(b"after_batch\r");
+    test.wait_until("the agent view returned the terminal", |test| {
+        test.runtime_records_since(0)
+            .iter()
+            .any(|record| record["event_name"] == "terminal_returned_from_child")
+    });
+
+    test.send(b"AFTER_BATCH");
+    test.wait_screen("AFTER_BATCH");
+    test.submit_draft();
+    test.wait_screen("reply 1 started");
+    test.assert_prompts(&["AFTER_BATCH"]);
+    test.shutdown();
+}
+
 #[test]
 fn background_permission_remains_interactive_after_launch_enters_history() {
     for (keys, option, outcome) in
