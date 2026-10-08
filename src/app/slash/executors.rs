@@ -18,7 +18,7 @@ use crate::app::{
 };
 use std::fmt::Write as _;
 use std::path::Path;
-use std::process::{ExitStatus, Stdio};
+use std::process::ExitStatus;
 use tokio::sync::mpsc;
 
 /// Handle slash command submission.
@@ -376,60 +376,20 @@ async fn run_auth_child_command(
     claude_path: &Path,
     subcommand: &'static str,
 ) -> Result<ExitStatus, String> {
-    // Enqueuing an event alone does not transfer ownership of inherited stdin.
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
-    tx.send(ClientEvent::TerminalReleasedToChild {
-        reason: ReleaseReason::AuthFlow,
-        ready_tx,
-        cancel_tx,
-    })
-    .await
-    .map_err(|_| "UI stopped before terminal handoff".to_owned())?;
-    ready_rx.await.map_err(|_| "UI did not acknowledge terminal handoff".to_owned())?;
-    let terminal_release = match crate::app::terminal_runtime::TerminalReleaseGuard::release(
-        ReleaseReason::AuthFlow,
-        subcommand,
-    ) {
-        Ok(terminal_release) => terminal_release,
-        Err(err) => {
-            send_terminal_returned_from_child(tx).await;
-            return Err(format!("Failed to release terminal for claude auth {subcommand}: {err}"));
-        }
-    };
-
-    let result = match tokio::process::Command::new(claude_path)
-        .args(["auth", subcommand])
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .kill_on_drop(true)
-        .spawn()
-    {
-        Ok(mut child) => tokio::select! {
-            status = child.wait() => status.map_err(|err| format!("Failed to run claude auth {subcommand}: {err}")),
-            _ = &mut cancel_rx => {
-                // This PID belongs to this auth task. Reap it before returning
-                // terminal ownership, including during fatal bridge shutdown.
-                let result = child.kill().await;
-                Err(result.map_or_else(|err| format!("Failed to stop claude auth {subcommand}: {err}"), |()| "Authentication interrupted by shutdown".to_owned()))
-            }
+    let label = format!("claude auth {subcommand}");
+    crate::app::terminal_runtime::run_with_terminal(
+        tx,
+        crate::app::terminal_runtime::TerminalChild {
+            reason: ReleaseReason::AuthFlow,
+            command: subcommand,
+            label: &label,
+            program: claude_path,
+            args: &["auth", subcommand],
+            cwd: None,
+            interrupted_message: "Authentication interrupted by shutdown",
         },
-        Err(err) => Err(format!("Failed to run claude auth {subcommand}: {err}")),
-    };
-
-    let restore_result = terminal_release.restore();
-    send_terminal_returned_from_child(tx).await;
-    restore_result.map_err(|err| {
-        format!("Failed to restore terminal after claude auth {subcommand}: {err}")
-    })?;
-
-    result
-}
-
-async fn send_terminal_returned_from_child(tx: &mpsc::Sender<ClientEvent>) {
-    let _ =
-        tx.send(ClientEvent::TerminalReturnedFromChild { reason: ReleaseReason::AuthFlow }).await;
+    )
+    .await
 }
 
 /// Resolve the `claude` CLI binary from PATH, or push an error message and return `None`.
