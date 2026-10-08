@@ -11,9 +11,6 @@ import {
   buildQueryOptions,
   buildPromptUserMessage,
   resolveClaudeCodeSpawnCommand,
-  canGenerateSessionTitle,
-  generatePersistedSessionTitle,
-  buildSessionMutationOptions,
   buildSessionListOptions,
   createToolCall,
   handleTaskSystemMessage,
@@ -986,44 +983,6 @@ test("parseCommandEnvelope validates resume_session_at independently from plain 
   });
 });
 
-test("parseCommandEnvelope validates rename_session command", () => {
-  const parsed = parseCommandEnvelope(
-    JSON.stringify({
-      request_id: "req-rename",
-      command: "rename_session",
-      session_id: "session-123",
-      title: "Renamed session",
-    }),
-  );
-
-  assert.equal(parsed.requestId, "req-rename");
-  assert.equal(parsed.command.command, "rename_session");
-  if (parsed.command.command !== "rename_session") {
-    throw new Error("unexpected command variant");
-  }
-  assert.equal(parsed.command.session_id, "session-123");
-  assert.equal(parsed.command.title, "Renamed session");
-});
-
-test("parseCommandEnvelope validates generate_session_title command", () => {
-  const parsed = parseCommandEnvelope(
-    JSON.stringify({
-      request_id: "req-generate",
-      command: "generate_session_title",
-      session_id: "session-123",
-      description: "Current custom title",
-    }),
-  );
-
-  assert.equal(parsed.requestId, "req-generate");
-  assert.equal(parsed.command.command, "generate_session_title");
-  if (parsed.command.command !== "generate_session_title") {
-    throw new Error("unexpected command variant");
-  }
-  assert.equal(parsed.command.session_id, "session-123");
-  assert.equal(parsed.command.description, "Current custom title");
-});
-
 test("parseCommandEnvelope validates mcp_toggle command", () => {
   const parsed = parseCommandEnvelope(
     JSON.stringify({
@@ -1938,8 +1897,6 @@ test("get_context_usage requests the SDK summary detail", async () => {
         { command: "get_context_usage", session_id: session.sessionId },
         "request-context-summary",
         {
-          generatePersistedSessionTitle: async () => "unused",
-          buildSessionMutationOptions: () => undefined,
           rewindTargetsFromSessionMessages: () => [],
           handleRewind: async () => undefined,
         },
@@ -2512,45 +2469,29 @@ test("MCP connection history is isolated between sessions with the same server n
   assert.equal(reconnectCalls, 0);
 });
 
-test("buildSessionMutationOptions scopes rename requests to the session cwd", () => {
-  assert.deepEqual(buildSessionMutationOptions("C:/worktree"), {
-    dir: "C:/worktree",
-  });
-  assert.equal(buildSessionMutationOptions(undefined), undefined);
-});
+// Claude Code's SDK mode does not restore a resumed session's name into its
+// registry entry, so the resume passes it back as `--name` (2.1.293 `-n, --name`).
+test("buildQueryOptions names a resumed session after its stored title", () => {
+  const input = new AsyncQueue<
+    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
+  >();
+  const build = (sessionName?: string) =>
+    buildQueryOptions({
+      resolvedSettings: {},
+      cwd: "C:/work",
+      resume: "session-1",
+      ...(sessionName ? { sessionName } : {}),
+      launchSettings: {},
+      provisionalSessionId: "session-1",
+      input,
+      canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+      enableSdkDebug: false,
+      enableSpawnDebug: false,
+      sessionIdForLogs: () => "session-1",
+    });
 
-test("canGenerateSessionTitle detects supported query objects", () => {
-  const query = {
-    async generateSessionTitle(): Promise<string> {
-      return "Generated";
-    },
-  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
-
-  assert.equal(canGenerateSessionTitle(query), true);
-  assert.equal(
-    canGenerateSessionTitle(
-      {} as import("@anthropic-ai/claude-agent-sdk").Query,
-    ),
-    false,
-  );
-});
-
-test("generatePersistedSessionTitle calls sdk query with persist true", async () => {
-  const calls: Array<{ description: string; persist?: boolean }> = [];
-  const query = {
-    async generateSessionTitle(
-      description: string,
-      options?: { persist?: boolean },
-    ): Promise<string> {
-      calls.push({ description, persist: options?.persist });
-      return "Generated title";
-    },
-  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
-
-  const title = await generatePersistedSessionTitle(query, "Current summary");
-
-  assert.equal(title, "Generated title");
-  assert.deepEqual(calls, [{ description: "Current summary", persist: true }]);
+  assert.deepEqual(build("renamed-live").extraArgs, { name: "renamed-live" });
+  assert.equal(build().extraArgs, undefined);
 });
 
 test("buildQueryOptions includes resumeSessionAt when provided", () => {
@@ -4081,6 +4022,8 @@ test("handleSdkMessage emits SDK-owned context Markdown exactly once", () => {
       uuid: "context-assistant-1",
       session_id: "session-1",
       parent_tool_use_id: null,
+      local_command_source: "<local-command-stdout>## Context usage</local-command-stdout>",
+      local_command_run: { command: "context", args: "" },
       context_usage: { used_percentage: 42 },
       message: {
         role: "assistant",
@@ -4111,6 +4054,75 @@ test("handleSdkMessage emits SDK-owned context Markdown exactly once", () => {
   ]);
 });
 
+// Measured on Claude Code 2.1.293: a forwarded local command (/rename,
+// /color, /usage, ...) replies with one completed synthetic assistant frame
+// carrying local_command_source and no stream events, so its text exists
+// only in that frame. A command that never ran (/hooks headless) has no
+// local_command_run but still replies.
+test("handleSdkMessage shows the reply of every forwarded local command", () => {
+  const session = makeSessionState();
+  const reply = (uuid: string, command: string, text: string) => ({
+    type: "assistant",
+    uuid,
+    session_id: "session-1",
+    parent_tool_use_id: null,
+    local_command_source: `<local-command-stdout>${text}</local-command-stdout>`,
+    local_command_run: { command, args: "" },
+    message: {
+      model: "<synthetic>",
+      role: "assistant",
+      stop_reason: "end_turn",
+      content: [{ type: "text", text }],
+    },
+  });
+  const events = captureBridgeEvents(() => {
+    for (const message of [
+      reply("rename-reply", "rename", "Session renamed to: probe"),
+      reply("usage-reply", "usage", "Current session: 9% used"),
+      {
+        type: "assistant",
+        uuid: "hooks-reply",
+        session_id: "session-1",
+        parent_tool_use_id: null,
+        local_command_source:
+          "<local-command-stdout>/hooks isn't available in this environment.</local-command-stdout>",
+        local_command_outcome: "unavailable_headless",
+        message: {
+          model: "<synthetic>",
+          role: "assistant",
+          content: [{ type: "text", text: "/hooks isn't available in this environment." }],
+        },
+      },
+    ]) {
+      handleSdkMessage(
+        session,
+        message as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage,
+      );
+    }
+  });
+
+  const chunks = events
+    .map((event) => event.update as Record<string, unknown> | undefined)
+    .filter((update) => update?.type === "agent_message_chunk");
+  assert.deepEqual(chunks, [
+    {
+      type: "agent_message_chunk",
+      content: { type: "text", text: "Session renamed to: probe" },
+      source_message_uuid: "rename-reply",
+    },
+    {
+      type: "agent_message_chunk",
+      content: { type: "text", text: "Current session: 9% used" },
+      source_message_uuid: "usage-reply",
+    },
+    {
+      type: "agent_message_chunk",
+      content: { type: "text", text: "/hooks isn't available in this environment." },
+      source_message_uuid: "hooks-reply",
+    },
+  ]);
+});
+
 test("handleSdkMessage does not replay ordinary or invalid completed assistant text", () => {
   const session = makeSessionState();
   const events = captureBridgeEvents(() => {
@@ -4135,10 +4147,24 @@ test("handleSdkMessage does not replay ordinary or invalid completed assistant t
       {
         type: "assistant",
         uuid: "empty-context",
+        local_command_source: "<local-command-stdout>   </local-command-stdout>",
+        local_command_run: { command: "context", args: "" },
         context_usage: {},
         message: {
           role: "assistant",
           content: [{ type: "text", text: "   " }],
+        },
+      },
+      {
+        // A synthetic API error is reported through the turn result, not
+        // replayed as assistant text.
+        type: "assistant",
+        uuid: "synthetic-error",
+        error: "rate_limit",
+        message: {
+          model: "<synthetic>",
+          role: "assistant",
+          content: [{ type: "text", text: "API Error: rate limited" }],
         },
       },
     ]) {

@@ -115,7 +115,12 @@ fn chat_control_default_bindings() -> [KeyBinding; 7] {
 
 fn chat_navigation_default_bindings() -> [KeyBinding; 16] {
     [
-        chat_key(KeyCodeSpec::Left, KeyModifiers::NONE, InputAction::MoveCharLeft),
+        // Claude Code's Left on an empty prompt opens its agent view.
+        KeyBinding::default(
+            KeyContext::ChatInput,
+            KeySpec::new(KeyCodeSpec::Left, KeyModifiers::NONE),
+            KeyAction::App(AppAction::OpenAgentsOrMoveLeft),
+        ),
         chat_key(KeyCodeSpec::Right, KeyModifiers::NONE, InputAction::MoveCharRight),
         chat_key(KeyCodeSpec::Up, KeyModifiers::NONE, InputAction::MoveUp),
         chat_key(KeyCodeSpec::Down, KeyModifiers::NONE, InputAction::MoveDown),

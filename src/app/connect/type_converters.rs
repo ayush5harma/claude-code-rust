@@ -378,6 +378,19 @@ pub(super) fn convert_account_info(account: types::AccountInfo) -> model::Accoun
     }
 }
 
+fn map_session_color(color: types::SessionColor) -> model::SessionColor {
+    match color {
+        types::SessionColor::Red => model::SessionColor::Red,
+        types::SessionColor::Blue => model::SessionColor::Blue,
+        types::SessionColor::Green => model::SessionColor::Green,
+        types::SessionColor::Yellow => model::SessionColor::Yellow,
+        types::SessionColor::Purple => model::SessionColor::Purple,
+        types::SessionColor::Orange => model::SessionColor::Orange,
+        types::SessionColor::Pink => model::SessionColor::Pink,
+        types::SessionColor::Cyan => model::SessionColor::Cyan,
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::SessionUpdate> {
     match update {
@@ -521,6 +534,18 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
         }),
         types::SessionUpdate::PromptSuggestionUpdate { suggestion } => {
             Some(model::SessionUpdate::PromptSuggestionUpdate(suggestion))
+        }
+        types::SessionUpdate::SessionTitleUpdate { title } => {
+            // A title is user text, from the transcript on resume; every
+            // surface that shows it writes to the terminal.
+            let title: String = title.chars().filter(|ch| !ch.is_control()).collect();
+            let title = title.trim();
+            Some(model::SessionUpdate::SessionTitleUpdate(
+                (!title.is_empty()).then(|| title.to_owned()),
+            ))
+        }
+        types::SessionUpdate::SessionColorUpdate { color } => {
+            Some(model::SessionUpdate::SessionColorUpdate(color.map(map_session_color)))
         }
         types::SessionUpdate::RuntimeSessionStateUpdate { state } => {
             Some(model::SessionUpdate::RuntimeSessionStateUpdate(match state {
@@ -1368,6 +1393,33 @@ mod tests {
                 error_code: Some(model::CompactionFailureCode::TooFewGroups),
                 error: Some("Prompt is too long".to_owned()),
             }))
+        );
+    }
+
+    #[test]
+    fn session_label_updates_decode_from_the_bridge_wire() {
+        let decode = |json: &str| {
+            map_session_update(serde_json::from_str::<types::SessionUpdate>(json).expect("wire"))
+        };
+        assert_eq!(
+            decode(r#"{"type":"session_title_update","title":" probe-e2e "}"#),
+            Some(model::SessionUpdate::SessionTitleUpdate(Some("probe-e2e".to_owned())))
+        );
+        assert_eq!(
+            decode(r#"{"type":"session_title_update","title":"  "}"#),
+            Some(model::SessionUpdate::SessionTitleUpdate(None))
+        );
+        assert_eq!(
+            decode(r#"{"type":"session_title_update","title":"a\u001b]52;c;eA==\u0007b"}"#),
+            Some(model::SessionUpdate::SessionTitleUpdate(Some("a]52;c;eA==b".to_owned())))
+        );
+        assert_eq!(
+            decode(r#"{"type":"session_color_update","color":"purple"}"#),
+            Some(model::SessionUpdate::SessionColorUpdate(Some(model::SessionColor::Purple)))
+        );
+        assert_eq!(
+            decode(r#"{"type":"session_color_update","color":null}"#),
+            Some(model::SessionUpdate::SessionColorUpdate(None))
         );
     }
 

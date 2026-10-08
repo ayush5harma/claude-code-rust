@@ -20,6 +20,7 @@ pub enum AppAction {
     SubmitInput,
     FocusPromptOrAcceptSuggestion,
     CycleMode,
+    OpenAgentsOrMoveLeft,
     ScrollChatUp,
     ScrollChatDown,
     FollowChat,

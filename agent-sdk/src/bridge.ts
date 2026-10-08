@@ -136,12 +136,6 @@ export type {
   PendingQuestion,
 } from "./bridge/session_lifecycle.js";
 
-export function buildSessionMutationOptions(
-  cwd?: string,
-): import("@anthropic-ai/claude-agent-sdk").SessionMutationOptions | undefined {
-  return cwd ? { dir: cwd } : undefined;
-}
-
 function normalizeRewindTargetText(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
@@ -224,39 +218,6 @@ export function rewindTargetsFromSessionMessages(
   });
 
   return targets.reverse();
-}
-
-type SessionTitleGeneratingQuery =
-  import("@anthropic-ai/claude-agent-sdk").Query & {
-    generateSessionTitle: (
-      description: string,
-      options?: { persist?: boolean },
-    ) => Promise<string | null | undefined>;
-  };
-
-export function canGenerateSessionTitle(
-  query: import("@anthropic-ai/claude-agent-sdk").Query,
-): query is SessionTitleGeneratingQuery {
-  return (
-    typeof (query as { generateSessionTitle?: unknown })
-      .generateSessionTitle === "function"
-  );
-}
-
-export async function generatePersistedSessionTitle(
-  query: import("@anthropic-ai/claude-agent-sdk").Query,
-  description: string,
-): Promise<string> {
-  if (!canGenerateSessionTitle(query)) {
-    throw new Error("SDK query does not support generateSessionTitle");
-  }
-  const title = await query.generateSessionTitle(description, {
-    persist: true,
-  });
-  if (typeof title !== "string" || title.trim().length === 0) {
-    throw new Error("SDK did not return a generated session title");
-  }
-  return title;
 }
 
 export function buildPromptUserMessage(
@@ -1025,16 +986,12 @@ async function handleCommand(
         handleReloadPluginsCommand,
       });
       return;
-    case "generate_session_title":
-    case "rename_session":
     case "get_status_snapshot":
     case "get_context_usage":
     case "get_usage":
     case "get_rewind_targets":
     case "rewind":
       await handleSessionDataCommand(command, requestId, {
-        generatePersistedSessionTitle,
-        buildSessionMutationOptions,
         rewindTargetsFromSessionMessages,
         handleRewind,
       });

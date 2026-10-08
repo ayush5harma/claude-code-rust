@@ -372,6 +372,7 @@ pub(super) fn argument_candidates(
     match command_name {
         "/docs" | "/ultracode" | "/thinking" | "/fast" => static_argument_candidates(command_name),
         "/agent" => agent_argument_candidates(app),
+        "/color" => color_argument_candidates(),
         "/effort" => effort_argument_candidates(app),
         "/resume" => app
             .recent_sessions
@@ -437,6 +438,23 @@ pub(super) fn argument_candidates(
             .collect(),
         _ => Vec::new(),
     }
+}
+
+/// Claude Code's `/color` values; `default` removes the colour.
+fn color_argument_candidates() -> Vec<SlashCandidate> {
+    crate::agent::model::SessionColor::ALL
+        .iter()
+        .map(|color| SlashCandidate {
+            insert_value: color.name().to_owned(),
+            primary: color.name().to_owned(),
+            secondary: None,
+        })
+        .chain(std::iter::once(SlashCandidate {
+            insert_value: "default".to_owned(),
+            primary: "default".to_owned(),
+            secondary: Some("remove the session colour".to_owned()),
+        }))
+        .collect()
 }
 
 fn rewind_restore_mode_candidates() -> Vec<SlashCandidate> {

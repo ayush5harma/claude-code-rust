@@ -13,7 +13,7 @@ pub struct App {
     pub surface_mode: SurfaceMode,
     pub(crate) copy_picker: Option<crate::app::copy::CopyPicker>,
     pub(crate) terminal_lifecycle: TerminalLifecycleState,
-    pub(crate) terminal_child_cancel: Option<tokio::sync::oneshot::Sender<()>>,
+    pub(crate) terminal_child: crate::app::terminal_runtime::TerminalChildState,
     pub(crate) surface_dirty: SurfaceDirtyState,
     pub(crate) config: ConfigState,
     pub(crate) global_settings: crate::app::AppSettings,
@@ -113,9 +113,21 @@ pub struct App {
     pub(crate) startup: StartupState,
     /// Owned bridge-process task and its explicit shutdown signal.
     pub(crate) bridge_task: Option<crate::app::connect::BridgeTask>,
+    /// Background-session status for the footer and the agent view poller.
+    pub(crate) agent_view: crate::app::agent_view::AgentViewState,
 }
 
 impl App {
+    /// Whether the composer holds anything a key could lose or act on: text,
+    /// an attached image, an unfinished paste or a deferred submit.
+    #[must_use]
+    pub(crate) fn has_local_input(&self) -> bool {
+        !self.input.is_empty()
+            || !self.pending_images.is_empty()
+            || self.paste.has_pending_text()
+            || self.pending_submit.is_some()
+    }
+
     #[must_use]
     pub(crate) fn composer_access(&self) -> ComposerAccess {
         if self.shutdown_requested() {
@@ -132,9 +144,7 @@ impl App {
     }
 
     pub(crate) fn request_shutdown(&mut self) {
-        if let Some(cancel_tx) = self.terminal_child_cancel.take() {
-            let _ = cancel_tx.send(());
-        }
+        crate::app::terminal_runtime::stop_terminal_child(self);
         if matches!(self.shutdown, ShutdownState::Running) {
             self.shutdown = ShutdownState::Requested;
         }
@@ -235,7 +245,7 @@ impl App {
             show_session_overview: true,
             turn: TurnState::default(),
             shutdown: ShutdownState::Running,
-            terminal_child_cancel: None,
+            terminal_child: crate::app::terminal_runtime::TerminalChildState::Idle,
             exit_error: None,
             cwd: "/test".into(),
             cwd_raw: "/test".into(),
@@ -277,6 +287,7 @@ impl App {
             cache_metrics: CacheMetrics::default(),
             startup: StartupState::default(),
             bridge_task: None,
+            agent_view: crate::app::agent_view::AgentViewState::default(),
         }
     }
 

@@ -37,7 +37,18 @@ pub fn update_tab_title(app: &super::App) {
 }
 
 fn title(app: &super::App) -> String {
-    let name = folder_name(&app.cwd_raw);
+    // Stock Claude Code names the tab after the session once it has a title.
+    // A title is user text (from the transcript on resume): a BEL or ESC in it
+    // would end the OSC and let the rest act as escape sequences.
+    let name: String = app
+        .session_runtime
+        .session_title
+        .as_deref()
+        .unwrap_or(folder_name(&app.cwd_raw))
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .collect();
+    let name = name.as_str();
     if !app.config.status_in_terminal_tab_effective() {
         return name.to_owned();
     }
@@ -101,6 +112,20 @@ mod tests {
         }
         app.status = AppStatus::Ready;
         assert_eq!(title(&app), "○ test");
+        app.session_runtime.session_title = Some("probe-e2e".to_owned());
+        assert_eq!(title(&app), "○ probe-e2e");
+    }
+
+    #[test]
+    fn a_session_title_cannot_end_the_osc_or_inject_escapes() {
+        let mut app = super::super::App::test_default();
+        app.status = AppStatus::Ready;
+        // A resumed title comes from the transcript as written.
+        app.session_runtime.session_title =
+            Some("evil\u{7}\u{1b}]52;c;cHduZWQ=\u{7}\u{1b}[2Jname\u{9c}".to_owned());
+        let title = title(&app);
+        assert!(!title.chars().any(char::is_control), "{title:?}");
+        assert!(title.ends_with("evil]52;c;cHduZWQ=[2Jname"), "{title:?}");
     }
 
     #[test]

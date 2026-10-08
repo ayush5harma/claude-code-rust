@@ -3868,11 +3868,7 @@ fn conversation_reset_mounts_a_fresh_transcript_without_dropping_session_invento
     ];
     app.sdk_inventory.available_commands = vec![model::AvailableCommand::new("/remote", "Remote")];
     app.sdk_inventory.available_agents = vec![model::AvailableAgent::new("reviewer", "Reviews")];
-    app.config.pending_session_title_change =
-        Some(crate::app::config::PendingSessionTitleChangeState {
-            session_id: "test-session".to_owned(),
-            kind: crate::app::config::PendingSessionTitleChangeKind::Generate,
-        });
+    app.session_runtime.session_title = Some("Kept across /clear".to_owned());
 
     handle_client_event(
         &mut app,
@@ -3909,7 +3905,8 @@ fn conversation_reset_mounts_a_fresh_transcript_without_dropping_session_invento
     assert_eq!(other_session.custom_title.as_deref(), Some("Other conversation title"));
     assert_eq!(other_session.summary, "Other conversation title");
     assert_eq!(other_session.first_prompt.as_deref(), Some("prompt Other conversation title"));
-    assert!(app.config.pending_session_title_change.is_none());
+    // Claude Code keeps a session's name across /clear and re-announces it.
+    assert_eq!(app.session_runtime.session_title.as_deref(), Some("Kept across /clear"));
     assert_eq!(app.status, AppStatus::Ready);
 }
 

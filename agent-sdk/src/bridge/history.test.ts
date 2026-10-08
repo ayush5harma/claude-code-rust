@@ -41,7 +41,7 @@ test("resume display restores compaction segments once and preserves SDK branch 
     writeFileSync(transcript, before);
     const script = `
       import { getSessionTranscriptMessages, mapSessionMessagesToUpdates } from ${JSON.stringify(new URL("./history.js", import.meta.url).href)};
-      const messages = await getSessionTranscriptMessages(${JSON.stringify(sessionId)});
+      const { messages } = await getSessionTranscriptMessages(${JSON.stringify(sessionId)});
       const updates = mapSessionMessagesToUpdates(messages);
       console.log(JSON.stringify({
         uuids: messages.map(message => message.uuid), updates
@@ -70,6 +70,107 @@ test("resume display restores compaction segments once and preserves SDK branch 
     assert.equal(dirname(directory), realpathSync(tmpdir()));
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+// Record shapes copied from a Claude Code 2.1.293 transcript of `/rename`.
+test("resume display shows a local command as its command line with its output under it", () => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "claude-rs-local-command-")));
+  try {
+    const cwd = join(directory, "project");
+    const configDir = join(directory, "config");
+    const projectDir = join(configDir, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+    mkdirSync(cwd, { recursive: true });
+    mkdirSync(projectDir, { recursive: true });
+    const sessionId = "40547c80-d211-4dfc-ab6c-67cfb5c63d6d";
+    const common = { isSidechain: false, userType: "external", entrypoint: "sdk-ts", cwd, sessionId, version: "2.1.293", gitBranch: "HEAD" };
+    const records = [
+      { type: "custom-title", customTitle: "renamed-live", sessionId },
+      { type: "agent-color", agentColor: "green", sessionId },
+      { parentUuid: null, ...common, type: "user", message: { role: "user", content: "<local-command-caveat>The command below was run directly in Claude Code, not sent to you as a request, and its output goes straight to the user. It's recorded here as context for later messages.</local-command-caveat>" }, isMeta: true, uuid: "c182d27d-8a48-45fb-a08d-e0ce647a8546", timestamp: "2026-10-08T17:52:00.209Z" },
+      { parentUuid: "c182d27d-8a48-45fb-a08d-e0ce647a8546", ...common, type: "user", message: { role: "user", content: "<command-name>/rename</command-name>\n            <command-message>rename</command-message>\n            <command-args>renamed-live</command-args>" }, uuid: "4c688fd2-b3f0-4fe1-b7fc-58a45d22e9ee", timestamp: "2026-10-08T17:52:00.209Z" },
+      { parentUuid: "4c688fd2-b3f0-4fe1-b7fc-58a45d22e9ee", ...common, type: "system", subtype: "local_command", content: "<local-command-stdout>Session renamed to: renamed-live</local-command-stdout>", level: "info", timestamp: "2026-10-08T17:52:00.210Z", uuid: "fc38681e-5abf-4d5b-a870-a619d49cac15", isMeta: false },
+      { parentUuid: "fc38681e-5abf-4d5b-a870-a619d49cac15", ...common, type: "user", message: { role: "user", content: "<command-name>/rename</command-name> by hand" }, uuid: "typed-xml", timestamp: "2026-10-08T17:52:01.000Z" },
+    ];
+    writeFileSync(join(projectDir, `${sessionId}.jsonl`), `${records.map(record => JSON.stringify(record)).join("\n")}\n`);
+    const script = `
+      import { getSessionTranscriptMessages, mapSessionMessagesToUpdates } from ${JSON.stringify(new URL("./history.js", import.meta.url).href)};
+      const { messages, label } = await getSessionTranscriptMessages(${JSON.stringify(sessionId)});
+      console.log(JSON.stringify({ updates: mapSessionMessagesToUpdates(messages), label }));
+    `;
+    const child = spawnSync(process.execPath, ["--input-type=module", "-"], {
+      input: script,
+      encoding: "utf8",
+      env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, CLAUDE_CODE_PROJECT_DIR_NAME: undefined },
+      windowsHide: true,
+    });
+    assert.equal(child.status, 0, child.stderr);
+    const { updates, label } = JSON.parse(child.stdout) as { updates: SessionUpdate[]; label: unknown };
+    // The resumed session's name and colour come from the same SDK-loaded entries.
+    assert.deepEqual(label, { title: "renamed-live", color: "green" });
+    const chunks = updates.filter(update => update.type === "user_message_chunk" || update.type === "agent_message_chunk");
+    assert.deepEqual(chunks.map(update => [update.type, update.source_message_uuid, update.content]), [
+      ["user_message_chunk", "4c688fd2-b3f0-4fe1-b7fc-58a45d22e9ee", { type: "text", text: "/rename renamed-live" }],
+      ["agent_message_chunk", "fc38681e-5abf-4d5b-a870-a619d49cac15", { type: "text", text: "Session renamed to: renamed-live" }],
+      // Text that merely contains the tags is something the user typed.
+      ["user_message_chunk", "typed-xml", { type: "text", text: "<command-name>/rename</command-name> by hand" }],
+    ]);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("resume display recognizes only complete command records and preserves field semantics", () => {
+  const cases = [
+    ["\t<command-args> title\nwith spaces </command-args>\n<command-message>rename</command-message><command-name> /rename </command-name>\uFEFF", "/rename title\nwith spaces"],
+    ["<command-name>/context</command-name><command-args> </command-args>", "/context"],
+    ["<command-name>/old</command-name><command-args>old</command-args><command-name>/rename</command-name><command-args>new</command-args>", "/rename new"],
+    ["<command-name>/rename</command-name><command-args><command-args>nested</command-args>", "/rename <command-args>nested"],
+    ["<command-name>rename</command-name>", undefined],
+    ["<command-args>title</command-args>", undefined],
+    ["<command-name>/rename</command-name><command-args>title", undefined],
+    ["<command-name>/rename</command-name> by hand", undefined],
+    ["before <command-name>/rename</command-name>", undefined],
+    ["<command-name>/rename</command-name><unknown>value</unknown>", undefined],
+    ["<command-name>/rename</command-name><command-args>title</command-message>", undefined],
+  ] as const;
+  const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
+  const updates = mapSessionMessagesToUpdates(cases.map(([content], index) => ({
+    ...base, type: "user", uuid: `command-${index}`, message: { role: "user", content },
+  })));
+  assert.deepEqual(
+    updates.filter(update => update.type === "user_message_chunk").map(update => [update.source_message_uuid, update.content]),
+    cases.map(([content, expected], index) => [`command-${index}`, { type: "text", text: expected ?? content }]),
+  );
+});
+
+test("resume display preserves many unclosed command tags without blocking later history", () => {
+  // A child timeout catches synchronous parser stalls without hanging the suite (2026-10-09).
+  const child = spawnSync(process.execPath, ["--input-type=module", "-"], {
+    input: `
+      import assert from "node:assert/strict";
+      import { mapSessionMessagesToUpdates } from ${JSON.stringify(new URL("./history.js", import.meta.url).href)};
+      const broken = [
+        "<command-name>" + "<command-args>a".repeat(200_000),
+        "<command-name>/rename</command-name>" + "<command-args>a".repeat(200_000),
+        "<command-name>a".repeat(200_000),
+        "<command-message>a".repeat(200_000),
+      ];
+      const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
+      const updates = mapSessionMessagesToUpdates([
+        ...broken.map((content, index) => ({ ...base, type: "user", uuid: "broken-" + index, message: { role: "user", content } })),
+        { ...base, type: "user", uuid: "after", message: { role: "user", content: "<command-name>/rename</command-name><command-args>Still restored</command-args>" } },
+      ]);
+      assert.deepEqual(updates.filter(update => update.type === "user_message_chunk").map(update => [update.source_message_uuid, update.content]), [
+        ...broken.map((text, index) => ["broken-" + index, { type: "text", text }]),
+        ["after", { type: "text", text: "/rename Still restored" }],
+      ]);
+    `,
+    encoding: "utf8",
+    timeout: 10_000,
+    windowsHide: true,
+  });
+  assert.equal(child.error, undefined, String(child.error));
+  assert.equal(child.status, 0, child.stderr);
 });
 
 test("resume display excludes internal task notifications while preserving user XML and external messages", () => {

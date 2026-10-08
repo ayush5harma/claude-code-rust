@@ -37,10 +37,7 @@ pub use browse::{SettingsBrowse, SettingsFocus};
 pub(crate) use mcp::McpCallbackUrlOverlayState;
 pub use overlays::*;
 pub(crate) use service::{apply_settings_result, request_settings};
-pub use state::{
-    ConfigState, PendingSessionTitleChangeKind, PendingSessionTitleChangeState,
-    PendingSettingsRequest,
-};
+pub use state::{ConfigState, PendingSettingsRequest};
 pub(crate) use structured::{FieldInput, FormRow};
 pub use structured::{StructuredEditor, summary as structured_summary};
 pub use tabs::{ConfigHelpSection, ConfigTab};

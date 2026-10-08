@@ -232,7 +232,7 @@ async function create(
   });
   setSessionListingDir(command.cwd);
   if (command.continue_session) {
-    if (command.resume) {
+    if (command.resume !== undefined) {
       throw new Error("continue_session cannot be combined with resume");
     }
     const recent = (await listSessions(currentSessionListOptions()))
@@ -242,9 +242,15 @@ async function create(
       return;
     }
   }
+  if (command.resume !== undefined) {
+    await resume(
+      { command: "resume_session", session_id: command.resume, launch_settings: command.launch_settings },
+      requestId,
+    );
+    return;
+  }
   await createSession({
     cwd: command.cwd,
-    resume: command.resume,
     launchSettings: command.launch_settings,
     connectEvent: "connected",
     requestId,
@@ -286,12 +292,11 @@ async function resume(
       return;
     }
     setSessionListingDir(matched.cwd ?? process.cwd());
-    const historyMessages = await getSessionTranscriptMessages(
-      command.session_id,
-      matched.cwd
-        ? { dir: matched.cwd }
-        : {},
-    );
+    const { messages: historyMessages, label: storedLabel } =
+      await getSessionTranscriptMessages(
+        command.session_id,
+        matched.cwd ? { dir: matched.cwd } : {},
+      );
     const resumeUpdates = mapSessionMessagesToUpdates(historyMessages);
     const staleSessions = Array.from(sessions.values());
     const hadActiveSession = staleSessions.length > 0;
@@ -313,6 +318,7 @@ async function resume(
       resume: command.session_id,
       launchSettings: command.launch_settings,
       ...(resumeUpdates.length > 0 ? { resumeUpdates } : {}),
+      storedLabel,
       connectEvent: hadActiveSession ? "session_replaced" : "connected",
       requestId,
       ...(hadActiveSession

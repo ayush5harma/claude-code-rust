@@ -109,6 +109,8 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         | ClientEvent::PluginsInventoryUpdated { .. }
         | ClientEvent::PluginsInventoryRefreshFailed { .. }
         | ClientEvent::PluginsCliActionSucceeded { .. }
-        | ClientEvent::PluginsCliActionFailed { .. } => ClientEventFamily::Host,
+        | ClientEvent::PluginsCliActionFailed { .. }
+        | ClientEvent::AgentStatusUpdated { .. }
+        | ClientEvent::AgentViewFailed { .. } => ClientEventFamily::Host,
     }
 }

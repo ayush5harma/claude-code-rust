@@ -1,3 +1,4 @@
+import { emitSessionLabelAfterConnect } from "./session_label.js";
 import {
   listSessions,
   type ListSessionsOptions,
@@ -24,16 +25,39 @@ const SESSION_LIST_LIMIT = 50;
 let sessionListingDir: string | undefined;
 type ProtocolEventWriter = (line: string) => void;
 
+// A non-blocking stdout pipe makes writeSync throw EAGAIN once its 64 KB
+// buffer is full, so without a retry any event larger than that (a slash
+// command list of a few hundred skills, a long resumed history) reached the
+// TUI cut at byte 65536 and the session died decoding it. Wait 1 ms and try
+// again, up to 30 s, then fail as before. system-config's launcher looks for
+// this function's name before it routes a session to claude-rs.
+const EAGAIN_RETRY_LIMIT = 30_000;
+const eagainWaitCell = new Int32Array(new SharedArrayBuffer(4));
+
+function scWriteSync(payload: Buffer, offset: number): number {
+  for (let waits = 0; ; waits++) {
+    try {
+      return writeSync(
+        process.stdout.fd,
+        payload,
+        offset,
+        payload.length - offset,
+      );
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      if (code !== "EAGAIN" || waits >= EAGAIN_RETRY_LIMIT) {
+        throw error;
+      }
+      Atomics.wait(eagainWaitCell, 0, 0, 1);
+    }
+  }
+}
+
 function writeProtocolEventToStdout(line: string): void {
   const payload = Buffer.from(line);
   let offset = 0;
   while (offset < payload.length) {
-    const written = writeSync(
-      process.stdout.fd,
-      payload,
-      offset,
-      payload.length - offset,
-    );
+    const written = scWriteSync(payload, offset);
     if (written <= 0) {
       throw new Error("bridge stdout write made no progress");
     }
@@ -369,6 +393,7 @@ export function emitConnectEvent(session: SessionState): void {
     }
   }
   emitAvailableAgentsSnapshot(session);
+  emitSessionLabelAfterConnect(session);
   session.resumeUpdates = undefined;
   session.restoredInput = undefined;
 
@@ -400,6 +425,7 @@ export function emitSessionReplacedEvent(
   writeEvent(bridgeEvent, requestId);
   emitAvailableCommandsSnapshot(session);
   emitAvailableAgentsSnapshot(session);
+  emitSessionLabelAfterConnect(session);
   if (session.pendingRewindResult) {
     writeEvent(
       { ...session.pendingRewindResult, session_id: session.sessionId },
