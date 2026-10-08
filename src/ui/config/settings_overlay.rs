@@ -133,7 +133,7 @@ pub(super) fn render_session_rename_overlay(frame: &mut Frame, area: Rect, app: 
         },
         OverlayChrome {
             title: "Rename session",
-            subtitle: Some("Set a custom title for the current session"),
+            subtitle: Some("Rename the current session with Claude Code's /rename"),
             help: Some("Enter confirm | Esc cancel"),
             message: app.config.overlay_message.as_ref(),
         },
@@ -152,7 +152,7 @@ pub(super) fn render_session_rename_overlay(frame: &mut Frame, area: Rect, app: 
     );
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "Leave the field empty to clear the custom session name.",
+            "Claude Code cannot clear a name; press g in Status to generate one.",
             Style::default().fg(theme::DIM),
         ))),
         sections[1],

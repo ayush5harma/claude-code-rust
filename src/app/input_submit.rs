@@ -143,6 +143,27 @@ pub(super) fn maybe_submit_initial_prompt(app: &mut App) {
     }
 }
 
+/// Send a Claude Code command (such as `/rename`) on the user's behalf from
+/// outside the composer, as a turn of its own exactly as if it were typed, so
+/// its reply shows in the chat. Errs, without sending, while a turn is active
+/// or queued, or when there is no session to send it to.
+pub(crate) fn submit_session_command(app: &mut App, text: &str) -> Result<(), String> {
+    if app.is_agent_turn_active()
+        || !app.pending_user_messages.is_empty()
+        || !matches!(app.status, AppStatus::Ready)
+    {
+        return Err("Wait until the current turn finishes".to_owned());
+    }
+    if app.session_runtime.conn.is_none() || app.session_runtime.session_id.is_none() {
+        return Err("No active session".to_owned());
+    }
+    if send_prompt_turn(app, text, Vec::new(), Vec::new()) {
+        Ok(())
+    } else {
+        Err(format!("{text} could not be sent"))
+    }
+}
+
 fn send_prompt_turn(
     app: &mut App,
     text: &str,

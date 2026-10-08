@@ -112,8 +112,6 @@ function commandSessionId(command: BridgeCommand): string | undefined {
     case "inspect_settings":
     case "mutate_setting":
     case "set_fast_mode":
-    case "generate_session_title":
-    case "rename_session":
     case "permission_response":
     case "question_response":
     case "elicitation_response":
@@ -162,8 +160,6 @@ function commandToolCallId(command: BridgeCommand): string | undefined {
     case "inspect_settings":
     case "mutate_setting":
     case "set_fast_mode":
-    case "generate_session_title":
-    case "rename_session":
     case "new_session":
     case "elicitation_response":
     case "get_status_snapshot":
