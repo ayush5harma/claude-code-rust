@@ -1281,8 +1281,7 @@ export function handleAssistantMessage(
   // A local command (/rename, /color, /context, /usage, ...) replies with one
   // completed synthetic frame and no stream events, so this frame is the only
   // carrier of its output. Model replies were already streamed as deltas.
-  const localCommand = asRecordOrNull(message.local_command_run);
-  if (localCommand) {
+  if (typeof message.local_command_source === "string") {
     const markdown = content
       .flatMap((block) => {
         const record = asRecordOrNull(block);
@@ -1303,7 +1302,7 @@ export function handleAssistantMessage(
       });
     }
     // /color has no system event; its reply is the only report of the change.
-    if (localCommand.command === "color") {
+    if (asRecordOrNull(message.local_command_run)?.command === "color") {
       emitSessionColorFromReply(session, markdown);
     }
   }
