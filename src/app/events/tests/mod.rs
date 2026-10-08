@@ -3583,14 +3583,19 @@ fn settings_view_ignores_paste_events() {
 }
 
 #[test]
+#[cfg(windows)]
 fn clipboard_paste_shortcut_dispatches_on_release() {
-    let key = crossterm::event::KeyEvent {
-        code: KeyCode::Char('v'),
-        modifiers: KeyModifiers::CONTROL,
-        kind: KeyEventKind::Release,
-        state: crossterm::event::KeyEventState::NONE,
-    };
+    let key =
+        KeyEvent::new_with_kind(KeyCode::Char('v'), KeyModifiers::CONTROL, KeyEventKind::Release);
     assert!(should_dispatch_key_event(key));
+}
+
+#[test]
+#[cfg(not(windows))]
+fn clipboard_paste_shortcut_release_is_ignored_outside_windows() {
+    let key =
+        KeyEvent::new_with_kind(KeyCode::Char('v'), KeyModifiers::CONTROL, KeyEventKind::Release);
+    assert!(!should_dispatch_key_event(key));
 }
 
 #[test]
