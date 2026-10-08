@@ -2718,11 +2718,11 @@ mod tests {
         let mut app = App::test_default();
         app.transcript.messages.push(message);
 
-        let text = line_texts(&serialize_live_rows(&mut app, 110));
+        let text = line_texts(&serialize_live_rows(&mut app, 103));
         let tip_row = text.iter().position(|line| line.contains("Tips: Start")).expect("tip row");
 
-        assert_eq!(text[tip_row].find("Tips:"), Some(20));
-        assert_eq!(text[tip_row + 1].find("noise"), Some(26));
+        assert_eq!(text[tip_row].find("Tips:"), Some(13));
+        assert_eq!(text[tip_row + 1].find(|ch: char| !ch.is_whitespace()), Some(19));
     }
 
     #[test]
@@ -2788,7 +2788,11 @@ mod tests {
         let text = line_texts(&rows);
 
         assert_eq!(text.iter().filter(|line| line.as_str() == "Overview").count(), 1);
-        assert!(text.iter().any(|line| line.contains("_~^~^~_")));
+        assert!(text.iter().any(|line| {
+            line.contains(
+                "\u{259d}\u{259c}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2580}",
+            )
+        }));
         assert!(text.iter().any(|line| line.contains("Subscription: Connecting")));
         assert!(text.iter().any(|line| line.contains("Session ID: Connecting")));
     }
