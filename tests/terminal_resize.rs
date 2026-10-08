@@ -222,11 +222,25 @@ impl TerminalTest {
         command.env("FAKE_BRIDGE_SCENARIO", scenario);
         command.env("FAKE_BRIDGE_JOURNAL", &journal);
         command.env("FAKE_BRIDGE_RELEASE_FILE", &release_file);
+        // The agent status poller runs CLAUDE_CODE_EXECUTABLE, else `claude`
+        // from PATH. Never let it reach the developer's real Claude Code: a
+        // missing path turns the poller off, and the agent view tests point
+        // it at the fake CLI.
+        command.env_remove("CLAUDE_CODE_EXECUTABLE");
+        command.env("CLAUDE_CODE_EXECUTABLE", temp.path().join("no-claude-executable"));
         for name in removed_env {
             command.env_remove(name);
         }
         if let Some(mode) = auth_mode {
             Self::install_fake_cli(&mut command, temp.path(), mode);
+            if mode == "agent-view" {
+                let cli = temp.path().join("bin").join(if cfg!(windows) {
+                    "claude.exe"
+                } else {
+                    "claude"
+                });
+                command.env("CLAUDE_CODE_EXECUTABLE", cli);
+            }
         }
         let writer = Arc::new(Mutex::new(pair.master.take_writer().expect("pty writer")));
         let reader = pair.master.try_clone_reader().expect("pty reader");
