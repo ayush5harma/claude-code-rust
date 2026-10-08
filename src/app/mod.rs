@@ -2,6 +2,7 @@
 // Copyright 2025 Simon Peter Rothgang
 
 pub(crate) mod activity;
+pub(crate) mod agent_view;
 pub(crate) mod auth;
 mod btw;
 mod cache_policy;
@@ -160,7 +161,7 @@ async fn run_tui_loop(
     app: &mut App,
     terminal_runtime: &mut terminal_runtime::TerminalRuntime,
 ) -> anyhow::Result<()> {
-    let mut os_shutdown = Box::pin(wait_for_shutdown_signal().fuse());
+    let mut os_shutdown = Box::pin(wait_for_os_signal().fuse());
 
     let mut events = Some(TerminalInput::new());
     let mut event_loop_interval = event_loop_interval();
@@ -184,17 +185,32 @@ async fn run_tui_loop(
                     &mut events,
                 );
             }
-            shutdown = &mut os_shutdown => {
-                if let Err(err) = shutdown {
-                    tracing::warn!(
-                        target: crate::logging::targets::APP_LIFECYCLE,
-                        event_name = "os_shutdown_listener_failed",
-                        message = "OS shutdown signal listener failed",
-                        outcome = "failure",
-                        error_message = %err,
-                    );
+            signal = &mut os_shutdown => {
+                match signal {
+                    // A child in cooked mode owns the terminal, so this Ctrl+C
+                    // was typed at the child. The bridge has its own process
+                    // group and never sees it; claude-rs keeps running too.
+                    Ok(OsSignal::Interrupt) if app.terminal_child.is_active() => {
+                        tracing::debug!(
+                            target: crate::logging::targets::APP_LIFECYCLE,
+                            event_name = "sigint_ignored_for_terminal_child",
+                            message = "SIGINT ignored while a child owns the terminal",
+                            outcome = "ignored",
+                        );
+                        os_shutdown = Box::pin(wait_for_os_signal().fuse());
+                    }
+                    Ok(_) => app.request_shutdown(),
+                    Err(err) => {
+                        tracing::warn!(
+                            target: crate::logging::targets::APP_LIFECYCLE,
+                            event_name = "os_shutdown_listener_failed",
+                            message = "OS shutdown signal listener failed",
+                            outcome = "failure",
+                            error_message = %err,
+                        );
+                        app.request_shutdown();
+                    }
                 }
-                app.request_shutdown();
             }
             _ = event_loop_interval.tick() => {}
         }
@@ -383,6 +399,10 @@ fn handle_runtime_command(
 ) -> anyhow::Result<()> {
     match command {
         Some(keys::RuntimeCommand::SuspendProcess) => suspend_tui_process(app, terminal_runtime),
+        Some(keys::RuntimeCommand::OpenAgentView) => {
+            agent_view::open(app);
+            Ok(())
+        }
         None => Ok(()),
     }
 }
@@ -602,6 +622,17 @@ fn advance_spinner_frame(app: &mut App, now: Instant) {
 }
 
 async fn wait_for_shutdown_signal() -> std::io::Result<()> {
+    wait_for_os_signal().await.map(|_| ())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OsSignal {
+    Interrupt,
+    #[cfg_attr(not(unix), allow(dead_code))]
+    Terminate,
+}
+
+async fn wait_for_os_signal() -> std::io::Result<OsSignal> {
     #[cfg(unix)]
     {
         let mut sigterm =
@@ -609,14 +640,14 @@ async fn wait_for_shutdown_signal() -> std::io::Result<()> {
         tokio::select! {
             sigint = tokio::signal::ctrl_c() => {
                 sigint?;
+                Ok(OsSignal::Interrupt)
             }
-            _ = sigterm.recv() => {}
+            _ = sigterm.recv() => Ok(OsSignal::Terminate),
         }
-        Ok(())
     }
     #[cfg(not(unix))]
     {
-        tokio::signal::ctrl_c().await
+        tokio::signal::ctrl_c().await.map(|()| OsSignal::Interrupt)
     }
 }
 

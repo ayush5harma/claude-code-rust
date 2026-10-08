@@ -8,18 +8,25 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
         ClientEvent::UpdateCheckCompleted { result } => {
             crate::app::update_check::apply_check_result(app, &result);
         }
+        ClientEvent::AgentStatusUpdated { enabled, status } => {
+            app.agent_view.enabled = enabled;
+            app.agent_view.status = status;
+        }
+        ClientEvent::AgentViewFailed { message } => {
+            crate::app::events::push_system_message_with_severity(
+                app,
+                Some(crate::app::SystemSeverity::Error),
+                &message,
+            );
+        }
         ClientEvent::TerminalReleasedToChild { reason, ready_tx, cancel_tx } => {
             app.terminal_lifecycle = crate::app::TerminalLifecycleState::ReleasedToChild(reason);
             app.surface_dirty.clear_for_child_release();
-            if app.shutdown_requested() {
-                let _ = cancel_tx.send(());
-            } else {
-                app.terminal_child_cancel = Some(cancel_tx);
-            }
+            crate::app::terminal_runtime::child_took_terminal(app, cancel_tx);
             let _ = ready_tx.send(());
         }
         ClientEvent::TerminalReturnedFromChild { reason: _ } => {
-            app.terminal_child_cancel = None;
+            crate::app::terminal_runtime::child_returned_terminal(app);
             app.terminal_lifecycle =
                 crate::app::TerminalLifecycleState::Running(crate::app::SurfaceMode::Chat);
             app.surface_dirty.terminal_mode = true;

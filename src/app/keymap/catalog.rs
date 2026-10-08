@@ -94,6 +94,15 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         default_contexts: &[KeyContext::ChatInput],
     },
     KeyActionDescriptor {
+        action: KeyAction::App(AppAction::OpenAgentsOrMoveLeft),
+        id: "app.open_agents_or_move_left",
+        label: "Agent view (empty input) / move left",
+        description: "Open Claude Code's agent view (`claude agents`) when the input is empty, \
+                      otherwise move the cursor one character left. Esc, or Ctrl+C twice, in \
+                      the agent view returns here.",
+        default_contexts: &[KeyContext::ChatInput],
+    },
+    KeyActionDescriptor {
         action: KeyAction::Input(InputAction::MoveCharLeft),
         id: "input.move_char_left",
         label: "Move left",

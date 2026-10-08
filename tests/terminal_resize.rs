@@ -144,6 +144,52 @@ fn capture_output(
     output
 }
 
+/// Puts a fake `claude` first on the app's PATH: the compiled
+/// `fake-claude.rs`, or for "spawn-error" an executable that cannot start.
+#[allow(clippy::expect_used)]
+fn install_fake_claude(command: &mut CommandBuilder, temp: &Path, mode: &str) {
+    let cli_dir = temp.join("bin");
+    std::fs::create_dir(&cli_dir).expect("fake CLI directory");
+    let cli = cli_dir.join(if cfg!(windows) { "claude.exe" } else { "claude" });
+    if mode == "spawn-error" {
+        let contents = if cfg!(unix) {
+            // macOS can run executable text without a shebang through
+            // a shell. A missing interpreter forces a spawn error.
+            format!("#!{}\nexit 99\n", cli_dir.join("missing-interpreter").display())
+        } else {
+            "invalid executable fixture".to_owned()
+        };
+        std::fs::write(&cli, contents).expect("invalid executable");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755))
+                .expect("executable permission");
+        }
+    } else {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-claude.rs");
+        let output = std::process::Command::new("rustc")
+            .arg("--edition=2024")
+            .arg(source)
+            .arg("-o")
+            .arg(&cli)
+            .output()
+            .expect("compile native fake CLI");
+        assert!(
+            output.status.success(),
+            "fake CLI compile failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let mut paths = vec![cli_dir];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+    command.env("PATH", std::env::join_paths(paths).expect("fixture PATH"));
+    command.env("FAKE_AUTH_MODE", mode);
+    if mode == "agent-view" {
+        command.env("CLAUDE_CODE_EXECUTABLE", &cli);
+    }
+}
+
 struct TerminalTest {
     child: TestChild,
     master: Box<dyn MasterPty + Send>,
@@ -213,45 +259,14 @@ impl TerminalTest {
         command.env("FAKE_BRIDGE_SCENARIO", scenario);
         command.env("FAKE_BRIDGE_JOURNAL", &journal);
         command.env("FAKE_BRIDGE_RELEASE_FILE", &release_file);
+        // The agent status poller runs CLAUDE_CODE_EXECUTABLE, else `claude`
+        // from PATH. Never let it reach the developer's real Claude Code: a
+        // missing path turns the poller off, and the agent view tests point
+        // it at the fake below.
+        command.env_remove("CLAUDE_CODE_EXECUTABLE");
+        command.env("CLAUDE_CODE_EXECUTABLE", temp.path().join("no-claude-executable"));
         if let Some(mode) = auth_mode {
-            let cli_dir = temp.path().join("bin");
-            std::fs::create_dir(&cli_dir).expect("fake CLI directory");
-            let cli = cli_dir.join(if cfg!(windows) { "claude.exe" } else { "claude" });
-            if mode == "spawn-error" {
-                let contents = if cfg!(unix) {
-                    // macOS can run executable text without a shebang through
-                    // a shell. A missing interpreter forces a spawn error.
-                    format!("#!{}\nexit 99\n", cli_dir.join("missing-interpreter").display())
-                } else {
-                    "invalid executable fixture".to_owned()
-                };
-                std::fs::write(&cli, contents).expect("invalid executable");
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755))
-                        .expect("executable permission");
-                }
-            } else {
-                let source =
-                    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-claude.rs");
-                let output = std::process::Command::new("rustc")
-                    .arg("--edition=2024")
-                    .arg(source)
-                    .arg("-o")
-                    .arg(&cli)
-                    .output()
-                    .expect("compile native fake CLI");
-                assert!(
-                    output.status.success(),
-                    "fake CLI compile failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
-            let mut paths = vec![cli_dir];
-            paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
-            command.env("PATH", std::env::join_paths(paths).expect("fixture PATH"));
-            command.env("FAKE_AUTH_MODE", mode);
+            install_fake_claude(&mut command, temp.path(), mode);
         }
         let writer = Arc::new(Mutex::new(pair.master.take_writer().expect("pty writer")));
         let reader = pair.master.try_clone_reader().expect("pty reader");
@@ -820,6 +835,232 @@ fn auth_child_owns_stdin_and_output_and_returns_a_resized_usable_terminal() {
         test.assert_prompts(&["AFTER_AUTH 界 + PASTE 🦀"]);
         test.shutdown();
     }
+}
+
+#[test]
+fn left_on_an_empty_prompt_hands_the_terminal_to_the_agent_view_and_back() {
+    let mut test = TerminalTest::start_with_auth("stream", 3, Some("agent-view"));
+    let profile = test.temp.path().join("profile");
+    let project = test.temp.path().join("project");
+
+    // With text in the composer, Left is cursor movement and opens nothing.
+    test.send(b"LEFTab");
+    test.wait_screen("LEFTab");
+    test.send(b"\x1b[DX");
+    test.wait_screen("LEFTaXb");
+    test.submit_draft();
+    test.wait_turn_finished("reply 1 started");
+    test.assert_prompts(&["LEFTaXb"]);
+    assert!(!profile.join("agent-view-runs").exists(), "Left with text opened the agent view");
+    assert!(!test.screen().contains('\u{2190}'), "an empty listing must not show the hint");
+
+    // The poller reads Claude Code's job files, not the CLI: one blocked job
+    // nobody runs, one working job a live daemon worker (this test) runs.
+    write_job(&profile, "aaaa0001", "blocked", "blocked");
+    write_job(&profile, "aaaa0002", "working", "active");
+    write_roster(&profile, &["aaaa0002"]);
+    test.send(b"\x1b[D");
+    test.wait_screen("AGENT_VIEW_READY");
+    let before = test.output.lock().expect("output lock").raw.len();
+    std::thread::sleep(Duration::from_millis(250));
+    let after = test.output.lock().expect("output lock").raw.len();
+    assert_eq!(after, before, "TUI wrote while the agent view owned the terminal");
+    test.send(b"view_only_118\r");
+
+    // The listing is polled again as soon as the view exits, not at the next
+    // ten-second interval.
+    test.wait_screen("\u{2190} 2 agents \u{b7} 1 awaiting input \u{b7} 1 working");
+    let polls = test.runtime_records_since(0);
+    let polls: Vec<_> =
+        polls.iter().filter(|record| record["event_name"] == "agent_status_polled").collect();
+    let shown = polls.iter().position(|record| record["background"] == 2).expect("listed poll");
+    assert_eq!(polls[shown]["trigger"], "refresh", "{polls:?}");
+    assert_eq!(polls[shown]["source"], "files", "{polls:?}");
+    let received =
+        std::fs::read_to_string(profile.join("agent-view-input")).expect("agent view stdin");
+    assert_eq!(received.trim_end_matches(['\r', '\n']), "view_only_118");
+    let runs = std::fs::read_to_string(profile.join("agent-view-runs")).expect("agent view runs");
+    let runs: Vec<_> = runs.lines().collect();
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    let (argv, cwd) = runs[0].split_once('\t').expect("argv and cwd");
+    assert_eq!(argv, "agents");
+    assert_eq!(
+        Path::new(cwd).canonicalize().expect("child cwd"),
+        project.canonicalize().expect("project")
+    );
+
+    test.send(b"AFTER_AGENTS");
+    test.wait_screen("AFTER_AGENTS");
+    test.submit_draft();
+    test.wait_screen("reply 2 started");
+    test.assert_prompts(&["LEFTaXb", "AFTER_AGENTS"]);
+    test.shutdown();
+}
+
+/// A Claude Code background job as the daemon records it.
+#[allow(clippy::expect_used)]
+fn write_job(profile: &Path, id: &str, state: &str, tempo: &str) {
+    let dir = profile.join("jobs").join(id);
+    std::fs::create_dir_all(&dir).expect("job directory");
+    std::fs::write(
+        dir.join("state.json"),
+        format!(
+            r#"{{"state":"{state}","tempo":"{tempo}","name":"{id}","sessionId":"{id}","createdAt":"2026-01-01T00:00:00.000Z","template":"bg","respawnFlags":[]}}"#
+        ),
+    )
+    .expect("job state");
+}
+
+/// Daemon workers for `shorts`, alive because their pid is this test's.
+#[allow(clippy::expect_used)]
+fn write_roster(profile: &Path, shorts: &[&str]) {
+    let pid = std::process::id();
+    let workers: Vec<String> =
+        shorts.iter().map(|short| format!(r#""{short}":{{"pid":{pid}}}"#)).collect();
+    std::fs::create_dir_all(profile.join("daemon")).expect("daemon directory");
+    std::fs::write(
+        profile.join("daemon/roster.json"),
+        format!(r#"{{"proto":1,"workers":{{{}}}}}"#, workers.join(",")),
+    )
+    .expect("daemon roster");
+}
+
+fn agent_view_runs(test: &TerminalTest) -> Vec<String> {
+    std::fs::read_to_string(test.temp.path().join("profile/agent-view-runs"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn a_repeated_left_starts_one_agent_view_and_reports_no_error() {
+    let mut test = TerminalTest::start_with_auth("stream", 3, Some("agent-view"));
+    let profile = test.temp.path().join("profile");
+    write_job(&profile, "bbbb0001", "working", "active");
+    write_roster(&profile, &["bbbb0001"]);
+
+    // Key repeat, or keys batched over ssh/mosh, deliver both in one read.
+    test.send(b"\x1b[D\x1b[D");
+    test.wait_screen("AGENT_VIEW_READY");
+    test.send(b"once\r");
+    test.wait_screen("\u{2190} 1 agent \u{b7} 1 working");
+    // Give a second hand-over, had one started, time to show itself.
+    std::thread::sleep(Duration::from_millis(500));
+
+    assert_eq!(agent_view_runs(&test).len(), 1, "{:?}", agent_view_runs(&test));
+    let screen = test.screen();
+    assert!(!screen.contains("closed by shutdown"), "{screen}");
+    assert!(!screen.contains("claude agents"), "{screen}");
+    test.send(b"AFTER_REPEAT");
+    test.wait_screen("AFTER_REPEAT");
+    test.submit_draft();
+    test.wait_screen("reply 1 started");
+    test.assert_prompts(&["AFTER_REPEAT"]);
+    test.shutdown();
+}
+
+/// Before the child takes raw mode the terminal is in cooked mode, so Ctrl+C
+/// raises SIGINT in the terminal's foreground process group.
+#[cfg(unix)]
+#[test]
+fn ctrl_c_while_the_agent_view_starts_leaves_the_session_running() {
+    let mut test = TerminalTest::start_with_auth("stream", 3, Some("agent-view"));
+
+    test.send(b"\x1b[D");
+    test.wait_screen("AGENT_VIEW_READY");
+    test.send(b"\x03");
+    test.wait_until("the agent view returned the terminal", |test| {
+        test.runtime_records_since(0)
+            .iter()
+            .any(|record| record["event_name"] == "terminal_returned_from_child")
+    });
+    assert!(
+        test.runtime_records_since(0)
+            .iter()
+            .any(|record| record["event_name"] == "sigint_ignored_for_terminal_child"),
+        "claude-rs saw no SIGINT, so this test proves nothing:\n{}",
+        test.diagnostics()
+    );
+    assert!(!test.temp.path().join("profile/agent-view-input").exists());
+
+    test.send(b"AFTER_SIGINT");
+    test.wait_screen("AFTER_SIGINT");
+    test.submit_draft();
+    test.wait_screen("reply 1 started");
+    test.assert_prompts(&["AFTER_SIGINT"]);
+    let screen = test.screen();
+    assert!(!screen.contains("exited with code"), "{screen}");
+    test.shutdown();
+}
+
+/// Left and Ctrl+C in one read reach claude-rs before it releases the
+/// terminal; the Ctrl+C was typed for the view and must not quit claude-rs.
+#[test]
+fn ctrl_c_batched_with_left_does_not_quit_claude_rs() {
+    let mut test = TerminalTest::start_with_auth("stream", 3, Some("agent-view"));
+
+    test.send(b"\x1b[D\x03");
+    test.wait_screen("AGENT_VIEW_READY");
+    test.send(b"after_batch\r");
+    test.wait_until("the agent view returned the terminal", |test| {
+        test.runtime_records_since(0)
+            .iter()
+            .any(|record| record["event_name"] == "terminal_returned_from_child")
+    });
+
+    test.send(b"AFTER_BATCH");
+    test.wait_screen("AFTER_BATCH");
+    test.submit_draft();
+    test.wait_screen("reply 1 started");
+    test.assert_prompts(&["AFTER_BATCH"]);
+    test.shutdown();
+}
+
+/// After batched Left and Ctrl+C start the view, a later cooked-mode Ctrl+C
+/// must return the terminal so Ctrl+Q can quit the parent cleanly.
+#[cfg(unix)]
+#[test]
+fn batched_ctrl_c_then_child_sigint_returns_terminal_and_allows_shutdown() {
+    let mut test = TerminalTest::start_with_auth("stream", 3, Some("agent-view"));
+    let log_offset =
+        std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
+
+    test.send(b"\x1b[D\x03");
+    test.wait_screen("AGENT_VIEW_READY");
+    assert_eq!(agent_view_runs(&test).len(), 1, "agent view did not start exactly once");
+
+    let child_ready_offset =
+        std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
+    test.send(b"\x03");
+    test.wait_until("child SIGINT handled and terminal returned", |test| {
+        let records = test.runtime_records_since(child_ready_offset);
+        records.iter().any(|record| record["event_name"] == "sigint_ignored_for_terminal_child")
+            && records.iter().any(|record| {
+                record["event_name"] == "terminal_returned_from_child"
+                    && record["command"] == "agents"
+                    && record["reason"] == "AgentView"
+            })
+    });
+
+    let records = test.runtime_records_since(log_offset);
+    let released = records.iter().position(|record| {
+        record["event_name"] == "terminal_released_to_child"
+            && record["command"] == "agents"
+            && record["reason"] == "AgentView"
+    });
+    let returned = records.iter().position(|record| {
+        record["event_name"] == "terminal_returned_from_child"
+            && record["command"] == "agents"
+            && record["reason"] == "AgentView"
+    });
+    assert!(
+        matches!((released, returned), (Some(start), Some(end)) if start < end),
+        "agent view handoff was incomplete:\n{}",
+        test.diagnostics()
+    );
+    assert!(!test.temp.path().join("profile/agent-view-input").exists());
+    test.shutdown();
 }
 
 #[test]

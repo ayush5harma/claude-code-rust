@@ -22,6 +22,7 @@ use tui_textarea::AtomicDeleteDirection;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RuntimeCommand {
     SuspendProcess,
+    OpenAgentView,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -305,15 +306,18 @@ fn execute_app_action(app: &mut App, action: AppAction) -> KeyOutcome {
             true.into()
         }
         AppAction::CycleMode => handle_mode_cycle(app).into(),
+        AppAction::OpenAgentsOrMoveLeft => {
+            if crate::app::agent_view::opens_from_composer(app) {
+                KeyOutcome::Runtime(RuntimeCommand::OpenAgentView)
+            } else {
+                execute_input_action(app, InputAction::MoveCharLeft)
+            }
+        }
     }
 }
 
 fn clear_input_or_quit(app: &mut App) -> bool {
-    let has_local_input = !app.input.is_empty()
-        || !app.pending_images.is_empty()
-        || app.paste.has_pending_text()
-        || app.pending_submit.is_some();
-    if !has_local_input {
+    if !app.has_local_input() {
         app.request_shutdown();
         return true;
     }
@@ -1400,5 +1404,148 @@ mod tests {
             KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
         );
         assert!(!blocked);
+    }
+
+    /// An app whose agent view setting is what the poller would have read.
+    fn agent_view_app(enabled: bool) -> App {
+        let mut app = App::test_default();
+        app.agent_view.enabled = enabled;
+        app
+    }
+
+    fn left() -> KeyEvent {
+        KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn left_on_an_empty_prompt_opens_the_agent_view() {
+        let mut app = agent_view_app(true);
+
+        let outcome = dispatch_key_by_focus(&mut app, left());
+
+        assert_eq!(outcome, KeyOutcome::Runtime(RuntimeCommand::OpenAgentView));
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn left_with_text_moves_the_cursor_instead_of_opening_the_agent_view() {
+        let mut app = agent_view_app(true);
+        app.input.set_text("ab");
+        let _ = app.input.set_cursor(0, 2);
+
+        let outcome = dispatch_key_by_focus(&mut app, left());
+
+        assert_eq!(outcome.runtime_command(), None);
+        assert_eq!(app.input.cursor(), (0, 1));
+        assert_eq!(app.input.text(), "ab");
+    }
+
+    #[test]
+    fn a_deferred_submit_counts_as_input_for_left() {
+        let mut app = agent_view_app(true);
+        app.pending_submit = Some(app.input.snapshot());
+
+        assert_eq!(dispatch_key_by_focus(&mut app, left()).runtime_command(), None);
+    }
+
+    #[test]
+    fn left_arrow_opens_agents_false_keeps_left_as_cursor_movement() {
+        let mut app = agent_view_app(false);
+
+        let outcome = dispatch_key_by_focus(&mut app, left());
+
+        assert_eq!(outcome.runtime_command(), None);
+    }
+
+    #[test]
+    fn a_repeated_left_while_the_view_is_starting_opens_nothing_more() {
+        let mut app = agent_view_app(true);
+        let first = dispatch_key_by_focus(&mut app, left());
+        assert_eq!(first, KeyOutcome::Runtime(RuntimeCommand::OpenAgentView));
+        // What `agent_view::open` does synchronously before its task runs.
+        let _claim = crate::app::terminal_runtime::claim_terminal(&mut app).expect("first claim");
+
+        let repeat = dispatch_key_by_focus(&mut app, left());
+
+        assert_eq!(repeat.runtime_command(), None);
+    }
+
+    #[test]
+    fn keys_typed_for_a_starting_child_do_not_reach_the_composer() {
+        let mut app = agent_view_app(true);
+        let _claim = crate::app::terminal_runtime::claim_terminal(&mut app).expect("claim");
+
+        // Left then Ctrl+C in one read: the Ctrl+C was meant for the view.
+        let ctrl_c =
+            crossterm::event::Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        let _ = crate::app::events::handle_terminal_event(&mut app, ctrl_c);
+        let typed =
+            crossterm::event::Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        let _ = crate::app::events::handle_terminal_event(&mut app, typed);
+
+        assert!(!app.shutdown_requested());
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn one_terminal_hand_over_at_a_time_until_the_terminal_returns() {
+        let mut app = agent_view_app(true);
+        let first = crate::app::terminal_runtime::claim_terminal(&mut app);
+        assert!(first.is_some());
+        assert!(crate::app::terminal_runtime::claim_terminal(&mut app).is_none());
+
+        let (cancel_tx, _cancel_rx) = tokio::sync::oneshot::channel();
+        crate::app::terminal_runtime::child_took_terminal(&mut app, cancel_tx);
+        assert!(crate::app::terminal_runtime::claim_terminal(&mut app).is_none());
+
+        crate::app::terminal_runtime::child_returned_terminal(&mut app);
+        assert!(crate::app::terminal_runtime::claim_terminal(&mut app).is_some());
+    }
+
+    #[test]
+    fn shutdown_stops_a_running_child_and_keeps_the_claim_until_it_returns() {
+        let mut app = agent_view_app(true);
+        let _claim = crate::app::terminal_runtime::claim_terminal(&mut app).expect("claim");
+        let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
+        crate::app::terminal_runtime::child_took_terminal(&mut app, cancel_tx);
+
+        app.request_shutdown();
+
+        assert_eq!(cancel_rx.try_recv(), Ok(()));
+        assert!(crate::app::terminal_runtime::claim_terminal(&mut app).is_none());
+    }
+
+    #[test]
+    fn the_agent_view_action_follows_a_rebinding() {
+        let mut app = agent_view_app(true);
+        let ctrl_g = KeySpec::char('g', KeyModifiers::CONTROL);
+        let bindings = crate::app::keymap::default_bindings()
+            .into_iter()
+            .map(|binding| {
+                if binding.action == KeyAction::App(AppAction::OpenAgentsOrMoveLeft) {
+                    KeyBinding::new(
+                        binding.context,
+                        binding.spec,
+                        KeyAction::Input(InputAction::MoveCharLeft),
+                        KeyBindingSource::Config,
+                    )
+                } else {
+                    binding
+                }
+            })
+            .chain([KeyBinding::new(
+                KeyContext::ChatInput,
+                ctrl_g,
+                KeyAction::App(AppAction::OpenAgentsOrMoveLeft),
+                KeyBindingSource::Config,
+            )]);
+        app.keymap = ResolvedKeymap::from_bindings(bindings).expect("rebound keymap");
+
+        assert_eq!(dispatch_key_by_focus(&mut app, left()).runtime_command(), None);
+        let outcome = dispatch_key_by_focus(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(outcome, KeyOutcome::Runtime(RuntimeCommand::OpenAgentView));
     }
 }

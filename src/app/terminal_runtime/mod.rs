@@ -3,6 +3,7 @@
 
 mod chat_session;
 mod chat_terminal;
+mod child_command;
 mod fullscreen_session;
 mod history_insert;
 mod input;
@@ -25,7 +26,11 @@ use anyhow::{Context, anyhow};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-pub(crate) use release_guard::TerminalReleaseGuard;
+pub(crate) use child_command::{
+    TerminalChild, TerminalChildState, TerminalClaim, child_returned_terminal, child_took_terminal,
+    claim_terminal, run_with_terminal, stop_terminal_child,
+};
+use release_guard::TerminalReleaseGuard;
 
 enum SurfaceTerminalSession {
     Chat(ChatTerminalSession),
