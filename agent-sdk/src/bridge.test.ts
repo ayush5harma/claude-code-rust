@@ -4022,6 +4022,7 @@ test("handleSdkMessage emits SDK-owned context Markdown exactly once", () => {
       uuid: "context-assistant-1",
       session_id: "session-1",
       parent_tool_use_id: null,
+      local_command_source: "<local-command-stdout>## Context usage</local-command-stdout>",
       local_command_run: { command: "context", args: "" },
       context_usage: { used_percentage: 42 },
       message: {
@@ -4055,8 +4056,9 @@ test("handleSdkMessage emits SDK-owned context Markdown exactly once", () => {
 
 // Measured on Claude Code 2.1.293: a forwarded local command (/rename,
 // /color, /usage, ...) replies with one completed synthetic assistant frame
-// carrying local_command_run and no stream events, so its text exists only
-// in that frame.
+// carrying local_command_source and no stream events, so its text exists
+// only in that frame. A command that never ran (/hooks headless) has no
+// local_command_run but still replies.
 test("handleSdkMessage shows the reply of every forwarded local command", () => {
   const session = makeSessionState();
   const reply = (uuid: string, command: string, text: string) => ({
@@ -4077,6 +4079,20 @@ test("handleSdkMessage shows the reply of every forwarded local command", () => 
     for (const message of [
       reply("rename-reply", "rename", "Session renamed to: probe"),
       reply("usage-reply", "usage", "Current session: 9% used"),
+      {
+        type: "assistant",
+        uuid: "hooks-reply",
+        session_id: "session-1",
+        parent_tool_use_id: null,
+        local_command_source:
+          "<local-command-stdout>/hooks isn't available in this environment.</local-command-stdout>",
+        local_command_outcome: "unavailable_headless",
+        message: {
+          model: "<synthetic>",
+          role: "assistant",
+          content: [{ type: "text", text: "/hooks isn't available in this environment." }],
+        },
+      },
     ]) {
       handleSdkMessage(
         session,
@@ -4098,6 +4114,11 @@ test("handleSdkMessage shows the reply of every forwarded local command", () => 
       type: "agent_message_chunk",
       content: { type: "text", text: "Current session: 9% used" },
       source_message_uuid: "usage-reply",
+    },
+    {
+      type: "agent_message_chunk",
+      content: { type: "text", text: "/hooks isn't available in this environment." },
+      source_message_uuid: "hooks-reply",
     },
   ]);
 });
@@ -4126,6 +4147,7 @@ test("handleSdkMessage does not replay ordinary or invalid completed assistant t
       {
         type: "assistant",
         uuid: "empty-context",
+        local_command_source: "<local-command-stdout>   </local-command-stdout>",
         local_command_run: { command: "context", args: "" },
         context_usage: {},
         message: {
