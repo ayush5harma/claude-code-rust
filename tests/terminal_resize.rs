@@ -191,6 +191,9 @@ impl TerminalTest {
 
         let pair = native_pty_system().openpty(pty_size(SHORT_ROWS, COLS)).expect("open pty");
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_claude-rs"));
+        // The PTY asserts RGB cells; Codex exports NO_COLOR=1 (2026-10-09).
+        command.env_remove("NO_COLOR");
+        command.env("TERM", "xterm-256color");
         command.arg("--no-update-check");
         command.arg("--log-file");
         command.arg(temp.path().join("runtime.log"));
@@ -2037,4 +2040,50 @@ fn notifications_follow_focus_saved_categories_and_sdk_delivery_provenance_in_a_
         .expect("bell result");
     assert_eq!(bell["outcome"], "success");
     assert_eq!(bell["span"]["tool_call_id"], "push-1");
+}
+
+/// The composer's rule row carrying `name`, as (screen row, text): the full
+/// width rule with the name right-aligned before one last rule cell.
+fn session_rule_row(test: &TerminalTest, name: &str) -> Option<(u16, String)> {
+    let screen = test.screen();
+    let suffix = format!(" {name} ─");
+    screen.lines().enumerate().find_map(|(row, line)| {
+        let line = line.trim_end();
+        let row = u16::try_from(row).ok()?;
+        (line.starts_with('─') && line.ends_with(&suffix)).then(|| (row, line.to_owned()))
+    })
+}
+
+#[test]
+fn session_name_and_colour_label_the_rule_above_the_composer() {
+    let mut test = TerminalTest::start("session-label", 3);
+    // The bridge re-sends the title Claude Code announced before connect.
+    let (row, _) = test
+        .wait_for("the resumed title in the rule", |test| session_rule_row(test, "resumed-name"));
+    let screen = test.screen();
+    let below: Vec<&str> = screen.lines().skip(usize::from(row) + 1).take(2).collect();
+    assert!(
+        below.iter().any(|line| line.contains('\u{276f}')),
+        "the editor must follow the rule directly:\n{screen}"
+    );
+
+    test.submit("/rename probe-e2e", "/rename probe-e2e");
+    test.wait_turn_finished("Session renamed to: probe-e2e");
+    test.wait_for("the new name in the rule", |test| session_rule_row(test, "probe-e2e"));
+
+    test.submit("/color blue", "/color blue");
+    test.wait_turn_finished("Session color set to: blue");
+    let blue = vt100::Color::Rgb(106, 155, 204);
+    test.wait_for("the blue rule and badge", |test| {
+        let (row, line) = session_rule_row(test, "probe-e2e")?;
+        let name_col = line.chars().position(|ch| ch == 'p').expect("name column");
+        let output = test.output.lock().expect("output lock");
+        let screen = output.parser.screen();
+        let cell = |col: usize| screen.cell(row, u16::try_from(col).expect("column"));
+        let rule = cell(0)?;
+        let badge = cell(name_col)?;
+        (rule.fgcolor() == blue && badge.bgcolor() == blue).then_some(())
+    });
+    test.assert_prompts(&["/rename probe-e2e", "/color blue"]);
+    test.shutdown();
 }

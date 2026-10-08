@@ -3,6 +3,10 @@ import { nativeNotification } from "./notifications.js";
 import { elapsedNumber, messageMetadata, turnTiming } from "./presentation_metadata.js";
 import { refreshUltracode } from "./ultracode.js";
 import { observeSessionEffort, refreshSessionEffort } from "./effort.js";
+import {
+  emitSessionColorFromReply,
+  handleSessionTitleChanged,
+} from "./session_label.js";
 import { observeSessionModel } from "./session_model.js";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
@@ -1274,7 +1278,10 @@ export function handleAssistantMessage(
   const content = Array.isArray(messageObject.content)
     ? messageObject.content
     : [];
-  if (asRecordOrNull(message.context_usage)) {
+  // A local command (/rename, /color, /context, /usage, ...) replies with one
+  // completed synthetic frame and no stream events, so this frame is the only
+  // carrier of its output. Model replies were already streamed as deltas.
+  if (typeof message.local_command_source === "string") {
     const markdown = content
       .flatMap((block) => {
         const record = asRecordOrNull(block);
@@ -1293,6 +1300,10 @@ export function handleAssistantMessage(
           ? { source_message_uuid: assistantMessageUuid }
           : {}),
       });
+    }
+    // /color has no system event; its reply is the only report of the change.
+    if (asRecordOrNull(message.local_command_run)?.command === "color") {
+      emitSessionColorFromReply(session, markdown);
     }
   }
   for (const block of content) {
@@ -2095,6 +2106,13 @@ export function handleSdkMessage(
           ...(durationMs !== undefined ? { duration_ms: durationMs } : {}),
         });
       }
+      return;
+    }
+
+    // Claude Code 2.1.293 emits this for /rename, a generated name, `-n`,
+    // and the stored title on resume; SDK 0.3.288 does not declare it.
+    if (subtype === "session_title_changed") {
+      handleSessionTitleChanged(session, msg);
       return;
     }
 

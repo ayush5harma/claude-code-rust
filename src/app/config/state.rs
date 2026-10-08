@@ -41,18 +41,6 @@ impl PendingSettingsRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PendingSessionTitleChangeKind {
-    Rename { requested_title: Option<String> },
-    Generate,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingSessionTitleChangeState {
-    pub session_id: String,
-    pub kind: PendingSessionTitleChangeKind,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfigState {
     pub active_tab: ConfigTab,
@@ -68,7 +56,6 @@ pub struct ConfigState {
     pub status_message: Option<String>,
     pub last_error: Option<String>,
     pub overlay_message: Option<OverlayMessage>,
-    pub pending_session_title_change: Option<PendingSessionTitleChangeState>,
 }
 
 impl Default for ConfigState {
@@ -87,7 +74,6 @@ impl Default for ConfigState {
             status_message: None,
             last_error: None,
             overlay_message: None,
-            pending_session_title_change: None,
         }
     }
 }
@@ -182,7 +168,6 @@ impl ConfigState {
     pub fn invalidate_session(&mut self) {
         self.snapshot = None;
         self.pending_settings_request = None;
-        self.pending_session_title_change = None;
         self.status_message = None;
         self.last_error = None;
         if self.setting_overlay().is_none() {
