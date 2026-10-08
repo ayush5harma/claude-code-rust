@@ -11,7 +11,8 @@ mod tests;
 pub use status::AgentStatus;
 
 use crate::agent::events::ClientEvent;
-use crate::app::App;
+use crate::app::terminal_runtime::{TerminalChild, run_with_terminal};
+use crate::app::{App, ReleaseReason, SystemSeverity};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -68,6 +69,12 @@ fn left_arrow_opens_agents(preferences: Option<&Path>) -> bool {
         .and_then(|raw| serde_json::from_slice::<serde_json::Value>(&raw).ok())
         .and_then(|document| document.get(LEFT_ARROW_SETTING).and_then(serde_json::Value::as_bool))
         .unwrap_or(true)
+}
+
+/// Whether the agent view key opens the view instead of moving the cursor:
+/// only from an empty composer, and only while the setting allows it.
+pub(crate) fn opens_from_composer(app: &App) -> bool {
+    !app.has_local_input() && left_arrow_opens_agents(preferences_path(app).as_deref())
 }
 
 /// Polls `claude agents --json` at start, every `POLL_INTERVAL`, and right
@@ -149,4 +156,46 @@ async fn poll_status(
             );
         })
         .ok()
+}
+
+/// Hands the terminal to the stock agent view until it exits (Esc, or
+/// Ctrl+C twice). The claude-rs session keeps running meanwhile; anything it
+/// asks for waits in the transcript until the terminal comes back.
+pub(crate) fn open(app: &mut App) {
+    let Some(program) = resolve_executable() else {
+        crate::app::events::push_system_message_with_severity(
+            app,
+            Some(SystemSeverity::Error),
+            "claude CLI not found: set CLAUDE_CODE_EXECUTABLE or put claude on PATH to open the agent view.",
+        );
+        return;
+    };
+    let event_tx = app.event_tx.clone();
+    let refresh = Rc::clone(&app.agent_view.refresh);
+    let cwd = app.cwd_raw.clone();
+    tokio::task::spawn_local(async move {
+        let result = run_with_terminal(
+            &event_tx,
+            TerminalChild {
+                reason: ReleaseReason::AgentView,
+                command: "agents",
+                label: "claude agents",
+                program: &program,
+                args: &["agents"],
+                cwd: Some(&cwd),
+                interrupted_message: "Agent view closed by shutdown",
+            },
+        )
+        .await;
+        refresh.notify_one();
+        let message = match result {
+            Ok(status) if status.success() => return,
+            Ok(status) => format!(
+                "claude agents exited with code {}",
+                status.code().map_or_else(|| "unknown".to_owned(), |code| code.to_string())
+            ),
+            Err(message) => message,
+        };
+        let _ = event_tx.send(ClientEvent::AgentViewFailed { message }).await;
+    });
 }

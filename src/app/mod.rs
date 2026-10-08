@@ -385,6 +385,10 @@ fn handle_runtime_command(
 ) -> anyhow::Result<()> {
     match command {
         Some(keys::RuntimeCommand::SuspendProcess) => suspend_tui_process(app, terminal_runtime),
+        Some(keys::RuntimeCommand::OpenAgentView) => {
+            agent_view::open(app);
+            Ok(())
+        }
         None => Ok(()),
     }
 }
