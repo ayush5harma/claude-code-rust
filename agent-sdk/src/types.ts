@@ -955,16 +955,6 @@ export type BridgeCommand =
       enabled: boolean;
     }
   | {
-      command: "generate_session_title";
-      session_id: string;
-      description: string;
-    }
-  | {
-      command: "rename_session";
-      session_id: string;
-      title: string;
-    }
-  | {
       command: "new_session";
       cwd: string;
       launch_settings: SessionLaunchSettings;

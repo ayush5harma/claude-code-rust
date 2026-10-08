@@ -11,9 +11,6 @@ import {
   buildQueryOptions,
   buildPromptUserMessage,
   resolveClaudeCodeSpawnCommand,
-  canGenerateSessionTitle,
-  generatePersistedSessionTitle,
-  buildSessionMutationOptions,
   buildSessionListOptions,
   createToolCall,
   handleTaskSystemMessage,
@@ -986,44 +983,6 @@ test("parseCommandEnvelope validates resume_session_at independently from plain 
   });
 });
 
-test("parseCommandEnvelope validates rename_session command", () => {
-  const parsed = parseCommandEnvelope(
-    JSON.stringify({
-      request_id: "req-rename",
-      command: "rename_session",
-      session_id: "session-123",
-      title: "Renamed session",
-    }),
-  );
-
-  assert.equal(parsed.requestId, "req-rename");
-  assert.equal(parsed.command.command, "rename_session");
-  if (parsed.command.command !== "rename_session") {
-    throw new Error("unexpected command variant");
-  }
-  assert.equal(parsed.command.session_id, "session-123");
-  assert.equal(parsed.command.title, "Renamed session");
-});
-
-test("parseCommandEnvelope validates generate_session_title command", () => {
-  const parsed = parseCommandEnvelope(
-    JSON.stringify({
-      request_id: "req-generate",
-      command: "generate_session_title",
-      session_id: "session-123",
-      description: "Current custom title",
-    }),
-  );
-
-  assert.equal(parsed.requestId, "req-generate");
-  assert.equal(parsed.command.command, "generate_session_title");
-  if (parsed.command.command !== "generate_session_title") {
-    throw new Error("unexpected command variant");
-  }
-  assert.equal(parsed.command.session_id, "session-123");
-  assert.equal(parsed.command.description, "Current custom title");
-});
-
 test("parseCommandEnvelope validates mcp_toggle command", () => {
   const parsed = parseCommandEnvelope(
     JSON.stringify({
@@ -1938,8 +1897,6 @@ test("get_context_usage requests the SDK summary detail", async () => {
         { command: "get_context_usage", session_id: session.sessionId },
         "request-context-summary",
         {
-          generatePersistedSessionTitle: async () => "unused",
-          buildSessionMutationOptions: () => undefined,
           rewindTargetsFromSessionMessages: () => [],
           handleRewind: async () => undefined,
         },
@@ -2510,47 +2467,6 @@ test("MCP connection history is isolated between sessions with the same server n
   assert.deepEqual(first.knownConnectedMcpServers, new Set(["docs"]));
   assert.deepEqual(second.knownConnectedMcpServers, new Set());
   assert.equal(reconnectCalls, 0);
-});
-
-test("buildSessionMutationOptions scopes rename requests to the session cwd", () => {
-  assert.deepEqual(buildSessionMutationOptions("C:/worktree"), {
-    dir: "C:/worktree",
-  });
-  assert.equal(buildSessionMutationOptions(undefined), undefined);
-});
-
-test("canGenerateSessionTitle detects supported query objects", () => {
-  const query = {
-    async generateSessionTitle(): Promise<string> {
-      return "Generated";
-    },
-  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
-
-  assert.equal(canGenerateSessionTitle(query), true);
-  assert.equal(
-    canGenerateSessionTitle(
-      {} as import("@anthropic-ai/claude-agent-sdk").Query,
-    ),
-    false,
-  );
-});
-
-test("generatePersistedSessionTitle calls sdk query with persist true", async () => {
-  const calls: Array<{ description: string; persist?: boolean }> = [];
-  const query = {
-    async generateSessionTitle(
-      description: string,
-      options?: { persist?: boolean },
-    ): Promise<string> {
-      calls.push({ description, persist: options?.persist });
-      return "Generated title";
-    },
-  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
-
-  const title = await generatePersistedSessionTitle(query, "Current summary");
-
-  assert.equal(title, "Generated title");
-  assert.deepEqual(calls, [{ description: "Current summary", persist: true }]);
 });
 
 test("buildQueryOptions includes resumeSessionAt when provided", () => {
