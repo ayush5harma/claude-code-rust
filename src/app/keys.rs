@@ -22,6 +22,7 @@ use tui_textarea::AtomicDeleteDirection;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RuntimeCommand {
     SuspendProcess,
+    OpenAgentView,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -305,6 +306,13 @@ fn execute_app_action(app: &mut App, action: AppAction) -> KeyOutcome {
             true.into()
         }
         AppAction::CycleMode => handle_mode_cycle(app).into(),
+        AppAction::OpenAgentsOrMoveLeft => {
+            if crate::app::agent_view::opens_from_composer(app) {
+                KeyOutcome::Runtime(RuntimeCommand::OpenAgentView)
+            } else {
+                execute_input_action(app, InputAction::MoveCharLeft)
+            }
+        }
     }
 }
 
@@ -1349,5 +1357,95 @@ mod tests {
             KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
         );
         assert!(!blocked);
+    }
+
+    /// An app whose Claude global config is a fresh temp file, so the agent
+    /// view setting is read from the test, not the developer's profile.
+    fn app_with_claude_config(config: Option<&str>) -> (App, tempfile::TempDir) {
+        let home = tempfile::tempdir().expect("temp home");
+        if let Some(config) = config {
+            std::fs::write(home.path().join(".claude.json"), config).expect("claude config");
+        }
+        let mut app = App::test_default();
+        app.settings_home_override = Some(home.path().to_path_buf());
+        (app, home)
+    }
+
+    fn left() -> KeyEvent {
+        KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn left_on_an_empty_prompt_opens_the_agent_view() {
+        let (mut app, _home) = app_with_claude_config(None);
+
+        let outcome = dispatch_key_by_focus(&mut app, left());
+
+        assert_eq!(outcome, KeyOutcome::Runtime(RuntimeCommand::OpenAgentView));
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn left_with_text_moves_the_cursor_instead_of_opening_the_agent_view() {
+        let (mut app, _home) = app_with_claude_config(None);
+        app.input.set_text("ab");
+        let _ = app.input.set_cursor(0, 2);
+
+        let outcome = dispatch_key_by_focus(&mut app, left());
+
+        assert_eq!(outcome.runtime_command(), None);
+        assert_eq!(app.input.cursor(), (0, 1));
+        assert_eq!(app.input.text(), "ab");
+    }
+
+    #[test]
+    fn a_deferred_submit_counts_as_input_for_left() {
+        let (mut app, _home) = app_with_claude_config(None);
+        app.pending_submit = Some(app.input.snapshot());
+
+        assert_eq!(dispatch_key_by_focus(&mut app, left()).runtime_command(), None);
+    }
+
+    #[test]
+    fn left_arrow_opens_agents_false_keeps_left_as_cursor_movement() {
+        let (mut app, _home) = app_with_claude_config(Some(r#"{"leftArrowOpensAgents":false}"#));
+
+        let outcome = dispatch_key_by_focus(&mut app, left());
+
+        assert_eq!(outcome.runtime_command(), None);
+    }
+
+    #[test]
+    fn the_agent_view_action_follows_a_rebinding() {
+        let (mut app, _home) = app_with_claude_config(None);
+        let ctrl_g = KeySpec::char('g', KeyModifiers::CONTROL);
+        let bindings = crate::app::keymap::default_bindings()
+            .into_iter()
+            .map(|binding| {
+                if binding.action == KeyAction::App(AppAction::OpenAgentsOrMoveLeft) {
+                    KeyBinding::new(
+                        binding.context,
+                        binding.spec,
+                        KeyAction::Input(InputAction::MoveCharLeft),
+                        KeyBindingSource::Config,
+                    )
+                } else {
+                    binding
+                }
+            })
+            .chain([KeyBinding::new(
+                KeyContext::ChatInput,
+                ctrl_g,
+                KeyAction::App(AppAction::OpenAgentsOrMoveLeft),
+                KeyBindingSource::Config,
+            )]);
+        app.keymap = ResolvedKeymap::from_bindings(bindings).expect("rebound keymap");
+
+        assert_eq!(dispatch_key_by_focus(&mut app, left()).runtime_command(), None);
+        let outcome = dispatch_key_by_focus(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(outcome, KeyOutcome::Runtime(RuntimeCommand::OpenAgentView));
     }
 }
