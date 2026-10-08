@@ -1274,7 +1274,10 @@ export function handleAssistantMessage(
   const content = Array.isArray(messageObject.content)
     ? messageObject.content
     : [];
-  if (asRecordOrNull(message.context_usage)) {
+  // A local command (/rename, /color, /context, /usage, ...) replies with one
+  // completed synthetic frame and no stream events, so this frame is the only
+  // carrier of its output. Model replies were already streamed as deltas.
+  if (asRecordOrNull(message.local_command_run)) {
     const markdown = content
       .flatMap((block) => {
         const record = asRecordOrNull(block);
