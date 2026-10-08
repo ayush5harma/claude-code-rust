@@ -4,7 +4,7 @@
 # claude-rs session lifecycle, and the result log. Sourced by run.sh, which
 # sets BIN, CLAUDE_BIN, CONFIG_DIR, WORK, SESSIONS_FILE, RESULTS and friends.
 
-SOCKET=parity
+SOCKET=parity-$$-$RANDOM-$RANDOM
 COLS=${PARITY_COLS:-120}
 ROWS=${PARITY_ROWS:-45}
 # Shift+Enter as a kitty-protocol terminal sends it. tmux re-encodes its own
@@ -77,15 +77,71 @@ keys() { tm send-keys -t "$1" "${@:2}"; }
 
 shift_enter() { tm send-keys -t "$1" -H "${SHIFT_ENTER_HEX[@]}"; }
 
-# type_text <sess> <text>: type literally and wait until the composer shows it.
-# claude-rs treats a burst of characters as a paste and holds editing keys
-# until it is inserted, so Enter must wait for the text to land.
+# 2026-10-09: a raw tmux send-keys -l burst reordered /fast, /btw and
+# /rename drafts. tmux paste-buffer -p also corrupted /rename because the
+# app did not advertise bracketed paste; explicit 200~/201~ wrappers delivered
+# /rename TRANSPORT_CHECK exactly in a fresh TUI.
+composer_rows_text() {
+  awk '
+    /^ ?❯ / { on = 1; sub(/^ ?❯ /, ""); print; next }
+    on && (/^\[[A-Za-z ]+\] / || /^Loc: / || /^$/) { exit }
+    on { sub(/^   /, ""); print }
+  ' <<<"$1"
+}
+
+# 2026-10-09: tmux wraps at both spaces (the Write prompt) and within words
+# (the Glob/Grep prompt). Compare each visual row to the intended byte span;
+# consume a boundary space only when it exists in the intended prompt.
+composer_matches_exact() {
+  local capture=$1 expected=$2 line offset=0
+  local -a rows=()
+  mapfile -t rows < <(composer_rows_text "$capture")
+  ((${#rows[@]} > 0)) || return 1
+  for line in "${rows[@]}"; do
+    [[ ${expected:offset:${#line}} == "$line" ]] || return 1
+    offset=$((offset + ${#line}))
+    ((offset == ${#expected})) && return 0
+    [[ ${expected:offset:1} == ' ' ]] && offset=$((offset + 1))
+  done
+  return 1
+}
+
+wait_composer_text() {
+  local s=$1 expected=${2//$'\n'/} mode=$3 end
+  end=$(($(now) + 8))
+  while :; do
+    SCREEN=$(screen "$s")
+    if composer_matches_exact "$SCREEN" "$expected" ||
+      { [[ $mode == suffix ]] && [[ $(composer_rows_text "$SCREEN" | tail -1) == *"$expected" ]]; }; then
+      return 0
+    fi
+    (($(now) >= end)) && return 1
+    sleep 0.1
+  done
+}
+
+# A transport mismatch leaves an unknown draft. Stop the run before another
+# check can append to it; the saved screen makes the failure reviewable.
+require_composer_text() {
+  local s=$1 expected=$2 mode=$3
+  wait_composer_text "$s" "$expected" "$mode" && return 0
+  SCREEN=$(screen "$s")
+  printf '%s\n' "$SCREEN" >"$WORK/screens/${CUR:-input}.transport.txt"
+  printf 'input transport mismatch in %s (%s, %s chars); screen: %s\n' \
+    "${CUR:-input}" "$mode" "${#expected}" "$WORK/screens/${CUR:-input}.transport.txt" >&2
+  exit 3
+}
+
+# type_text <sess> <text>: paste literally and confirm it reached the composer.
 type_text() {
-  local s=$1 text=$2 probe
-  tm send-keys -t "$s" -l -- "$text"
-  probe=${text:0:24}
-  wait_for "$s" "$(ere_escape "$probe")" 5 || true
-  sleep 0.5
+  local s=$1 text=$2
+  # A preceding standalone Escape must expire before the paste ESC prefix.
+  # Without this separation, a post-agent-view probe displayed literal [200~.
+  sleep 0.1
+  tm send-keys -t "$s" -H 1b 5b 32 30 30 7e || exit 3
+  tm send-keys -t "$s" -l -- "$text" || exit 3
+  tm send-keys -t "$s" -H 1b 5b 32 30 31 7e || exit 3
+  require_composer_text "$s" "$text" suffix
 }
 
 # type_slow <sess> <text>: one key at a time, for popups that only refresh
@@ -105,6 +161,7 @@ ere_escape() { sed -E 's/[][\.^$*+?(){}|/]/\\&/g' <<<"$1"; }
 # a fullscreen view (the composer is hidden, so submit cannot confirm).
 enter_cmd() {
   type_text "$1" "$2"
+  require_composer_text "$1" "$2" exact
   keys "$1" Enter
 }
 
@@ -112,11 +169,9 @@ enter_cmd() {
 submit() {
   local s=$1 text=$2
   type_text "$s" "$text"
+  require_composer_text "$s" "$text" exact
   keys "$s" Enter
-  if ! wait_for "$s" "$EMPTY_COMPOSER" 4; then
-    keys "$s" Enter
-    wait_for "$s" "$EMPTY_COMPOSER" 4 || return 1
-  fi
+  wait_for "$s" "$EMPTY_COMPOSER" 4
 }
 
 # ---------------------------------------------------------------- registry
@@ -159,7 +214,13 @@ cwd_of() { printf '%s/%s\n' "$WORK" "$1"; }
 prepare_cwd() {
   local cwd
   cwd=$(cwd_of "$1")
-  rm -rf "$cwd"
+  if [[ -e $cwd || -L $cwd ]]; then
+    [[ -d $cwd && ! -L $cwd && -f $cwd/.parity-fixture && ! -L $cwd/.parity-fixture && $(cat "$cwd/.parity-fixture") == parity-fixture-v1 ]] || {
+      echo "refusing to replace unowned fixture cwd: $cwd" >&2
+      return 1
+    }
+    rm -rf "$cwd"
+  fi
   mkdir -p "$cwd"
   cp -R "$SUITE_DIR/fixtures/project/." "$cwd/"
   # Stored as dot-claude because the repository ignores .claude/.
@@ -167,6 +228,7 @@ prepare_cwd() {
   # .mcp.json needs the absolute path of the echo server.
   jq -n --arg srv "$SUITE_DIR/fixtures/mcp-echo.mjs" \
     '{mcpServers: {parity: {command: "node", args: [$srv]}}}' >"$cwd/.mcp.json"
+  printf 'parity-fixture-v1\n' >"$cwd/.parity-fixture"
 }
 
 rs_env() {

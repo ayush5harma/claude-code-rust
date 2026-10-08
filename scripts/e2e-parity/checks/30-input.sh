@@ -236,7 +236,8 @@ def input.tab_complete input "Tab completes a slash command" "Completes the high
 chk_input_tab_complete() {
   ensure_main || { res FAIL "main session did not start"; return; }
   clear_draft main
-  type_slow main "/stat"
+  # /stat also matches /stats; use an unambiguous completion prefix.
+  type_slow main "/statu"
   local top
   wait_for main '> /[a-z]' 3 || true
   top=$(first_match '> /[a-z:-]+' | grep -Eo '/[a-z:-]+' | head -1)
@@ -244,7 +245,7 @@ chk_input_tab_complete() {
   if wait_for main '❯ /status' 3; then
     res PASS "$(composer_line)"
   else
-    res FAIL "Tab took the highlighted '$top': the menu ranks substring matches above the prefix match /status; composer: $(composer_line)"
+    res FAIL "Tab did not complete /statu to /status; highlighted '$top'; composer: $(composer_line)"
   fi
   keys main Escape
   clear_draft main

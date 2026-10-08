@@ -10,8 +10,9 @@ Code and spends real (small) model usage.
 ## What it needs
 
 - A logged-in stock Claude Code (`claude`; by default the installed
-  `~/.local/share/claude/ClaudeCode.app` binary) and its config directory
-  (`--config-dir`, default `$PARITY_CONFIG_DIR` or `~/.claude-personal`).
+  `~/.local/share/claude/ClaudeCode.app` binary) and an explicit, isolated
+  config directory (`--config-dir` or `$PARITY_CONFIG_DIR`). The suite refuses
+  `~/.claude` and `~/.claude-personal`, including paths that resolve to them.
 - tmux, jq, node (for the fixture MCP server) and bash 4 or later.
 - A claude-rs build: an installed release (default `~/.local/bin/claude-rs`;
   its bridge and Bun runtime sit next to it), or a source build with
@@ -27,15 +28,21 @@ Code and spends real (small) model usage.
 
 ## Cost and time
 
-Every model turn uses Haiku (`--model haiku`). A full run takes about eight
-minutes and costs about $0.40 (measured 2026-10-08), most of it the plan-mode check: the
-stock child plans on Sonnet even when the session runs on Haiku. The run
-prints the total, read from each session's Usage tab.
+Every model turn uses Haiku (`--model haiku`). A full run took about eight
+minutes and cost about $0.40 on 2026-10-08, before the owned background
+fixture added one Haiku turn. Most of that measured cost came from the
+plan-mode check: the stock child plans on Sonnet even when the session runs
+on Haiku. The run prints a TUI Usage subtotal; it excludes the owned
+background fixture. Idle CPU and memory now use a 120-second settling period
+per target before the 60-second sample (`PARITY_PERF_SETTLE` and
+`PARITY_PERF_IDLE`). Allow about 15 minutes for a full run; model usage does
+not increase during these idle waits.
 
 ## Running
 
 ```sh
 scripts/e2e-parity/run.sh --list                        # the checks
+export PARITY_CONFIG_DIR=/path/to/isolated-claude-config
 scripts/e2e-parity/run.sh --only cmd.model              # one check
 scripts/e2e-parity/run.sh --only identity 'agents.*'    # groups or globs
 scripts/e2e-parity/run.sh --report docs/src/parity.md   # full run + table
@@ -49,23 +56,33 @@ result differs from stock), `GAP` (stock has it, claude-rs does not) or
 it read. Checks synchronise on what the screen, `claude agents --json` or the
 files show, polling with a timeout, never on fixed sleeps alone.
 
-The work directory (`--work`, default `$TMPDIR/claude-rs-parity`) holds one
+The work directory (`--work`, default a new unique directory under `$TMPDIR`)
+holds one
 scratch cwd per session (a copy of `fixtures/project`: a project skill, agent,
 hooks, statusLine and an MCP server), `logs/` (claude-rs bridge diagnostics),
 `screens/` (the capture a failing check judged by), `results.tsv` and
-`inventory.tsv`. It is wiped at the start of each run.
+`inventory.tsv`. An explicit `--work` must be empty for a fresh run. `--keep`
+requires an explicit directory marked by an earlier suite run; only selected
+result rows and suite-owned fixture directories are replaced.
 
 ## Safety
 
-- tmux runs on its own socket (`tmux -L parity`) and the server is killed at
-  the end of every run, including on failure or Ctrl+C.
+- tmux runs on a unique per-run socket. The suite kills only that server at
+  exit, including on failure or Ctrl+C. It clears inherited `NO_COLOR` and
+  uses a color-capable terminal before starting tmux.
 - Sessions run in scratch directories under the work directory, never a real
   repository, so `/init` and the file tools write nothing that matters. The
   first launch in each directory answers claude-rs's trust prompt with Yes.
 - The suite never edits the config directory's `settings.json`; setting-
   dependent checks use project settings in the scratch directory.
-- The agent view lists the owner's real background sessions: the checks only
-  read it and leave with Esc, never Enter, Space or Ctrl+X.
+- Agent hint checks create one named background Haiku job in the isolated
+  config and wait for its AskUserQuestion state. The suite records that job's
+  new ID, stops only that ID at exit, and only reads agent view rows; it never
+  sends Enter, Space or Ctrl+X there.
+- Resume rendering uses an offline 400-record synthetic transcript under the
+  isolated config and scratch cwd, without a model call to generate history.
+  The performance row fails when the build exceeds stock or the installed
+  baseline by more than 10% plus its documented absolute slack.
 - `/copy` saves and restores a plain-text clipboard and skips when the
   clipboard holds anything else; the Ctrl+V image check is skipped.
 - Every session id the run creates is appended to `--sessions-file` (default

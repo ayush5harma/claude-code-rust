@@ -11,6 +11,7 @@
 PERF_TARGETS=(test base stock)
 PERF_LAUNCHES=3
 PERF_IDLE_SECONDS=${PARITY_PERF_IDLE:-60}
+PERF_SETTLE_SECONDS=${PARITY_PERF_SETTLE:-120}
 PERF_TYPED=perfinput0123456789abcdefghijklmnopqrst
 PERF_DONE=
 declare -A PERF=()
@@ -127,6 +128,9 @@ perf_measure() {
   PERF[launch_ready.$t]=$(printf '%s\n' "${ready[@]}" | grep -v NA | median)
   PERF[launch_registered.$t]=$(printf '%s\n' "${regd[@]}" | grep -v NA | median)
 
+  # 2026-10-09: prompt readiness preceded stable CPU/RSS on this Mac.
+  # Exclude startup work before timing the idle process tree.
+  sleep "$PERF_SETTLE_SECONDS"
   # Idle: CPU seconds the whole tree burns while the prompt sits there.
   pid=$(tm display-message -p -t "$s" '#{pane_pid}')
   local -A c0=()
@@ -143,7 +147,7 @@ perf_measure() {
   PERF[rss.$t]=$(rss_mb "${tree[@]}")
   PERF[procs.$t]=${#tree[@]}
 
-  # Input latency: a 40-character send-keys until it shows on screen.
+  # Input latency: a 39-character send-keys until it shows on screen.
   for ((i = 0; i < 5; i++)); do
     t0=$(ms_now)
     tm send-keys -t "$s" -l -- "$PERF_TYPED"
@@ -159,49 +163,56 @@ perf_measure() {
   perf_kill "$s"
 }
 
-# perf_resume <target> <session id> <cwd> <marker>: time a resume of a long
-# transcript until its last prompt shows; median of 3.
-perf_resume() {
-  local t=$1 id=$2 cwd=$3 marker=$4 s=perf-resume-$1 i t0 times=() re
+# perf_resume_once <target> <session id> <cwd> <marker> <warmup>:
+# answer either trust dialog, then require the final transcript marker and prompt.
+perf_resume_once() {
+  local t=$1 id=$2 cwd=$3 marker=$4 warmup=$5 s=perf-resume-$1 t0 re end trusted='' transcript
   perf_cmd "$t"
   re=$(perf_ready_re "$t")
-  for ((i = 0; i < 3; i++)); do
-    t0=$(ms_now)
-    tm new-session -d -s "$s" -x "$COLS" -y "$ROWS" -c "$cwd" "${PERF_CMD[@]}" -r "$id"
-    if wait_for "$s" "$(ere_escape "$marker")" 60 && wait_for "$s" "$re" 30; then
-      times+=($(($(ms_now) - t0)))
+  transcript="$CONFIG_DIR/projects/$(sed -E 's/[^A-Za-z0-9]/-/g' <<<"$cwd")/$id.jsonl"
+  cp "$WORK/perf-resume-synthetic.source.jsonl" "$transcript" || return 1
+  t0=$(ms_now)
+  tm new-session -d -s "$s" -x "$COLS" -y "$ROWS" -c "$cwd" "${PERF_CMD[@]}" -r "$id"
+  end=$(($(now) + 90))
+  while (($(now) < end)); do
+    SCREEN=$(screen "$s")
+    if grep -q 'Trust this project directory' <<<"$SCREEN"; then
+      trusted=1
+      keys "$s" Enter
+      wait_gone "$s" 'Trust this project directory' 5 || return 1
+    elif grep -q 'Yes, I trust this folder' <<<"$SCREEN"; then
+      trusted=1
+      keys "$s" Down
+      keys "$s" Enter
+      wait_gone "$s" 'Yes, I trust this folder' 5 || return 1
+    elif grep -Fq "$marker" <<<"$SCREEN" && grep -Eq -- "$re" <<<"$SCREEN"; then
+      [[ -n $warmup || -z $trusted ]] || return 2
+      [[ -n $warmup ]] || echo $(($(ms_now) - t0))
+      return 0
     fi
+    sleep 0.1
+  done
+  return 1
+}
+
+# perf_resume <target> <session id> <cwd> <marker>: exclude trust/warmup,
+# then time three completed renders of the same synthetic transcript.
+perf_resume() {
+  local t=$1 id=$2 cwd=$3 marker=$4 s=perf-resume-$1 i sample times=()
+  perf_resume_once "$t" "$id" "$cwd" "$marker" 1 >/dev/null || { perf_kill "$s"; return 1; }
+  perf_kill "$s"
+  for ((i = 0; i < 5 && ${#times[@]} < 3; i++)); do
+    sample=$(perf_resume_once "$t" "$id" "$cwd" "$marker" "") && times+=("$sample")
     perf_kill "$s"
   done
+  ((${#times[@]} == 3)) || return 1
   printf '%s\n' "${times[@]}" | median
 }
 
-# perf_long_transcript: the longest transcript the suite has written under
-# this WORK (normally the main session's), as "id cwd marker lines"; marker
-# is the start of its last plain-text prompt. Compacted transcripts are left
-# out: a resume shows only what follows the compaction.
+# perf_long_transcript: generate one offline, uncompacted SDK transcript.
 perf_long_transcript() {
-  local best="" best_n=0 f n cwd prefix marker
-  prefix="$CONFIG_DIR/projects/$(sed -E 's/[^A-Za-z0-9]/-/g' <<<"$WORK")-"
-  for f in "$prefix"*/*.jsonl; do
-    [[ -f $f ]] || continue
-    grep -q '"compact_boundary"' "$f" && continue
-    n=$(wc -l <"$f")
-    ((n > best_n)) && best_n=$n && best=$f
-  done
-  [[ -n $best ]] || return 1
-  f=$best
-  cwd=$(jq -r 'select(.cwd != null) | .cwd' "$f" 2>/dev/null | head -1)
-  [[ $cwd == "$WORK"/* ]] || return 1
-  mkdir -p "$cwd"
-  # SDK sessions store a prompt as text blocks, stock ones as a string.
-  marker=$(jq -r 'select(.type == "user" and .isMeta != true and .isCompactSummary != true)
-      | .message.content
-      | if type == "string" then . else ([.[]? | select(.type == "text") | .text] | join(" ")) end
-      | select(length > 0 and (startswith("<") | not))' "$f" 2>/dev/null |
-    tail -1 | cut -c1-30)
-  [[ -n $marker ]] || return 1
-  printf '%s\t%s\t%s\t%s\n' "$(basename "$f" .jsonl)" "$cwd" "$marker" "$best_n"
+  prepare_cwd perf-resume-synthetic || return 1
+  node "$SUITE_DIR/fixtures/long-transcript.mjs" "$CONFIG_DIR" "$WORK" "$CC_VERSION"
 }
 
 perf_collect() {
@@ -230,6 +241,7 @@ perf_collect() {
       [[ $(cwd_of "$t") == "$cwd" ]] && rs_stop "$t"
     done
     PERF[resume_lines]=$lines
+    PERF[resume_fixture]=synthetic
     for t in "${PERF_TARGETS[@]}"; do
       if [[ $t == base && -n $same ]]; then PERF[resume_render.base]=${PERF[resume_render.test]}; continue; fi
       PERF[resume_render.$t]=$(perf_resume "$t" "$id" "$cwd" "$marker")
@@ -238,8 +250,8 @@ perf_collect() {
 }
 
 # perf_row <metric> <unit> <slack> <label>: record the three values and read
-# the result: FAIL when the build under test is worse than stock by more than
-# 10% plus the slack; regressions against the baseline are named either way.
+# the result: FAIL when the build under test is worse than either stock or the
+# installed baseline by more than 10% plus the metric's absolute slack.
 perf_row() {
   local m=$1 unit=$2 slack=$3 tv bv sv verdict note=""
   perf_collect
@@ -247,22 +259,22 @@ perf_row() {
   bv=${PERF[$m.base]:-}
   sv=${PERF[$m.stock]:-}
   printf '%s\t%s\t%s\t%s\t%s\n' "$m" "${tv:-n/a}" "${bv:-n/a}" "${sv:-n/a}" "$unit" >>"$WORK/perf.tsv"
-  if [[ -z $tv || -z $sv ]]; then
-    res SKIP "not measured (test '${tv:-}', stock '${sv:-}')"
+  if [[ -z $tv || -z $bv || -z $sv ]]; then
+    res FAIL "measurement unavailable (test '${tv:-}', baseline '${bv:-}', stock '${sv:-}')"
     return
   fi
   worse() { awk -v a="$1" -v b="$2" -v s="$slack" 'BEGIN {exit !(a > b * 1.10 + s)}'; }
-  if [[ -n $bv && -z ${PERF[same]:-} ]] && worse "$tv" "$bv"; then
-    note="; regressed against the installed release ($bv $unit)"
-  fi
   if worse "$tv" "$sv"; then
     verdict=FAIL
-    note="claude-rs is worse than stock: $tv vs $sv $unit$note"
+    note="claude-rs is worse than stock: $tv vs $sv $unit"
+  elif [[ -z ${PERF[same]:-} ]] && worse "$tv" "$bv"; then
+    verdict=FAIL
+    note="claude-rs regressed against the installed release: $tv vs $bv $unit"
   else
     verdict=PASS
-    note="claude-rs $tv vs stock $sv $unit$note"
+    note="claude-rs $tv vs baseline $bv and stock $sv $unit"
   fi
-  [[ $m == resume_render ]] && note+="; ${PERF[resume_lines]}-line transcript"
+  [[ $m == resume_render ]] && note+="; ${PERF[resume_lines]}-record synthetic, non-billed transcript"
   [[ $m == rss || $m == idle_cpu ]] && note+="; processes: rs ${PERF[procs.test]}, stock ${PERF[procs.stock]}"
   res "$verdict" "$note (load avg ${PERF[load]})"
 }
@@ -279,15 +291,15 @@ chk_perf_idle_cpu() { perf_row idle_cpu "CPU s" 0.5; }
 def perf.rss perf "Resident memory, whole process tree" "MB at the end of the idle window"
 chk_perf_rss() { perf_row rss MB 20; }
 
-def perf.input_latency perf "Input latency" "40 characters from send-keys to the screen, median of 5, ms"
+def perf.input_latency perf "Input latency" "39 characters from send-keys to the screen, median of 5, ms"
 chk_perf_input_latency() { perf_row input_latency ms 15; }
 
-def perf.resume_render perf "Resume a long transcript" "Launch with -r until its last prompt shows, median of 3, ms"
+def perf.resume_render perf "Resume a synthetic long transcript" "Offline 400-record fixture; launch with -r until its final marker shows, median of 3, ms"
 chk_perf_resume_render() {
   perf_collect
   if [[ -z ${PERF[resume_lines]:-} ]]; then
     printf '%s\t%s\t%s\t%s\t%s\n' resume_render n/a n/a n/a ms >>"$WORK/perf.tsv"
-    res SKIP "no transcript from this run to resume (run with the other groups)"
+    res FAIL "synthetic resume transcript was not generated"
     return
   fi
   perf_row resume_render ms 150

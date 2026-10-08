@@ -44,15 +44,17 @@ ordered_results() {
 write_perf_table() {
   local id status ev m tv bv sv unit
   cat <<EOF
-Measured without model turns on the same machine, one target after another:
-the claude-rs build under test, the installed claude-rs release as the
+Measured without model turns on the same machine: the claude-rs build under
+test, the installed claude-rs release as the
 regression baseline, and the stock Claude Code TUI run directly. claude-rs
 always runs the stock binary as its session engine, so its memory and idle
 CPU are claude-rs + the Bun bridge + the stock child (and the MCP servers that
 child starts, as stock's own tree does), while its rendering and input path
-are its own. **FAIL** means the build under test is more than 10% (plus a
-small absolute slack) worse than stock. Timings depend on machine load, which
-the notes record.
+are its own. Resume rendering uses a synthetic 400-record transcript generated
+offline in the isolated config; it does not bill a model turn. **FAIL** means
+the build under test is more than 10% (plus a small absolute slack) worse than
+stock or the installed baseline. Timings depend on machine load, which the
+notes record.
 
 | Metric | claude-rs under test ($RS_VERSION) | claude-rs baseline ($BASE_VERSION) | Claude Code $CC_VERSION | Reading | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -119,15 +121,21 @@ scripts/e2e-parity/run.sh --only cmd.model
 scripts/e2e-parity/run.sh --only 'agents.*'
 ```
 
+Set `PARITY_CONFIG_DIR` to a logged-in, isolated config directory before
+running these commands. The suite refuses the owner's real Claude profiles.
+
 See `scripts/e2e-parity/README.md` for the options and the safety rules.
 
 EOF
     printf '## Last run\n\n'
     printf -- '- Date: %s\n' "$(date -u '+%Y-%m-%d %H:%M UTC')"
     printf -- '- claude-rs: %s\n' "$RS_VERSION"
+    printf -- '- Tested binary: `%s`\n' "$BIN"
+    printf -- '- Source checkout revision: `%s`\n' "$SRC_REV"
+    printf -- '- Installed baseline binary: `%s`\n' "$BASE_BIN"
     printf -- '- Claude Code: %s\n' "$CC_VERSION"
     printf -- '- Results: %s%s\n' "$counts" "$partial"
-    printf -- '- Duration: %ss of checks; model spend: $%s (sum of each session'"'"'s Usage tab)\n\n' "$TOTAL_ELAPSED" "$COST"
+    printf -- '- Duration: %ss of checks; TUI Usage subtotal: $%s (excludes the background fixture)\n\n' "$TOTAL_ELAPSED" "$COST"
 
     for g in "${GROUP_ORDER[@]}"; do
       group_has_results "$g" || continue

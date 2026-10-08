@@ -94,13 +94,27 @@ id_guard() {
   return 1
 }
 
-# rule_index <sess>: 1-based line number of the row directly above the
-# composer's ❯ line in a plain capture.
-rule_index() {
-  local n
-  n=$(screen "$1" | grep -n -E '^ ?❯ ' | tail -1 | cut -d: -f1)
-  [[ -n $n ]] && ((n > 1)) && echo $((n - 1))
+id_shot() {
+  SCREEN=$(screen "$1")
+  shot
 }
+
+id_shot_color() {
+  id_shot "$1"
+  screen_e "$1" >"$WORK/screens/$CUR.ansi.txt"
+}
+
+# 2026-10-09: saved TUI captures place a blank padding row between the
+# session rule and ❯. Associate the nearest nonblank row with the last composer.
+rule_index() {
+  screen "$1" | awk '
+    /^ ?❯ / { rule = previous; composer = NR }
+    /[^[:space:]]/ { previous = NR }
+    END { if (rule > 0 && composer - rule <= 3) print rule; else exit 1 }
+  '
+}
+
+composer_index() { screen "$1" | grep -n -E '^ ?❯ ' | tail -1 | cut -d: -f1; }
 
 rule_line() {
   local i
@@ -116,9 +130,10 @@ sgr_of_line() {
 # rule_sgr <sess>: SGR on the rule row that the composer row does not also
 # use, so the input area's own background never reads as a colour.
 rule_sgr() {
-  local i
+  local i c
   i=$(rule_index "$1") || return 1
-  comm -23 <(sgr_of_line "$1" "$i") <(sgr_of_line "$1" $((i + 1))) | paste -sd' ' -
+  c=$(composer_index "$1") || return 1
+  comm -23 <(sgr_of_line "$1" "$i") <(sgr_of_line "$1" "$c") | paste -sd' ' -
 }
 
 # rule_names <sess> <name>: the rule row reads "──── <name> ─".
@@ -143,6 +158,7 @@ id_live_output() {
   s=$(id_sess "$v")
   t=$(id_title "$v")
   if wait_for "$s" "Session renamed to: $t" 10; then
+    id_shot "$s"
     res PASS "$(first_match 'Session renamed to:')"
   else
     shot
@@ -158,8 +174,10 @@ id_live_composer() {
   wait_for "$s" "$EMPTY_COMPOSER" 5 || true
   sleep 1
   if rule_names "$s" "$(id_title "$v")"; then
+    id_shot "$s"
     res PASS "rule above the prompt: '$(rule_line "$s")'"
   else
+    id_shot "$s"
     res FAIL "row above the prompt: '$(rule_line "$s")' (no name)"
   fi
 }
@@ -178,6 +196,7 @@ id_persisted() {
   transcript=$(transcript_of "$s" "$(jq -r .sessionId <<<"$REG")")
   title=$(grep '"type":"custom-title"' "$transcript" 2>/dev/null | tail -1 | jq -r .customTitle 2>/dev/null)
   if [[ $reg_name == "$t" && $sess_name == "$t" && $title == "$t" ]]; then
+    id_shot "$s"
     res PASS "sessions/$pid.json name, transcript custom-title and \`claude agents --json\` all read $t"
   else
     res FAIL "expected $t: sessions/$pid.json '$sess_name', custom-title '$title', agents --json '$reg_name'"
@@ -194,6 +213,7 @@ id_status_tab() {
   enter_cmd "$s" /status
   if wait_for "$s" 'Session name:' 10; then
     if grep -q "Session name: $t" <<<"$SCREEN"; then
+      id_shot "$s"
       res PASS "$(first_match 'Session name:')"
     else
       res FAIL "Status tab '$(first_match 'Session name:')' while the registry name is $t"
@@ -217,6 +237,7 @@ id_color_replies() {
   id_colored "$v"
   if wait_for "$s" "Session color set to: $ID_COLOR" 8; then got+=(set); else missing+=(set); fi
   if ((${#missing[@]} == 0)); then
+    id_shot "$s"
     res PASS "invalid, reset and 'Session color set to: $ID_COLOR' replies shown"
   else
     shot
@@ -232,8 +253,10 @@ id_color_rule() {
   wait_for "$s" "$EMPTY_COMPOSER" 5 || true
   sleep 1
   if rule_coloured "$s"; then
+    id_shot_color "$s"
     res PASS "rule SGR: $(rule_sgr "$s")"
   else
+    id_shot_color "$s"
     res FAIL "row above the prompt '$(rule_line "$s")' has no colour (SGR: $(rule_sgr "$s" || true))"
   fi
 }
@@ -246,6 +269,7 @@ id_color_persisted() {
   transcript=$(transcript_of "$s" "$(jq -r .sessionId <<<"$(registry_entry "$(cwd_of "$s")")")")
   c=$(grep '"type":"agent-color"' "$transcript" 2>/dev/null | tail -1 | jq -r .agentColor 2>/dev/null)
   if [[ $c == "$ID_COLOR" ]]; then
+    id_shot "$s"
     res PASS "transcript agent-color: $c"
   else
     res FAIL "transcript agent-color '${c:-none}', expected $ID_COLOR"
@@ -259,6 +283,7 @@ id_resume_name() {
   s=$(id_sess "$v")
   t=$(id_title "$v")
   if wait_registry "$(cwd_of "$s")" ".name == \"$t\"" 15; then
+    id_shot "$s"
     res PASS "after Ctrl+Q and resume the registry name is $t (session $(jq -r .sessionId <<<"$REG"))"
   else
     res FAIL "registry name after resume: '$(jq -r .name <<<"$REG")', expected $t (session $(jq -r .sessionId <<<"$REG"))"
@@ -288,8 +313,10 @@ id_resume_composer() {
   id_guard $? "$v" || return
   s=$(id_sess "$v")
   if rule_names "$s" "$(id_title "$v")"; then
+    id_shot "$s"
     res PASS "rule after resume: '$(rule_line "$s")'"
   else
+    id_shot "$s"
     res FAIL "row above the prompt after resume: '$(rule_line "$s")' (no name)"
   fi
 }
@@ -300,8 +327,10 @@ id_resume_color() {
   id_guard $? "$v" || return
   s=$(id_sess "$v")
   if rule_coloured "$s"; then
+    id_shot_color "$s"
     res PASS "rule SGR after resume: $(rule_sgr "$s")"
   else
+    id_shot_color "$s"
     res FAIL "no colour on the row above the prompt after resume (SGR: $(rule_sgr "$s" || true))"
   fi
   rs_stop "$s"

@@ -36,16 +36,16 @@ Usage: $0 [options]
                          installed 0.15.1-fork.1, else ~/.local/bin/claude-rs)
   --launcher PATH        system-config claude-launch for the launcher-path checks
                          (default: ~/.local/bin/claude-launch; "" skips them)
-  --config-dir DIR       CLAUDE_CONFIG_DIR (default: \$PARITY_CONFIG_DIR or ~/.claude-personal)
+  --config-dir DIR       required isolated CLAUDE_CONFIG_DIR (or set \$PARITY_CONFIG_DIR)
   --work DIR             scratch root for session cwds, logs and screens
-                         (default: \$TMPDIR/claude-rs-parity); never a real repo
+                         (default: a unique new directory under \$TMPDIR)
   --sessions-file PATH   append every created session id here
                          (default: WORK/test-sessions.txt)
   --src DIR              claude-rs source tree, for the app-owned command
                          catalog (default: this repository)
   --only ID|GLOB ...     run only matching checks (e.g. --only 'agents.*' cmd.rename)
   --report PATH          write the Markdown parity table (e.g. docs/src/parity.md)
-  --keep                 keep the previous run's readings in WORK and replace only
+  --keep                 reuse a suite-marked --work directory and replace only
                          the selected checks' rows (with --only, to refresh part
                          of a report without re-running everything)
   --list                 list the checks and exit
@@ -59,8 +59,8 @@ CLAUDE_BIN=
 LAUNCHER=$HOME/.local/bin/claude-launch
 BASE_BIN=$HOME/.local/share/claude-rs/0.15.1-fork.1/claude-rs
 [[ -x $BASE_BIN ]] || BASE_BIN=$HOME/.local/bin/claude-rs
-CONFIG_DIR=${PARITY_CONFIG_DIR:-$HOME/.claude-personal}
-WORK=${TMPDIR:-/tmp}/claude-rs-parity
+CONFIG_DIR=${PARITY_CONFIG_DIR:-}
+WORK=
 SESSIONS_FILE=
 SRC_DIR=$REPO_DIR
 REPORT=
@@ -132,13 +132,67 @@ done
 [[ -x $CLAUDE_BIN ]] || { echo "stock Claude Code not found; pass --claude" >&2; exit 2; }
 [[ -z $BRIDGE || -f $BRIDGE ]] || { echo "bridge script not found: $BRIDGE" >&2; exit 2; }
 [[ -z $BRIDGE || -x $BRIDGE_RUNTIME ]] || { echo "bridge runtime not found; pass --bridge-runtime" >&2; exit 2; }
-[[ -d $CONFIG_DIR ]] || { echo "config dir not found: $CONFIG_DIR" >&2; exit 2; }
+[[ -x $BASE_BIN ]] || { echo "baseline binary not executable: $BASE_BIN" >&2; exit 2; }
+[[ -d $SRC_DIR ]] || { echo "source directory not found: $SRC_DIR" >&2; exit 2; }
 
-mkdir -p "$WORK"
+# 2026-10-09: target processes start in scratch cwd; relative launch paths
+# otherwise resolve there instead of the caller's checkout.
+absolute_path() { (cd "$(dirname "$1")" && printf '%s/%s\n' "$(pwd -P)" "$(basename "$1")"); }
+BIN=$(absolute_path "$BIN")
+CLAUDE_BIN=$(absolute_path "$CLAUDE_BIN")
+BASE_BIN=$(absolute_path "$BASE_BIN")
+[[ -z $BRIDGE ]] || BRIDGE=$(absolute_path "$BRIDGE")
+[[ -z $BRIDGE ]] || BRIDGE_RUNTIME=$(absolute_path "$BRIDGE_RUNTIME")
+if [[ -n $LAUNCHER && ( $LAUNCHER == */* || -x $LAUNCHER ) ]]; then
+  LAUNCHER=$(absolute_path "$LAUNCHER")
+fi
+SRC_DIR=$(cd "$SRC_DIR" && pwd -P)
+[[ -n $CONFIG_DIR && -d $CONFIG_DIR ]] || { echo "pass an existing isolated --config-dir or PARITY_CONFIG_DIR" >&2; exit 2; }
+CONFIG_DIR=$(cd "$CONFIG_DIR" && pwd -P)
+REAL_CLAUDE=$(cd "$HOME/.claude" 2>/dev/null && pwd -P || true)
+REAL_PERSONAL=$(cd "$HOME/.claude-personal" 2>/dev/null && pwd -P || true)
+for real_config in "$REAL_CLAUDE" "$REAL_PERSONAL"; do
+  [[ -z $real_config || $CONFIG_DIR != "$real_config" && $CONFIG_DIR != "$real_config"/* ]] || {
+    echo "refusing the owner's real Claude config: $CONFIG_DIR" >&2; exit 2;
+  }
+done
+if [[ -e $CONFIG_DIR/settings.json ]] &&
+  ! jq -e -s 'length == 1 and (.[0] | type == "object")' "$CONFIG_DIR/settings.json" >/dev/null 2>&1; then
+  echo "isolated settings.json must contain exactly one JSON object: $CONFIG_DIR/settings.json" >&2
+  exit 2
+fi
+if [[ -z $WORK ]]; then
+  ((KEEP == 0)) || { echo "--keep requires an explicit --work" >&2; exit 2; }
+  WORK=$(mktemp -d "${TMPDIR:-/tmp}/claude-rs-parity.XXXXXX") || exit 2
+else
+  [[ ! -L $WORK ]] || { echo "refusing symlinked --work: $WORK" >&2; exit 2; }
+  [[ -e $WORK ]] || mkdir "$WORK" || exit 2
+  [[ -d $WORK ]] || { echo "work path is not a directory: $WORK" >&2; exit 2; }
+fi
 WORK=$(cd "$WORK" && pwd -P)
 case $WORK in
   "$REPO_DIR" | "$REPO_DIR"/* | "$HOME") echo "refusing WORK inside a real tree: $WORK" >&2; exit 2 ;;
 esac
+if git -C "$WORK" rev-parse --show-toplevel >/dev/null 2>&1; then
+  echo "refusing WORK inside a Git checkout: $WORK" >&2
+  exit 2
+fi
+case $WORK in
+  "$CONFIG_DIR" | "$CONFIG_DIR"/*) echo "refusing WORK inside config: $WORK" >&2; exit 2 ;;
+esac
+case $CONFIG_DIR in
+  "$WORK"/*) echo "refusing config inside WORK: $CONFIG_DIR" >&2; exit 2 ;;
+esac
+if ((KEEP)); then
+  [[ -f $WORK/.parity-suite && ! -L $WORK/.parity-suite && $(cat "$WORK/.parity-suite") == parity-suite-v1 ]] || {
+    echo "--keep requires a suite-marked work directory: $WORK" >&2; exit 2;
+  }
+else
+  [[ -z $(find "$WORK" -mindepth 1 -maxdepth 1 -print -quit) ]] || {
+    echo "work directory is not empty; use a new path or --keep on a suite-marked directory: $WORK" >&2; exit 2;
+  }
+  printf 'parity-suite-v1\n' >"$WORK/.parity-suite"
+fi
 SESSIONS_FILE=${SESSIONS_FILE:-$WORK/test-sessions.txt}
 RESULTS=$WORK/results.tsv
 if ((KEEP)); then
@@ -152,9 +206,6 @@ if ((KEEP)); then
     mv "$f.keep" "$f"
   done
 else
-  # Every run starts from fresh fixture copies: checks edit files in their
-  # cwd. Trust is recorded per path, so recreated directories stay trusted.
-  find "$WORK" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
   : >"$RESULTS"
   : >"$WORK/costs.tsv"
   : >"$WORK/timings.tsv"
@@ -178,18 +229,21 @@ EOF
 # socket, ...) must not leak into the sessions under test. The tmux server
 # inherits this environment, so scrub it before the first tmux call.
 while IFS= read -r var; do
-  unset "$var"
+  export -n "${var?}"
 done < <(compgen -e | grep -E '^(CLAUDE|CLAUDECODE|AI_AGENT|ANTHROPIC_)' || true)
-export TERM=${TERM:-xterm-256color}
+unset NO_COLOR
+export TERM=xterm-256color COLORTERM=truecolor
 
 cleanup() {
-  local s
-  if tm has-session 2>/dev/null; then
+  local status=$? s
+  # A failed transport cannot safely drive /usage while unwinding.
+  if ((status == 0)) && tm has-session 2>/dev/null; then
     for s in $(tm list-sessions -F '#{session_name}' 2>/dev/null); do
       [[ $s == _keep ]] || rs_stop "$s"
     done
   fi
   tm kill-server 2>/dev/null || true
+  stop_background_fixture
   collect_session_ids
 }
 trap cleanup EXIT
@@ -213,6 +267,7 @@ tm new-session -d -s _keep -x 20 -y 5 'sleep 86400'
 RS_VERSION=$("$BIN" --version 2>/dev/null | awk '{print $2}')
 BASE_VERSION=$("$BASE_BIN" --version 2>/dev/null | awk '{print $2}')
 CC_VERSION=$("$CLAUDE_BIN" --version 2>/dev/null | awk '{print $1}')
+SRC_REV=$(git -C "$SRC_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)
 STARTED=$(now)
 echo "claude-rs $RS_VERSION ($BIN) vs Claude Code $CC_VERSION; work $WORK"
 
@@ -242,7 +297,7 @@ COST=$(awk -F'\t' '{s += $2} END {printf "%.4f", s}' "$WORK/costs.tsv")
 
 echo
 awk -F'\t' '{n[$2]++} END {for (k in n) printf "%s %d  ", k, n[k]; print ""}' "$RESULTS"
-echo "elapsed ${ELAPSED}s; cost \$$COST (sum of each session's Usage tab)"
+echo "elapsed ${ELAPSED}s; TUI Usage subtotal \$$COST (excludes background fixture)"
 echo "slowest checks: $(sort -t$'\t' -k2 -nr "$WORK/timings.tsv" | head -5 | awk -F'\t' '{printf "%s %ss  ", $1, $2}')"
 echo "sessions created this run (also appended to $SESSIONS_FILE):"
 sed 's/^/  /' "$WORK/run-sessions.txt"

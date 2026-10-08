@@ -146,17 +146,52 @@ chk_tools_grep_glob() {
 }
 
 def tools.todo tools "Todo / task list (TodoWrite or TaskCreate)" "Tasks shown as a checklist"
+# 2026-10-09: the isolated stock child searched for both deferred todo tools
+# and got "No matching deferred tools found". Correlate the latest search
+# after this turn's prompt to its own result, not the model's prose reply.
+todo_tools_unavailable() {
+  [[ -r $1 ]] || return 1
+  jq -e -s '
+    to_entries as $entries
+    | ([ $entries[]
+         | select(.value.type == "user" and
+             any(.value.message.content[]?; .type == "text" and
+               (.text | contains("PARITY_TODO_ plus ONE") and contains("PARITY_TODO_ plus TWO"))))
+         | .key ] | last) as $turn
+    | if $turn == null then false else
+        ([ $entries[] | select(.key > $turn) | .value.message.content[]?
+           | select(.type == "tool_use" and .name == "ToolSearch" and
+               ((.input.query // "") | test("^select:(TodoWrite,TaskCreate|TaskCreate,TodoWrite)$")))
+         ] | last) as $search
+        | if $search == null then false else
+            ([ $entries[] | select(.key > $turn) | .value.message.content[]?
+               | select(.type == "tool_result" and .tool_use_id == $search.id)
+             ] | last | .content) == "No matching deferred tools found"
+          end
+      end
+  ' "$1" >/dev/null
+}
+
 chk_tools_todo() {
+  local failure sid transcript
   if main_turn "Use your todo list tool (TodoWrite, or TaskCreate if that is what you have) to record exactly two pending items named PARITY_TODO_ plus ONE and PARITY_TODO_ plus TWO, without spaces. Do nothing else, then reply LISTED." '^ *LISTED\.? *$' 90; then
     if grep -Eq '(□|☐|◻|\[ \]|Create task).*PARITY_TODO_ONE' <<<"$SCREEN"; then
       res PASS "$(first_match 'PARITY_TODO_ONE')"
+      return
     else
       shot
-      res FAIL "no task rows for PARITY_TODO_ONE"
+      failure='no task rows for PARITY_TODO_ONE'
     fi
   else
     shot
-    res FAIL "todo turn did not finish"
+    failure='todo turn did not finish'
+  fi
+  sid=$(jq -r '.sessionId // empty' <<<"$(registry_entry "$(cwd_of main)")")
+  transcript=$(transcript_of main "$sid")
+  if [[ -n $sid ]] && todo_tools_unavailable "$transcript"; then
+    res SKIP "stock ToolSearch found neither TodoWrite nor TaskCreate in this isolated profile"
+  else
+    res FAIL "$failure"
   fi
 }
 
@@ -329,7 +364,9 @@ def tools.plugin tools "Plugin commands" "Installed plugins' commands in the sla
 chk_tools_plugin() {
   ensure_main || { res FAIL "main session did not start"; return; }
   local names n example
-  names=$(sdk_command_names main | grep ':' || true)
+  # 2026-10-09: the SDK advertised "claude.ai Figma:... (MCP)" with a colon;
+  # plugin commands are bare namespace:command names, without display labels.
+  names=$(sdk_command_names main | grep -E '^[[:alnum:]_.-]+:[[:alnum:]_-]+$' || true)
   n=$(grep -c . <<<"$names")
   if ((n == 0)); then
     res SKIP "no plugin commands installed for this identity"
