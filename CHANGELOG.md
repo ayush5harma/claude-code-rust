@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
+- **Welcome mascot**: draw the stock Claude Code mascot with its body and eye colours, while preserving narrow-terminal layout.
 - **Session name and colour**: `/rename` and `/color` now show their reply, and a named or coloured session shows a rule above the composer with the name right-aligned, drawn in the session colour with the name as a badge, as Claude Code does. The terminal tab title and the Status tab show the name, and resuming a session restores both.
 - **/color values**: Tab after `/color ` completes its colour values.
 - **Agent view**: `Left` on an empty prompt opens Claude Code's agent view (`claude agents`) through the terminal hand-over `/login` uses, and returns to claude-rs when it exits (`Esc`, or `Ctrl+C` twice). The session keeps running meanwhile; repeated presses open one view, and a Ctrl+C while the view starts closes only the view. The bridge now runs in its own process group so that Ctrl+C never reaches the session. The key is the rebindable `app.open_agents_or_move_left` action and honours Claude Code's `leftArrowOpensAgents` setting.
