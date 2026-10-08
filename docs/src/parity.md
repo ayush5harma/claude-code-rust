@@ -103,7 +103,11 @@ locked fetch, bridge build/tests/lint/knip/audit and duplicate-code checks
 passed. Lifecycle probes covered repeated Left, Ctrl+C during handoff,
 post-handoff model response, Ctrl+Q, terminal closure and Ctrl+Z/fg with owned
 process cleanup. The mascot was reviewed and exercised by rendering tests and
-real launch captures. Windows and GitHub CI have not run; no branch was pushed.
+real launch captures. These local measurements predate the cross-platform CI
+follow-up tracked in [fork PR #1](https://github.com/ayush5harma/claude-code-rust/pull/1).
+That follow-up replaces a backtracking history-parser regex, fixes Linux test
+portability, and preserves pending Ctrl+C handling before a child returns the
+terminal. The PR records the current Linux, macOS and Windows check results.
 
 ## Launch and resume
 

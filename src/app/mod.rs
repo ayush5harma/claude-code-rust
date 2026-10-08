@@ -161,7 +161,7 @@ async fn run_tui_loop(
     app: &mut App,
     terminal_runtime: &mut terminal_runtime::TerminalRuntime,
 ) -> anyhow::Result<()> {
-    let mut os_shutdown = Box::pin(wait_for_os_signal().fuse());
+    let mut os_signals = OsSignals::new()?;
 
     let mut events = Some(TerminalInput::new());
     let mut event_loop_interval = event_loop_interval();
@@ -171,53 +171,43 @@ async fn run_tui_loop(
         start_connection(app);
 
         // Phase 1: wait for at least one event or the next frame tick
-        tokio::select! {
-            Some(Ok(event)) = next_terminal_event(&mut events) => {
-                let outcome = events::handle_terminal_event(app, event);
-                handle_runtime_command(app, terminal_runtime, outcome.runtime_command())?;
-            }
-            Some(event) = app.event_rx.recv() => {
-                handle_runtime_client_event(
-                    app,
-                    terminal_runtime,
-                    event,
-                    &mut service_status_check_started,
-                    &mut events,
-                );
-            }
-            signal = &mut os_shutdown => {
-                match signal {
-                    // A child in cooked mode owns the terminal, so this Ctrl+C
-                    // was typed at the child. The bridge has its own process
-                    // group and never sees it; claude-rs keeps running too.
-                    Ok(OsSignal::Interrupt) if app.terminal_child.is_active() => {
-                        tracing::debug!(
-                            target: crate::logging::targets::APP_LIFECYCLE,
-                            event_name = "sigint_ignored_for_terminal_child",
-                            message = "SIGINT ignored while a child owns the terminal",
-                            outcome = "ignored",
-                        );
-                        os_shutdown = Box::pin(wait_for_os_signal().fuse());
-                    }
-                    Ok(_) => app.request_shutdown(),
-                    Err(err) => {
-                        tracing::warn!(
-                            target: crate::logging::targets::APP_LIFECYCLE,
-                            event_name = "os_shutdown_listener_failed",
-                            message = "OS shutdown signal listener failed",
-                            outcome = "failure",
-                            error_message = %err,
-                        );
-                        app.request_shutdown();
-                    }
+        let event = signal_before_event(os_signals.recv(), async {
+            tokio::select! {
+                Some(Ok(event)) = next_terminal_event(&mut events) => {
+                    let outcome = events::handle_terminal_event(app, event);
+                    handle_runtime_command(app, terminal_runtime, outcome.runtime_command())?;
                 }
+                Some(event) = app.event_rx.recv() => {
+                    handle_runtime_client_event(
+                        app,
+                        terminal_runtime,
+                        event,
+                        &mut service_status_check_started,
+                        &mut events,
+                    );
+                }
+                _ = event_loop_interval.tick() => {}
             }
-            _ = event_loop_interval.tick() => {}
+            Ok::<_, anyhow::Error>(())
+        })
+        .await;
+        match event {
+            SignalOrEvent::Signal(signal) => handle_os_signal(app, signal),
+            SignalOrEvent::Event(result) => result?,
         }
 
         // Phase 2: process a bounded, fair batch of already-ready events.
         for _ in 0..READY_EVENT_DRAIN_ROUNDS {
             let mut handled_ready_event = false;
+
+            if let Some(signal) = os_signals.recv().now_or_never() {
+                handled_ready_event = true;
+                handle_os_signal(app, signal);
+            }
+
+            if app.shutdown_requested() {
+                break;
+            }
 
             if let Some(Some(terminal_event)) = next_terminal_event(&mut events).now_or_never() {
                 handled_ready_event = true;
@@ -231,15 +221,22 @@ async fn run_tui_loop(
                 break;
             }
 
-            if let Ok(event) = app.event_rx.try_recv() {
-                handled_ready_event = true;
-                handle_runtime_client_event(
-                    app,
-                    terminal_runtime,
-                    event,
-                    &mut service_status_check_started,
-                    &mut events,
-                );
+            match signal_before_event(os_signals.recv(), async { app.event_rx.try_recv() }).await {
+                SignalOrEvent::Signal(signal) => {
+                    handled_ready_event = true;
+                    handle_os_signal(app, signal);
+                }
+                SignalOrEvent::Event(Ok(event)) => {
+                    handled_ready_event = true;
+                    handle_runtime_client_event(
+                        app,
+                        terminal_runtime,
+                        event,
+                        &mut service_status_check_started,
+                        &mut events,
+                    );
+                }
+                SignalOrEvent::Event(Err(_)) => {}
             }
 
             if !handled_ready_event {
@@ -622,7 +619,7 @@ fn advance_spinner_frame(app: &mut App, now: Instant) {
 }
 
 async fn wait_for_shutdown_signal() -> std::io::Result<()> {
-    wait_for_os_signal().await.map(|_| ())
+    OsSignals::new()?.recv().await.map(|_| ())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -632,22 +629,85 @@ enum OsSignal {
     Terminate,
 }
 
-async fn wait_for_os_signal() -> std::io::Result<OsSignal> {
+struct OsSignals {
     #[cfg(unix)]
-    {
-        let mut sigterm =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-        tokio::select! {
-            sigint = tokio::signal::ctrl_c() => {
-                sigint?;
-                Ok(OsSignal::Interrupt)
-            }
-            _ = sigterm.recv() => Ok(OsSignal::Terminate),
+    interrupt: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    terminate: tokio::signal::unix::Signal,
+    #[cfg(windows)]
+    interrupt: tokio::signal::windows::CtrlC,
+}
+
+impl OsSignals {
+    fn new() -> std::io::Result<Self> {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            Ok(Self {
+                interrupt: signal(SignalKind::interrupt())?,
+                terminate: signal(SignalKind::terminate())?,
+            })
+        }
+        #[cfg(windows)]
+        {
+            Ok(Self { interrupt: tokio::signal::windows::ctrl_c()? })
         }
     }
-    #[cfg(not(unix))]
-    {
-        tokio::signal::ctrl_c().await.map(|()| OsSignal::Interrupt)
+
+    async fn recv(&mut self) -> std::io::Result<OsSignal> {
+        #[cfg(unix)]
+        tokio::select! {
+            biased;
+            _ = self.terminate.recv() => Ok(OsSignal::Terminate),
+            _ = self.interrupt.recv() => Ok(OsSignal::Interrupt),
+        }
+        #[cfg(windows)]
+        {
+            self.interrupt.recv().await;
+            Ok(OsSignal::Interrupt)
+        }
+    }
+}
+
+enum SignalOrEvent<T> {
+    Signal(std::io::Result<OsSignal>),
+    Event(T),
+}
+
+async fn signal_before_event<T>(
+    signal: impl std::future::Future<Output = std::io::Result<OsSignal>>,
+    event: impl std::future::Future<Output = T>,
+) -> SignalOrEvent<T> {
+    // Measured on Linux and macOS (2026-10-09): child return and SIGINT can
+    // both be ready. Consume the signal before return ends the terminal claim.
+    tokio::select! {
+        biased;
+        signal = signal => SignalOrEvent::Signal(signal),
+        event = event => SignalOrEvent::Event(event),
+    }
+}
+
+fn handle_os_signal(app: &mut App, signal: std::io::Result<OsSignal>) {
+    match signal {
+        Ok(OsSignal::Interrupt) if app.terminal_child.is_active() => {
+            tracing::debug!(
+                target: crate::logging::targets::APP_LIFECYCLE,
+                event_name = "sigint_ignored_for_terminal_child",
+                message = "SIGINT ignored while a child owns the terminal",
+                outcome = "ignored",
+            );
+        }
+        Ok(_) => app.request_shutdown(),
+        Err(err) => {
+            tracing::warn!(
+                target: crate::logging::targets::APP_LIFECYCLE,
+                event_name = "os_shutdown_listener_failed",
+                message = "OS shutdown signal listener failed",
+                outcome = "failure",
+                error_message = %err,
+            );
+            app.request_shutdown();
+        }
     }
 }
 
