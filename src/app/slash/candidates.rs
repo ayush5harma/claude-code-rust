@@ -191,14 +191,8 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
             if command_spec(&name).is_some() {
                 continue;
             }
-            let selected = find_advertised_command(app, &name).unwrap_or(cmd);
-            // Claude Code's argument hint (`[name]`, `[red|blue|...]`) leads the description.
-            let description = match selected.input_hint.as_deref().map(str::trim) {
-                Some(hint) if !hint.is_empty() => {
-                    format!("{hint}  {}", selected.description).trim_end().to_owned()
-                }
-                _ => selected.description.clone(),
-            };
+            let description = find_advertised_command(app, &name)
+                .map_or_else(|| cmd.description.clone(), |selected| selected.description.clone());
             by_name.insert(name, description);
         }
     }

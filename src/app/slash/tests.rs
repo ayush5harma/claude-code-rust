@@ -691,19 +691,6 @@ fn rename_and_color_inventory() -> Vec<model::AvailableCommand> {
 }
 
 #[test]
-fn rename_and_color_are_listed_with_their_argument_hints() {
-    let mut app = App::test_default();
-    app.sdk_inventory.available_commands = rename_and_color_inventory();
-    app.input.set_text("/re");
-    let _ = app.input.set_cursor(0, 3);
-
-    let slash = requested_slash_state(&app).expect("slash state");
-    let rename = slash.candidates.iter().find(|c| c.primary == "/rename").expect("/rename");
-    assert_eq!(rename.insert_value, "/rename");
-    assert_eq!(rename.secondary.as_deref(), Some("[name]  Rename the current conversation"));
-}
-
-#[test]
 fn color_argument_candidates_are_the_nine_colors() {
     let mut app = App::test_default();
     app.sdk_inventory.available_commands = rename_and_color_inventory();

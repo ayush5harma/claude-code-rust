@@ -64,7 +64,7 @@ Use:
 /docs commands
 ```
 
-to inspect the current session's full command list. The output includes app-owned commands and SDK-advertised commands, with descriptions when the SDK provides them. The command menu shows an SDK command's argument hint before its description, for example `[name]  Rename the current conversation` beside `/rename`.
+to inspect the current session's full command list. The output includes app-owned commands and SDK-advertised commands, with descriptions when the SDK provides them.
 
 Commands that Claude Code runs locally, such as `/rename`, `/color` or `/context`, reply in the chat under the command as they do in Claude Code. A resumed session shows each local command it ran as the command line with its output under it.
 
