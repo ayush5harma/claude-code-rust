@@ -536,6 +536,9 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
             Some(model::SessionUpdate::PromptSuggestionUpdate(suggestion))
         }
         types::SessionUpdate::SessionTitleUpdate { title } => {
+            // A title is user text, from the transcript on resume; every
+            // surface that shows it writes to the terminal.
+            let title: String = title.chars().filter(|ch| !ch.is_control()).collect();
             let title = title.trim();
             Some(model::SessionUpdate::SessionTitleUpdate(
                 (!title.is_empty()).then(|| title.to_owned()),
@@ -1405,6 +1408,10 @@ mod tests {
         assert_eq!(
             decode(r#"{"type":"session_title_update","title":"  "}"#),
             Some(model::SessionUpdate::SessionTitleUpdate(None))
+        );
+        assert_eq!(
+            decode(r#"{"type":"session_title_update","title":"a\u001b]52;c;eA==\u0007b"}"#),
+            Some(model::SessionUpdate::SessionTitleUpdate(Some("a]52;c;eA==b".to_owned())))
         );
         assert_eq!(
             decode(r#"{"type":"session_color_update","color":"purple"}"#),
