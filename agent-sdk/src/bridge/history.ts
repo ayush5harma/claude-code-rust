@@ -14,6 +14,7 @@ import type {
   ToolCall,
 } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
+import { storedSessionLabel, type StoredSessionLabel } from "./session_label.js";
 import { applyFieldsToBase, normalizeToolCallUpdateFields, toolAcceptsTaskLifecycle, toolNameFromMeta } from "./tool_calls.js";
 import { taskLifecyclePatch, upsertTask } from "./tasks.js";
 import { linkTaskToolUse } from "./task_links.js";
@@ -31,11 +32,14 @@ import {
   parseToolNonExecutionMetadata,
 } from "./tooling.js";
 
-/** Load display history across compactions without changing the model's saved context. */
+/**
+ * Load display history across compactions without changing the model's saved
+ * context, with the name and colour the transcript last recorded.
+ */
 export async function getSessionTranscriptMessages(
   sessionId: string,
   options: { dir?: string } = {},
-): Promise<SessionMessage[]> {
+): Promise<{ messages: SessionMessage[]; label: StoredSessionLabel }> {
   const entries: SessionStoreEntry[] = [];
   const store: SessionStore = {
     append: async (_key, batch) => { entries.push(...batch); },
@@ -62,13 +66,14 @@ export async function getSessionTranscriptMessages(
   const messages = await getSessionMessages(sessionId, { ...options, includeSystemMessages: true, sessionStore: store });
   const records = new Map(entries.map(entry => [entry.uuid, entry]));
   const localCommandOutputs = localCommandOutputsByCommandUuid(entries);
-  return messages.map(message => {
+  const displayed = messages.map(message => {
     const record = records.get(message.uuid);
     const rawResult = record?.toolUseResult ?? record?.tool_use_result;
     const withResult = rawResult === undefined ? message : { ...message, tool_use_result: rawResult };
     const output = localCommandOutputs.get(message.uuid);
     return output === undefined ? withResult : { ...withResult, local_command_output: output };
   });
+  return { messages: displayed, label: storedSessionLabel(entries) };
 }
 
 type LocalCommandOutput = { uuid: string; text: string };
