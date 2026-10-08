@@ -233,14 +233,6 @@ impl TerminalTest {
         }
         if let Some(mode) = auth_mode {
             Self::install_fake_cli(&mut command, temp.path(), mode);
-            if mode == "agent-view" {
-                let cli = temp.path().join("bin").join(if cfg!(windows) {
-                    "claude.exe"
-                } else {
-                    "claude"
-                });
-                command.env("CLAUDE_CODE_EXECUTABLE", cli);
-            }
         }
         let writer = Arc::new(Mutex::new(pair.master.take_writer().expect("pty writer")));
         let reader = pair.master.try_clone_reader().expect("pty reader");
@@ -311,6 +303,9 @@ impl TerminalTest {
         paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
         command.env("PATH", std::env::join_paths(paths).expect("fixture PATH"));
         command.env("FAKE_AUTH_MODE", mode);
+        if mode == "agent-view" {
+            command.env("CLAUDE_CODE_EXECUTABLE", &cli);
+        }
     }
 
     fn mark_action(&mut self) {
@@ -910,6 +905,75 @@ fn left_on_an_empty_prompt_hands_the_terminal_to_the_agent_view_and_back() {
     test.submit_draft();
     test.wait_screen("reply 2 started");
     test.assert_prompts(&["LEFTaXb", "AFTER_AGENTS"]);
+    test.shutdown();
+}
+
+fn agent_view_runs(test: &TerminalTest) -> Vec<String> {
+    std::fs::read_to_string(test.temp.path().join("profile/agent-view-runs"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn a_repeated_left_starts_one_agent_view_and_reports_no_error() {
+    let mut test = TerminalTest::start_with_auth("stream", 3, Some("agent-view"));
+    let profile = test.temp.path().join("profile");
+    std::fs::write(profile.join("agents.json"), r#"[{"kind":"background","state":"working"}]"#)
+        .expect("fake agent listing");
+
+    // Key repeat, or keys batched over ssh/mosh, deliver both in one read.
+    test.send(b"\x1b[D\x1b[D");
+    test.wait_screen("AGENT_VIEW_READY");
+    test.send(b"once\r");
+    test.wait_screen("\u{2190} 1 agent \u{b7} 1 working");
+    // Give a second hand-over, had one started, time to show itself.
+    std::thread::sleep(Duration::from_millis(500));
+
+    assert_eq!(agent_view_runs(&test).len(), 1, "{:?}", agent_view_runs(&test));
+    let screen = test.screen();
+    assert!(!screen.contains("closed by shutdown"), "{screen}");
+    assert!(!screen.contains("claude agents"), "{screen}");
+    test.send(b"AFTER_REPEAT");
+    test.wait_screen("AFTER_REPEAT");
+    test.submit_draft();
+    test.wait_screen("reply 1 started");
+    test.assert_prompts(&["AFTER_REPEAT"]);
+    test.shutdown();
+}
+
+/// Before the child takes raw mode the terminal is in cooked mode, so Ctrl+C
+/// raises SIGINT in the terminal's foreground process group.
+#[cfg(unix)]
+#[test]
+fn ctrl_c_while_the_agent_view_starts_leaves_the_session_running() {
+    let mut test = TerminalTest::start_with_auth("stream", 3, Some("agent-view"));
+
+    test.send(b"\x1b[D");
+    test.wait_screen("AGENT_VIEW_READY");
+    test.send(b"\x03");
+    test.wait_until("the agent view returned the terminal", |test| {
+        test.runtime_records_since(0)
+            .iter()
+            .any(|record| record["event_name"] == "terminal_returned_from_child")
+    });
+    assert!(
+        test.runtime_records_since(0)
+            .iter()
+            .any(|record| record["event_name"] == "sigint_ignored_for_terminal_child"),
+        "claude-rs saw no SIGINT, so this test proves nothing:\n{}",
+        test.diagnostics()
+    );
+    assert!(!test.temp.path().join("profile/agent-view-input").exists());
+
+    test.send(b"AFTER_SIGINT");
+    test.wait_screen("AFTER_SIGINT");
+    test.submit_draft();
+    test.wait_screen("reply 1 started");
+    test.assert_prompts(&["AFTER_SIGINT"]);
+    let screen = test.screen();
+    assert!(!screen.contains("exited with code"), "{screen}");
     test.shutdown();
 }
 

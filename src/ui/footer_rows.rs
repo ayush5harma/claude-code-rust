@@ -2,8 +2,10 @@
 // Copyright 2025 Simon Peter Rothgang
 
 use crate::agent::model;
+use crate::app::keymap::{AppAction, KeyAction, KeyCodeSpec, KeyContext, KeySpec};
 use crate::app::{App, MessageBlock, MessageRole};
 use crate::ui::theme;
+use crossterm::event::KeyModifiers;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Style};
@@ -75,15 +77,19 @@ fn append_agent_status(line: &mut Line<'static>, app: &App, max_width: usize) {
     }
 }
 
+/// Shown only when the agent view key would open the view now, with that key.
 fn agent_status_segments(app: &App) -> Vec<(String, Color)> {
-    if app.has_local_input() {
+    if !crate::app::agent_view::opens_from_composer(app) {
         return Vec::new();
     }
     let Some(status) = app.agent_view.status.filter(|status| status.background > 0) else {
         return Vec::new();
     };
+    let Some(key) = agent_view_key_label(app) else {
+        return Vec::new();
+    };
     let noun = if status.background == 1 { "agent" } else { "agents" };
-    let mut segments = vec![(format!("\u{2190} {} {noun}", status.background), theme::DIM)];
+    let mut segments = vec![(format!("{key} {} {noun}", status.background), theme::DIM)];
     if status.awaiting_input > 0 {
         segments.push((
             format!(" \u{b7} {} awaiting input", status.awaiting_input),
@@ -94,6 +100,21 @@ fn agent_status_segments(app: &App) -> Vec<(String, Color)> {
         segments.push((format!(" \u{b7} {} working", status.working), theme::DIM));
     }
     segments
+}
+
+/// The key bound to the agent view action in chat input: stock's `←` for the
+/// default binding, the key's help name after a rebinding, none when unbound.
+fn agent_view_key_label(app: &App) -> Option<String> {
+    let binding = app
+        .keymap
+        .help_bindings_for_context(KeyContext::ChatInput)
+        .into_iter()
+        .find(|binding| binding.action == KeyAction::App(AppAction::OpenAgentsOrMoveLeft))?;
+    Some(if binding.spec == KeySpec::new(KeyCodeSpec::Left, KeyModifiers::NONE) {
+        "\u{2190}".to_owned()
+    } else {
+        crate::ui::help::format_help_key_spec(&binding.spec)
+    })
 }
 
 fn footer_primary_hint(app: &App) -> FooterItem {
@@ -814,6 +835,63 @@ mod tests {
             let first = line_text(&serialize_footer_rows(app, 120).rows[0]);
             assert!(!first.contains('\u{2190}'), "{first:?}");
         }
+    }
+
+    #[test]
+    fn agent_status_is_hidden_whenever_left_would_not_open_the_view() {
+        let mut disabled = app_with_agents(2, 1, 0);
+        disabled.agent_view.enabled = false;
+        let mut errored = app_with_agents(2, 1, 0);
+        errored.status = AppStatus::Error;
+        let mut pending_command = app_with_agents(2, 1, 0);
+        pending_command.status = AppStatus::CommandPending;
+        let mut handing_over = app_with_agents(2, 1, 0);
+        let _claim = crate::app::terminal_runtime::claim_terminal(&mut handing_over);
+
+        for app in [&disabled, &errored, &pending_command, &handing_over] {
+            assert!(!crate::app::agent_view::opens_from_composer(app));
+            let first = line_text(&serialize_footer_rows(app, 120).rows[0]);
+            assert!(!first.contains("agent"), "{first:?}");
+        }
+    }
+
+    fn rebind_agent_view(app: &mut App, to: Option<KeySpec>) {
+        use crate::app::keymap::{InputAction, KeyBinding, KeyBindingSource, ResolvedKeymap};
+        let bindings = crate::app::keymap::default_bindings().into_iter().map(|binding| {
+            if binding.action == KeyAction::App(AppAction::OpenAgentsOrMoveLeft) {
+                KeyBinding::new(
+                    binding.context,
+                    binding.spec,
+                    KeyAction::Input(InputAction::MoveCharLeft),
+                    KeyBindingSource::Config,
+                )
+            } else {
+                binding
+            }
+        });
+        let added = to.map(|spec| {
+            KeyBinding::new(
+                KeyContext::ChatInput,
+                spec,
+                KeyAction::App(AppAction::OpenAgentsOrMoveLeft),
+                KeyBindingSource::Config,
+            )
+        });
+        app.keymap = ResolvedKeymap::from_bindings(bindings.chain(added)).expect("rebound keymap");
+    }
+
+    #[test]
+    fn agent_status_names_the_rebound_key_and_hides_when_unbound() {
+        let mut rebound = app_with_agents(2, 0, 0);
+        rebind_agent_view(&mut rebound, Some(KeySpec::char('g', KeyModifiers::CONTROL)));
+        let first = line_text(&serialize_footer_rows(&rebound, 120).rows[0]);
+        assert!(first.contains("Ctrl+G 2 agents"), "{first:?}");
+        assert!(!first.contains('\u{2190}'), "{first:?}");
+
+        let mut unbound = app_with_agents(2, 0, 0);
+        rebind_agent_view(&mut unbound, None);
+        let first = line_text(&serialize_footer_rows(&unbound, 120).rows[0]);
+        assert!(!first.contains("agents"), "{first:?}");
     }
 
     #[test]

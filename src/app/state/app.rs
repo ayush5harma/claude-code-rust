@@ -13,7 +13,7 @@ pub struct App {
     pub surface_mode: SurfaceMode,
     pub(crate) copy_picker: Option<crate::app::copy::CopyPicker>,
     pub(crate) terminal_lifecycle: TerminalLifecycleState,
-    pub(crate) terminal_child_cancel: Option<tokio::sync::oneshot::Sender<()>>,
+    pub(crate) terminal_child: crate::app::terminal_runtime::TerminalChildState,
     pub(crate) surface_dirty: SurfaceDirtyState,
     pub(crate) config: ConfigState,
     pub(crate) global_settings: crate::app::AppSettings,
@@ -148,9 +148,7 @@ impl App {
     }
 
     pub(crate) fn request_shutdown(&mut self) {
-        if let Some(cancel_tx) = self.terminal_child_cancel.take() {
-            let _ = cancel_tx.send(());
-        }
+        crate::app::terminal_runtime::stop_terminal_child(self);
         if matches!(self.shutdown, ShutdownState::Running) {
             self.shutdown = ShutdownState::Requested;
         }
@@ -251,7 +249,7 @@ impl App {
             show_session_overview: true,
             turn: TurnState::default(),
             shutdown: ShutdownState::Running,
-            terminal_child_cancel: None,
+            terminal_child: crate::app::terminal_runtime::TerminalChildState::Idle,
             exit_error: None,
             cwd: "/test".into(),
             cwd_raw: "/test".into(),

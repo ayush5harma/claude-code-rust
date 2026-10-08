@@ -119,7 +119,7 @@ pub fn create_app(cli: &Cli) -> App {
     let mut app = App {
         surface_mode: SurfaceMode::Chat,
         terminal_lifecycle: TerminalLifecycleState::Bootstrapping,
-        terminal_child_cancel: None,
+        terminal_child: crate::app::terminal_runtime::TerminalChildState::Idle,
         surface_dirty: SurfaceDirtyState::initial_chat(),
         config: ConfigState::default(),
         global_settings: loaded_settings.settings,
@@ -201,6 +201,9 @@ pub fn start_connection(app: &mut App) {
     if !app.startup.mark_connection_started() {
         return;
     }
+    // A connection starts only once workspace trust is settled; so does the
+    // agent status poller, which runs Claude Code in this directory.
+    crate::app::agent_view::ensure_status_poller(app);
 
     let params = StartConnectionParams {
         event_tx: app.event_tx.clone(),
