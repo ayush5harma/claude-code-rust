@@ -4081,6 +4081,7 @@ test("handleSdkMessage emits SDK-owned context Markdown exactly once", () => {
       uuid: "context-assistant-1",
       session_id: "session-1",
       parent_tool_use_id: null,
+      local_command_run: { command: "context", args: "" },
       context_usage: { used_percentage: 42 },
       message: {
         role: "assistant",
@@ -4111,6 +4112,55 @@ test("handleSdkMessage emits SDK-owned context Markdown exactly once", () => {
   ]);
 });
 
+// Measured on Claude Code 2.1.293: a forwarded local command (/rename,
+// /color, /usage, ...) replies with one completed synthetic assistant frame
+// carrying local_command_run and no stream events, so its text exists only
+// in that frame.
+test("handleSdkMessage shows the reply of every forwarded local command", () => {
+  const session = makeSessionState();
+  const reply = (uuid: string, command: string, text: string) => ({
+    type: "assistant",
+    uuid,
+    session_id: "session-1",
+    parent_tool_use_id: null,
+    local_command_source: `<local-command-stdout>${text}</local-command-stdout>`,
+    local_command_run: { command, args: "" },
+    message: {
+      model: "<synthetic>",
+      role: "assistant",
+      stop_reason: "end_turn",
+      content: [{ type: "text", text }],
+    },
+  });
+  const events = captureBridgeEvents(() => {
+    for (const message of [
+      reply("rename-reply", "rename", "Session renamed to: probe"),
+      reply("usage-reply", "usage", "Current session: 9% used"),
+    ]) {
+      handleSdkMessage(
+        session,
+        message as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage,
+      );
+    }
+  });
+
+  const chunks = events
+    .map((event) => event.update as Record<string, unknown> | undefined)
+    .filter((update) => update?.type === "agent_message_chunk");
+  assert.deepEqual(chunks, [
+    {
+      type: "agent_message_chunk",
+      content: { type: "text", text: "Session renamed to: probe" },
+      source_message_uuid: "rename-reply",
+    },
+    {
+      type: "agent_message_chunk",
+      content: { type: "text", text: "Current session: 9% used" },
+      source_message_uuid: "usage-reply",
+    },
+  ]);
+});
+
 test("handleSdkMessage does not replay ordinary or invalid completed assistant text", () => {
   const session = makeSessionState();
   const events = captureBridgeEvents(() => {
@@ -4135,10 +4185,23 @@ test("handleSdkMessage does not replay ordinary or invalid completed assistant t
       {
         type: "assistant",
         uuid: "empty-context",
+        local_command_run: { command: "context", args: "" },
         context_usage: {},
         message: {
           role: "assistant",
           content: [{ type: "text", text: "   " }],
+        },
+      },
+      {
+        // A synthetic API error is reported through the turn result, not
+        // replayed as assistant text.
+        type: "assistant",
+        uuid: "synthetic-error",
+        error: "rate_limit",
+        message: {
+          model: "<synthetic>",
+          role: "assistant",
+          content: [{ type: "text", text: "API Error: rate limited" }],
         },
       },
     ]) {
