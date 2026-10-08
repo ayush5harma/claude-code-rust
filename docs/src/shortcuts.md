@@ -37,12 +37,21 @@ The fullscreen settings surface has its own keys for tabs, panes, search and edi
 | `Tab` | Focus prompts or accept suggestions. |
 | `Shift+Tab` | Cycle mode. |
 | `Up` | Move up through text, or recall the latest user message when the input is empty. |
-| `Down`, `Left`, `Right` | Move through text. |
+| `Left` | Open Claude Code's agent view when the input is empty; otherwise move left through text. |
+| `Down`, `Right` | Move through text. |
 | `Home`, `End` | Move to line start or line end. |
 | `Ctrl+Left`, `Ctrl+Right` | Move by word. |
 | `Alt+Left`, `Alt+Right` | Move by word. |
 | `Ctrl+Backspace`, `Ctrl+Delete` | Delete by word. |
 | `Alt+Backspace`, `Alt+Delete` | Delete by word. |
+
+### Agent View
+
+As in Claude Code, `Left` on an empty prompt opens the agent view: claude-rs hands the terminal to `claude agents` (the stock list of background sessions, where you can peek, attach, reply, dispatch and stop them) and comes back when it exits. Press `Esc`, or `Ctrl+C` twice, in the agent view to return. Your claude-rs session keeps running while the agent view is open; anything it asks you waits in the transcript until you return.
+
+claude-rs runs the same Claude Code the session runs (`CLAUDE_CODE_EXECUTABLE`), or `claude` from `PATH` when that is not set. While the input is empty, the footer's first row shows Claude Code's background sessions after the mode badges, for example `← 2 agents · 1 awaiting input · 1 working`, refreshed every 10 seconds and right after the agent view closes. It is hidden when there are none or when `claude agents --json` fails.
+
+Claude Code's `leftArrowOpensAgents` setting (in its global config, `.claude.json`, also under `/config` in Claude Code) turns both off when it is `false`: `Left` then only moves the cursor and the footer shows no agent status. The action is `app.open_agents_or_move_left`; bind it to another key to open the agent view from an empty prompt with that key instead. `Ctrl+B` always moves left. claude-rs does not take over `/agents`: that command stays Claude Code's subagent configuration.
 
 Readline-style bindings are also supported:
 

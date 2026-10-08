@@ -7,6 +7,8 @@ All notable changes to this project will be documented in this file.
 ### Features
 
 - **Background automatic updates** (#437, @srothgan): Install automatic updates in the background after exit, and show a warning at startup when the last one failed.
+- **Agent view**: `Left` on an empty prompt opens Claude Code's agent view (`claude agents`) through the terminal hand-over `/login` uses, and returns to claude-rs when it exits (`Esc`, or `Ctrl+C` twice). The session keeps running meanwhile. The key is the rebindable `app.open_agents_or_move_left` action and honours Claude Code's `leftArrowOpensAgents` setting.
+- **Agent status in the footer**: while the input is empty, the footer shows Claude Code's background sessions after the mode badges, as `← N agents · K awaiting input · W working`, polled from `claude agents --json` every 10 seconds and right after the agent view closes.
 
 ## [0.15.2] - 2026-10-08 [Changes][v0.15.2]
 
