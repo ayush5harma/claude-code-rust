@@ -2046,8 +2046,8 @@ fn session_rule_row(test: &TerminalTest, name: &str) -> Option<(u16, String)> {
     let suffix = format!(" {name} ─");
     screen.lines().enumerate().find_map(|(row, line)| {
         let line = line.trim_end();
-        (line.starts_with('─') && line.ends_with(&suffix))
-            .then(|| (u16::try_from(row).expect("screen row"), line.to_owned()))
+        let row = u16::try_from(row).ok()?;
+        (line.starts_with('─') && line.ends_with(&suffix)).then(|| (row, line.to_owned()))
     })
 }
 
