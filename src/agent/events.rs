@@ -181,6 +181,11 @@ pub enum ClientEvent {
     SessionsListed { sessions: Vec<crate::agent::types::SessionListEntry> },
     /// Background app update check completed with current release metadata.
     UpdateCheckCompleted { result: crate::app::settings::UpdateCheckResult },
+    /// Background-session counts from `claude agents --json` changed; `None`
+    /// when the listing failed or the agent view is turned off.
+    AgentStatusUpdated { status: Option<crate::app::agent_view::AgentStatus> },
+    /// The stock agent view could not run, or exited with a failure.
+    AgentViewFailed { message: String },
     /// Startup Claude Code status check detected degraded/outage conditions.
     ServiceStatus { severity: ServiceStatusSeverity, message: String },
     /// /login completed via `claude auth login` -- credentials stored, ready to start a session.
@@ -284,6 +289,8 @@ impl ClientEvent {
             | Self::SessionsListed { .. }
             | Self::RewindTargetsReceived { .. }
             | Self::UpdateCheckCompleted { .. }
+            | Self::AgentStatusUpdated { .. }
+            | Self::AgentViewFailed { .. }
             | Self::ServiceStatus { .. }
             | Self::AuthCompleted { .. }
             | Self::LogoutCompleted
