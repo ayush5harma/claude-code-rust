@@ -99,7 +99,10 @@ pub fn handle_terminal_event(app: &mut App, event: Event) -> TerminalEventOutcom
         return TerminalEventOutcome::ignored();
     }
 
-    if matches!(app.terminal_lifecycle, super::TerminalLifecycleState::ReleasedToChild(_))
+    // From the claim on, input belongs to the child: keys read in the same
+    // batch as the one that started it (Left then Ctrl+C) were typed for it.
+    if (app.terminal_child.is_active()
+        || matches!(app.terminal_lifecycle, super::TerminalLifecycleState::ReleasedToChild(_)))
         && !matches!(&event, Event::Resize(_, _))
     {
         return TerminalEventOutcome::ignored();

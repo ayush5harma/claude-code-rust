@@ -1424,6 +1424,23 @@ mod tests {
     }
 
     #[test]
+    fn keys_typed_for_a_starting_child_do_not_reach_the_composer() {
+        let mut app = agent_view_app(true);
+        let _claim = crate::app::terminal_runtime::claim_terminal(&mut app).expect("claim");
+
+        // Left then Ctrl+C in one read: the Ctrl+C was meant for the view.
+        let ctrl_c =
+            crossterm::event::Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        let _ = crate::app::events::handle_terminal_event(&mut app, ctrl_c);
+        let typed =
+            crossterm::event::Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        let _ = crate::app::events::handle_terminal_event(&mut app, typed);
+
+        assert!(!app.shutdown_requested());
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
     fn one_terminal_hand_over_at_a_time_until_the_terminal_returns() {
         let mut app = agent_view_app(true);
         let first = crate::app::terminal_runtime::claim_terminal(&mut app);
