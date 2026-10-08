@@ -13,7 +13,7 @@ test("an event larger than the pipe buffer reaches a slow reader whole", async (
   const description = "x".repeat(200 * 1024);
   const script = `
     import { writeEvent } from ${JSON.stringify(eventsModule)};
-    writeEvent({ event: "slash_error", session_id: "s", message: ${JSON.stringify(description)} });
+    writeEvent({ event: "slash_error", session_id: "s", message: "x".repeat(200 * 1024) });
   `;
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
     stdio: ["ignore", "pipe", "pipe"],

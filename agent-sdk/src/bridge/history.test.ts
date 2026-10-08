@@ -119,6 +119,60 @@ test("resume display shows a local command as its command line with its output u
   }
 });
 
+test("resume display recognizes only complete command records and preserves field semantics", () => {
+  const cases = [
+    ["\t<command-args> title\nwith spaces </command-args>\n<command-message>rename</command-message><command-name> /rename </command-name>\uFEFF", "/rename title\nwith spaces"],
+    ["<command-name>/context</command-name><command-args> </command-args>", "/context"],
+    ["<command-name>/old</command-name><command-args>old</command-args><command-name>/rename</command-name><command-args>new</command-args>", "/rename new"],
+    ["<command-name>/rename</command-name><command-args><command-args>nested</command-args>", "/rename <command-args>nested"],
+    ["<command-name>rename</command-name>", undefined],
+    ["<command-args>title</command-args>", undefined],
+    ["<command-name>/rename</command-name><command-args>title", undefined],
+    ["<command-name>/rename</command-name> by hand", undefined],
+    ["before <command-name>/rename</command-name>", undefined],
+    ["<command-name>/rename</command-name><unknown>value</unknown>", undefined],
+    ["<command-name>/rename</command-name><command-args>title</command-message>", undefined],
+  ] as const;
+  const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
+  const updates = mapSessionMessagesToUpdates(cases.map(([content], index) => ({
+    ...base, type: "user", uuid: `command-${index}`, message: { role: "user", content },
+  })));
+  assert.deepEqual(
+    updates.filter(update => update.type === "user_message_chunk").map(update => [update.source_message_uuid, update.content]),
+    cases.map(([content, expected], index) => [`command-${index}`, { type: "text", text: expected ?? content }]),
+  );
+});
+
+test("resume display preserves many unclosed command tags without blocking later history", () => {
+  // A child timeout catches synchronous parser stalls without hanging the suite (2026-10-09).
+  const child = spawnSync(process.execPath, ["--input-type=module", "-"], {
+    input: `
+      import assert from "node:assert/strict";
+      import { mapSessionMessagesToUpdates } from ${JSON.stringify(new URL("./history.js", import.meta.url).href)};
+      const broken = [
+        "<command-name>" + "<command-args>a".repeat(200_000),
+        "<command-name>/rename</command-name>" + "<command-args>a".repeat(200_000),
+        "<command-name>a".repeat(200_000),
+        "<command-message>a".repeat(200_000),
+      ];
+      const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
+      const updates = mapSessionMessagesToUpdates([
+        ...broken.map((content, index) => ({ ...base, type: "user", uuid: "broken-" + index, message: { role: "user", content } })),
+        { ...base, type: "user", uuid: "after", message: { role: "user", content: "<command-name>/rename</command-name><command-args>Still restored</command-args>" } },
+      ]);
+      assert.deepEqual(updates.filter(update => update.type === "user_message_chunk").map(update => [update.source_message_uuid, update.content]), [
+        ...broken.map((text, index) => ["broken-" + index, { type: "text", text }]),
+        ["after", { type: "text", text: "/rename Still restored" }],
+      ]);
+    `,
+    encoding: "utf8",
+    timeout: 10_000,
+    windowsHide: true,
+  });
+  assert.equal(child.error, undefined, String(child.error));
+  assert.equal(child.status, 0, child.stderr);
+});
+
 test("resume display excludes internal task notifications while preserving user XML and external messages", () => {
   const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null, timestamp: "2026-10-06T11:10:22.531Z" };
   const completed = "<task-notification>\n<task-id>task-1</task-id>\n<status>completed</status>\n<summary>Background command completed</summary>\n</task-notification>";
