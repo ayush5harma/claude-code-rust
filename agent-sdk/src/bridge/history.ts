@@ -61,11 +61,64 @@ export async function getSessionTranscriptMessages(
   await importSessionToStore(sessionId, store, { ...options, includeSubagents: false });
   const messages = await getSessionMessages(sessionId, { ...options, includeSystemMessages: true, sessionStore: store });
   const records = new Map(entries.map(entry => [entry.uuid, entry]));
+  const localCommandOutputs = localCommandOutputsByCommandUuid(entries);
   return messages.map(message => {
     const record = records.get(message.uuid);
     const rawResult = record?.toolUseResult ?? record?.tool_use_result;
-    return rawResult === undefined ? message : { ...message, tool_use_result: rawResult };
+    const withResult = rawResult === undefined ? message : { ...message, tool_use_result: rawResult };
+    const output = localCommandOutputs.get(message.uuid);
+    return output === undefined ? withResult : { ...withResult, local_command_output: output };
   });
+}
+
+type LocalCommandOutput = { uuid: string; text: string };
+
+/**
+ * Claude Code stores a local command (/rename, /context, ...) as a user record
+ * holding `<command-name>` XML and a `system` record of subtype
+ * `local_command` whose content is the `<local-command-stdout>` it printed.
+ * The SDK returns only the user record, so the output is read from the raw
+ * entries and attached to it.
+ */
+function localCommandOutputsByCommandUuid(
+  entries: SessionStoreEntry[],
+): Map<string, LocalCommandOutput> {
+  const outputs = new Map<string, LocalCommandOutput>();
+  for (const entry of entries) {
+    if (
+      entry.type !== "system" || entry.subtype !== "local_command" ||
+      typeof entry.parentUuid !== "string" || typeof entry.content !== "string" ||
+      typeof entry.uuid !== "string"
+    ) {
+      continue;
+    }
+    const text = entry.content
+      .replace(/<\/?local-command-(?:stdout|stderr)>/g, "")
+      .trim();
+    if (text.length > 0) outputs.set(entry.parentUuid, { uuid: entry.uuid, text });
+  }
+  return outputs;
+}
+
+const COMMAND_TAG = /<command-(name|message|args)>([\s\S]*?)<\/command-\1>/g;
+
+/**
+ * The command line a user record of a slash command stands for, such as
+ * `/rename renamed-live`, when the record holds nothing but Claude Code's
+ * `<command-*>` tags; undefined for any other text.
+ */
+function slashCommandLine(text: string): string | undefined {
+  const fields = new Map<string, string>();
+  const rest = text.replace(COMMAND_TAG, (_match, tag: string, value: string) => {
+    fields.set(tag, value.trim());
+    return "";
+  });
+  const name = fields.get("name");
+  if (rest.trim().length > 0 || !name?.startsWith("/")) {
+    return undefined;
+  }
+  const args = fields.get("args");
+  return args ? `${name} ${args}` : name;
 }
 
 function nonEmptyTrimmed(value: unknown): string | undefined {
@@ -375,7 +428,8 @@ export function mapSessionMessagesToUpdates(
           continue;
         }
         if (blockType === "text" && typeof block.text === "string") {
-          pushResumeTextChunk(updates, role, block.text, sourceMessageUuid);
+          const text = role === "user" ? (slashCommandLine(block.text) ?? block.text) : block.text;
+          pushResumeTextChunk(updates, role, text, sourceMessageUuid);
           continue;
         }
         if (isToolUseBlockType(blockType) && role === "assistant") {
@@ -410,6 +464,11 @@ export function mapSessionMessagesToUpdates(
     }
     const metadata = messageMetadata({ ...entry, ...asRecordOrNull(entry.message) }, fallbackRole);
     if (metadata) updates.push(metadata);
+    // Shown under the command the way the live reply was.
+    const localOutput = asRecordOrNull(record?.local_command_output);
+    if (typeof localOutput?.text === "string" && typeof localOutput.uuid === "string") {
+      pushResumeTextChunk(updates, "assistant", localOutput.text, localOutput.uuid);
+    }
   }
 
   return updates;
