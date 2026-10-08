@@ -9,26 +9,42 @@ const eventsModule = join(dirname(fileURLToPath(import.meta.url)), "events.js");
 // The event that killed sessions at start was the slash-command list: 86-131 KB
 // with a few hundred skills installed, against a 64 KB pipe buffer. The reader
 // waits before draining so the writer meets a full pipe mid-event.
-test("an event larger than the pipe buffer reaches a slow reader whole", async () => {
-  const description = "x".repeat(200 * 1024);
+test("an event larger than the pipe buffer reaches a slow reader whole", { timeout: 10_000 }, async (t) => {
+  const description = "x".repeat(2 * 1024 * 1024);
   const script = `
     import { writeEvent } from ${JSON.stringify(eventsModule)};
-    writeEvent({ event: "slash_error", session_id: "s", message: "x".repeat(200 * 1024) });
+    writeEvent({ event: "slash_error", session_id: "s", message: "x".repeat(2 * 1024 * 1024) });
   `;
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
     stdio: ["ignore", "pipe", "pipe"],
   });
+  t.after(() => {
+    if (child.exitCode === null) child.kill();
+  });
+  const closed = new Promise<number | null>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  });
+  // Node auto-resumed paused stdout on early exit and lost a late close listener
+  // in a 1 KB reproduction (2026-10-09); install both listeners before waiting.
+  const chunks: Buffer[] = [];
+  child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
   child.stdout.pause();
   let stderr = "";
   child.stderr.on("data", (chunk: Buffer) => {
     stderr += chunk.toString();
   });
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  const chunks: Buffer[] = [];
-  child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
-  child.stdout.resume();
-  const code = await new Promise<number | null>((resolve) => child.on("close", resolve));
+  const [code, exitCodeBeforeResume] = await Promise.all([
+    closed,
+    (async () => {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const exitCode = child.exitCode;
+      child.stdout.resume();
+      return exitCode;
+    })(),
+  ]);
 
+  assert.equal(exitCodeBeforeResume, null, "the writer must remain blocked while stdout is paused");
   assert.equal(code, 0, stderr);
   const lines = Buffer.concat(chunks).toString().split("\n").filter((line) => line.length > 0);
   assert.equal(lines.length, 1);

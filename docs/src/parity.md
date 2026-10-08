@@ -107,7 +107,9 @@ real launch captures. These local measurements predate the cross-platform CI
 follow-up tracked in [fork PR #1](https://github.com/ayush5harma/claude-code-rust/pull/1).
 That follow-up replaces a backtracking history-parser regex, fixes Linux test
 portability, and preserves pending Ctrl+C handling before a child returns the
-terminal. The PR records the current Linux, macOS and Windows check results.
+terminal. Explicit returns from the agent view also refresh the CLI listing
+immediately while routine fallback polls stay throttled. The PR records the
+current Linux, macOS and Windows check results.
 
 ## Launch and resume
 

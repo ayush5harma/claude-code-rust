@@ -182,7 +182,8 @@ fn pid_alive(pid: u32) -> bool {
 }
 
 /// `claude agents --json`, for a job layout the file reader does not know:
-/// at most once per `CLI_FALLBACK_INTERVAL`, reusing the last answer between.
+/// Routine polls reuse the last answer within `CLI_FALLBACK_INTERVAL`;
+/// returning from the interactive view explicitly refreshes changed jobs.
 struct CliFallback {
     program: Option<PathBuf>,
     cwd: String,
@@ -191,8 +192,8 @@ struct CliFallback {
 }
 
 impl CliFallback {
-    async fn status(&mut self) -> Option<AgentStatus> {
-        if self.last_run.is_some_and(|ran| ran.elapsed() < CLI_FALLBACK_INTERVAL) {
+    async fn status(&mut self, refresh: bool) -> Option<AgentStatus> {
+        if !refresh && self.last_run.is_some_and(|ran| ran.elapsed() < CLI_FALLBACK_INTERVAL) {
             return self.last;
         }
         self.last_run = Some(Instant::now());
@@ -256,7 +257,13 @@ pub(crate) fn ensure_status_poller(app: &mut App) {
                         outcome = "fallback",
                         reason,
                     );
-                    (AgentPoll { enabled: true, status: fallback.status().await }, "cli")
+                    (
+                        AgentPoll {
+                            enabled: true,
+                            status: fallback.status(trigger == "refresh").await,
+                        },
+                        "cli",
+                    )
                 }
             };
             tracing::debug!(
