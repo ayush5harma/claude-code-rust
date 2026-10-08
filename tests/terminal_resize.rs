@@ -575,9 +575,46 @@ impl TerminalTest {
     }
 
     fn submit(&mut self, text: &str, visible: &str) {
+        self.submit_with_entry(text, visible, Self::paste);
+    }
+
+    fn submit_command(&mut self, text: &str) {
+        self.submit_with_entry(text, text, |test, text| {
+            if cfg!(windows) {
+                // ConPTY's key-burst path reordered this command on CI
+                // (2026-10-09). Model ordinary typing for the label test.
+                let mut prefix = String::new();
+                for ch in text.chars() {
+                    let offset = std::fs::read(test.temp.path().join("runtime.log"))
+                        .expect("runtime log")
+                        .len();
+                    test.send(ch.encode_utf8(&mut [0; 4]).as_bytes());
+                    prefix.push(ch);
+                    // Screen contents trim trailing blanks; the next prefix
+                    // and final command still verify the space between words.
+                    test.wait_composer_text(offset, prefix.trim_end());
+                    std::thread::sleep(Duration::from_millis(80));
+                }
+            } else {
+                test.paste(text);
+            }
+        });
+    }
+
+    fn submit_with_entry(
+        &mut self,
+        text: &str,
+        visible: &str,
+        enter: impl FnOnce(&mut Self, &str),
+    ) {
         let log_offset =
             std::fs::read(self.temp.path().join("runtime.log")).expect("runtime log").len();
-        self.paste(text);
+        enter(self, text);
+        self.wait_composer_text(log_offset, visible);
+        self.submit_draft();
+    }
+
+    fn wait_composer_text(&mut self, log_offset: usize, visible: &str) {
         // The overview, tips, and transcript can already mention the command.
         // Check the editor region from a subsequent draw. ConPTY's native cursor
         // can remain on the spinner instead of the editor.
@@ -601,7 +638,6 @@ impl TerminalTest {
             };
             test.screen().lines().skip(top).take(height).any(|line| line.contains(visible))
         });
-        self.submit_draft();
     }
 
     fn submit_draft(&mut self) {
@@ -865,11 +901,10 @@ fn left_on_an_empty_prompt_hands_the_terminal_to_the_agent_view_and_back() {
     assert!(!profile.join("agent-view-runs").exists(), "Left with text opened the agent view");
     assert!(!test.screen().contains('\u{2190}'), "an empty listing must not show the hint");
 
-    // The poller reads Claude Code's job files, not the CLI: one blocked job
-    // nobody runs, one working job a live daemon worker (this test) runs.
-    write_job(&profile, "aaaa0001", "blocked", "blocked");
-    write_job(&profile, "aaaa0002", "working", "active");
-    write_roster(&profile, &["aaaa0002"]);
+    // Unix reads the daemon's files; Windows reads the equivalent CLI listing.
+    // The working job belongs to this test, so its worker is alive.
+    wait_empty_agent_listing(&mut test);
+    write_agents(&profile, &[("aaaa0001", "blocked"), ("aaaa0002", "working")]);
     test.send(b"\x1b[D");
     test.wait_screen("AGENT_VIEW_READY");
     let before = test.output.lock().expect("output lock").raw.len();
@@ -886,7 +921,7 @@ fn left_on_an_empty_prompt_hands_the_terminal_to_the_agent_view_and_back() {
         polls.iter().filter(|record| record["event_name"] == "agent_status_polled").collect();
     let shown = polls.iter().position(|record| record["background"] == 2).expect("listed poll");
     assert_eq!(polls[shown]["trigger"], "refresh", "{polls:?}");
-    assert_eq!(polls[shown]["source"], "files", "{polls:?}");
+    assert_eq!(polls[shown]["source"], if cfg!(unix) { "files" } else { "cli" }, "{polls:?}");
     let received =
         std::fs::read_to_string(profile.join("agent-view-input")).expect("agent view stdin");
     assert_eq!(received.trim_end_matches(['\r', '\n']), "view_only_118");
@@ -908,26 +943,33 @@ fn left_on_an_empty_prompt_hands_the_terminal_to_the_agent_view_and_back() {
     test.shutdown();
 }
 
-/// A Claude Code background job as the daemon records it.
 #[allow(clippy::expect_used)]
-fn write_job(profile: &Path, id: &str, state: &str, tempo: &str) {
-    let dir = profile.join("jobs").join(id);
-    std::fs::create_dir_all(&dir).expect("job directory");
+fn write_agents(profile: &Path, agents: &[(&str, &str)]) {
+    // Both fixtures describe the same test jobs: Unix reads files and
+    // Windows asks the CLI because its process-liveness API differs.
+    let mut listing = Vec::new();
+    let mut workers = Vec::new();
+    for (id, state) in agents {
+        let tempo = if *state == "working" { "active" } else { "blocked" };
+        let dir = profile.join("jobs").join(id);
+        std::fs::create_dir_all(&dir).expect("job directory");
+        std::fs::write(
+            dir.join("state.json"),
+            format!(
+                r#"{{"state":"{state}","tempo":"{tempo}","name":"{id}","sessionId":"{id}","createdAt":"2026-01-01T00:00:00.000Z","template":"bg","respawnFlags":[]}}"#
+            ),
+        )
+        .expect("job state");
+        listing.push(serde_json::json!({"id": id, "kind": "background", "state": state}));
+        if *state == "working" {
+            workers.push(format!(r#""{id}":{{"pid":{}}}"#, std::process::id()));
+        }
+    }
     std::fs::write(
-        dir.join("state.json"),
-        format!(
-            r#"{{"state":"{state}","tempo":"{tempo}","name":"{id}","sessionId":"{id}","createdAt":"2026-01-01T00:00:00.000Z","template":"bg","respawnFlags":[]}}"#
-        ),
+        profile.join("agents.json"),
+        serde_json::to_vec(&listing).expect("CLI agent listing"),
     )
-    .expect("job state");
-}
-
-/// Daemon workers for `shorts`, alive because their pid is this test's.
-#[allow(clippy::expect_used)]
-fn write_roster(profile: &Path, shorts: &[&str]) {
-    let pid = std::process::id();
-    let workers: Vec<String> =
-        shorts.iter().map(|short| format!(r#""{short}":{{"pid":{pid}}}"#)).collect();
+    .expect("CLI agent listing");
     std::fs::create_dir_all(profile.join("daemon")).expect("daemon directory");
     std::fs::write(
         profile.join("daemon/roster.json"),
@@ -944,12 +986,23 @@ fn agent_view_runs(test: &TerminalTest) -> Vec<String> {
         .collect()
 }
 
+fn wait_empty_agent_listing(test: &mut TerminalTest) {
+    test.wait_until("initial empty agent listing", |test| {
+        test.runtime_records_since(0).iter().any(|record| {
+            record["event_name"] == "agent_status_polled"
+                && record["outcome"] == "success"
+                && record["source"] == if cfg!(unix) { "files" } else { "cli" }
+                && record["background"] == 0
+        })
+    });
+}
+
 #[test]
 fn a_repeated_left_starts_one_agent_view_and_reports_no_error() {
     let mut test = TerminalTest::start_with_auth("stream", 3, Some("agent-view"));
     let profile = test.temp.path().join("profile");
-    write_job(&profile, "bbbb0001", "working", "active");
-    write_roster(&profile, &["bbbb0001"]);
+    wait_empty_agent_listing(&mut test);
+    write_agents(&profile, &[("bbbb0001", "working")]);
 
     // Key repeat, or keys batched over ssh/mosh, deliver both in one read.
     test.send(b"\x1b[D\x1b[D");

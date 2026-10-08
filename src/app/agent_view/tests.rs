@@ -67,12 +67,35 @@ mod cli {
             last: None,
         };
 
-        let first = fallback.status().await;
-        let second = fallback.status().await;
+        let first = fallback.status(false).await;
+        let second = fallback.status(false).await;
 
         let listed = Some(AgentStatus { background: 1, awaiting_input: 0, working: 0 });
         assert_eq!((first, second), (listed, listed));
         assert_eq!(runs(dir.path()), 1);
+    }
+
+    #[tokio::test]
+    async fn an_explicit_refresh_reads_changed_jobs_without_waiting_for_the_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let listing = dir.path().join("listing.json");
+        std::fs::write(&listing, "[]").unwrap();
+        let program = fake_claude(dir.path(), &format!("cat '{}'", listing.display()));
+        let mut fallback = CliFallback {
+            program: Some(program),
+            cwd: cwd(dir.path()),
+            last_run: None,
+            last: None,
+        };
+        assert_eq!(fallback.status(false).await, Some(AgentStatus::default()));
+        std::fs::write(&listing, r#"[{"kind":"background","state":"blocked"}]"#).unwrap();
+        assert_eq!(fallback.status(false).await, Some(AgentStatus::default()));
+        assert_eq!(runs(dir.path()), 1);
+
+        let changed = Some(AgentStatus { background: 1, awaiting_input: 1, working: 0 });
+        assert_eq!(fallback.status(true).await, changed);
+        assert_eq!(fallback.status(false).await, changed);
+        assert_eq!(runs(dir.path()), 2);
     }
 
     /// `ps` state of `pid`, empty once it is gone.
