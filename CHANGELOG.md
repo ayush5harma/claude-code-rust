@@ -8,7 +8,7 @@ All notable changes to this project will be documented in this file.
 
 - **Background automatic updates** (#437, @srothgan): Install automatic updates in the background after exit, and show a warning at startup when the last one failed.
 - **Session name and colour**: `/rename` and `/color` now show their reply, and a named or coloured session shows a rule above the composer with the name right-aligned, drawn in the session colour with the name as a badge, as Claude Code does. The terminal tab title and the Status tab show the name, and resuming a session restores both.
-- **Slash menu hints**: SDK commands show their argument hint before the description, and `/color` completes its colour values.
+- **/color values**: Tab after `/color ` completes its colour values.
 
 ### Fixes
 
