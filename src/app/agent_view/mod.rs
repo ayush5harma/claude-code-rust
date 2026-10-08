@@ -11,16 +11,21 @@ mod tests;
 pub use status::AgentStatus;
 
 use crate::agent::events::ClientEvent;
-use crate::app::terminal_runtime::{TerminalChild, run_with_terminal};
-use crate::app::{App, ReleaseReason, SystemSeverity};
+use crate::app::terminal_runtime::{TerminalChild, claim_terminal, run_with_terminal};
+use crate::app::{App, FocusOwner, ReleaseReason, SystemSeverity};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 use std::rc::Rc;
 use std::time::Duration;
 use tokio::sync::Notify;
 
+/// The poll interval while background sessions exist.
 const POLL_INTERVAL: Duration = Duration::from_secs(10);
+/// One poll costs about 0.17 s of CPU (measured on 2.1.293) and several
+/// claude-rs instances may run at once, so a listing with no background
+/// sessions is checked less often. Returning from the view polls at once.
+const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(30);
 /// `claude agents --json` answered in about 0.2 s when measured; a call that
 /// takes this long is stuck and is killed rather than awaited.
 const POLL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -28,13 +33,30 @@ const POLL_TIMEOUT: Duration = Duration::from_secs(5);
 /// records), not in settings.json; absent means on.
 const LEFT_ARROW_SETTING: &str = "leftArrowOpensAgents";
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct AgentViewState {
+    /// Stock's `leftArrowOpensAgents`, as the poller last read it. The UI
+    /// thread never reads the config file itself: it can be megabytes.
+    pub(crate) enabled: bool,
     /// The latest background-session counts. `None` hides the footer hint:
     /// no listing yet, the listing failed, or the agent view is turned off.
     pub(crate) status: Option<AgentStatus>,
+    poller_started: bool,
     /// Wakes the poller before its interval ends.
     refresh: Rc<Notify>,
+}
+
+impl Default for AgentViewState {
+    fn default() -> Self {
+        Self { enabled: true, status: None, poller_started: false, refresh: Rc::default() }
+    }
+}
+
+/// One poll's result, sent to the UI when it changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AgentPoll {
+    enabled: bool,
+    status: Option<AgentStatus>,
 }
 
 /// The stock executable the session runs (`CLAUDE_CODE_EXECUTABLE`, possibly
@@ -61,8 +83,9 @@ fn preferences_path(app: &App) -> Option<PathBuf> {
         .map(|paths| paths.preferences)
 }
 
-/// Read at each use, so a change made in Claude Code's /config applies
-/// without restarting claude-rs. An unreadable file keeps stock's default.
+/// Read on the poller's worker at every poll, so a change made in Claude
+/// Code's /config applies within one interval. An unreadable file keeps
+/// stock's default.
 fn left_arrow_opens_agents(preferences: Option<&Path>) -> bool {
     preferences
         .and_then(|path| std::fs::read(path).ok())
@@ -71,16 +94,29 @@ fn left_arrow_opens_agents(preferences: Option<&Path>) -> bool {
         .unwrap_or(true)
 }
 
-/// Whether the agent view key opens the view instead of moving the cursor:
-/// only from an empty composer, and only while the setting allows it.
+/// The one rule for whether the agent view action opens the view now, used
+/// by the key and by the footer hint that advertises it: the setting allows
+/// it, no other child owns the terminal, and the editable composer has focus
+/// and is empty.
 pub(crate) fn opens_from_composer(app: &App) -> bool {
-    !app.has_local_input() && left_arrow_opens_agents(preferences_path(app).as_deref())
+    app.agent_view.enabled
+        && !app.terminal_child.is_active()
+        && app.composer_access().can_edit()
+        && app.focus_owner() == FocusOwner::Input
+        && !app.has_local_input()
 }
 
-/// Polls `claude agents --json` at start, every `POLL_INTERVAL`, and right
+/// Starts the poller once, after workspace trust is settled (the TUI loop
+/// calls this when it starts the connection). It polls
+/// `claude agents --json` at once, then every `POLL_INTERVAL` while
+/// background sessions exist or `IDLE_POLL_INTERVAL` otherwise, and right
 /// after the agent view exits. One poll runs at a time; the child and the
 /// parse run on a runtime worker, never on the UI thread.
-pub fn start_status_poller(app: &App) {
+pub(crate) fn ensure_status_poller(app: &mut App) {
+    if app.agent_view.poller_started {
+        return;
+    }
+    app.agent_view.poller_started = true;
     let Some(program) = resolve_executable() else {
         tracing::debug!(
             target: crate::logging::targets::APP_LIFECYCLE,
@@ -95,7 +131,7 @@ pub fn start_status_poller(app: &App) {
     let event_tx = app.event_tx.clone();
     let refresh = Rc::clone(&app.agent_view.refresh);
     tokio::task::spawn_local(async move {
-        let mut last_sent = None;
+        let mut last_sent = AgentPoll { enabled: true, status: None };
         let mut trigger = "start";
         loop {
             let poll = tokio::spawn(poll_status(
@@ -104,23 +140,31 @@ pub fn start_status_poller(app: &App) {
                 cwd.clone(),
                 POLL_TIMEOUT,
             ));
-            let status = poll.await.ok().flatten();
+            let poll = poll.await.unwrap_or(AgentPoll { enabled: true, status: None });
             tracing::debug!(
                 target: crate::logging::targets::APP_LIFECYCLE,
                 event_name = "agent_status_polled",
                 message = "agent status polled",
-                outcome = if status.is_some() { "success" } else { "hidden" },
+                outcome = if poll.status.is_some() { "success" } else { "hidden" },
                 trigger,
-                background = status.map_or(0, |status| status.background),
+                enabled = poll.enabled,
+                background = poll.status.map_or(0, |status| status.background),
             );
-            if status != last_sent {
-                if event_tx.send(ClientEvent::AgentStatusUpdated { status }).await.is_err() {
+            if poll != last_sent {
+                let event =
+                    ClientEvent::AgentStatusUpdated { enabled: poll.enabled, status: poll.status };
+                if event_tx.send(event).await.is_err() {
                     return;
                 }
-                last_sent = status;
+                last_sent = poll;
             }
+            let interval = if poll.status.is_some_and(|status| status.background > 0) {
+                POLL_INTERVAL
+            } else {
+                IDLE_POLL_INTERVAL
+            };
             trigger = tokio::select! {
-                () = tokio::time::sleep(POLL_INTERVAL) => "interval",
+                () = tokio::time::sleep(interval) => "interval",
                 () = refresh.notified() => "refresh",
             };
         }
@@ -132,9 +176,9 @@ async fn poll_status(
     preferences: Option<PathBuf>,
     cwd: String,
     timeout: Duration,
-) -> Option<AgentStatus> {
+) -> AgentPoll {
     if !left_arrow_opens_agents(preferences.as_deref()) {
-        return None;
+        return AgentPoll { enabled: false, status: None };
     }
     let result = match tokio::process::Command::new(&program)
         .args(["agents", "--json"])
@@ -154,7 +198,7 @@ async fn poll_status(
         },
         Err(error) => Err(error.to_string()),
     };
-    result
+    let status = result
         .map_err(|error| {
             tracing::debug!(
                 target: crate::logging::targets::APP_LIFECYCLE,
@@ -164,12 +208,14 @@ async fn poll_status(
                 error_message = %error,
             );
         })
-        .ok()
+        .ok();
+    AgentPoll { enabled: true, status }
 }
 
 /// Hands the terminal to the stock agent view until it exits (Esc, or
-/// Ctrl+C twice). The claude-rs session keeps running meanwhile; anything it
-/// asks for waits in the transcript until the terminal comes back.
+/// Ctrl+C twice). The claude-rs session keeps running meanwhile. Does
+/// nothing while another hand-over is in flight, so a repeated key cannot
+/// start a second child.
 pub(crate) fn open(app: &mut App) {
     let Some(program) = resolve_executable() else {
         crate::app::events::push_system_message_with_severity(
@@ -179,12 +225,16 @@ pub(crate) fn open(app: &mut App) {
         );
         return;
     };
+    let Some(claim) = claim_terminal(app) else {
+        return;
+    };
     let event_tx = app.event_tx.clone();
     let refresh = Rc::clone(&app.agent_view.refresh);
     let cwd = app.cwd_raw.clone();
     tokio::task::spawn_local(async move {
         let result = run_with_terminal(
             &event_tx,
+            claim,
             TerminalChild {
                 reason: ReleaseReason::AgentView,
                 command: "agents",
@@ -198,7 +248,7 @@ pub(crate) fn open(app: &mut App) {
         .await;
         refresh.notify_one();
         let message = match result {
-            Ok(status) if status.success() => return,
+            Ok(status) if closed_normally(status) => return,
             Ok(status) => format!(
                 "claude agents exited with code {}",
                 status.code().map_or_else(|| "unknown".to_owned(), |code| code.to_string())
@@ -207,4 +257,17 @@ pub(crate) fn open(app: &mut App) {
         };
         let _ = event_tx.send(ClientEvent::AgentViewFailed { message }).await;
     });
+}
+
+/// A Ctrl+C before the view takes raw mode interrupts it; that is the user
+/// leaving, not a failure.
+fn closed_normally(status: ExitStatus) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt as _;
+        if status.signal() == Some(libc::SIGINT) {
+            return true;
+        }
+    }
+    status.success()
 }

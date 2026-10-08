@@ -181,9 +181,11 @@ pub enum ClientEvent {
     SessionsListed { sessions: Vec<crate::agent::types::SessionListEntry> },
     /// Background app update check completed with current release metadata.
     UpdateCheckCompleted { result: crate::app::settings::UpdateCheckResult },
-    /// Background-session counts from `claude agents --json` changed; `None`
-    /// when the listing failed or the agent view is turned off.
-    AgentStatusUpdated { status: Option<crate::app::agent_view::AgentStatus> },
+    /// A poll of Claude Code's agent view changed what the composer shows:
+    /// whether its `leftArrowOpensAgents` setting allows the view, and the
+    /// background-session counts (`None` when the listing failed or the view
+    /// is turned off).
+    AgentStatusUpdated { enabled: bool, status: Option<crate::app::agent_view::AgentStatus> },
     /// The stock agent view could not run, or exited with a failure.
     AgentViewFailed { message: String },
     /// Startup Claude Code status check detected degraded/outage conditions.

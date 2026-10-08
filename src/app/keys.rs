@@ -1406,16 +1406,11 @@ mod tests {
         assert!(!blocked);
     }
 
-    /// An app whose Claude global config is a fresh temp file, so the agent
-    /// view setting is read from the test, not the developer's profile.
-    fn app_with_claude_config(config: Option<&str>) -> (App, tempfile::TempDir) {
-        let home = tempfile::tempdir().expect("temp home");
-        if let Some(config) = config {
-            std::fs::write(home.path().join(".claude.json"), config).expect("claude config");
-        }
+    /// An app whose agent view setting is what the poller would have read.
+    fn agent_view_app(enabled: bool) -> App {
         let mut app = App::test_default();
-        app.settings_home_override = Some(home.path().to_path_buf());
-        (app, home)
+        app.agent_view.enabled = enabled;
+        app
     }
 
     fn left() -> KeyEvent {
@@ -1424,7 +1419,7 @@ mod tests {
 
     #[test]
     fn left_on_an_empty_prompt_opens_the_agent_view() {
-        let (mut app, _home) = app_with_claude_config(None);
+        let mut app = agent_view_app(true);
 
         let outcome = dispatch_key_by_focus(&mut app, left());
 
@@ -1434,7 +1429,7 @@ mod tests {
 
     #[test]
     fn left_with_text_moves_the_cursor_instead_of_opening_the_agent_view() {
-        let (mut app, _home) = app_with_claude_config(None);
+        let mut app = agent_view_app(true);
         app.input.set_text("ab");
         let _ = app.input.set_cursor(0, 2);
 
@@ -1447,7 +1442,7 @@ mod tests {
 
     #[test]
     fn a_deferred_submit_counts_as_input_for_left() {
-        let (mut app, _home) = app_with_claude_config(None);
+        let mut app = agent_view_app(true);
         app.pending_submit = Some(app.input.snapshot());
 
         assert_eq!(dispatch_key_by_focus(&mut app, left()).runtime_command(), None);
@@ -1455,7 +1450,7 @@ mod tests {
 
     #[test]
     fn left_arrow_opens_agents_false_keeps_left_as_cursor_movement() {
-        let (mut app, _home) = app_with_claude_config(Some(r#"{"leftArrowOpensAgents":false}"#));
+        let mut app = agent_view_app(false);
 
         let outcome = dispatch_key_by_focus(&mut app, left());
 
@@ -1463,8 +1458,49 @@ mod tests {
     }
 
     #[test]
+    fn a_repeated_left_while_the_view_is_starting_opens_nothing_more() {
+        let mut app = agent_view_app(true);
+        let first = dispatch_key_by_focus(&mut app, left());
+        assert_eq!(first, KeyOutcome::Runtime(RuntimeCommand::OpenAgentView));
+        // What `agent_view::open` does synchronously before its task runs.
+        let _claim = crate::app::terminal_runtime::claim_terminal(&mut app).expect("first claim");
+
+        let repeat = dispatch_key_by_focus(&mut app, left());
+
+        assert_eq!(repeat.runtime_command(), None);
+    }
+
+    #[test]
+    fn one_terminal_hand_over_at_a_time_until_the_terminal_returns() {
+        let mut app = agent_view_app(true);
+        let first = crate::app::terminal_runtime::claim_terminal(&mut app);
+        assert!(first.is_some());
+        assert!(crate::app::terminal_runtime::claim_terminal(&mut app).is_none());
+
+        let (cancel_tx, _cancel_rx) = tokio::sync::oneshot::channel();
+        crate::app::terminal_runtime::child_took_terminal(&mut app, cancel_tx);
+        assert!(crate::app::terminal_runtime::claim_terminal(&mut app).is_none());
+
+        crate::app::terminal_runtime::child_returned_terminal(&mut app);
+        assert!(crate::app::terminal_runtime::claim_terminal(&mut app).is_some());
+    }
+
+    #[test]
+    fn shutdown_stops_a_running_child_and_keeps_the_claim_until_it_returns() {
+        let mut app = agent_view_app(true);
+        let _claim = crate::app::terminal_runtime::claim_terminal(&mut app).expect("claim");
+        let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
+        crate::app::terminal_runtime::child_took_terminal(&mut app, cancel_tx);
+
+        app.request_shutdown();
+
+        assert_eq!(cancel_rx.try_recv(), Ok(()));
+        assert!(crate::app::terminal_runtime::claim_terminal(&mut app).is_none());
+    }
+
+    #[test]
     fn the_agent_view_action_follows_a_rebinding() {
-        let (mut app, _home) = app_with_claude_config(None);
+        let mut app = agent_view_app(true);
         let ctrl_g = KeySpec::char('g', KeyModifiers::CONTROL);
         let bindings = crate::app::keymap::default_bindings()
             .into_iter()

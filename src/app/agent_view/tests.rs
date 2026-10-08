@@ -6,7 +6,7 @@ use std::ffi::OsString;
 
 #[cfg(unix)]
 mod poll {
-    use super::super::poll_status;
+    use super::super::{AgentPoll, poll_status};
     use super::AgentStatus;
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
@@ -37,9 +37,10 @@ mod poll {
             r#"printf '%s' '[{"kind":"background","state":"blocked"},{"kind":"interactive"}]'"#,
         );
 
-        let status = poll_status(program, None, cwd(dir.path()), Duration::from_secs(5)).await;
+        let poll = poll_status(program, None, cwd(dir.path()), Duration::from_secs(5)).await;
 
-        assert_eq!(status, Some(AgentStatus { background: 1, awaiting_input: 1, working: 0 }));
+        let listed = AgentStatus { background: 1, awaiting_input: 1, working: 0 };
+        assert_eq!(poll, AgentPoll { enabled: true, status: Some(listed) });
         assert_eq!(std::fs::read_to_string(dir.path().join("argv")).unwrap(), "agents --json\n");
     }
 
@@ -47,28 +48,48 @@ mod poll {
     async fn a_failing_or_disabled_poll_hides_the_status() {
         let dir = tempfile::tempdir().unwrap();
         let failing = fake_claude(dir.path(), "printf '[]'; exit 3");
-        assert_eq!(poll_status(failing, None, cwd(dir.path()), Duration::from_secs(5)).await, None);
+        let poll = poll_status(failing, None, cwd(dir.path()), Duration::from_secs(5)).await;
+        assert_eq!(poll, AgentPoll { enabled: true, status: None });
 
         let off = tempfile::tempdir().unwrap();
         let program = fake_claude(off.path(), "printf '[]'");
         let preferences = off.path().join(".claude.json");
         std::fs::write(&preferences, r#"{"leftArrowOpensAgents":false}"#).unwrap();
-        let status =
+        let poll =
             poll_status(program, Some(preferences), cwd(off.path()), Duration::from_secs(5)).await;
-        assert_eq!(status, None);
+        assert_eq!(poll, AgentPoll { enabled: false, status: None });
         assert!(!off.path().join("argv").exists(), "a disabled agent view must not run claude");
     }
 
+    /// `ps` state of `pid`, empty once it is gone.
+    fn process_state(pid: &str) -> String {
+        let output = std::process::Command::new("ps").args(["-o", "stat=", "-p", pid]).output();
+        String::from_utf8_lossy(&output.unwrap().stdout).trim().to_owned()
+    }
+
     #[tokio::test]
-    async fn a_stuck_poll_is_abandoned_at_the_timeout() {
+    async fn a_stuck_poll_is_abandoned_and_its_child_killed_at_the_timeout() {
         let dir = tempfile::tempdir().unwrap();
-        let program = fake_claude(dir.path(), "exec sleep 30");
+        let pid_file = dir.path().join("pid");
+        let program =
+            fake_claude(dir.path(), &format!("echo $$ > '{}'; exec sleep 30", pid_file.display()));
         let started = Instant::now();
 
-        let status = poll_status(program, None, cwd(dir.path()), Duration::from_millis(200)).await;
+        let poll = poll_status(program, None, cwd(dir.path()), Duration::from_secs(2)).await;
 
-        assert_eq!(status, None);
+        assert_eq!(poll, AgentPoll { enabled: true, status: None });
         assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+        let pid = std::fs::read_to_string(&pid_file).unwrap().trim().to_owned();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            // Killed: gone, or a zombie until the runtime reaps it.
+            let state = process_state(&pid);
+            if state.is_empty() || state.starts_with('Z') {
+                break;
+            }
+            assert!(Instant::now() < deadline, "poll child {pid} still running: {state}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 }
 

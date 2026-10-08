@@ -226,6 +226,9 @@ fn handle_login_submit(app: &mut App) -> bool {
     let Some(claude_path) = resolve_claude_cli(app, "login") else {
         return true;
     };
+    let Some(claim) = claim_terminal_for_auth(app) else {
+        return true;
+    };
 
     set_command_pending(app, "Authenticating...", None);
 
@@ -239,7 +242,7 @@ fn handle_login_submit(app: &mut App) -> bool {
             outcome = "start",
             auth_command = "login",
         );
-        match run_auth_child_command(&tx, &claude_path, "login").await {
+        match run_auth_child_command(&tx, claim, &claude_path, "login").await {
             Ok(status) => {
                 tracing::debug!(
                     target: crate::logging::targets::APP_AUTH,
@@ -315,6 +318,9 @@ fn handle_logout_submit(app: &mut App) -> bool {
     let Some(claude_path) = resolve_claude_cli(app, "logout") else {
         return true;
     };
+    let Some(claim) = claim_terminal_for_auth(app) else {
+        return true;
+    };
 
     set_command_pending(app, "Signing out...", None);
 
@@ -327,7 +333,7 @@ fn handle_logout_submit(app: &mut App) -> bool {
             outcome = "start",
             auth_command = "logout",
         );
-        match run_auth_child_command(&tx, &claude_path, "logout").await {
+        match run_auth_child_command(&tx, claim, &claude_path, "logout").await {
             Ok(status) => {
                 tracing::debug!(
                     target: crate::logging::targets::APP_AUTH,
@@ -371,14 +377,29 @@ fn handle_logout_submit(app: &mut App) -> bool {
     true
 }
 
+/// Claims the terminal for `claude auth`, or explains why it cannot run yet.
+fn claim_terminal_for_auth(app: &mut App) -> Option<crate::app::terminal_runtime::TerminalClaim> {
+    let claim = crate::app::terminal_runtime::claim_terminal(app);
+    if claim.is_none() {
+        push_submission_feedback(
+            app,
+            SystemSeverity::Info,
+            "Another program is using the terminal. Try again when it returns.",
+        );
+    }
+    claim
+}
+
 async fn run_auth_child_command(
     tx: &mpsc::Sender<ClientEvent>,
+    claim: crate::app::terminal_runtime::TerminalClaim,
     claude_path: &Path,
     subcommand: &'static str,
 ) -> Result<ExitStatus, String> {
     let label = format!("claude auth {subcommand}");
     crate::app::terminal_runtime::run_with_terminal(
         tx,
+        claim,
         crate::app::terminal_runtime::TerminalChild {
             reason: ReleaseReason::AuthFlow,
             command: subcommand,

@@ -26,7 +26,10 @@ use anyhow::{Context, anyhow};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-pub(crate) use child_command::{TerminalChild, run_with_terminal};
+pub(crate) use child_command::{
+    TerminalChild, TerminalChildState, TerminalClaim, child_returned_terminal, child_took_terminal,
+    claim_terminal, run_with_terminal, stop_terminal_child,
+};
 use release_guard::TerminalReleaseGuard;
 
 enum SurfaceTerminalSession {

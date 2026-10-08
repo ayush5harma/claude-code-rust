@@ -144,6 +144,52 @@ fn capture_output(
     output
 }
 
+/// Puts a fake `claude` first on the app's PATH: the compiled
+/// `fake-claude.rs`, or for "spawn-error" an executable that cannot start.
+#[allow(clippy::expect_used)]
+fn install_fake_claude(command: &mut CommandBuilder, temp: &Path, mode: &str) {
+    let cli_dir = temp.join("bin");
+    std::fs::create_dir(&cli_dir).expect("fake CLI directory");
+    let cli = cli_dir.join(if cfg!(windows) { "claude.exe" } else { "claude" });
+    if mode == "spawn-error" {
+        let contents = if cfg!(unix) {
+            // macOS can run executable text without a shebang through
+            // a shell. A missing interpreter forces a spawn error.
+            format!("#!{}\nexit 99\n", cli_dir.join("missing-interpreter").display())
+        } else {
+            "invalid executable fixture".to_owned()
+        };
+        std::fs::write(&cli, contents).expect("invalid executable");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755))
+                .expect("executable permission");
+        }
+    } else {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-claude.rs");
+        let output = std::process::Command::new("rustc")
+            .arg("--edition=2024")
+            .arg(source)
+            .arg("-o")
+            .arg(&cli)
+            .output()
+            .expect("compile native fake CLI");
+        assert!(
+            output.status.success(),
+            "fake CLI compile failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let mut paths = vec![cli_dir];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+    command.env("PATH", std::env::join_paths(paths).expect("fixture PATH"));
+    command.env("FAKE_AUTH_MODE", mode);
+    if mode == "agent-view" {
+        command.env("CLAUDE_CODE_EXECUTABLE", &cli);
+    }
+}
+
 struct TerminalTest {
     child: TestChild,
     master: Box<dyn MasterPty + Send>,
@@ -217,47 +263,7 @@ impl TerminalTest {
         command.env_remove("CLAUDE_CODE_EXECUTABLE");
         command.env("CLAUDE_CODE_EXECUTABLE", temp.path().join("no-claude-executable"));
         if let Some(mode) = auth_mode {
-            let cli_dir = temp.path().join("bin");
-            std::fs::create_dir(&cli_dir).expect("fake CLI directory");
-            let cli = cli_dir.join(if cfg!(windows) { "claude.exe" } else { "claude" });
-            if mode == "spawn-error" {
-                let contents = if cfg!(unix) {
-                    // macOS can run executable text without a shebang through
-                    // a shell. A missing interpreter forces a spawn error.
-                    format!("#!{}\nexit 99\n", cli_dir.join("missing-interpreter").display())
-                } else {
-                    "invalid executable fixture".to_owned()
-                };
-                std::fs::write(&cli, contents).expect("invalid executable");
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755))
-                        .expect("executable permission");
-                }
-            } else {
-                let source =
-                    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-claude.rs");
-                let output = std::process::Command::new("rustc")
-                    .arg("--edition=2024")
-                    .arg(source)
-                    .arg("-o")
-                    .arg(&cli)
-                    .output()
-                    .expect("compile native fake CLI");
-                assert!(
-                    output.status.success(),
-                    "fake CLI compile failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
-            let mut paths = vec![cli_dir];
-            paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
-            command.env("PATH", std::env::join_paths(paths).expect("fixture PATH"));
-            command.env("FAKE_AUTH_MODE", mode);
-            if mode == "agent-view" {
-                command.env("CLAUDE_CODE_EXECUTABLE", &cli);
-            }
+            install_fake_claude(&mut command, temp.path(), mode);
         }
         let writer = Arc::new(Mutex::new(pair.master.take_writer().expect("pty writer")));
         let reader = pair.master.try_clone_reader().expect("pty reader");
@@ -885,6 +891,75 @@ fn left_on_an_empty_prompt_hands_the_terminal_to_the_agent_view_and_back() {
     test.submit_draft();
     test.wait_screen("reply 2 started");
     test.assert_prompts(&["LEFTaXb", "AFTER_AGENTS"]);
+    test.shutdown();
+}
+
+fn agent_view_runs(test: &TerminalTest) -> Vec<String> {
+    std::fs::read_to_string(test.temp.path().join("profile/agent-view-runs"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn a_repeated_left_starts_one_agent_view_and_reports_no_error() {
+    let mut test = TerminalTest::start_with_auth("stream", 3, Some("agent-view"));
+    let profile = test.temp.path().join("profile");
+    std::fs::write(profile.join("agents.json"), r#"[{"kind":"background","state":"working"}]"#)
+        .expect("fake agent listing");
+
+    // Key repeat, or keys batched over ssh/mosh, deliver both in one read.
+    test.send(b"\x1b[D\x1b[D");
+    test.wait_screen("AGENT_VIEW_READY");
+    test.send(b"once\r");
+    test.wait_screen("\u{2190} 1 agent \u{b7} 1 working");
+    // Give a second hand-over, had one started, time to show itself.
+    std::thread::sleep(Duration::from_millis(500));
+
+    assert_eq!(agent_view_runs(&test).len(), 1, "{:?}", agent_view_runs(&test));
+    let screen = test.screen();
+    assert!(!screen.contains("closed by shutdown"), "{screen}");
+    assert!(!screen.contains("claude agents"), "{screen}");
+    test.send(b"AFTER_REPEAT");
+    test.wait_screen("AFTER_REPEAT");
+    test.submit_draft();
+    test.wait_screen("reply 1 started");
+    test.assert_prompts(&["AFTER_REPEAT"]);
+    test.shutdown();
+}
+
+/// Before the child takes raw mode the terminal is in cooked mode, so Ctrl+C
+/// raises SIGINT in the terminal's foreground process group.
+#[cfg(unix)]
+#[test]
+fn ctrl_c_while_the_agent_view_starts_leaves_the_session_running() {
+    let mut test = TerminalTest::start_with_auth("stream", 3, Some("agent-view"));
+
+    test.send(b"\x1b[D");
+    test.wait_screen("AGENT_VIEW_READY");
+    test.send(b"\x03");
+    test.wait_until("the agent view returned the terminal", |test| {
+        test.runtime_records_since(0)
+            .iter()
+            .any(|record| record["event_name"] == "terminal_returned_from_child")
+    });
+    assert!(
+        test.runtime_records_since(0)
+            .iter()
+            .any(|record| record["event_name"] == "sigint_ignored_for_terminal_child"),
+        "claude-rs saw no SIGINT, so this test proves nothing:\n{}",
+        test.diagnostics()
+    );
+    assert!(!test.temp.path().join("profile/agent-view-input").exists());
+
+    test.send(b"AFTER_SIGINT");
+    test.wait_screen("AFTER_SIGINT");
+    test.submit_draft();
+    test.wait_screen("reply 1 started");
+    test.assert_prompts(&["AFTER_SIGINT"]);
+    let screen = test.screen();
+    assert!(!screen.contains("exited with code"), "{screen}");
     test.shutdown();
 }
 
