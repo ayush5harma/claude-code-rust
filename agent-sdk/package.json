@@ -14,7 +14,7 @@
     "knip": "knip --include files,dependencies,unlisted,unresolved",
     "audit": "node ./scripts/audit-direct-deps.mjs",
     "audit:raw": "npm audit --audit-level=moderate",
-    "test": "npm run build && node --test dist/**/*.test.js"
+    "test": "npm run build && node --test dist/bridge.test.js \"dist/bridge/**/*.test.js\""
   },
   "engines": {
     "node": ">=24"
