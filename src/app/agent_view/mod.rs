@@ -96,6 +96,7 @@ pub fn start_status_poller(app: &App) {
     let refresh = Rc::clone(&app.agent_view.refresh);
     tokio::task::spawn_local(async move {
         let mut last_sent = None;
+        let mut trigger = "start";
         loop {
             let poll = tokio::spawn(poll_status(
                 program.clone(),
@@ -104,16 +105,24 @@ pub fn start_status_poller(app: &App) {
                 POLL_TIMEOUT,
             ));
             let status = poll.await.ok().flatten();
+            tracing::debug!(
+                target: crate::logging::targets::APP_LIFECYCLE,
+                event_name = "agent_status_polled",
+                message = "agent status polled",
+                outcome = if status.is_some() { "success" } else { "hidden" },
+                trigger,
+                background = status.map_or(0, |status| status.background),
+            );
             if status != last_sent {
                 if event_tx.send(ClientEvent::AgentStatusUpdated { status }).await.is_err() {
                     return;
                 }
                 last_sent = status;
             }
-            tokio::select! {
-                () = tokio::time::sleep(POLL_INTERVAL) => {}
-                () = refresh.notified() => {}
-            }
+            trigger = tokio::select! {
+                () = tokio::time::sleep(POLL_INTERVAL) => "interval",
+                () = refresh.notified() => "refresh",
+            };
         }
     });
 }

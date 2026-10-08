@@ -820,6 +820,66 @@ fn auth_child_owns_stdin_and_output_and_returns_a_resized_usable_terminal() {
 }
 
 #[test]
+fn left_on_an_empty_prompt_hands_the_terminal_to_the_agent_view_and_back() {
+    let mut test = TerminalTest::start_with_auth("stream", 3, Some("agent-view"));
+    let profile = test.temp.path().join("profile");
+    let project = test.temp.path().join("project");
+
+    // With text in the composer, Left is cursor movement and opens nothing.
+    test.send(b"LEFTab");
+    test.wait_screen("LEFTab");
+    test.send(b"\x1b[DX");
+    test.wait_screen("LEFTaXb");
+    test.submit_draft();
+    test.wait_turn_finished("reply 1 started");
+    test.assert_prompts(&["LEFTaXb"]);
+    assert!(!profile.join("agent-view-runs").exists(), "Left with text opened the agent view");
+    assert!(!test.screen().contains('\u{2190}'), "an empty listing must not show the hint");
+
+    std::fs::write(
+        profile.join("agents.json"),
+        r#"[{"kind":"background","state":"blocked"},{"kind":"background","state":"working"},
+            {"kind":"interactive","status":"busy"}]"#,
+    )
+    .expect("fake agent listing");
+    test.send(b"\x1b[D");
+    test.wait_screen("AGENT_VIEW_READY");
+    let before = test.output.lock().expect("output lock").raw.len();
+    std::thread::sleep(Duration::from_millis(250));
+    let after = test.output.lock().expect("output lock").raw.len();
+    assert_eq!(after, before, "TUI wrote while the agent view owned the terminal");
+    test.send(b"view_only_118\r");
+
+    // The listing is polled again as soon as the view exits, not at the next
+    // ten-second interval.
+    test.wait_screen("\u{2190} 2 agents \u{b7} 1 awaiting input \u{b7} 1 working");
+    let polls = test.runtime_records_since(0);
+    let polls: Vec<_> =
+        polls.iter().filter(|record| record["event_name"] == "agent_status_polled").collect();
+    let shown = polls.iter().position(|record| record["background"] == 2).expect("listed poll");
+    assert_eq!(polls[shown]["trigger"], "refresh", "{polls:?}");
+    let received =
+        std::fs::read_to_string(profile.join("agent-view-input")).expect("agent view stdin");
+    assert_eq!(received.trim_end_matches(['\r', '\n']), "view_only_118");
+    let runs = std::fs::read_to_string(profile.join("agent-view-runs")).expect("agent view runs");
+    let runs: Vec<_> = runs.lines().collect();
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    let (argv, cwd) = runs[0].split_once('\t').expect("argv and cwd");
+    assert_eq!(argv, "agents");
+    assert_eq!(
+        Path::new(cwd).canonicalize().expect("child cwd"),
+        project.canonicalize().expect("project")
+    );
+
+    test.send(b"AFTER_AGENTS");
+    test.wait_screen("AFTER_AGENTS");
+    test.submit_draft();
+    test.wait_screen("reply 2 started");
+    test.assert_prompts(&["LEFTaXb", "AFTER_AGENTS"]);
+    test.shutdown();
+}
+
+#[test]
 fn background_permission_remains_interactive_after_launch_enters_history() {
     for (keys, option, outcome) in
         [(b"\r".as_slice(), "allow-once", "completed"), (b"\x1b".as_slice(), "deny-once", "killed")]
