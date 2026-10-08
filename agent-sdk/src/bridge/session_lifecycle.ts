@@ -222,6 +222,13 @@ export type SessionState = {
   resumeUpdates?: SessionUpdate[];
   restoredInput?: string;
   pendingRewindResult?: PendingRewindResult;
+  /**
+   * The last title the child announced. The app drops updates for a session
+   * it does not know yet, and the child announces before init (on resume and
+   * after /clear, which replaces the session id), so it is re-sent after every
+   * connect or replacement.
+   */
+  sessionTitle?: string;
 };
 
 export const sessions = new Map<string, SessionState>();

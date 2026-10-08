@@ -1830,3 +1830,32 @@ fn ultracode_lifecycle_preserves_conversation_state_and_rejects_stale_sessions()
     handle_client_event(&mut app, ClientEvent::ConnectionFailed("closed".to_owned().into()));
     assert!(app.session_runtime.ultracode.is_none());
 }
+
+#[test]
+fn session_title_and_color_follow_the_child_until_another_session_connects() {
+    let mut app = make_test_app();
+    app.session_runtime.session_id = Some(model::SessionId::new("current-session"));
+    let update =
+        |update| ClientEvent::SessionUpdate { session_id: "current-session".to_owned(), update };
+
+    handle_client_event(
+        &mut app,
+        update(model::SessionUpdate::SessionTitleUpdate(Some("probe-e2e".to_owned()))),
+    );
+    handle_client_event(
+        &mut app,
+        update(model::SessionUpdate::SessionColorUpdate(Some(model::SessionColor::Blue))),
+    );
+    assert_eq!(app.session_runtime.session_title.as_deref(), Some("probe-e2e"));
+    assert_eq!(app.session_runtime.session_color, Some(model::SessionColor::Blue));
+
+    // Reconnecting the same session keeps them; the bridge re-sends both.
+    app.session_runtime.activate_session(model::SessionId::new("current-session"));
+    assert_eq!(app.session_runtime.session_title.as_deref(), Some("probe-e2e"));
+
+    handle_client_event(&mut app, update(model::SessionUpdate::SessionColorUpdate(None)));
+    assert_eq!(app.session_runtime.session_color, None);
+
+    app.session_runtime.activate_session(model::SessionId::new("other-session"));
+    assert_eq!(app.session_runtime.session_title, None);
+}
