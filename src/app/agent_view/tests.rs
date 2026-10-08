@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::status::{AgentStatus, parse_agents_json};
-use super::{executable_from, left_arrow_opens_agents};
+use super::{PreferencesCache, executable_from, left_arrow_opens_agents};
 use std::ffi::OsString;
 
+mod jobs_format;
+
 #[cfg(unix)]
-mod poll {
-    use super::super::{AgentPoll, poll_status};
+mod cli {
+    use super::super::{CliFallback, run_agents_json};
     use super::AgentStatus;
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
@@ -29,36 +31,48 @@ mod poll {
         dir.to_string_lossy().into_owned()
     }
 
+    fn runs(dir: &Path) -> usize {
+        std::fs::read_to_string(dir.join("argv")).unwrap_or_default().lines().count()
+    }
+
     #[tokio::test]
-    async fn a_poll_runs_agents_json_and_counts_its_reply() {
+    async fn the_cli_fallback_runs_agents_json_and_counts_its_reply() {
         let dir = tempfile::tempdir().unwrap();
         let program = fake_claude(
             dir.path(),
             r#"printf '%s' '[{"kind":"background","state":"blocked"},{"kind":"interactive"}]'"#,
         );
 
-        let poll = poll_status(program, None, cwd(dir.path()), Duration::from_secs(5)).await;
+        let status = run_agents_json(program, cwd(dir.path()), Duration::from_secs(5)).await;
 
-        let listed = AgentStatus { background: 1, awaiting_input: 1, working: 0 };
-        assert_eq!(poll, AgentPoll { enabled: true, status: Some(listed) });
+        assert_eq!(status, Some(AgentStatus { background: 1, awaiting_input: 1, working: 0 }));
         assert_eq!(std::fs::read_to_string(dir.path().join("argv")).unwrap(), "agents --json\n");
     }
 
     #[tokio::test]
-    async fn a_failing_or_disabled_poll_hides_the_status() {
+    async fn a_failing_cli_hides_the_status() {
         let dir = tempfile::tempdir().unwrap();
         let failing = fake_claude(dir.path(), "printf '[]'; exit 3");
-        let poll = poll_status(failing, None, cwd(dir.path()), Duration::from_secs(5)).await;
-        assert_eq!(poll, AgentPoll { enabled: true, status: None });
+        assert_eq!(run_agents_json(failing, cwd(dir.path()), Duration::from_secs(5)).await, None);
+    }
 
-        let off = tempfile::tempdir().unwrap();
-        let program = fake_claude(off.path(), "printf '[]'");
-        let preferences = off.path().join(".claude.json");
-        std::fs::write(&preferences, r#"{"leftArrowOpensAgents":false}"#).unwrap();
-        let poll =
-            poll_status(program, Some(preferences), cwd(off.path()), Duration::from_secs(5)).await;
-        assert_eq!(poll, AgentPoll { enabled: false, status: None });
-        assert!(!off.path().join("argv").exists(), "a disabled agent view must not run claude");
+    #[tokio::test]
+    async fn the_cli_fallback_runs_at_most_once_a_minute() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = fake_claude(dir.path(), r#"printf '%s' '[{"kind":"background"}]'"#);
+        let mut fallback = CliFallback {
+            program: Some(program),
+            cwd: cwd(dir.path()),
+            last_run: None,
+            last: None,
+        };
+
+        let first = fallback.status().await;
+        let second = fallback.status().await;
+
+        let listed = Some(AgentStatus { background: 1, awaiting_input: 0, working: 0 });
+        assert_eq!((first, second), (listed, listed));
+        assert_eq!(runs(dir.path()), 1);
     }
 
     /// `ps` state of `pid`, empty once it is gone.
@@ -68,16 +82,16 @@ mod poll {
     }
 
     #[tokio::test]
-    async fn a_stuck_poll_is_abandoned_and_its_child_killed_at_the_timeout() {
+    async fn a_stuck_cli_is_abandoned_and_its_child_killed_at_the_timeout() {
         let dir = tempfile::tempdir().unwrap();
         let pid_file = dir.path().join("pid");
         let program =
             fake_claude(dir.path(), &format!("echo $$ > '{}'; exec sleep 30", pid_file.display()));
         let started = Instant::now();
 
-        let poll = poll_status(program, None, cwd(dir.path()), Duration::from_secs(2)).await;
+        let status = run_agents_json(program, cwd(dir.path()), Duration::from_secs(2)).await;
 
-        assert_eq!(poll, AgentPoll { enabled: true, status: None });
+        assert_eq!(status, None);
         assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
         let pid = std::fs::read_to_string(&pid_file).unwrap().trim().to_owned();
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -132,29 +146,48 @@ fn background_entries_without_a_known_state_still_count_as_agents() {
     assert_eq!(status, AgentStatus { background: 2, awaiting_input: 0, working: 0 });
 }
 
-fn preferences(contents: Option<&str>) -> (tempfile::TempDir, std::path::PathBuf) {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join(".claude.json");
-    if let Some(contents) = contents {
-        std::fs::write(&path, contents).unwrap();
-    }
-    (dir, path)
-}
-
 #[test]
 fn left_arrow_setting_defaults_on_and_only_false_turns_it_off() {
     let cases = [
-        (None, true),
-        (Some("{}"), true),
-        (Some(r#"{"leftArrowOpensAgents":true}"#), true),
-        (Some(r#"{"leftArrowOpensAgents":false}"#), false),
-        (Some("not json"), true),
+        ("{}", true),
+        (r#"{"leftArrowOpensAgents":true}"#, true),
+        (r#"{"leftArrowOpensAgents":false}"#, false),
+        ("not json", true),
     ];
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(".claude.json");
+    assert!(left_arrow_opens_agents(&path), "a missing file keeps the default");
     for (contents, expected) in cases {
-        let (_dir, path) = preferences(contents);
-        assert_eq!(left_arrow_opens_agents(Some(&path)), expected, "{contents:?}");
+        std::fs::write(&path, contents).unwrap();
+        assert_eq!(left_arrow_opens_agents(&path), expected, "{contents:?}");
     }
-    assert!(left_arrow_opens_agents(None));
+}
+
+/// Rewrites `path` with `contents` of the same length and the old mtime, so
+/// only a cache keyed on (mtime, size) can tell that nothing changed.
+pub(super) fn rewrite_keeping_stamp(path: &std::path::Path, contents: &str) {
+    let modified = std::fs::metadata(path).unwrap().modified().unwrap();
+    assert_eq!(std::fs::metadata(path).unwrap().len(), contents.len() as u64);
+    std::fs::write(path, contents).unwrap();
+    std::fs::File::options().write(true).open(path).unwrap().set_modified(modified).unwrap();
+}
+
+#[test]
+fn the_setting_is_reparsed_only_when_the_config_file_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(".claude.json");
+    std::fs::write(&path, r#"{"leftArrowOpensAgents":false}"#).unwrap();
+    let mut cache = PreferencesCache::new(Some(path.clone()));
+    assert!(!cache.enabled());
+
+    // Same size and mtime: the cached value stands, the file is not parsed.
+    rewrite_keeping_stamp(&path, r#"{"leftArrowOpensAgents":true }"#);
+    assert!(!cache.enabled());
+
+    std::fs::write(&path, r#"{"leftArrowOpensAgents":true}"#).unwrap();
+    assert!(cache.enabled());
+    std::fs::remove_file(&path).unwrap();
+    assert!(cache.enabled());
 }
 
 #[test]

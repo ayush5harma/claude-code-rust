@@ -851,12 +851,11 @@ fn left_on_an_empty_prompt_hands_the_terminal_to_the_agent_view_and_back() {
     assert!(!profile.join("agent-view-runs").exists(), "Left with text opened the agent view");
     assert!(!test.screen().contains('\u{2190}'), "an empty listing must not show the hint");
 
-    std::fs::write(
-        profile.join("agents.json"),
-        r#"[{"kind":"background","state":"blocked"},{"kind":"background","state":"working"},
-            {"kind":"interactive","status":"busy"}]"#,
-    )
-    .expect("fake agent listing");
+    // The poller reads Claude Code's job files, not the CLI: one blocked job
+    // nobody runs, one working job a live daemon worker (this test) runs.
+    write_job(&profile, "aaaa0001", "blocked", "blocked");
+    write_job(&profile, "aaaa0002", "working", "active");
+    write_roster(&profile, &["aaaa0002"]);
     test.send(b"\x1b[D");
     test.wait_screen("AGENT_VIEW_READY");
     let before = test.output.lock().expect("output lock").raw.len();
@@ -873,6 +872,7 @@ fn left_on_an_empty_prompt_hands_the_terminal_to_the_agent_view_and_back() {
         polls.iter().filter(|record| record["event_name"] == "agent_status_polled").collect();
     let shown = polls.iter().position(|record| record["background"] == 2).expect("listed poll");
     assert_eq!(polls[shown]["trigger"], "refresh", "{polls:?}");
+    assert_eq!(polls[shown]["source"], "files", "{polls:?}");
     let received =
         std::fs::read_to_string(profile.join("agent-view-input")).expect("agent view stdin");
     assert_eq!(received.trim_end_matches(['\r', '\n']), "view_only_118");
@@ -894,6 +894,34 @@ fn left_on_an_empty_prompt_hands_the_terminal_to_the_agent_view_and_back() {
     test.shutdown();
 }
 
+/// A Claude Code background job as the daemon records it.
+#[allow(clippy::expect_used)]
+fn write_job(profile: &Path, id: &str, state: &str, tempo: &str) {
+    let dir = profile.join("jobs").join(id);
+    std::fs::create_dir_all(&dir).expect("job directory");
+    std::fs::write(
+        dir.join("state.json"),
+        format!(
+            r#"{{"state":"{state}","tempo":"{tempo}","name":"{id}","sessionId":"{id}","createdAt":"2026-01-01T00:00:00.000Z","template":"bg","respawnFlags":[]}}"#
+        ),
+    )
+    .expect("job state");
+}
+
+/// Daemon workers for `shorts`, alive because their pid is this test's.
+#[allow(clippy::expect_used)]
+fn write_roster(profile: &Path, shorts: &[&str]) {
+    let pid = std::process::id();
+    let workers: Vec<String> =
+        shorts.iter().map(|short| format!(r#""{short}":{{"pid":{pid}}}"#)).collect();
+    std::fs::create_dir_all(profile.join("daemon")).expect("daemon directory");
+    std::fs::write(
+        profile.join("daemon/roster.json"),
+        format!(r#"{{"proto":1,"workers":{{{}}}}}"#, workers.join(",")),
+    )
+    .expect("daemon roster");
+}
+
 fn agent_view_runs(test: &TerminalTest) -> Vec<String> {
     std::fs::read_to_string(test.temp.path().join("profile/agent-view-runs"))
         .unwrap_or_default()
@@ -906,8 +934,8 @@ fn agent_view_runs(test: &TerminalTest) -> Vec<String> {
 fn a_repeated_left_starts_one_agent_view_and_reports_no_error() {
     let mut test = TerminalTest::start_with_auth("stream", 3, Some("agent-view"));
     let profile = test.temp.path().join("profile");
-    std::fs::write(profile.join("agents.json"), r#"[{"kind":"background","state":"working"}]"#)
-        .expect("fake agent listing");
+    write_job(&profile, "bbbb0001", "working", "active");
+    write_roster(&profile, &["bbbb0001"]);
 
     // Key repeat, or keys batched over ssh/mosh, deliver both in one read.
     test.send(b"\x1b[D\x1b[D");
