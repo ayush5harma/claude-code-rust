@@ -1,3 +1,4 @@
+import { emitSessionLabelAfterConnect } from "./session_label.js";
 import {
   listSessions,
   type ListSessionsOptions,
@@ -389,6 +390,7 @@ export function emitConnectEvent(session: SessionState): void {
     }
   }
   emitAvailableAgentsSnapshot(session);
+  void emitSessionLabelAfterConnect(session);
   session.resumeUpdates = undefined;
   session.restoredInput = undefined;
 
@@ -420,6 +422,7 @@ export function emitSessionReplacedEvent(
   writeEvent(bridgeEvent, requestId);
   emitAvailableCommandsSnapshot(session);
   emitAvailableAgentsSnapshot(session);
+  void emitSessionLabelAfterConnect(session);
   if (session.pendingRewindResult) {
     writeEvent(
       { ...session.pendingRewindResult, session_id: session.sessionId },
