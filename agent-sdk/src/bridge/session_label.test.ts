@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import type { SDKMessage, SessionStoreEntry } from "@anthropic-ai/claude-agent-sdk";
 import { replaceProtocolEventWriter } from "./events.js";
@@ -104,6 +107,33 @@ test("a title announced before connect reaches the app after it, and again after
   assert.deepEqual(captureUpdates(() => emitSessionLabelAfterConnect(session)), [
     { session_id: "session-2", type: "session_title_update", title: "renamed" },
   ]);
+});
+
+test("a live rename refreshes the session list the resume picker shows", async () => {
+  const configDir = mkdtempSync(path.join(os.tmpdir(), "label-config-"));
+  const previous = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = configDir;
+  const writes: string[] = [];
+  const restore = replaceProtocolEventWriter((line) => {
+    writes.push(line);
+  });
+  const listed = () => writes.some((line) => line.includes('"sessions_listed"'));
+  try {
+    handleSdkMessage(minimalSession(true), titleChanged("renamed-live"));
+    const deadline = Date.now() + 5_000;
+    while (!listed() && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(listed(), "a rename must re-list sessions");
+  } finally {
+    restore();
+    if (previous === undefined) {
+      delete process.env.CLAUDE_CONFIG_DIR;
+    } else {
+      process.env.CLAUDE_CONFIG_DIR = previous;
+    }
+    rmSync(configDir, { recursive: true, force: true });
+  }
 });
 
 test("a resumed session's colour reaches the app once, not again after /clear", () => {
