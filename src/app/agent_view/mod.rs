@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Claude Code's agent view from claude-rs: the composer footer's
-//! `← N agents` status, polled from `claude agents --json`, and the hand-over
+//! `← N agents` status, read from Claude Code's job files, and the hand-over
 //! of the terminal to the stock `claude agents` view.
 
+mod jobs;
 pub(crate) mod status;
 #[cfg(test)]
 mod tests;
@@ -13,22 +14,24 @@ pub use status::AgentStatus;
 use crate::agent::events::ClientEvent;
 use crate::app::terminal_runtime::{TerminalChild, claim_terminal, run_with_terminal};
 use crate::app::{App, FocusOwner, ReleaseReason, SystemSeverity};
+use jobs::{JobsScanner, Scan, Stamp, stamp_of};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 
-/// The poll interval while background sessions exist.
+/// A poll is a few `stat` calls (see `jobs`), so the interval matches the
+/// stock footer's freshness without a cost worth backing off from.
 const POLL_INTERVAL: Duration = Duration::from_secs(10);
-/// One poll costs about 0.17 s of CPU (measured on 2.1.293) and several
-/// claude-rs instances may run at once, so a listing with no background
-/// sessions is checked less often. Returning from the view polls at once.
-const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(30);
+/// `claude agents --json` starts the 236 MB stock binary (about 0.17 s of
+/// CPU, measured on 2.1.293). It is used only when the job files are in a
+/// layout this reader does not know, and then at most this often.
+const CLI_FALLBACK_INTERVAL: Duration = Duration::from_secs(60);
 /// `claude agents --json` answered in about 0.2 s when measured; a call that
 /// takes this long is stuck and is killed rather than awaited.
-const POLL_TIMEOUT: Duration = Duration::from_secs(5);
+const CLI_TIMEOUT: Duration = Duration::from_secs(5);
 /// Stock keeps this in its global config (`.claude.json`, beside the trust
 /// records), not in settings.json; absent means on.
 const LEFT_ARROW_SETTING: &str = "leftArrowOpensAgents";
@@ -39,7 +42,7 @@ pub(crate) struct AgentViewState {
     /// thread never reads the config file itself: it can be megabytes.
     pub(crate) enabled: bool,
     /// The latest background-session counts. `None` hides the footer hint:
-    /// no listing yet, the listing failed, or the agent view is turned off.
+    /// no reading yet, the reading failed, or the agent view is turned off.
     pub(crate) status: Option<AgentStatus>,
     poller_started: bool,
     /// Wakes the poller before its interval ends.
@@ -78,20 +81,42 @@ fn executable_from(
     }
 }
 
-fn preferences_path(app: &App) -> Option<PathBuf> {
-    crate::claude_paths::ClaudePaths::resolve(app.settings_home_override.as_deref())
-        .map(|paths| paths.preferences)
-}
-
-/// Read on the poller's worker at every poll, so a change made in Claude
-/// Code's /config applies within one interval. An unreadable file keeps
-/// stock's default.
-fn left_arrow_opens_agents(preferences: Option<&Path>) -> bool {
-    preferences
-        .and_then(|path| std::fs::read(path).ok())
+fn left_arrow_opens_agents(preferences: &Path) -> bool {
+    std::fs::read(preferences)
+        .ok()
         .and_then(|raw| serde_json::from_slice::<serde_json::Value>(&raw).ok())
         .and_then(|document| document.get(LEFT_ARROW_SETTING).and_then(serde_json::Value::as_bool))
         .unwrap_or(true)
+}
+
+/// `leftArrowOpensAgents`, re-parsed only when `.claude.json` changes: the
+/// file holds every project's records and can be megabytes. Missing or
+/// unreadable keeps stock's default, on.
+struct PreferencesCache {
+    path: Option<PathBuf>,
+    stamp: Option<Stamp>,
+    enabled: bool,
+}
+
+impl PreferencesCache {
+    fn new(path: Option<PathBuf>) -> Self {
+        Self { path, stamp: None, enabled: true }
+    }
+
+    fn enabled(&mut self) -> bool {
+        let Some(path) = self.path.as_deref() else {
+            return true;
+        };
+        let stamp = stamp_of(path);
+        if stamp.is_none() {
+            self.stamp = None;
+            self.enabled = true;
+        } else if stamp != self.stamp {
+            self.stamp = stamp;
+            self.enabled = left_arrow_opens_agents(path);
+        }
+        self.enabled
+    }
 }
 
 /// The one rule for whether the agent view action opens the view now, used
@@ -106,47 +131,141 @@ pub(crate) fn opens_from_composer(app: &App) -> bool {
         && !app.has_local_input()
 }
 
+/// What a file poll found, before any CLI fallback.
+enum FilePoll {
+    Disabled,
+    Scanned(Scan),
+}
+
+/// The file side of the poller, moved to a blocking worker for each poll.
+struct FileReader {
+    preferences: PreferencesCache,
+    jobs: Option<JobsScanner>,
+}
+
+impl FileReader {
+    fn poll(&mut self) -> FilePoll {
+        if !self.preferences.enabled() {
+            return FilePoll::Disabled;
+        }
+        let Some(jobs) = self.jobs.as_mut() else {
+            return FilePoll::Scanned(Scan::Unrecognised("no Claude config directory".to_owned()));
+        };
+        if !cfg!(unix) {
+            return FilePoll::Scanned(Scan::Unrecognised(
+                "process liveness is read only on Unix".to_owned(),
+            ));
+        }
+        FilePoll::Scanned(jobs.scan(chrono::Utc::now().timestamp_millis(), &pid_alive))
+    }
+}
+
+/// Whether `pid` names a running process (stock also compares its start
+/// time to rule out pid reuse; this does not).
+fn pid_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        let Ok(pid) = libc::pid_t::try_from(pid) else {
+            return false;
+        };
+        // SAFETY: signal 0 performs only the existence and permission check;
+        // no signal is delivered and no memory is passed.
+        #[allow(unsafe_code)]
+        let result = unsafe { libc::kill(pid, 0) };
+        result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+/// `claude agents --json`, for a job layout the file reader does not know:
+/// at most once per `CLI_FALLBACK_INTERVAL`, reusing the last answer between.
+struct CliFallback {
+    program: Option<PathBuf>,
+    cwd: String,
+    last_run: Option<Instant>,
+    last: Option<AgentStatus>,
+}
+
+impl CliFallback {
+    async fn status(&mut self) -> Option<AgentStatus> {
+        if self.last_run.is_some_and(|ran| ran.elapsed() < CLI_FALLBACK_INTERVAL) {
+            return self.last;
+        }
+        self.last_run = Some(Instant::now());
+        self.last = match self.program.clone() {
+            // The child and the parse run on a runtime worker.
+            Some(program) => tokio::spawn(run_agents_json(program, self.cwd.clone(), CLI_TIMEOUT))
+                .await
+                .ok()
+                .flatten(),
+            None => None,
+        };
+        self.last
+    }
+}
+
 /// Starts the poller once, after workspace trust is settled (the TUI loop
-/// calls this when it starts the connection). It polls
-/// `claude agents --json` at once, then every `POLL_INTERVAL` while
-/// background sessions exist or `IDLE_POLL_INTERVAL` otherwise, and right
-/// after the agent view exits. One poll runs at a time; the child and the
-/// parse run on a runtime worker, never on the UI thread.
+/// calls this when it starts the connection). It reads the job files at
+/// once, every `POLL_INTERVAL`, and right after the agent view exits. One
+/// poll runs at a time, on a blocking worker, never on the UI thread.
 pub(crate) fn ensure_status_poller(app: &mut App) {
     if app.agent_view.poller_started {
         return;
     }
     app.agent_view.poller_started = true;
-    let Some(program) = resolve_executable() else {
-        tracing::debug!(
-            target: crate::logging::targets::APP_LIFECYCLE,
-            event_name = "agent_status_poller_skipped",
-            message = "no claude executable for the agent status",
-            outcome = "skipped",
-        );
-        return;
+    let paths = crate::claude_paths::ClaudePaths::resolve(app.settings_home_override.as_deref());
+    let mut reader = FileReader {
+        preferences: PreferencesCache::new(paths.as_ref().map(|paths| paths.preferences.clone())),
+        jobs: paths.map(|paths| JobsScanner::new(paths.config_dir)),
     };
-    let preferences = preferences_path(app);
-    let cwd = app.cwd_raw.clone();
+    let mut fallback = CliFallback {
+        program: resolve_executable(),
+        cwd: app.cwd_raw.clone(),
+        last_run: None,
+        last: None,
+    };
     let event_tx = app.event_tx.clone();
     let refresh = Rc::clone(&app.agent_view.refresh);
     tokio::task::spawn_local(async move {
         let mut last_sent = AgentPoll { enabled: true, status: None };
         let mut trigger = "start";
         loop {
-            let poll = tokio::spawn(poll_status(
-                program.clone(),
-                preferences.clone(),
-                cwd.clone(),
-                POLL_TIMEOUT,
-            ));
-            let poll = poll.await.unwrap_or(AgentPoll { enabled: true, status: None });
+            let Ok((returned, file_poll)) = tokio::task::spawn_blocking(move || {
+                let file_poll = reader.poll();
+                (reader, file_poll)
+            })
+            .await
+            else {
+                return;
+            };
+            reader = returned;
+            let (poll, source) = match file_poll {
+                FilePoll::Disabled => (AgentPoll { enabled: false, status: None }, "disabled"),
+                FilePoll::Scanned(Scan::Counted(status)) => {
+                    (AgentPoll { enabled: true, status: Some(status) }, "files")
+                }
+                FilePoll::Scanned(Scan::Unrecognised(reason)) => {
+                    tracing::debug!(
+                        target: crate::logging::targets::APP_LIFECYCLE,
+                        event_name = "agent_jobs_unrecognised",
+                        message = "job files not recognised; using claude agents --json",
+                        outcome = "fallback",
+                        reason,
+                    );
+                    (AgentPoll { enabled: true, status: fallback.status().await }, "cli")
+                }
+            };
             tracing::debug!(
                 target: crate::logging::targets::APP_LIFECYCLE,
                 event_name = "agent_status_polled",
                 message = "agent status polled",
                 outcome = if poll.status.is_some() { "success" } else { "hidden" },
                 trigger,
+                source,
                 enabled = poll.enabled,
                 background = poll.status.map_or(0, |status| status.background),
             );
@@ -158,28 +277,15 @@ pub(crate) fn ensure_status_poller(app: &mut App) {
                 }
                 last_sent = poll;
             }
-            let interval = if poll.status.is_some_and(|status| status.background > 0) {
-                POLL_INTERVAL
-            } else {
-                IDLE_POLL_INTERVAL
-            };
             trigger = tokio::select! {
-                () = tokio::time::sleep(interval) => "interval",
+                () = tokio::time::sleep(POLL_INTERVAL) => "interval",
                 () = refresh.notified() => "refresh",
             };
         }
     });
 }
 
-async fn poll_status(
-    program: PathBuf,
-    preferences: Option<PathBuf>,
-    cwd: String,
-    timeout: Duration,
-) -> AgentPoll {
-    if !left_arrow_opens_agents(preferences.as_deref()) {
-        return AgentPoll { enabled: false, status: None };
-    }
+async fn run_agents_json(program: PathBuf, cwd: String, timeout: Duration) -> Option<AgentStatus> {
     let result = match tokio::process::Command::new(&program)
         .args(["agents", "--json"])
         .current_dir(&cwd)
@@ -198,7 +304,7 @@ async fn poll_status(
         },
         Err(error) => Err(error.to_string()),
     };
-    let status = result
+    result
         .map_err(|error| {
             tracing::debug!(
                 target: crate::logging::targets::APP_LIFECYCLE,
@@ -208,8 +314,7 @@ async fn poll_status(
                 error_message = %error,
             );
         })
-        .ok();
-    AgentPoll { enabled: true, status }
+        .ok()
 }
 
 /// Hands the terminal to the stock agent view until it exits (Esc, or
