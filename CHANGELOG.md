@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.15.1-fork.2] - 2026-10-09
+
 ### Features
 
 - **Welcome mascot**: draw the stock Claude Code mascot with its body and eye colours, while preserving narrow-terminal layout.
@@ -14,9 +16,15 @@ All notable changes to this project will be documented in this file.
 
 ### Fixes
 
+- **Bridge event writes**: retry partial writes and EAGAIN so large command lists and resumed histories do not terminate the session.
+- **Terminal hand-over cleanup**: preserve signal handling across agent-view transitions, including Ctrl+C during startup, Ctrl+Q, terminal close and suspend/resume.
 - **Local command output**: The reply of every command Claude Code runs locally (`/rename`, `/color`, `/usage`, ...) appears in chat instead of being dropped.
 - **Resumed local commands**: Resumed history shows a local command as its command line with its output under it, instead of the raw `<command-name>` record.
 - **Status tab rename**: Renaming or generating a name from the Status tab goes through Claude Code's `/rename`, so `claude agents` and the transcript agree with the app. An empty name is refused instead of clearing the name.
+
+### Verification
+
+- Add the stock-versus-fork parity suite, launcher coverage and the measured parity/performance report in `docs/src/parity.md`. The report records remaining gaps and the limits of the measurements.
 
 ## [0.15.1-fork.1] - 2026-10-07
 
