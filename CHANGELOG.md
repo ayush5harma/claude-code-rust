@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Features
+
+- **Background automatic updates** (#437, @srothgan): Install automatic updates in the background after exit, and show a warning at startup when the last one failed.
+
 ## [0.15.2] - 2026-10-08 [Changes][v0.15.2]
 
 ### Fixes
