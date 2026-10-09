@@ -163,12 +163,12 @@ pub(crate) fn selected_tip(block: &WelcomeBlock) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{HOST_TIPS, Line, overview_lines};
+    use crate::app::{ChatMessage, MessageBlock};
     use crate::ui::theme;
+    use crate::ui::wrap::{display_width, line_display_width};
 
     const LOGO_MIDDLE_ROW: &str =
         "\u{259d}\u{259c}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2580}";
-    use crate::app::{ChatMessage, MessageBlock};
-    use crate::ui::wrap::{display_width, line_display_width};
 
     fn line_text(line: &Line<'_>) -> String {
         line.spans.iter().map(|span| span.content.as_ref()).collect()
