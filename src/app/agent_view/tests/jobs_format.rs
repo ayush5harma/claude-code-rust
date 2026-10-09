@@ -188,7 +188,9 @@ fn agent_view_files_match_agents_json() {
         unsafe {
             let mut usage: libc::rusage = std::mem::zeroed();
             libc::getrusage(libc::RUSAGE_SELF, &raw mut usage);
-            let micros = |time: libc::timeval| time.tv_sec * 1_000_000 + i64::from(time.tv_usec);
+            let micros = |time: libc::timeval| {
+                i128::from(time.tv_sec) * 1_000_000 + i128::from(time.tv_usec)
+            };
             micros(usage.ru_utime) + micros(usage.ru_stime)
         }
     };
