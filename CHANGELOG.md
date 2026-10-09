@@ -7,14 +7,6 @@ All notable changes to this project will be documented in this file.
 ### Features
 
 - **Background automatic updates** (#437, @srothgan): Install automatic updates in the background after exit, and show a warning at startup when the last one failed.
-- **Session name and colour**: `/rename` and `/color` now show their reply, and a named or coloured session shows a rule above the composer with the name right-aligned, drawn in the session colour with the name as a badge, as Claude Code does. The terminal tab title and the Status tab show the name, and resuming a session restores both.
-- **/color values**: Tab after `/color ` completes its colour values.
-
-### Fixes
-
-- **Local command output**: The reply of every command Claude Code runs locally (`/rename`, `/color`, `/usage`, ...) appears in chat instead of being dropped.
-- **Resumed local commands**: Resumed history shows a local command as its command line with its output under it, instead of the raw `<command-name>` record.
-- **Status tab rename**: Renaming or generating a name from the Status tab goes through Claude Code's `/rename`, so `claude agents` and the transcript agree with the app. An empty name is refused instead of clearing the name.
 
 ## [0.15.2] - 2026-10-08 [Changes][v0.15.2]
 
