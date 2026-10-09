@@ -566,9 +566,46 @@ impl TerminalTest {
     }
 
     fn submit(&mut self, text: &str, visible: &str) {
+        self.submit_with_entry(text, visible, Self::paste);
+    }
+
+    fn submit_command(&mut self, text: &str) {
+        self.submit_with_entry(text, text, |test, text| {
+            if cfg!(windows) {
+                // ConPTY's key-burst path reordered this command on CI
+                // (2026-10-09). Model ordinary typing for the label test.
+                let mut prefix = String::new();
+                for ch in text.chars() {
+                    let offset = std::fs::read(test.temp.path().join("runtime.log"))
+                        .expect("runtime log")
+                        .len();
+                    test.send(ch.encode_utf8(&mut [0; 4]).as_bytes());
+                    prefix.push(ch);
+                    // Screen contents trim trailing blanks; the next prefix
+                    // and final command still verify the space between words.
+                    test.wait_composer_text(offset, prefix.trim_end());
+                    std::thread::sleep(Duration::from_millis(80));
+                }
+            } else {
+                test.paste(text);
+            }
+        });
+    }
+
+    fn submit_with_entry(
+        &mut self,
+        text: &str,
+        visible: &str,
+        enter: impl FnOnce(&mut Self, &str),
+    ) {
         let log_offset =
             std::fs::read(self.temp.path().join("runtime.log")).expect("runtime log").len();
-        self.paste(text);
+        enter(self, text);
+        self.wait_composer_text(log_offset, visible);
+        self.submit_draft();
+    }
+
+    fn wait_composer_text(&mut self, log_offset: usize, visible: &str) {
         // The overview, tips, and transcript can already mention the command.
         // Check the editor region from a subsequent draw. ConPTY's native cursor
         // can remain on the spinner instead of the editor.
@@ -592,7 +629,6 @@ impl TerminalTest {
             };
             test.screen().lines().skip(top).take(height).any(|line| line.contains(visible))
         });
-        self.submit_draft();
     }
 
     fn submit_draft(&mut self) {
@@ -2149,11 +2185,11 @@ fn session_name_and_colour_label_the_rule_above_the_composer() {
         "the editor must follow the rule directly:\n{screen}"
     );
 
-    test.submit("/rename probe-e2e", "/rename probe-e2e");
+    test.submit_command("/rename probe-e2e");
     test.wait_turn_finished("Session renamed to: probe-e2e");
     test.wait_for("the new name in the rule", |test| session_rule_row(test, "probe-e2e"));
 
-    test.submit("/color blue", "/color blue");
+    test.submit_command("/color blue");
     test.wait_turn_finished("Session color set to: blue");
     let blue = vt100::Color::Rgb(106, 155, 204);
     test.wait_for("the blue rule and badge", |test| {
