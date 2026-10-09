@@ -160,7 +160,7 @@ fn files_are_reread_only_when_they_change_and_vanished_jobs_drop_out() {
 }
 
 /// Real-machine parity and cost check, run by hand:
-/// `AGENT_PARITY_CONFIG_DIR=~/.claude-personal AGENT_PARITY_CLAUDE=<stock claude>
+/// `AGENT_PARITY_CONFIG_DIR=~/.claude AGENT_PARITY_CLAUDE=<stock claude>
 ///  cargo test --lib agent_view_files_match_agents_json -- --ignored --nocapture`.
 /// Compares the file reading with the stock listing and prints the CPU of
 /// 100 cached polls.

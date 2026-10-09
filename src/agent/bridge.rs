@@ -6,6 +6,11 @@ use anyhow::Context as _;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
+/// Keeps a console Ctrl+C away from the bridge on Windows, as the process
+/// group does on Unix.
+#[cfg(windows)]
+const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+
 pub const BRIDGE_SCRIPT_RELATIVE_PATH: &str = "agent-sdk/dist/bridge.js";
 pub const BRIDGE_SCRIPT_ENV_VAR: &str = "CLAUDE_RS_AGENT_BRIDGE";
 pub const BRIDGE_RUNTIME_ENV_VAR: &str = "CLAUDE_RS_AGENT_BRIDGE_RUNTIME";
@@ -84,9 +89,14 @@ impl BridgeLauncher {
         // spawns: a Ctrl+C typed while a child (the agent view, claude auth)
         // owns the terminal in cooked mode is delivered to the terminal's
         // foreground group and must not reach the session. The bridge never
-        // reads the terminal; it stops when claude-rs closes its stdin.
+        // reads the terminal; it stops when claude-rs closes its stdin. On
+        // Unix the group is a background one, so a tool under the session
+        // that reads /dev/tty (a sudo or ssh prompt) is stopped by SIGTTIN
+        // instead of competing with claude-rs for keys.
         #[cfg(unix)]
         cmd.process_group(0);
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
         cmd.stderr(if bridge_diagnostics_enabled {
             std::process::Stdio::piped()
         } else {

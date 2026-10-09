@@ -62,9 +62,8 @@ struct AgentPoll {
     status: Option<AgentStatus>,
 }
 
-/// The stock executable the session runs (`CLAUDE_CODE_EXECUTABLE`, possibly
-/// a launcher wrapper that passes non-session argv to the stock binary
-/// unchanged), else `claude` on PATH as /login finds it.
+/// The stock executable the session runs (`CLAUDE_CODE_EXECUTABLE`), else
+/// `claude` on PATH as /login finds it.
 fn resolve_executable() -> Option<PathBuf> {
     executable_from(std::env::var_os("CLAUDE_CODE_EXECUTABLE"), || which::which("claude").ok())
 }
@@ -378,6 +377,14 @@ fn closed_normally(status: ExitStatus) -> bool {
     {
         use std::os::unix::process::ExitStatusExt as _;
         if status.signal() == Some(libc::SIGINT) {
+            return true;
+        }
+    }
+    #[cfg(windows)]
+    {
+        // STATUS_CONTROL_C_EXIT, the exit code of a console process ended by Ctrl+C.
+        const STATUS_CONTROL_C_EXIT: i32 = i32::from_ne_bytes(0xC000_013A_u32.to_ne_bytes());
+        if status.code() == Some(STATUS_CONTROL_C_EXIT) {
             return true;
         }
     }

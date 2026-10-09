@@ -19,9 +19,11 @@ Core conversations, tools, file edits, permissions, and session history run thro
 | `/login` and `/logout` | `claude auth login` and `claude auth logout` | Account sign-in and sign-out from the Rust TUI. An already authenticated SDK session does not invoke these commands for each turn. |
 | Plugin inventory and management | `claude plugin ...` | Listing installed and available plugins; installing, enabling, disabling, updating, and uninstalling plugins; and managing marketplaces. Installed plugins execute through the SDK, and runtime reload uses the SDK. |
 | Remove a persisted MCP server | `claude mcp remove --scope <scope> <server>` | Removing user-, project-, or local-scope server configuration. Dynamic session servers are removed through the SDK. |
+| Agent view | `claude agents` | `Left` on an empty prompt hands the terminal to Claude Code's own agent view until it exits. |
+| Agent status in the footer | `claude agents --json` | Only when Claude Code's job files are in a layout claude-rs does not recognise, and always on Windows; at most once a minute. The job files are read directly otherwise. |
 | Usage data from the CLI | `claude /usage --allowed-tools ""` | When the CLI usage source is selected, or an eligible fallback reaches it. The default source first tries the connected SDK session, then OAuth; only eligible OAuth failures fall back to the CLI. |
 
-This list was audited against Agent SDK `0.3.286` on October 2, 2026, by checking the application's CLI process launches and usage-source selection. Installing `claude` provides these operations; it does not add the stock terminal interface's other screens or controls to the Rust TUI.
+This list was audited against Agent SDK `0.3.286` on October 2, 2026, by checking the application's CLI process launches and usage-source selection. Installing `claude` provides these operations; apart from the agent view, which runs as Claude Code's own screen, it does not add the stock terminal interface's other screens or controls to the Rust TUI.
 
 ## Feature Overview
 
