@@ -105,7 +105,7 @@ function localCommandOutputsByCommandUuid(
   return outputs;
 }
 
-const COMMAND_TAG = /<command-(name|message|args)>([\s\S]*?)<\/command-\1>/g;
+const COMMAND_FIELDS = ["name", "message", "args"] as const;
 
 /**
  * The command line a user record of a slash command stands for, such as
@@ -114,12 +114,27 @@ const COMMAND_TAG = /<command-(name|message|args)>([\s\S]*?)<\/command-\1>/g;
  */
 function slashCommandLine(text: string): string | undefined {
   const fields = new Map<string, string>();
-  const rest = text.replace(COMMAND_TAG, (_match, tag: string, value: string) => {
-    fields.set(tag, value.trim());
-    return "";
-  });
+  let cursor = 0;
+  // CodeQL identified quadratic retries on unclosed tags (2026-10-09).
+  // Consume each field once; malformed or surrounding text stays user text.
+  while (cursor < text.length) {
+    const start = text.indexOf("<", cursor);
+    if (start === -1) {
+      if (text.slice(cursor).trim().length > 0) return undefined;
+      break;
+    }
+    if (text.slice(cursor, start).trim().length > 0) return undefined;
+    const tag = COMMAND_FIELDS.find(field => text.startsWith(`<command-${field}>`, start));
+    if (tag === undefined) return undefined;
+    const valueStart = start + `<command-${tag}>`.length;
+    const closingTag = `</command-${tag}>`;
+    const end = text.indexOf(closingTag, valueStart);
+    if (end === -1) return undefined;
+    fields.set(tag, text.slice(valueStart, end).trim());
+    cursor = end + closingTag.length;
+  }
   const name = fields.get("name");
-  if (rest.trim().length > 0 || !name?.startsWith("/")) {
+  if (!name?.startsWith("/")) {
     return undefined;
   }
   const args = fields.get("args");
