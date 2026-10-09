@@ -115,8 +115,8 @@ const COMMAND_FIELDS = ["name", "message", "args"] as const;
 function slashCommandLine(text: string): string | undefined {
   const fields = new Map<string, string>();
   let cursor = 0;
-  // CodeQL identified quadratic retries on unclosed tags (2026-10-09).
-  // Consume each field once; malformed or surrounding text stays user text.
+  // One forward pass: a backtracking regex retries quadratically on unclosed
+  // tags. Consume each field once; malformed or surrounding text stays user text.
   while (cursor < text.length) {
     const start = text.indexOf("<", cursor);
     if (start === -1) {

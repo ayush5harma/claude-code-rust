@@ -144,7 +144,7 @@ test("resume display recognizes only complete command records and preserves fiel
 });
 
 test("resume display preserves many unclosed command tags without blocking later history", () => {
-  // A child timeout catches synchronous parser stalls without hanging the suite (2026-10-09).
+  // A child timeout catches synchronous parser stalls without hanging the suite.
   const child = spawnSync(process.execPath, ["--input-type=module", "-"], {
     input: `
       import assert from "node:assert/strict";
