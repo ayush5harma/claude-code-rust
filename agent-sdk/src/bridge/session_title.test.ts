@@ -87,7 +87,7 @@ test("after a turn only a changed title is sent, and a connect sends it again", 
     const titled = session(TITLED, cwd);
     const updates = await titleUpdates(async () => {
       await emitSessionTitle(titled, "connect");
-      await emitSessionTitle(titled, "turn");
+      await emitSessionTitle(titled, "refresh");
       await emitSessionTitle(titled, "connect");
     });
     assert.deepEqual(updates, [
@@ -101,7 +101,7 @@ test("of two overlapping reads only the later one is sent", async () => {
   await withTranscripts(async (cwd) => {
     const titled = session(TITLED, cwd);
     const updates = await titleUpdates(async () => {
-      await Promise.all([emitSessionTitle(titled, "connect"), emitSessionTitle(titled, "turn")]);
+      await Promise.all([emitSessionTitle(titled, "connect"), emitSessionTitle(titled, "refresh")]);
     });
     assert.deepEqual(updates, [{ session_id: TITLED, title: "persisted name" }]);
   });

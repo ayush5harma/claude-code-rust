@@ -1569,7 +1569,7 @@ export function handleResultMessage(
     message.parent_tool_use_id === undefined
   ) {
     emitUserMessageStarted(session, message, "result");
-    void emitSessionTitle(session, "turn");
+    void emitSessionTitle(session, "refresh");
   }
   emitFastModeUpdateIfChanged(
     session,

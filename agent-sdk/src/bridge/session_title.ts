@@ -17,7 +17,7 @@ import type { SessionState } from "./session_lifecycle.js";
  */
 export async function emitSessionTitle(
   session: SessionState,
-  after: "connect" | "turn",
+  after: "connect" | "refresh",
 ): Promise<void> {
   if (after === "connect") {
     // The app forgets the title when the session id changes.
@@ -52,7 +52,7 @@ export async function emitSessionTitle(
   }
   session.sentTitle = title;
   emitSessionUpdate(sessionId, { type: "session_title_update", title });
-  if (after === "turn") {
+  if (after === "refresh") {
     // The resume picker lists sessions by their title.
     refreshSessionsList();
   }
