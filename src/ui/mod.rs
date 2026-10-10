@@ -19,7 +19,6 @@ mod markdown;
 mod message;
 mod message_rows;
 mod session_picker;
-pub(crate) mod session_rule;
 pub(crate) mod spinner_verbs;
 pub mod theme;
 mod tool_call;

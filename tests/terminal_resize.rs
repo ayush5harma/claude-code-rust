@@ -2095,38 +2095,6 @@ fn notifications_follow_focus_saved_categories_and_sdk_delivery_provenance_in_a_
     assert_eq!(bell["span"]["tool_call_id"], "push-1");
 }
 
-/// The composer's rule row carrying `name`, as (screen row, text): the full
-/// width rule with the name right-aligned before one last rule cell.
-fn session_rule_row(test: &TerminalTest, name: &str) -> Option<(u16, String)> {
-    let screen = test.screen();
-    let suffix = format!(" {name} ─");
-    screen.lines().enumerate().find_map(|(row, line)| {
-        let line = line.trim_end();
-        let row = u16::try_from(row).ok()?;
-        (line.starts_with('─') && line.ends_with(&suffix)).then(|| (row, line.to_owned()))
-    })
-}
-
-#[test]
-fn session_name_labels_the_rule_above_the_composer() {
-    let mut test = TerminalTest::start("session-name", 3);
-    // The bridge sends the title Claude Code persisted once it connects.
-    let (row, _) = test
-        .wait_for("the resumed title in the rule", |test| session_rule_row(test, "resumed-name"));
-    let screen = test.screen();
-    let below: Vec<&str> = screen.lines().skip(usize::from(row) + 1).take(2).collect();
-    assert!(
-        below.iter().any(|line| line.contains('\u{276f}')),
-        "the editor must follow the rule directly:\n{screen}"
-    );
-
-    test.submit_command("/rename probe-e2e");
-    test.wait_turn_finished("Session renamed to: probe-e2e");
-    test.wait_for("the new name in the rule", |test| session_rule_row(test, "probe-e2e"));
-    test.assert_prompts(&["/rename probe-e2e"]);
-    test.shutdown();
-}
-
 /// The Status tab's "Session name" row, once it shows `name`.
 fn status_name_row(test: &TerminalTest, name: &str) -> Option<String> {
     test.screen()
@@ -2136,29 +2104,16 @@ fn status_name_row(test: &TerminalTest, name: &str) -> Option<String> {
 }
 
 #[test]
-fn status_tab_rename_updates_the_shown_session_name() {
+fn status_tab_shows_the_session_name_after_rename() {
     let mut test = TerminalTest::start("session-name", 3);
-    test.wait_for("the resumed title in the rule", |test| session_rule_row(test, "resumed-name"));
+    test.submit_command("/rename probe-e2e");
+    test.wait_turn_finished("Session renamed to: probe-e2e");
+    test.assert_prompts(&["/rename probe-e2e"]);
 
+    // The fake bridge lists no sessions, so only the title it sent after the
+    // turn can name the session here.
     test.submit("/status", "/status");
-    test.wait_for("the resumed title in Status", |test| status_name_row(test, "resumed-name"));
-    test.send(b"r");
-    test.wait_screen("Rename session");
-    // The draft starts from the shown title, which the fake bridge never
-    // listed, so the edit extends it.
-    for ch in "-2".chars() {
-        test.send(ch.encode_utf8(&mut [0; 4]).as_bytes());
-    }
-    test.wait_screen("resumed-name-2");
-    test.send(b"\r");
-    // The name shown is the title the bridge reads back, not the typed draft.
-    test.wait_for("the renamed title in Status", |test| status_name_row(test, "resumed-name-2"));
-    let renames = test.commands("rename_session");
-    assert_eq!(renames.len(), 1, "{renames:?}");
-    assert_eq!(renames[0]["title"], "resumed-name-2");
-
-    test.send(b"\x1b");
-    test.wait_for("the renamed title in the rule", |test| session_rule_row(test, "resumed-name-2"));
+    test.wait_for("the new name in Status", |test| status_name_row(test, "probe-e2e"));
     test.shutdown();
 }
 

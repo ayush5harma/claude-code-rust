@@ -312,8 +312,8 @@ function streamReply(messageUuid) {
   }
 }
 
-// The bridge's translation of Claude Code's /rename turn: the reply, the
-// result, then the title it reads back once the result is in.
+// The bridge's translation of a /rename turn: the reply, the result, then
+// the title it reads back once the result is in.
 function sessionNameReply(message) {
   const text = message.chunks.map(chunk => chunk.value).join('');
   const update = update => send({ event: 'session_update', session_id: SESSION, update });
@@ -378,12 +378,10 @@ readline
         });
         if (SCENARIO.startsWith('resize-') || SCENARIO.startsWith('background-')) send({ event: 'status_snapshot', session_id: SESSION, account: { subscription_type: 'Fixture subscription' } });
         if (SCENARIO === 'session-name') {
-          // As the real bridge does after connect: Claude Code's commands, and
-          // the title Claude Code persisted for a resumed session.
+          // As the real bridge does after connect: the SDK-advertised commands.
           send({ event: 'session_update', session_id: SESSION, update: { type: 'available_commands_update', commands: [
             { name: 'rename', description: 'Rename the current conversation', input_hint: '[name]' },
           ] } });
-          send({ event: 'session_update', session_id: SESSION, update: { type: 'session_title_update', title: 'resumed-name' } });
         }
         if (SCENARIO === 'disconnect-during-auth' && message.command === 'create_session') {
           const timer = setInterval(() => {
@@ -405,16 +403,6 @@ readline
           send({ event: 'user_message_queued', session_id: SESSION, message_uuid: message.message_uuid });
         } else streamReply(message.message_uuid);
         break;
-      case 'rename_session': {
-        // As the real bridge does after renameSession(): the title it reads
-        // back, then the session list carrying it.
-        const title = message.title;
-        send({ event: 'session_update', session_id: SESSION, update: { type: 'session_title_update', title } });
-        send({ event: 'sessions_listed', request_id: message.request_id, sessions: [
-          { session_id: SESSION, summary: 'Listed summary', last_modified_ms: 0, file_size_bytes: 0, cwd, git_branch: null, custom_title: title, first_prompt: null },
-        ] });
-        break;
-      }
       case 'inspect_settings':
         if (notificationScenario) {
           notificationAppPath = path.join(process.env.CLAUDE_CONFIG_DIR, 'app-settings.json');
