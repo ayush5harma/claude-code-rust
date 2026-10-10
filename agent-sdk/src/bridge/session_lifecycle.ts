@@ -222,8 +222,6 @@ export type SessionState = {
   resumeUpdates?: SessionUpdate[];
   restoredInput?: string;
   pendingRewindResult?: PendingRewindResult;
-  /** The title last sent to the app for this session id. */
-  sentTitle?: string;
   /** Counts title reads, so only the latest one is sent. */
   titleReads?: number;
 };

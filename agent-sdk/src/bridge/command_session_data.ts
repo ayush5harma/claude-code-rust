@@ -112,7 +112,7 @@ async function generateTitle(
       session.query,
       command.description,
     );
-    await emitSessionTitle(session, "refresh");
+    await emitSessionTitle(session);
     setSessionListingDir(session.cwd);
     await emitSessionsList(requestId);
   } catch (error) {
@@ -140,7 +140,7 @@ async function rename(
       command.title,
       deps.buildSessionMutationOptions(session.cwd),
     );
-    await emitSessionTitle(session, "refresh");
+    await emitSessionTitle(session);
     setSessionListingDir(session.cwd);
     await emitSessionsList(requestId);
   } catch (error) {
