@@ -337,20 +337,6 @@ pub struct RuntimeReloadCacheImpact {
     pub invalid_server_name_count: usize,
 }
 
-/// A `/color` value other than "default"; the wire sends `null` for no colour.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionColor {
-    Red,
-    Blue,
-    Green,
-    Yellow,
-    Purple,
-    Orange,
-    Pink,
-    Cyan,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
@@ -738,9 +724,6 @@ pub enum SessionUpdate {
     },
     SessionTitleUpdate {
         title: String,
-    },
-    SessionColorUpdate {
-        color: Option<SessionColor>,
     },
     RuntimeSessionStateUpdate {
         state: RuntimeSessionState,

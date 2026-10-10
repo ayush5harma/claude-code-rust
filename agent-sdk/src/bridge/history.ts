@@ -34,7 +34,7 @@ import {
 
 /**
  * Load display history across compactions without changing the model's saved
- * context, with the name and colour the transcript last recorded.
+ * context, with the name the transcript last recorded.
  */
 export async function getSessionTranscriptMessages(
   sessionId: string,

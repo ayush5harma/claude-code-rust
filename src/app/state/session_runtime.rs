@@ -43,8 +43,6 @@ pub struct SessionRuntimeState {
     /// The session's title as Claude Code last announced it: `/rename`, a
     /// generated name, the launcher's `-n`, or the stored title on resume.
     pub session_title: Option<String>,
-    /// The session colour from `/color`, or from the transcript on resume.
-    pub session_color: Option<model::SessionColor>,
 }
 
 impl Default for SessionRuntimeState {
@@ -68,7 +66,6 @@ impl Default for SessionRuntimeState {
             last_rate_limit_update: None,
             account_info: None,
             session_title: None,
-            session_color: None,
         }
     }
 }
@@ -94,7 +91,6 @@ impl SessionRuntimeState {
             self.ultracode = None;
             // A replacement session announces its own title after it connects.
             self.session_title = None;
-            self.session_color = None;
         }
         self.last_resumable_session_id = Some(session_id.clone());
         self.session_id = Some(session_id);
@@ -110,7 +106,6 @@ impl SessionRuntimeState {
     pub fn clear_identity(&mut self) {
         self.ultracode = None;
         self.session_title = None;
-        self.session_color = None;
         self.session_id = None;
         self.conversation_id = None;
         self.current_model = None;

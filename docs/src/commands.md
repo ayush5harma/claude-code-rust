@@ -68,16 +68,13 @@ to inspect the current session's full command list. The output includes app-owne
 
 Commands that Claude Code runs locally, such as `/rename`, `/color` or `/context`, reply in the chat under the command as they do in Claude Code. A resumed session shows each local command it ran as the command line with its output under it.
 
-## Session Name and Colour
+## Session Name
 
-`/rename <name>` and `/color <colour>` are Claude Code's own commands, forwarded to the session:
+`/rename <name>` is Claude Code's own command, forwarded to the session. It names the session: `Session renamed to: <name>`. The name is what `claude agents` lists and what a later `claude-rs --resume` restores. Bare `/rename` asks Claude Code to generate a name from the conversation.
 
-| Command | Effect |
-| --- | --- |
-| `/rename <name>` | Names the session: `Session renamed to: <name>`. The name is what `claude agents` lists and what a later `claude-rs --resume` restores. Bare `/rename` asks Claude Code to generate a name from the conversation. |
-| `/color <colour>` | Colours the session: `red`, `blue`, `green`, `yellow`, `purple`, `orange`, `pink` or `cyan`. `default` removes the colour; bare `/color` picks one at random. Tab after `/color ` lists the values. |
+A named session shows a rule directly above the composer with the name at its right, `──── name ─`, as Claude Code's prompt bar does. A session without a name keeps the plain composer. The terminal tab title shows the name instead of the folder, and the Status tab lists it as the session name. Resuming a session restores the name from its transcript, and `/clear` keeps it.
 
-A named or coloured session shows a rule directly above the composer with the name at its right, `──── name ─`, as Claude Code's prompt bar does. With a colour the rule is drawn in it and the name becomes a badge in that colour. A session with neither keeps the plain composer. The terminal tab title shows the name instead of the folder, and the Status tab lists it as the session name. Resuming a session restores both from its transcript. Like Claude Code, `/clear` keeps the name and drops the colour.
+`/color` also runs in Claude Code and its reply shows in the chat, but Claude Rust does not draw a session colour.
 
 In the Status tab, `r` renames the session and `g` generates a name; both send `/rename` to Claude Code as a turn of their own, so they wait for a running turn to finish. Claude Code has no command that removes a name, so an empty name is refused.
 

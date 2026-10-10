@@ -203,9 +203,6 @@ impl TerminalTest {
 
         let pair = native_pty_system().openpty(pty_size(SHORT_ROWS, COLS)).expect("open pty");
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_claude-rs"));
-        // The PTY asserts RGB cells; Codex exports NO_COLOR=1 (2026-10-09).
-        command.env_remove("NO_COLOR");
-        command.env("TERM", "xterm-256color");
         command.arg("--no-update-check");
         command.arg("--log-file");
         command.arg(temp.path().join("runtime.log"));
@@ -2111,8 +2108,8 @@ fn session_rule_row(test: &TerminalTest, name: &str) -> Option<(u16, String)> {
 }
 
 #[test]
-fn session_name_and_colour_label_the_rule_above_the_composer() {
-    let mut test = TerminalTest::start("session-label", 3);
+fn session_name_labels_the_rule_above_the_composer() {
+    let mut test = TerminalTest::start("session-name", 3);
     // The bridge re-sends the title Claude Code announced before connect.
     let (row, _) = test
         .wait_for("the resumed title in the rule", |test| session_rule_row(test, "resumed-name"));
@@ -2126,21 +2123,7 @@ fn session_name_and_colour_label_the_rule_above_the_composer() {
     test.submit_command("/rename probe-e2e");
     test.wait_turn_finished("Session renamed to: probe-e2e");
     test.wait_for("the new name in the rule", |test| session_rule_row(test, "probe-e2e"));
-
-    test.submit_command("/color blue");
-    test.wait_turn_finished("Session color set to: blue");
-    let blue = vt100::Color::Rgb(106, 155, 204);
-    test.wait_for("the blue rule and badge", |test| {
-        let (row, line) = session_rule_row(test, "probe-e2e")?;
-        let name_col = line.chars().position(|ch| ch == 'p').expect("name column");
-        let output = test.output.lock().expect("output lock");
-        let screen = output.parser.screen();
-        let cell = |col: usize| screen.cell(row, u16::try_from(col).expect("column"));
-        let rule = cell(0)?;
-        let badge = cell(name_col)?;
-        (rule.fgcolor() == blue && badge.bgcolor() == blue).then_some(())
-    });
-    test.assert_prompts(&["/rename probe-e2e", "/color blue"]);
+    test.assert_prompts(&["/rename probe-e2e"]);
     test.shutdown();
 }
 /// A terminal outside Windows sends Ctrl+V as one press byte and no release.

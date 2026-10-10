@@ -366,17 +366,6 @@ export interface TaskStateUpdate {
   is_complete_snapshot: boolean;
 }
 
-/** A /color value other than "default"; null on the wire means no colour. */
-export type SessionColor =
-  | "red"
-  | "blue"
-  | "green"
-  | "yellow"
-  | "purple"
-  | "orange"
-  | "pink"
-  | "cyan";
-
 export type SessionUpdate =
   | { type: "message_metadata"; role: "user" | "assistant"; timestamp: string; source_message_uuid?: string }
   | { type: "turn_timing"; duration_ms: number; api_duration_ms?: number }
@@ -442,7 +431,6 @@ export type SessionUpdate =
     }
   | { type: "prompt_suggestion_update"; suggestion: string }
   | { type: "session_title_update"; title: string }
-  | { type: "session_color_update"; color: SessionColor | null }
   | { type: "runtime_session_state_update"; state: RuntimeSessionState }
   | ({ type: "settings_parse_error" } & SettingsParseErrorUpdate)
   | { type: "session_status_update"; status: "requesting" | "idle" }

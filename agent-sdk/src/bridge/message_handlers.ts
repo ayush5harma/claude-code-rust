@@ -3,10 +3,7 @@ import { nativeNotification } from "./notifications.js";
 import { elapsedNumber, messageMetadata, turnTiming } from "./presentation_metadata.js";
 import { refreshUltracode } from "./ultracode.js";
 import { observeSessionEffort, refreshSessionEffort } from "./effort.js";
-import {
-  emitSessionColorFromReply,
-  handleSessionTitleChanged,
-} from "./session_label.js";
+import { handleSessionTitleChanged } from "./session_label.js";
 import { observeSessionModel } from "./session_model.js";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
@@ -1300,10 +1297,6 @@ export function handleAssistantMessage(
           ? { source_message_uuid: assistantMessageUuid }
           : {}),
       });
-    }
-    // /color has no system event; its reply is the only report of the change.
-    if (asRecordOrNull(message.local_command_run)?.command === "color") {
-      emitSessionColorFromReply(session, markdown);
     }
   }
   for (const block of content) {

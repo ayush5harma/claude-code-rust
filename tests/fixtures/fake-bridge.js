@@ -312,8 +312,8 @@ function streamReply(messageUuid) {
   }
 }
 
-// The bridge's translation of Claude Code's /rename and /color replies.
-function sessionLabelReply(message) {
+// The bridge's translation of Claude Code's /rename reply.
+function sessionNameReply(message) {
   const text = message.chunks.map(chunk => chunk.value).join('');
   const update = update => send({ event: 'session_update', session_id: SESSION, update });
   send({ event: 'user_message_started', session_id: SESSION, message_uuid: message.message_uuid, source: 'command_lifecycle' });
@@ -321,9 +321,6 @@ function sessionLabelReply(message) {
   if (command === '/rename') {
     update({ type: 'session_title_update', title: args.join(' ') });
     update({ type: 'agent_message_chunk', content: { type: 'text', text: `Session renamed to: ${args.join(' ')}` } });
-  } else if (command === '/color') {
-    update({ type: 'agent_message_chunk', content: { type: 'text', text: `Session color set to: ${args[0]}` } });
-    update({ type: 'session_color_update', color: args[0] });
   }
   send({ event: 'turn_complete', session_id: SESSION });
 }
@@ -379,12 +376,11 @@ readline
           restored_input: null,
         });
         if (SCENARIO.startsWith('resize-') || SCENARIO.startsWith('background-')) send({ event: 'status_snapshot', session_id: SESSION, account: { subscription_type: 'Fixture subscription' } });
-        if (SCENARIO === 'session-label') {
+        if (SCENARIO === 'session-name') {
           // As the real bridge does after connect: Claude Code's commands, and
           // the title the child announced before init (a resumed session's).
           send({ event: 'session_update', session_id: SESSION, update: { type: 'available_commands_update', commands: [
             { name: 'rename', description: 'Rename the current conversation', input_hint: '[name]' },
-            { name: 'color', description: 'Set the prompt bar color for this session', input_hint: '[red|blue|green|yellow|purple|orange|pink|cyan|default]' },
           ] } });
           send({ event: 'session_update', session_id: SESSION, update: { type: 'session_title_update', title: 'resumed-name' } });
         }
@@ -399,8 +395,8 @@ readline
         }
         break;
       case 'prompt':
-        if (SCENARIO === 'session-label') {
-          sessionLabelReply(message);
+        if (SCENARIO === 'session-name') {
+          sessionNameReply(message);
           break;
         }
         if (active) {

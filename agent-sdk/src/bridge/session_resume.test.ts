@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 type Envelope = Record<string, unknown>;
 
-test("resume commands restore a transcript name and emit its color once", async () => {
+test("resume commands restore a transcript name", async () => {
   for (const command of ["resume_session", "create_session"] as const) {
     const directory = realpathSync(mkdtempSync(join(tmpdir(), "bridge-label-resume-")));
     const cwd = join(directory, "project");
@@ -20,7 +20,6 @@ test("resume commands restore a transcript name and emit its color once", async 
     mkdirSync(projectDir, { recursive: true });
     const records = [
       { type: "custom-title", customTitle: "Saved name" },
-      { type: "agent-color", agentColor: "purple" },
       { type: "user", uuid: "user-1", parentUuid: null, message: { role: "user", content: "hello" } },
     ].map((record) => ({ ...record, sessionId, cwd, timestamp: "2026-10-09T00:00:00.000Z" }));
     writeFileSync(join(projectDir, `${sessionId}.jsonl`), `${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
@@ -78,10 +77,6 @@ test("resume commands restore a transcript name and emit its color once", async 
       const query = JSON.parse(readFileSync(journal, "utf8").trim()) as Envelope;
       assert.equal(query.resume, sessionId);
       assert.deepEqual(query.extraArgs, { name: "Saved name" }, `${command}: ${JSON.stringify(events)}`);
-      const colors = events.filter((event) =>
-        event.event === "session_update" && (event.update as Envelope)?.type === "session_color_update",
-      );
-      assert.deepEqual(colors.map((event) => event.update), [{ type: "session_color_update", color: "purple" }]);
     } finally {
       clearTimeout(timeout);
       output.close();

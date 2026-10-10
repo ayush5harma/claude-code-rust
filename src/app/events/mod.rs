@@ -505,9 +505,6 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         model::SessionUpdate::SessionTitleUpdate(title) => {
             app.session_runtime.session_title = title;
         }
-        model::SessionUpdate::SessionColorUpdate(color) => {
-            app.session_runtime.session_color = color;
-        }
         model::SessionUpdate::PromptSuggestionUpdate(suggestion) => {
             app.session_runtime.prompt_suggestion =
                 (!suggestion.trim().is_empty()).then_some(suggestion);

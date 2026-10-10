@@ -252,10 +252,9 @@ fn connected_resets_session_scoped_view_data() {
     });
     app.plugins.installed.push(installed_plugin_entry("old-plugin"));
     app.plugins.last_inventory_refresh_at = Some(Instant::now());
-    // The previous session's name and colour; the connected one announces its own.
+    // The previous session's name; the connected one announces its own.
     app.session_runtime.session_id = Some(model::SessionId::new("old-session"));
     app.session_runtime.session_title = Some("Old session name".to_owned());
-    app.session_runtime.session_color = Some(model::SessionColor::Red);
 
     handle_client_event(&mut app, connected_event("claude-updated"));
 
@@ -268,7 +267,6 @@ fn connected_resets_session_scoped_view_data() {
     assert!(app.plugins.installed.is_empty());
     assert!(app.plugins.last_inventory_refresh_at.is_none());
     assert!(app.session_runtime.session_title.is_none());
-    assert!(app.session_runtime.session_color.is_none());
 }
 
 #[test]
@@ -1750,7 +1748,7 @@ fn ultracode_lifecycle_preserves_conversation_state_and_rejects_stale_sessions()
 }
 
 #[test]
-fn session_title_and_color_follow_the_child_until_another_session_connects() {
+fn session_title_follows_the_child_until_another_session_connects() {
     let mut app = make_test_app();
     app.session_runtime.session_id = Some(model::SessionId::new("current-session"));
     let update =
@@ -1760,19 +1758,11 @@ fn session_title_and_color_follow_the_child_until_another_session_connects() {
         &mut app,
         update(model::SessionUpdate::SessionTitleUpdate(Some("probe-e2e".to_owned()))),
     );
-    handle_client_event(
-        &mut app,
-        update(model::SessionUpdate::SessionColorUpdate(Some(model::SessionColor::Blue))),
-    );
     assert_eq!(app.session_runtime.session_title.as_deref(), Some("probe-e2e"));
-    assert_eq!(app.session_runtime.session_color, Some(model::SessionColor::Blue));
 
-    // Reconnecting the same session keeps them; the bridge re-sends both.
+    // Reconnecting the same session keeps it.
     app.session_runtime.activate_session(model::SessionId::new("current-session"));
     assert_eq!(app.session_runtime.session_title.as_deref(), Some("probe-e2e"));
-
-    handle_client_event(&mut app, update(model::SessionUpdate::SessionColorUpdate(None)));
-    assert_eq!(app.session_runtime.session_color, None);
 
     app.session_runtime.activate_session(model::SessionId::new("other-session"));
     assert_eq!(app.session_runtime.session_title, None);

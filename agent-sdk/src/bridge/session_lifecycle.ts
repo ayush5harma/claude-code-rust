@@ -229,8 +229,6 @@ export type SessionState = {
    * connect or replacement.
    */
   sessionTitle?: string;
-  /** The colour the resumed transcript last recorded, sent once after connect. */
-  resumedColor?: import("../types.js").SessionColor;
 };
 
 export const sessions = new Map<string, SessionState>();
@@ -509,7 +507,7 @@ export async function createSession(params: {
   sessionsToCloseBeforeRegister?: SessionState[];
   sessionsToCloseAfterConnect?: SessionState[];
   resumeUpdates?: SessionUpdate[];
-  /** The resumed transcript's last name and colour. */
+  /** The resumed transcript's last name. */
   storedLabel?: import("./session_label.js").StoredSessionLabel;
   restoredInput?: string;
   pendingRewindResult?: PendingRewindResult;
@@ -741,9 +739,6 @@ export async function createSession(params: {
     authHintSent: false,
     ...(params.resumeUpdates && params.resumeUpdates.length > 0
       ? { resumeUpdates: params.resumeUpdates }
-      : {}),
-    ...(params.storedLabel?.color !== undefined
-      ? { resumedColor: params.storedLabel.color }
       : {}),
     ...(params.restoredInput !== undefined
       ? { restoredInput: params.restoredInput }
