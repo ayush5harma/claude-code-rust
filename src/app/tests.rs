@@ -5,46 +5,6 @@ use crate::agent::wire::BridgeCommand;
 use crate::app::{MessageBlock, MessageRole};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
-#[tokio::test]
-async fn pending_sigint_is_consumed_before_a_ready_terminal_return() {
-    let mut app = App::test_default();
-    let _claim = terminal_runtime::claim_terminal(&mut app).unwrap();
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1);
-    event_tx
-        .send(ClientEvent::TerminalReturnedFromChild { reason: ReleaseReason::AgentView })
-        .await
-        .unwrap();
-
-    let first =
-        signal_before_event(std::future::ready(Ok(OsSignal::Interrupt)), event_rx.recv()).await;
-    let SignalOrEvent::Signal(signal) = first else {
-        panic!("terminal return overtook its pending SIGINT");
-    };
-    handle_os_signal(&mut app, signal);
-    assert!(!app.shutdown_requested());
-    assert!(app.terminal_child.is_active());
-
-    let returned =
-        signal_before_event(std::future::pending::<std::io::Result<OsSignal>>(), event_rx.recv())
-            .await;
-    let SignalOrEvent::Event(Some(event)) = returned else {
-        panic!("terminal return was lost after ignoring SIGINT");
-    };
-    events::handle_client_event(&mut app, event);
-    assert!(!app.terminal_child.is_active());
-    handle_os_signal(&mut app, Ok(OsSignal::Interrupt));
-    assert!(app.shutdown_requested(), "later Ctrl+C must still shut down the parent");
-}
-
-#[cfg(unix)]
-#[test]
-fn sigterm_still_shuts_down_while_a_terminal_child_is_active() {
-    let mut app = App::test_default();
-    let _claim = terminal_runtime::claim_terminal(&mut app).unwrap();
-    handle_os_signal(&mut app, Ok(OsSignal::Terminate));
-    assert!(app.shutdown_requested());
-}
-
 #[test]
 fn shutdown_preparation_normalizes_ui_and_preserves_resume_identity() {
     let mut app = App::test_default();

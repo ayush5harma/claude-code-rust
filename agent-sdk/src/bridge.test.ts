@@ -130,6 +130,8 @@ const STARTUP_REASONS = {
   worktree_unverified: true,
   cli_version_too_old: true,
   bypass_root: true,
+  org_config_required_unavailable: true,
+  org_config_refused: true,
 } satisfies Record<import("@anthropic-ai/claude-agent-sdk").SDKStartupFailureReason, boolean>;
 
 test("startup result reasons remain structured, correlated, and exclusive", () => {
@@ -2469,31 +2471,6 @@ test("MCP connection history is isolated between sessions with the same server n
   assert.equal(reconnectCalls, 0);
 });
 
-// Claude Code's SDK mode does not restore a resumed session's name into its
-// registry entry, so the resume passes it back as `--name` (2.1.293 `-n, --name`).
-test("buildQueryOptions names a resumed session after its stored title", () => {
-  const input = new AsyncQueue<
-    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
-  >();
-  const build = (sessionName?: string) =>
-    buildQueryOptions({
-      resolvedSettings: {},
-      cwd: "C:/work",
-      resume: "session-1",
-      ...(sessionName ? { sessionName } : {}),
-      launchSettings: {},
-      provisionalSessionId: "session-1",
-      input,
-      canUseTool: async () => ({ behavior: "deny", message: "not used" }),
-      enableSdkDebug: false,
-      enableSpawnDebug: false,
-      sessionIdForLogs: () => "session-1",
-    });
-
-  assert.deepEqual(build("renamed-live").extraArgs, { name: "renamed-live" });
-  assert.equal(build().extraArgs, undefined);
-});
-
 test("buildQueryOptions includes resumeSessionAt when provided", () => {
   const input = new AsyncQueue<
     import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
@@ -4022,10 +3999,9 @@ test("handleSdkMessage emits SDK-owned context Markdown exactly once", () => {
       uuid: "context-assistant-1",
       session_id: "session-1",
       parent_tool_use_id: null,
-      local_command_source: "<local-command-stdout>## Context usage</local-command-stdout>",
-      local_command_run: { command: "context", args: "" },
       context_usage: { used_percentage: 42 },
       message: {
+        id: "2f9c6d1e-0d4b-4a39-9a43-5d0f3c1e7a21",
         role: "assistant",
         content: [
           { type: "text", text: "## Context usage" },
@@ -4054,22 +4030,18 @@ test("handleSdkMessage emits SDK-owned context Markdown exactly once", () => {
   ]);
 });
 
-// Measured on Claude Code 2.1.293: a forwarded local command (/rename,
-// /color, /usage, ...) replies with one completed synthetic assistant frame
-// carrying local_command_source and no stream events, so its text exists
-// only in that frame. A command that never ran (/hooks headless) has no
-// local_command_run but still replies.
-test("handleSdkMessage shows the reply of every forwarded local command", () => {
+// Measured on Claude Code 2.1.296: a local command (/rename, /color, /usage,
+// ...) replies with one complete top-level assistant message and no stream
+// events, so its text exists only in that message.
+test("handleSdkMessage shows a complete reply whose response never streamed", () => {
   const session = makeSessionState();
-  const reply = (uuid: string, command: string, text: string) => ({
+  const reply = (uuid: string, responseId: string, text: string) => ({
     type: "assistant",
     uuid,
     session_id: "session-1",
     parent_tool_use_id: null,
-    local_command_source: `<local-command-stdout>${text}</local-command-stdout>`,
-    local_command_run: { command, args: "" },
     message: {
-      model: "<synthetic>",
+      id: responseId,
       role: "assistant",
       stop_reason: "end_turn",
       content: [{ type: "text", text }],
@@ -4077,22 +4049,8 @@ test("handleSdkMessage shows the reply of every forwarded local command", () => 
   });
   const events = captureBridgeEvents(() => {
     for (const message of [
-      reply("rename-reply", "rename", "Session renamed to: probe"),
-      reply("usage-reply", "usage", "Current session: 9% used"),
-      {
-        type: "assistant",
-        uuid: "hooks-reply",
-        session_id: "session-1",
-        parent_tool_use_id: null,
-        local_command_source:
-          "<local-command-stdout>/hooks isn't available in this environment.</local-command-stdout>",
-        local_command_outcome: "unavailable_headless",
-        message: {
-          model: "<synthetic>",
-          role: "assistant",
-          content: [{ type: "text", text: "/hooks isn't available in this environment." }],
-        },
-      },
+      reply("rename-reply", "a4cc84fe-7eb1-48bf-8fcd-0a11a7d5e251", "Session renamed to: probe"),
+      reply("color-reply", "5142ce8e-bb1c-4d99-a882-5752dd24280b", "Session color set to: blue"),
     ]) {
       handleSdkMessage(
         session,
@@ -4112,71 +4070,44 @@ test("handleSdkMessage shows the reply of every forwarded local command", () => 
     },
     {
       type: "agent_message_chunk",
-      content: { type: "text", text: "Current session: 9% used" },
-      source_message_uuid: "usage-reply",
-    },
-    {
-      type: "agent_message_chunk",
-      content: { type: "text", text: "/hooks isn't available in this environment." },
-      source_message_uuid: "hooks-reply",
+      content: { type: "text", text: "Session color set to: blue" },
+      source_message_uuid: "color-reply",
     },
   ]);
 });
 
-test("handleSdkMessage does not replay ordinary or invalid completed assistant text", () => {
+test("handleSdkMessage never shows a streamed, subagent, empty or error reply again", () => {
   const session = makeSessionState();
+  const emit = (message: Record<string, unknown>) =>
+    handleSdkMessage(session, {
+      session_id: "session-1",
+      parent_tool_use_id: null,
+      ...message,
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  const stream = (event: Record<string, unknown>) => emit({ type: "stream_event", uuid: "frame", event });
+  const complete = (uuid: string, message: Record<string, unknown>, extra = {}) =>
+    emit({ type: "assistant", uuid, message: { role: "assistant", ...message }, ...extra });
   const events = captureBridgeEvents(() => {
-    for (const message of [
-      {
-        type: "assistant",
-        uuid: "ordinary-assistant",
-        message: {
-          role: "assistant",
-          content: [{ type: "text", text: "already streamed" }],
-        },
-      },
-      {
-        type: "assistant",
-        uuid: "malformed-context",
-        context_usage: "invalid",
-        message: {
-          role: "assistant",
-          content: [{ type: "text", text: "not context" }],
-        },
-      },
-      {
-        type: "assistant",
-        uuid: "empty-context",
-        local_command_source: "<local-command-stdout>   </local-command-stdout>",
-        local_command_run: { command: "context", args: "" },
-        context_usage: {},
-        message: {
-          role: "assistant",
-          content: [{ type: "text", text: "   " }],
-        },
-      },
-      {
-        // A synthetic API error is reported through the turn result, not
-        // replayed as assistant text.
-        type: "assistant",
-        uuid: "synthetic-error",
-        error: "rate_limit",
-        message: {
-          model: "<synthetic>",
-          role: "assistant",
-          content: [{ type: "text", text: "API Error: rate limited" }],
-        },
-      },
-    ]) {
-      handleSdkMessage(session, {
-        ...message,
-        session_id: "session-1",
-        parent_tool_use_id: null,
-      } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
-    }
+    stream({ type: "message_start", message: { id: "msg_streamed" } });
+    stream({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+    stream({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "already streamed" } });
+    // The per-block message arrives inside the response; a terminal one may
+    // follow its stop. Neither is the reply's first appearance.
+    complete("streamed-block", { id: "msg_streamed", stop_reason: null, content: [{ type: "text", text: "already streamed" }] });
+    stream({ type: "content_block_stop", index: 0 });
+    stream({ type: "message_stop" });
+    complete("streamed-final", { id: "msg_streamed", stop_reason: "end_turn", content: [{ type: "text", text: "already streamed" }] });
+    complete("subagent", { id: "msg_subagent", content: [{ type: "text", text: "subagent text" }] }, { parent_tool_use_id: "tool-1" });
+    complete("empty", { id: "local-empty", content: [{ type: "text", text: "   " }] });
+    // A synthetic API error is reported through the turn result.
+    complete("synthetic-error", { id: "local-error", content: [{ type: "text", text: "API Error: rate limited" }] }, { error: "rate_limit" });
   });
 
-  assert.deepEqual(events, []);
+  const texts = events
+    .map((event) => event.update as { type?: string; content?: { text?: string } } | undefined)
+    .filter((update) => update?.type === "agent_message_chunk")
+    .map((update) => update?.content?.text);
+  assert.deepEqual(texts, ["already streamed"]);
 });
 
 test("handleSdkMessage refreshes Grep title when final assistant snapshot carries input", () => {
@@ -8742,7 +8673,7 @@ test("cut-short message_stop does not duplicate text or complete the model turn"
 });
 
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.288");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.296");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 

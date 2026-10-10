@@ -80,13 +80,6 @@ impl BridgeLauncher {
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
         cmd.kill_on_drop(true);
-        // Its own process group, inherited by the Claude Code session it
-        // spawns: a Ctrl+C typed while a child (the agent view, claude auth)
-        // owns the terminal in cooked mode is delivered to the terminal's
-        // foreground group and must not reach the session. The bridge never
-        // reads the terminal; it stops when claude-rs closes its stdin.
-        #[cfg(unix)]
-        cmd.process_group(0);
         cmd.stderr(if bridge_diagnostics_enabled {
             std::process::Stdio::piped()
         } else {

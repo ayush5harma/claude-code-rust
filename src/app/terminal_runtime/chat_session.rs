@@ -516,7 +516,6 @@ impl ChatTerminalSession {
         };
         let rule = crate::ui::session_rule::session_rule_line(
             app.session_runtime.session_title.as_deref(),
-            app.session_runtime.session_color,
             width,
         );
         let editor_row_count = editor.total_len_u16().saturating_add(u16::from(rule.is_some()));
@@ -920,7 +919,7 @@ struct ComposerSurface {
     activity_rows: Vec<Line<'static>>,
     hint_rows: Vec<Line<'static>>,
     btw_rows: Vec<Line<'static>>,
-    /// The session name and colour rule, drawn as the editor's top row.
+    /// The session name rule, drawn as the editor's top row.
     rule: Option<Line<'static>>,
     editor: ComposerEditor,
     footer_rows: Vec<Line<'static>>,
@@ -1449,17 +1448,15 @@ mod tests {
         app.input.set_text("hello");
         let _ = app.input.set_cursor(0, 5);
         app.session_runtime.session_title = Some("probe-e2e".to_owned());
-        app.session_runtime.session_color = Some(crate::agent::model::SessionColor::Blue);
 
         let backend = render_composer_editor_to_test_backend(&mut app, 30);
 
         assert_eq!(buffer_row(&backend, 0), format!("{} probe-e2e ─", "─".repeat(18)));
         let buffer = backend.buffer();
-        let blue = ratatui::style::Color::Rgb(106, 155, 204);
-        assert_eq!(buffer[(0, 0)].style().fg, Some(blue));
-        let badge_start = u16::try_from(18).expect("column");
-        for x in badge_start..badge_start + 11 {
-            assert_eq!(buffer[(x, 0)].style().bg, Some(blue), "badge cell {x}");
+        assert_eq!(buffer[(0, 0)].style().fg, Some(theme::DIM));
+        // The name is plain text on the terminal's own background.
+        for x in 18..29 {
+            assert_eq!(buffer[(x, 0)].style().bg, Some(ratatui::style::Color::Reset), "cell {x}");
         }
         // The editor field (padded top and bottom) follows directly below.
         assert_eq!(buffer[(0, 1)].style().bg, Some(theme::USER_MSG_BG));
@@ -1468,7 +1465,7 @@ mod tests {
     }
 
     #[test]
-    fn unnamed_uncoloured_session_keeps_the_editor_on_the_first_row() {
+    fn unnamed_session_keeps_the_editor_on_the_first_row() {
         let mut app = App::test_default();
         app.input.set_text("hello");
 

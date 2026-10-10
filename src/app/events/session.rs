@@ -273,6 +273,12 @@ fn startup_failure_message(reason: &str) -> &'static str {
         "bypass_root" => {
             "Bypass-permissions mode cannot run as root. Use a non-root account or another permission mode."
         }
+        "org_config_required_unavailable" => {
+            "Your organization's required policy settings could not be loaded. Check connectivity and try again."
+        }
+        "org_config_refused" => {
+            "Your organization's required policy settings were refused for this sign-in. Sign in again or contact your administrator."
+        }
         _ => "Claude Code startup failed. Review diagnostic logs for details.",
     }
 }
@@ -731,6 +737,8 @@ mod tests {
             ("worktree_unverified", "manual retry may succeed"),
             ("cli_version_too_old", "Update claude-rs to a release containing a newer runtime"),
             ("bypass_root", "cannot run as root"),
+            ("org_config_required_unavailable", "Check connectivity and try again"),
+            ("org_config_refused", "Sign in again or contact your administrator"),
             ("future_reason", "Claude Code startup failed"),
         ] {
             let mut app = App::test_default();

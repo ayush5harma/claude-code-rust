@@ -18,19 +18,31 @@ Claude Code Rust replaces the stock Claude Code terminal interface with a native
 ## Fork
 
 [ayush5harma/claude-code-rust](https://github.com/ayush5harma/claude-code-rust)
-adds the following to upstream:
+tracks upstream and adds:
 
-- Reliable bridge output under backpressure (the EAGAIN fix) and clipboard image pasting with Ctrl+V.
-- Persistent session names in the composer rule, terminal title and Status tab, plus a colored composer rule and name badge. Names and colors survive resume.
-- A cached background-agent count and input-needed status in the footer, with direct access to stock Claude Code's agent view.
-- The stock Clawd welcome mascot and an opt-in suite that measures behavior and performance against stock and the installed fork.
+- Session names: `/rename` names the session, and the name shows in a rule
+  above the composer, the terminal tab title and the Status tab. It survives
+  resume and `/clear`. The name is Claude Code's own session title, read
+  through the Agent SDK's session API.
+- Local command replies: the reply of every command Claude Code runs locally
+  (`/rename`, `/color`, `/usage`, `/context`, ...) appears in the chat, and a
+  resumed session shows each local command as its command line with its output.
+- An opt-in suite that measures behavior and performance against stock Claude
+  Code and the installed fork.
+
+Releases up to 0.15.1-fork.2 also drew the session colour, opened Claude Code's
+agent view from the Left arrow with a background-agent count in the footer, and
+drew Claude Code's mascot. 0.15.2-fork.1 removed them, because they depended on
+Claude Code's private files and screens or on its branding. `/color` still runs
+in Claude Code and its reply shows; run `claude agents` from a shell for the
+agent view.
 
 The Rust TUI runs the installed stock Claude Code binary through a TypeScript
 Agent SDK bridge. The [parity report](docs/src/parity.md) records measured
 results, known gaps and the performance comparison; it does not claim complete
-stock parity. The 2026-10-09 verification recorded **85 PASS, 4 FAIL, 12 GAP
-and 4 SKIP**, with all 27 name/color and agent-view rows passing, including the
-real system-config launcher. The four failures are pre-existing memory-picker,
+stock parity. Its last full run (2026-10-09, on 0.15.1-fork.2) recorded
+**85 PASS, 4 FAIL, 12 GAP and 4 SKIP**. Its colour and agent-view rows describe
+the features removed since. The four failures are pre-existing memory-picker,
 symlinked permissions/hooks and rewind issues.
 
 The matched, settled comparison found no regression against the installed
@@ -39,12 +51,16 @@ whole process tree, and 660 ms for both builds to resume a 400-record history.
 The report describes the background load, initial inconsistent measurements
 and targeted continuations used to correct harness errors.
 
+Startup, measured on 2026-10-10 with `--diagnostics-preset full` over three
+runs of a new session: claude-rs and its bridge are up and have asked the SDK
+for a session after 0.1-0.2 s. The rest of the 0.8-1.4 s until the session
+connects is Claude Code starting inside the SDK and running its SessionStart
+hooks. The composer accepts typing meanwhile, and an input-ready prompt
+appears in about 40 ms against about 600 ms for stock Claude Code.
+
 | Action | Shortcut or command |
 | --- | --- |
 | Rename the session | `/rename <name>` |
-| Choose a session color | `/color <color>`; `/color default` resets it |
-| Open stock's agent view | Left arrow with an empty composer |
-| Return from the agent view | Escape |
 | Quit claude-rs | Ctrl+Q |
 | Paste a clipboard image | Ctrl+V |
 

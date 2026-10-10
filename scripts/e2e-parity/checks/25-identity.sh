@@ -1,11 +1,15 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2154,SC2034 # harness globals (SCREEN, REG, WORK, ...) are shared with run.sh
-# Session name and colour (/rename, /color), live and after a resume, run
+# Session name (/rename) and the /color command, live and after a resume, run
 # twice: with the bare binary, and through the owner's launch path
 # (system-config's claude-launch), where the owner reported "/rename is not
-# working". Stock reference (2.1.293): /rename prints "Session renamed to:
-# <name>" and the rule above the prompt carries the name; /color prints
-# "Session color set to: <c>" and paints that rule; both survive a resume.
+# working". Checked: /rename prints "Session renamed to: <name>", the rule
+# above the prompt carries the name in the dim rule colour, and the name
+# survives a resume; /color runs inside Claude Code, its replies show in the
+# chat and the transcript gets its agent-color record. Not checked: any colour
+# drawn on the rule or the name. claude-rs no longer draws it (it read Claude
+# Code internals the upstream maintainer rejected); stock paints the rule,
+# which gap.session_color records.
 
 ID_VARIANTS=(bin launch)
 ID_COLOR=blue
@@ -99,11 +103,6 @@ id_shot() {
   shot
 }
 
-id_shot_color() {
-  id_shot "$1"
-  screen_e "$1" >"$WORK/screens/$CUR.ansi.txt"
-}
-
 # 2026-10-09: saved TUI captures place a blank padding row between the
 # session rule and ❯. Associate the nearest nonblank row with the last composer.
 rule_index() {
@@ -114,39 +113,15 @@ rule_index() {
   '
 }
 
-composer_index() { screen "$1" | grep -n -E '^ ?❯ ' | tail -1 | cut -d: -f1; }
-
 rule_line() {
   local i
   i=$(rule_index "$1") || return 1
   screen "$1" | sed -n "${i}p" | sed -E 's/[[:space:]]+$//'
 }
 
-# sgr_of_line <sess> <line no>: the distinct SGR sequences on a row (capture -e).
-sgr_of_line() {
-  screen_e "$1" | sed -n "$2p" | grep -Eo $'\e\\[[0-9;]*m' | sed $'s/\e//' | sort -u
-}
-
-# rule_sgr <sess>: SGR on the rule row that the composer row does not also
-# use, so the input area's own background never reads as a colour.
-rule_sgr() {
-  local i c
-  i=$(rule_index "$1") || return 1
-  c=$(composer_index "$1") || return 1
-  comm -23 <(sgr_of_line "$1" "$i") <(sgr_of_line "$1" "$c") | paste -sd' ' -
-}
-
 # rule_names <sess> <name>: the rule row reads "──── <name> ─".
 rule_names() {
   grep -Eq -- "─+ +$(ere_escape "$2") +─" <<<"$(rule_line "$1")"
-}
-
-# rule_coloured: a foreground colour on the rule and a background badge.
-rule_coloured() {
-  local sgr
-  sgr=$(rule_sgr "$1")
-  grep -Eq '(38;5;[0-9]+|38;2;[0-9;]+|\[3[1-7](;|m))' <<<"$sgr" &&
-    grep -Eq '(48;5;[0-9]+|48;2;[0-9;]+|\[4[1-7](;|m))' <<<"$sgr"
 }
 
 # Per-variant check bodies; the def loop at the end binds them to ids.
@@ -245,22 +220,6 @@ id_color_replies() {
   fi
 }
 
-id_color_rule() {
-  local v=$1 s
-  id_colored "$v"
-  id_guard $? "$v" || return
-  s=$(id_sess "$v")
-  wait_for "$s" "$EMPTY_COMPOSER" 5 || true
-  sleep 1
-  if rule_coloured "$s"; then
-    id_shot_color "$s"
-    res PASS "rule SGR: $(rule_sgr "$s")"
-  else
-    id_shot_color "$s"
-    res FAIL "row above the prompt '$(rule_line "$s")' has no colour (SGR: $(rule_sgr "$s" || true))"
-  fi
-}
-
 id_color_persisted() {
   local v=$1 s transcript c
   id_colored "$v"
@@ -276,6 +235,9 @@ id_color_persisted() {
   fi
 }
 
+# Under the Agent SDK, Claude Code does not put a resumed session's name back
+# into its registry the way its own TUI does, and since 0.15.2-fork.1 the bridge
+# no longer passes it back as --name, so a missing name reads GAP, not FAIL.
 id_resume_name() {
   local v=$1 s t
   id_resumed "$v"
@@ -286,7 +248,7 @@ id_resume_name() {
     id_shot "$s"
     res PASS "after Ctrl+Q and resume the registry name is $t (session $(jq -r .sessionId <<<"$REG"))"
   else
-    res FAIL "registry name after resume: '$(jq -r .name <<<"$REG")', expected $t (session $(jq -r .sessionId <<<"$REG"))"
+    res GAP "registry name after resume: '$(jq -r .name <<<"$REG")', stock keeps $t (session $(jq -r .sessionId <<<"$REG")); Claude Code does not restore it under the SDK"
   fi
 }
 
@@ -319,20 +281,8 @@ id_resume_composer() {
     id_shot "$s"
     res FAIL "row above the prompt after resume: '$(rule_line "$s")' (no name)"
   fi
-}
-
-id_resume_color() {
-  local v=$1 s
-  id_resumed "$v"
-  id_guard $? "$v" || return
-  s=$(id_sess "$v")
-  if rule_coloured "$s"; then
-    id_shot_color "$s"
-    res PASS "rule SGR after resume: $(rule_sgr "$s")"
-  else
-    id_shot_color "$s"
-    res FAIL "no colour on the row above the prompt after resume (SGR: $(rule_sgr "$s" || true))"
-  fi
+  # The last check that uses the resumed session; it used to be stopped by the
+  # colour-after-resume check that followed.
   rs_stop "$s"
 }
 
@@ -343,22 +293,18 @@ for v in "${ID_VARIANTS[@]}"; do
   def "rename.$v.persisted" identity "/rename persisted ($how)" "sessions/<pid>.json, transcript custom-title and \`claude agents --json\` carry the name"
   def "rename.$v.status_tab" identity "Session name in /status ($how)" "Status shows the session name"
   def "color.$v.replies" identity "/color replies ($how)" "Set, reset-to-default and invalid-colour lines"
-  def "color.$v.live_rule" identity "/color paints the composer rule ($how)" "Rule in the colour, name as a black-on-colour badge"
   def "color.$v.persisted" identity "/color persisted ($how)" "Transcript \`agent-color\` entry"
   def "rename.$v.resume_name" identity "Name kept after Ctrl+Q and resume ($how)" "Registry keeps the name"
   def "rename.$v.resume_history" identity "/rename in the restored history ($how)" "Shows \`/rename <name>\` and its output"
   def "rename.$v.resume_composer" identity "Name in the composer after resume ($how)" "Rule carries the stored title"
-  def "color.$v.resume_rule" identity "Colour kept after resume ($how)" "Rule repainted from the transcript"
   eval "chk_rename_${v}_live_output() { id_live_output $v; }
     chk_rename_${v}_live_composer() { id_live_composer $v; }
     chk_rename_${v}_persisted() { id_persisted $v; }
     chk_rename_${v}_status_tab() { id_status_tab $v; }
     chk_color_${v}_replies() { id_color_replies $v; }
-    chk_color_${v}_live_rule() { id_color_rule $v; }
     chk_color_${v}_persisted() { id_color_persisted $v; }
     chk_rename_${v}_resume_name() { id_resume_name $v; }
     chk_rename_${v}_resume_history() { id_resume_history $v; }
-    chk_rename_${v}_resume_composer() { id_resume_composer $v; }
-    chk_color_${v}_resume_rule() { id_resume_color $v; }"
+    chk_rename_${v}_resume_composer() { id_resume_composer $v; }"
 done
 unset v how

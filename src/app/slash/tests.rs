@@ -680,37 +680,6 @@ fn detect_slash_argument_context_after_first_space() {
     assert_eq!(detection.query, "pla");
 }
 
-fn rename_and_color_inventory() -> Vec<model::AvailableCommand> {
-    // As Claude Code 2.1.293 advertises them.
-    vec![
-        model::AvailableCommand::new("rename", "Rename the current conversation")
-            .input_hint("[name]"),
-        model::AvailableCommand::new("color", "Set the prompt bar color for this session")
-            .input_hint("[red|blue|green|yellow|purple|orange|pink|cyan|default]"),
-    ]
-}
-
-#[test]
-fn color_argument_candidates_are_the_nine_colors() {
-    let mut app = App::test_default();
-    app.sdk_inventory.available_commands = rename_and_color_inventory();
-    app.input.set_text("/color ");
-    let _ = app.input.set_cursor(0, "/color ".chars().count());
-
-    let slash = requested_slash_state(&app).expect("slash state");
-    let values: Vec<_> = slash.candidates.iter().map(|c| c.insert_value.as_str()).collect();
-    assert_eq!(
-        values,
-        ["red", "blue", "green", "yellow", "purple", "orange", "pink", "cyan", "default"]
-    );
-
-    app.input.set_text("/color pu");
-    let _ = app.input.set_cursor(0, "/color pu".chars().count());
-    let slash = requested_slash_state(&app).expect("slash state");
-    let values: Vec<_> = slash.candidates.iter().map(|c| c.insert_value.as_str()).collect();
-    assert_eq!(values, ["purple"]);
-}
-
 #[test]
 fn mode_argument_candidates_are_dynamic() {
     let mut app = App::test_default();

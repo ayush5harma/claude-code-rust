@@ -10,7 +10,7 @@ declare -A GROUP_TITLE=(
   [input]="Input"
   [tools]="Tools, permissions and extensions"
   [session]="Session info"
-  [agents]="Agents (registry and the agent view)"
+  [agents]="Agents (the session registry)"
   [gaps]="Known gaps"
   [perf]="Performance"
 )

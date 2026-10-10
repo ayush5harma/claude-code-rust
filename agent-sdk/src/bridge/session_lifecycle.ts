@@ -170,6 +170,8 @@ export type PendingWorkerShutdown = {
 
 export type SessionState = {
   mainAgentResponse?: MainAgentResponse;
+  /** The API response ID of the last top-level response whose stream began. */
+  lastStreamedResponseId?: string;
   ultracode?: import("../types.js").UltracodeSnapshot;
   sessionId: string;
   cwd: string;
@@ -222,15 +224,10 @@ export type SessionState = {
   resumeUpdates?: SessionUpdate[];
   restoredInput?: string;
   pendingRewindResult?: PendingRewindResult;
-  /**
-   * The last title the child announced. The app drops updates for a session
-   * it does not know yet, and the child announces before init (on resume and
-   * after /clear, which replaces the session id), so it is re-sent after every
-   * connect or replacement.
-   */
-  sessionTitle?: string;
-  /** The colour the resumed transcript last recorded, sent once after connect. */
-  resumedColor?: import("../types.js").SessionColor;
+  /** The title last sent to the app for this session id. */
+  sentTitle?: string;
+  /** Counts title reads, so only the latest one is sent. */
+  titleReads?: number;
 };
 
 export const sessions = new Map<string, SessionState>();
@@ -509,8 +506,6 @@ export async function createSession(params: {
   sessionsToCloseBeforeRegister?: SessionState[];
   sessionsToCloseAfterConnect?: SessionState[];
   resumeUpdates?: SessionUpdate[];
-  /** The resumed transcript's last name and colour. */
-  storedLabel?: import("./session_label.js").StoredSessionLabel;
   restoredInput?: string;
   pendingRewindResult?: PendingRewindResult;
 }): Promise<SessionState> {
@@ -668,7 +663,6 @@ export async function createSession(params: {
         resumeSessionAt: params.resumeSessionAt,
         resumeDropsTurn: params.resumeDropsTurn,
         forkSession: params.forkSession,
-        sessionName: params.storedLabel?.title,
         launchSettings: params.launchSettings,
         resolvedSettings,
         provisionalSessionId,
@@ -741,9 +735,6 @@ export async function createSession(params: {
     authHintSent: false,
     ...(params.resumeUpdates && params.resumeUpdates.length > 0
       ? { resumeUpdates: params.resumeUpdates }
-      : {}),
-    ...(params.storedLabel?.color !== undefined
-      ? { resumedColor: params.storedLabel.color }
       : {}),
     ...(params.restoredInput !== undefined
       ? { restoredInput: params.restoredInput }
@@ -1040,12 +1031,6 @@ type QueryOptionsBuilderParams = {
   resumeSessionAt?: string;
   resumeDropsTurn?: string;
   forkSession?: boolean;
-  /**
-   * The name to give the child. Claude Code's SDK mode does not restore a
-   * resumed session's name into its registry entry (`claude agents`) the way
-   * its own TUI does, so a resume passes it back as `--name`.
-   */
-  sessionName?: string;
   launchSettings: SessionLaunchSettings;
   provisionalSessionId: string;
   input: AsyncQueue<SDKUserMessage>;
@@ -1233,7 +1218,6 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     ...(params.forkSession
       ? { forkSession: true, sessionId: params.provisionalSessionId }
       : {}),
-    ...(params.sessionName ? { extraArgs: { name: params.sessionName } } : {}),
     canUseTool: params.canUseTool,
     onElicitation: async (
       request: {

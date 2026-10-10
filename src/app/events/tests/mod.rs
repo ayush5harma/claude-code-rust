@@ -3884,7 +3884,8 @@ fn conversation_reset_mounts_a_fresh_transcript_without_dropping_session_invento
     assert_eq!(other_session.custom_title.as_deref(), Some("Other conversation title"));
     assert_eq!(other_session.summary, "Other conversation title");
     assert_eq!(other_session.first_prompt.as_deref(), Some("prompt Other conversation title"));
-    // Claude Code keeps a session's name across /clear and re-announces it.
+    // The reset itself keeps the name; the replacement session's own title
+    // follows from the bridge once the new session id connects.
     assert_eq!(app.session_runtime.session_title.as_deref(), Some("Kept across /clear"));
     assert_eq!(app.status, AppStatus::Ready);
 }

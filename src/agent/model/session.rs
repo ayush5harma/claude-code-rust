@@ -163,47 +163,6 @@ pub struct RateLimitUpdate {
     pub has_chargeable_saved_payment_method: Option<bool>,
 }
 
-/// The session colour Claude Code's `/color` sets; `None` is its "default".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SessionColor {
-    Red,
-    Blue,
-    Green,
-    Yellow,
-    Purple,
-    Orange,
-    Pink,
-    Cyan,
-}
-
-impl SessionColor {
-    pub const ALL: [Self; 8] = [
-        Self::Red,
-        Self::Blue,
-        Self::Green,
-        Self::Yellow,
-        Self::Purple,
-        Self::Orange,
-        Self::Pink,
-        Self::Cyan,
-    ];
-
-    /// The name `/color` takes and prints.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Red => "red",
-            Self::Blue => "blue",
-            Self::Green => "green",
-            Self::Yellow => "yellow",
-            Self::Purple => "purple",
-            Self::Orange => "orange",
-            Self::Pink => "pink",
-            Self::Cyan => "cyan",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
@@ -347,9 +306,8 @@ pub enum SessionUpdate {
         error: ApiRetryError,
     },
     PromptSuggestionUpdate(String),
-    /// The child's title for the session; `None` when it announced an empty one.
+    /// Claude Code's title for the session; `None` when nothing printable is left.
     SessionTitleUpdate(Option<String>),
-    SessionColorUpdate(Option<SessionColor>),
     RuntimeSessionStateUpdate(RuntimeSessionState),
     SettingsParseError {
         file: Option<String>,

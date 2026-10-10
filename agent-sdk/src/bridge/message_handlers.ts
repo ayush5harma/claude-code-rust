@@ -1,12 +1,9 @@
-import { observeMainAgentStream, resetMainAgentActivity } from "./activity.js";
+import { observeMainAgentStream, resetMainAgentActivity, responseWasStreamed } from "./activity.js";
 import { nativeNotification } from "./notifications.js";
 import { elapsedNumber, messageMetadata, turnTiming } from "./presentation_metadata.js";
 import { refreshUltracode } from "./ultracode.js";
 import { observeSessionEffort, refreshSessionEffort } from "./effort.js";
-import {
-  emitSessionColorFromReply,
-  handleSessionTitleChanged,
-} from "./session_label.js";
+import { emitSessionTitle } from "./session_title.js";
 import { observeSessionModel } from "./session_model.js";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
@@ -1278,10 +1275,15 @@ export function handleAssistantMessage(
   const content = Array.isArray(messageObject.content)
     ? messageObject.content
     : [];
-  // A local command (/rename, /color, /context, /usage, ...) replies with one
-  // completed synthetic frame and no stream events, so this frame is the only
-  // carrier of its output. Model replies were already streamed as deltas.
-  if (typeof message.local_command_source === "string") {
+  // A streamed reply was already shown from its deltas. A complete top-level
+  // reply whose response never streamed (a local command such as /rename,
+  // /context or /usage) has no other carrier of its text. An error frame
+  // reports through the turn result instead.
+  if (
+    !message.parent_tool_use_id &&
+    typeof message.error !== "string" &&
+    !responseWasStreamed(session, messageObject.id)
+  ) {
     const markdown = content
       .flatMap((block) => {
         const record = asRecordOrNull(block);
@@ -1300,10 +1302,6 @@ export function handleAssistantMessage(
           ? { source_message_uuid: assistantMessageUuid }
           : {}),
       });
-    }
-    // /color has no system event; its reply is the only report of the change.
-    if (asRecordOrNull(message.local_command_run)?.command === "color") {
-      emitSessionColorFromReply(session, markdown);
     }
   }
   for (const block of content) {
@@ -1571,6 +1569,7 @@ export function handleResultMessage(
     message.parent_tool_use_id === undefined
   ) {
     emitUserMessageStarted(session, message, "result");
+    void emitSessionTitle(session, "refresh");
   }
   emitFastModeUpdateIfChanged(
     session,
@@ -2106,13 +2105,6 @@ export function handleSdkMessage(
           ...(durationMs !== undefined ? { duration_ms: durationMs } : {}),
         });
       }
-      return;
-    }
-
-    // Claude Code 2.1.293 emits this for /rename, a generated name, `-n`,
-    // and the stored title on resume; SDK 0.3.288 does not declare it.
-    if (subtype === "session_title_changed") {
-      handleSessionTitleChanged(session, msg);
       return;
     }
 

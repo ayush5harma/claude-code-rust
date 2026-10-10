@@ -602,7 +602,7 @@ fn status_tab_rename_sends_claude_codes_own_rename_command() {
     assert_eq!(sent_prompt_text(&mut rx).as_deref(), Some("/rename Renamed session"));
     assert!(app.config.overlay.is_none());
     assert!(app.config.last_error.is_none());
-    // The title itself changes only when Claude Code announces it.
+    // The title itself changes only once the bridge reads Claude Code's.
     assert_eq!(app.session_runtime.session_title.as_deref(), Some("Current custom title"));
 }
 
