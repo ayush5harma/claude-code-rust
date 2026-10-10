@@ -1,4 +1,4 @@
-import { observeMainAgentStream, resetMainAgentActivity } from "./activity.js";
+import { observeMainAgentStream, resetMainAgentActivity, responseWasStreamed } from "./activity.js";
 import { nativeNotification } from "./notifications.js";
 import { elapsedNumber, messageMetadata, turnTiming } from "./presentation_metadata.js";
 import { refreshUltracode } from "./ultracode.js";
@@ -1275,10 +1275,15 @@ export function handleAssistantMessage(
   const content = Array.isArray(messageObject.content)
     ? messageObject.content
     : [];
-  // A local command (/rename, /color, /context, /usage, ...) replies with one
-  // completed synthetic frame and no stream events, so this frame is the only
-  // carrier of its output. Model replies were already streamed as deltas.
-  if (typeof message.local_command_source === "string") {
+  // A streamed reply was already shown from its deltas. A complete top-level
+  // reply whose response never streamed (a local command such as /rename,
+  // /context or /usage) has no other carrier of its text. An error frame
+  // reports through the turn result instead.
+  if (
+    !message.parent_tool_use_id &&
+    typeof message.error !== "string" &&
+    !responseWasStreamed(session, messageObject.id)
+  ) {
     const markdown = content
       .flatMap((block) => {
         const record = asRecordOrNull(block);
