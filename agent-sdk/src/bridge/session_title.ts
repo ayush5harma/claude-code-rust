@@ -14,8 +14,9 @@ import type { SessionState } from "./session_lifecycle.js";
  *
  * Measured on Claude Code 2.1.296: a launch-time `-n` name and a /rename reach
  * the transcript only with a turn (`getSessionInfo` reports nothing right
- * after init), so the title is read again after every top-level turn. After
- * /clear the new session id already reports the old title at init.
+ * after init), so the title is read again after every top-level turn and
+ * every rename the app requests. After /clear the new session id already
+ * reports the old title at init.
  * `customTitle` also falls back to Claude Code's generated title, so an
  * unnamed session shows that title after its first turn.
  */

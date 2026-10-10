@@ -1,19 +1,21 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import { buildSessionMutationOptions } from "../bridge.js";
+import { handleSessionDataCommand } from "./command_session_data.js";
 import { replaceProtocolEventWriter } from "./events.js";
 import { handleSdkMessage } from "./message_handlers.js";
-import type { SessionState } from "./session_lifecycle.js";
+import { sessions, type SessionState } from "./session_lifecycle.js";
 import { emitSessionTitle } from "./session_title.js";
 
 const TITLED = "44444444-4444-4444-8444-444444444444";
 const UNTITLED = "55555555-5555-4555-8555-555555555555";
 
 async function withTranscripts(
-  run: (cwd: string) => Promise<void>,
+  run: (cwd: string, projectDir: string) => Promise<void>,
 ): Promise<void> {
   const directory = realpathSync(mkdtempSync(path.join(os.tmpdir(), "session-title-")));
   const cwd = path.join(directory, "project");
@@ -33,7 +35,7 @@ async function withTranscripts(
   const previous = process.env.CLAUDE_CONFIG_DIR;
   process.env.CLAUDE_CONFIG_DIR = path.join(directory, "config");
   try {
-    await run(cwd);
+    await run(cwd, projectDir);
   } finally {
     if (previous === undefined) {
       delete process.env.CLAUDE_CONFIG_DIR;
@@ -137,5 +139,52 @@ test("a conversation reset sends the title the API reports after it, even an unc
       restore();
     }
     assert.deepEqual(titles, ["persisted name", "persisted name"]);
+  });
+});
+
+test("a rename or a generated title from the Status tab is sent once it is persisted", async () => {
+  await withTranscripts(async (cwd, projectDir) => {
+    const titled = session(TITLED, cwd);
+    const untitled = session(UNTITLED, cwd);
+    sessions.set(TITLED, titled);
+    sessions.set(UNTITLED, untitled);
+    const deps = {
+      buildSessionMutationOptions,
+      // Stands in for Query.generateSessionTitle(description, { persist: true }),
+      // which needs a running Claude Code. The pinned CLI persists a generated
+      // title as an ai-title record, and only for a session without a title.
+      generatePersistedSessionTitle: async () => {
+        appendFileSync(
+          path.join(projectDir, `${UNTITLED}.jsonl`),
+          `\n${JSON.stringify({ type: "ai-title", aiTitle: "Generated name", sessionId: UNTITLED })}`,
+        );
+        return "Generated name";
+      },
+      rewindTargetsFromSessionMessages: () => [],
+      handleRewind: async () => undefined,
+    };
+    try {
+      const updates = await titleUpdates(async () => {
+        await emitSessionTitle(titled, "reset");
+        await handleSessionDataCommand(
+          { command: "rename_session", session_id: TITLED, title: "Status name" },
+          "request-rename",
+          deps,
+        );
+        await handleSessionDataCommand(
+          { command: "generate_session_title", session_id: UNTITLED, description: "hello" },
+          "request-generate",
+          deps,
+        );
+      });
+      assert.deepEqual(updates, [
+        { session_id: TITLED, title: "persisted name" },
+        { session_id: TITLED, title: "Status name" },
+        { session_id: UNTITLED, title: "Generated name" },
+      ]);
+    } finally {
+      sessions.delete(TITLED);
+      sessions.delete(UNTITLED);
+    }
   });
 });
