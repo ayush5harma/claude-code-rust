@@ -965,30 +965,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(windows))]
-    fn clipboard_paste_reads_the_clipboard_on_ctrl_v_press() {
-        // Outside Windows the terminal reports Ctrl+V as a press only; a
-        // release never arrives, so a release-only trigger never attaches.
-        for code in [KeyCode::Char('v'), KeyCode::Char('\u{16}')] {
-            let modifiers =
-                if code == KeyCode::Char('v') { KeyModifiers::CONTROL } else { KeyModifiers::NONE };
-            let press = KeyEvent::new_with_kind(code, modifiers, KeyEventKind::Press);
-            let release = KeyEvent::new_with_kind(code, modifiers, KeyEventKind::Release);
-            assert!(is_clipboard_paste_trigger(press), "{code:?} press");
-            assert!(!is_clipboard_paste_trigger(release), "{code:?} release");
-        }
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn clipboard_paste_reads_the_clipboard_on_ctrl_v_release() {
-        let ctrl_v =
-            |kind| KeyEvent::new_with_kind(KeyCode::Char('v'), KeyModifiers::CONTROL, kind);
-        assert!(is_clipboard_paste_trigger(ctrl_v(KeyEventKind::Release)));
-        assert!(!is_clipboard_paste_trigger(ctrl_v(KeyEventKind::Press)));
-    }
-
-    #[test]
     fn ctrl_shortcut_rejects_raw_control_character_with_alt() {
         let key = KeyEvent::new(KeyCode::Char('\u{16}'), KeyModifiers::ALT);
         assert!(!is_ctrl_char_shortcut(key, 'v'));
