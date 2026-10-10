@@ -390,7 +390,7 @@ export function emitConnectEvent(session: SessionState): void {
     }
   }
   emitAvailableAgentsSnapshot(session);
-  void emitSessionTitle(session, "connect");
+  void emitSessionTitle(session);
   session.resumeUpdates = undefined;
   session.restoredInput = undefined;
 
@@ -422,7 +422,7 @@ export function emitSessionReplacedEvent(
   writeEvent(bridgeEvent, requestId);
   emitAvailableCommandsSnapshot(session);
   emitAvailableAgentsSnapshot(session);
-  void emitSessionTitle(session, "connect");
+  void emitSessionTitle(session);
   if (session.pendingRewindResult) {
     writeEvent(
       { ...session.pendingRewindResult, session_id: session.sessionId },

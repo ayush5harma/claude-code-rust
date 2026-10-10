@@ -66,17 +66,13 @@ Use:
 
 to inspect the current session's full command list. The output includes app-owned commands and SDK-advertised commands, with descriptions when the SDK provides them.
 
-Commands that Claude Code runs locally, such as `/rename`, `/color` or `/context`, reply in the chat under the command as they do in Claude Code. A resumed session shows each local command it ran as the command line with its output under it.
+Commands that Claude Code runs locally, such as `/rename`, `/color` or `/context`, reply in the chat under the command as they do in Claude Code. `/color` runs in Claude Code and its reply shows, but Claude Rust does not draw a session colour.
 
 ## Session Name
 
-`/rename <name>` is Claude Code's own command, forwarded to the session. It names the session: `Session renamed to: <name>`. The name is what `claude agents` lists for the running session and what a later `claude-rs --resume` restores. Under the Agent SDK, Claude Code does not put a resumed session's name back into its session list, so `claude agents` shows a resumed session under its folder until it is renamed. Bare `/rename` asks Claude Code to generate a name from the conversation.
+The Status tab shows the session name. Its rename draft (`r`) starts from that name, and title generation (`g`) uses it as the description when there is one.
 
-The name shown is Claude Code's own session title, read through the Agent SDK's session API when a session connects or resumes, when `/clear` starts a new session, and after each turn; Claude Code keeps it across `/clear`. A name given at launch (`claude -n <name>` through a wrapper) reaches that API with the first turn, so it shows once the first reply is in. The API also reports Claude Code's generated title for a session nobody named, so such a session shows that title after its first turn, where Claude Code's own prompt bar shows none. A named session shows a rule directly above the composer with the name at its right, `──── name ─`, as Claude Code's prompt bar does. A session without a name keeps the plain composer. The terminal tab title shows the name instead of the folder, and the Status tab lists it as the session name.
-
-`/color` also runs in Claude Code and its reply shows in the chat, but Claude Rust does not draw a session colour.
-
-In the Status tab, `r` renames the session and `g` generates a name; both send `/rename` to Claude Code as a turn of their own, so they wait for a running turn to finish. Claude Code has no command that removes a name, so an empty name is refused.
+The name is whatever the Agent SDK's session API reports as the session's title; claude-rs keeps no title of its own. It is read when a session connects or resumes, when the session is replaced, when the conversation resets, after each turn, and after a Status-tab rename or title generation. A `/rename` typed in the composer therefore shows once its turn completes. For a session nobody named, the API reports a generated title instead, so such a session shows that title after its first turn.
 
 ## Session Commands
 

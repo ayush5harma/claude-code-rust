@@ -1,6 +1,14 @@
 import { observeSessionModel } from "./session_model.js";
-import { getSessionMessages, listSessions } from "@anthropic-ai/claude-agent-sdk";
-import type { Query, SessionMessage } from "@anthropic-ai/claude-agent-sdk";
+import {
+  getSessionMessages,
+  listSessions,
+  renameSession,
+} from "@anthropic-ai/claude-agent-sdk";
+import type {
+  Query,
+  SessionMessage,
+  SessionMutationOptions,
+} from "@anthropic-ai/claude-agent-sdk";
 import type {
   BridgeCommand,
   RewindTarget,
@@ -15,8 +23,15 @@ import type {
 } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
 import { mapSdkAccountInfo } from "./account_metadata.js";
-import { currentSessionListOptions, slashError, writeEvent } from "./events.js";
+import {
+  currentSessionListOptions,
+  emitSessionsList,
+  setSessionListingDir,
+  slashError,
+  writeEvent,
+} from "./events.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
+import { emitSessionTitle } from "./session_title.js";
 import {
   refreshCurrentModel,
   sessionById,
@@ -27,6 +42,8 @@ type SessionDataCommand = Extract<
   BridgeCommand,
   {
     command:
+      | "generate_session_title"
+      | "rename_session"
       | "get_status_snapshot"
       | "get_context_usage"
       | "get_usage"
@@ -36,6 +53,13 @@ type SessionDataCommand = Extract<
 >;
 
 export type SessionDataCommandDeps = {
+  generatePersistedSessionTitle: (
+    query: Query,
+    description: string,
+  ) => Promise<string>;
+  buildSessionMutationOptions: (
+    cwd?: string,
+  ) => SessionMutationOptions | undefined;
   rewindTargetsFromSessionMessages: (
     messages: SessionMessage[],
   ) => RewindTarget[];
@@ -51,6 +75,12 @@ export async function handleSessionDataCommand(
   deps: SessionDataCommandDeps,
 ): Promise<void> {
   switch (command.command) {
+    case "generate_session_title":
+      await generateTitle(command, requestId, deps);
+      return;
+    case "rename_session":
+      await rename(command, requestId, deps);
+      return;
     case "get_status_snapshot":
       await getStatusSnapshot(command, requestId);
       return;
@@ -65,6 +95,61 @@ export async function handleSessionDataCommand(
       return;
     case "rewind":
       await deps.handleRewind(command, requestId);
+  }
+}
+
+async function generateTitle(
+  command: Extract<SessionDataCommand, { command: "generate_session_title" }>,
+  requestId: string | undefined,
+  deps: SessionDataCommandDeps,
+): Promise<void> {
+  const session = requireSession(command.session_id, requestId);
+  if (!session) {
+    return;
+  }
+  try {
+    await deps.generatePersistedSessionTitle(
+      session.query,
+      command.description,
+    );
+    await emitSessionTitle(session);
+    setSessionListingDir(session.cwd);
+    await emitSessionsList(requestId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    slashError(
+      command.session_id,
+      `failed to generate session title: ${message}`,
+      requestId,
+    );
+  }
+}
+
+async function rename(
+  command: Extract<SessionDataCommand, { command: "rename_session" }>,
+  requestId: string | undefined,
+  deps: SessionDataCommandDeps,
+): Promise<void> {
+  const session = requireSession(command.session_id, requestId);
+  if (!session) {
+    return;
+  }
+  try {
+    await renameSession(
+      command.session_id,
+      command.title,
+      deps.buildSessionMutationOptions(session.cwd),
+    );
+    await emitSessionTitle(session);
+    setSessionListingDir(session.cwd);
+    await emitSessionsList(requestId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    slashError(
+      command.session_id,
+      `failed to rename session: ${message}`,
+      requestId,
+    );
   }
 }
 

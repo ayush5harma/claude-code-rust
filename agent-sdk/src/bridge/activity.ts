@@ -9,13 +9,15 @@ export type MainAgentResponse = {
 
 /**
  * Whether a completed top-level assistant message belongs to a response whose
- * stream this session saw begin. Its blocks arrive in order inside that
+ * stream this session never saw begin. Its blocks arrive in order inside that
  * response, before the next one starts, so the last started response is the
  * only one a completed message can continue. Unlike the activity scope, a
- * stop, retry or reset does not forget it.
+ * stop, retry or reset does not forget it. A message without a response ID
+ * cannot be correlated and counts as streamed.
  */
-export function responseWasStreamed(session: SessionState, responseId: unknown): boolean {
-  return typeof responseId === "string" && responseId === session.lastStreamedResponseId;
+export function responseNeverStreamed(session: SessionState, responseId: unknown): boolean {
+  return typeof responseId === "string" && responseId.length > 0 &&
+    responseId !== session.lastStreamedResponseId;
 }
 
 export function resetMainAgentActivity(session: SessionState): void {

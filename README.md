@@ -15,69 +15,6 @@ Claude Code Rust replaces the stock Claude Code terminal interface with a native
   <img src="assets/demo.gif" alt="Claude Code Rust explaining the terminal problems its native Rust interface solves" width="900">
 </p>
 
-## Fork
-
-[ayush5harma/claude-code-rust](https://github.com/ayush5harma/claude-code-rust)
-tracks upstream and adds:
-
-- Session names: `/rename` names the session, and the name shows in a rule
-  above the composer, the terminal tab title and the Status tab. It survives
-  resume and `/clear`. The name is Claude Code's own session title, read
-  through the Agent SDK's session API.
-- Local command replies: the reply of every command Claude Code runs locally
-  (`/rename`, `/color`, `/usage`, `/context`, ...) appears in the chat, and a
-  resumed session shows each local command as its command line with its output.
-- An opt-in suite that measures behavior and performance against stock Claude
-  Code and the installed fork.
-
-Releases up to 0.15.1-fork.2 also drew the session colour, opened Claude Code's
-agent view from the Left arrow with a background-agent count in the footer, and
-drew Claude Code's mascot. 0.15.2-fork.1 removed them, because they depended on
-Claude Code's private files and screens or on its branding. `/color` still runs
-in Claude Code and its reply shows; run `claude agents` from a shell for the
-agent view.
-
-The Rust TUI runs the installed stock Claude Code binary through a TypeScript
-Agent SDK bridge. The [parity report](docs/src/parity.md) records measured
-results, known gaps and the performance comparison; it does not claim complete
-stock parity. Its last full run (2026-10-09, on 0.15.1-fork.2) recorded
-**85 PASS, 4 FAIL, 12 GAP and 4 SKIP**. Its colour and agent-view rows describe
-the features removed since. The four failures are pre-existing memory-picker,
-symlinked permissions/hooks and rewind issues.
-
-The matched, settled comparison found no regression against the installed
-0.15.1-fork.1: 0.68 vs 0.71 CPU seconds per idle minute, 185 vs 187 MB for the
-whole process tree, and 660 ms for both builds to resume a 400-record history.
-The report describes the background load, initial inconsistent measurements
-and targeted continuations used to correct harness errors.
-
-Startup, measured on 2026-10-10 with `--diagnostics-preset full` over three
-runs of a new session: claude-rs and its bridge are up and have asked the SDK
-for a session after 0.1-0.2 s. The rest of the 0.8-1.4 s until the session
-connects is Claude Code starting inside the SDK and running its SessionStart
-hooks. The composer accepts typing meanwhile, and an input-ready prompt
-appears in about 40 ms against about 600 ms for stock Claude Code.
-
-| Action | Shortcut or command |
-| --- | --- |
-| Rename the session | `/rename <name>` |
-| Quit claude-rs | Ctrl+Q |
-| Paste a clipboard image | Ctrl+V |
-
-Run the suite with an authenticated, disposable config directory. It drives
-real TUIs in scratch directories on a private tmux socket and uses paid model
-turns. Never point it at your everyday Claude profile.
-
-```sh
-export PARITY_CONFIG_DIR=/path/to/isolated-claude-config
-scripts/e2e-parity/run.sh --report docs/src/parity.md
-# Also exercise the system-config launcher when installed:
-scripts/e2e-parity/run.sh --only identity --launcher "$HOME/.local/bin/claude-launch"
-```
-
-See [suite instructions](scripts/e2e-parity/README.md) for source builds,
-requirements, cost, targeted checks and cleanup.
-
 ## Prerequisite
 
 Install the Claude Code CLI and keep `claude` on `PATH` for some functionality not yet supported by the Anthropic SDK. See the [dependency and feature overview](https://srothgan.github.io/claude-code-rust/about.html#claude-cli-dependencies) for details.
@@ -137,7 +74,7 @@ The stock Claude Code TUI runs on Node.js with React Ink, which renders by redra
 - **Scrollback**: Hijacks the terminal's native scrollback, erasing history you can no longer scroll back to
 - **Paste**: Large pastes can flood stdout and freeze the terminal
 
-Claude Code Rust addresses these with a native terminal UI that uses diffed, direct terminal control via Crossterm and Ratatui, with no full-frame redraws and no React Ink rendering loop. The fork now records an [end-to-end comparison](docs/src/parity.md), including the bridge and stock child in memory and CPU totals. The measured results and their limits are documented there.
+Claude Code Rust addresses these with a native terminal UI that uses diffed, direct terminal control via Crossterm and Ratatui, with no full-frame redraws and no React Ink rendering loop. There is no benchmark against the stock interface yet, so the improvements are based on daily use, not on measurements.
 
 ## Documentation
 

@@ -1,4 +1,4 @@
-import { observeMainAgentStream, resetMainAgentActivity, responseWasStreamed } from "./activity.js";
+import { observeMainAgentStream, resetMainAgentActivity, responseNeverStreamed } from "./activity.js";
 import { nativeNotification } from "./notifications.js";
 import { elapsedNumber, messageMetadata, turnTiming } from "./presentation_metadata.js";
 import { refreshUltracode } from "./ultracode.js";
@@ -1275,14 +1275,15 @@ export function handleAssistantMessage(
   const content = Array.isArray(messageObject.content)
     ? messageObject.content
     : [];
-  // A streamed reply was already shown from its deltas. A complete top-level
-  // reply whose response never streamed (a local command such as /rename,
-  // /context or /usage) has no other carrier of its text. An error frame
-  // reports through the turn result instead.
+  // A streamed reply was already shown from its deltas. SDK-owned context
+  // Markdown, and a complete top-level reply whose response never streamed (a
+  // local command such as /rename, /color or /usage), have no other carrier
+  // of their text. An error frame reports through the turn result instead.
   if (
-    !message.parent_tool_use_id &&
-    typeof message.error !== "string" &&
-    !responseWasStreamed(session, messageObject.id)
+    asRecordOrNull(message.context_usage) ||
+    (!message.parent_tool_use_id &&
+      assistantError.length === 0 &&
+      responseNeverStreamed(session, messageObject.id))
   ) {
     const markdown = content
       .flatMap((block) => {
@@ -1569,7 +1570,7 @@ export function handleResultMessage(
     message.parent_tool_use_id === undefined
   ) {
     emitUserMessageStarted(session, message, "result");
-    void emitSessionTitle(session, "refresh");
+    void emitSessionTitle(session);
   }
   emitFastModeUpdateIfChanged(
     session,
@@ -1742,6 +1743,9 @@ export function handleSdkMessage(
       timestamp: trimmedStringField(msg, "timestamp"),
       user_message_uuid: trimmedStringField(msg, "user_message_uuid"),
     });
+    // The app drops the title with the conversation; send what the API
+    // reports for the session after the reset.
+    void emitSessionTitle(session);
     return;
   }
 

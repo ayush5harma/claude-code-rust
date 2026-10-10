@@ -232,7 +232,7 @@ async function create(
   });
   setSessionListingDir(command.cwd);
   if (command.continue_session) {
-    if (command.resume !== undefined) {
+    if (command.resume) {
       throw new Error("continue_session cannot be combined with resume");
     }
     const recent = (await listSessions(currentSessionListOptions()))
@@ -242,15 +242,9 @@ async function create(
       return;
     }
   }
-  if (command.resume !== undefined) {
-    await resume(
-      { command: "resume_session", session_id: command.resume, launch_settings: command.launch_settings },
-      requestId,
-    );
-    return;
-  }
   await createSession({
     cwd: command.cwd,
+    resume: command.resume,
     launchSettings: command.launch_settings,
     connectEvent: "connected",
     requestId,
