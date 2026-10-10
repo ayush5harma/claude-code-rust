@@ -28,7 +28,7 @@ test("resume commands restore a transcript name and emit its color once", async 
     const journal = join(directory, "query.jsonl");
     const fixturePath = join(directory, "sdk-fixture.mjs");
     const sdkUrl = import.meta.resolve("@anthropic-ai/claude-agent-sdk");
-    writeFileSync(join(directory, "package.json"), JSON.stringify({ version: "0.3.288" }));
+    writeFileSync(join(directory, "package.json"), JSON.stringify({ version: "0.3.296" }));
     writeFileSync(fixturePath, `
       export * from ${JSON.stringify(sdkUrl)};
       import { appendFileSync } from "node:fs";

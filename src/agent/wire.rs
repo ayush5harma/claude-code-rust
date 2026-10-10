@@ -744,6 +744,8 @@ mod tests {
             Some("worktree_unverified"),
             Some("cli_version_too_old"),
             Some("bypass_root"),
+            Some("org_config_required_unavailable"),
+            Some("org_config_refused"),
             Some("future_reason"),
         ] {
             let mut json = serde_json::json!({
