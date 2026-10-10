@@ -8,10 +8,6 @@ pub const RUST_ORANGE: Color = Color::Rgb(244, 118, 0);
 pub const BTW_ACCENT: Color = Color::LightCyan;
 pub const ULTRACODE_ACCENT: Color = Color::Rgb(180, 140, 255);
 
-// Claude Code's mascot, from its 2.1.293 theme (`clawd_body`, `clawd_background`)
-pub const CLAWD_BODY: Color = Color::Rgb(215, 119, 87);
-pub const CLAWD_EYES: Color = Color::Rgb(0, 0, 0);
-
 // UI chrome
 pub const DIM: Color = Color::DarkGray;
 pub const PROMPT_CHAR: &str = "\u{276f}";

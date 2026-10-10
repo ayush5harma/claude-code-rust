@@ -11,26 +11,10 @@ use crate::ui::wrap::{
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-// Claude Code's mascot exactly as the 2.1.293 welcome banner draws it (read
-// from its screen with colour escapes): block glyphs in the body colour, and
-// the cells holding the eyes on a black background, so the empty quadrant of
-// each eye glyph shows black on any terminal theme. Each segment is
-// (text, on the eye background).
-const LOGO_ART: &[&[(&str, bool)]] = &[
-    &[
-        (" \u{2590}", false),
-        ("\u{259b}\u{2588}\u{2588}\u{2588}\u{259b}\u{2588}", true),
-        (" ", false),
-    ],
-    &[
-        ("\u{259d}\u{259c}", false),
-        ("\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}", true),
-        ("\u{2588}\u{2580}", false),
-    ],
-    &[(" \u{259d}\u{259d}   \u{259d}\u{259d} ", false)],
-];
-const LOGO_LEFT_PADDING: &str = "  ";
-const LOGO_TEXT_GAP: usize = 2;
+const FERRIS_ART: &[&str] =
+    &[r"    _~^~^~_     ", r"\) /  o o  \ (/ ", r"  '_   -   _'   ", r"  / '-----' \   "];
+const FERRIS_LEFT_PADDING: &str = "  ";
+const FERRIS_TEXT_GAP: usize = 2;
 const MIN_INLINE_FIELD_VALUE_WIDTH: usize = 8;
 const WELCOME_FIELD_LABELS: &[&str] = &["Version", "Subscription", "Cwd", "Session ID", "Tips"];
 
@@ -56,8 +40,8 @@ pub(crate) fn overview_lines(
         Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
     };
 
-    let logo_width = logo_column_width();
-    let overview_offset = logo_width.saturating_add(LOGO_TEXT_GAP);
+    let ferris_width = ferris_column_width();
+    let overview_offset = ferris_width.saturating_add(FERRIS_TEXT_GAP);
     let overview_width = width.saturating_sub(overview_offset);
     let side_by_side = overview_width >= minimum_overview_width();
     let text_width = if side_by_side { overview_width } else { width };
@@ -69,7 +53,7 @@ pub(crate) fn overview_lines(
         text_width,
     );
     let mut lines = if side_by_side {
-        join_column_lines(logo_rows(), text_rows, logo_width, LOGO_TEXT_GAP)
+        join_column_lines(ferris_rows(), text_rows, ferris_width, FERRIS_TEXT_GAP)
     } else {
         text_rows
     };
@@ -114,25 +98,19 @@ fn welcome_field_lines(
     wrap_styled_chunks_with_hanging_prefix(&prefix, &body, width, Style::default())
 }
 
-fn logo_row_width(row: &[(&str, bool)]) -> usize {
-    row.iter().map(|(text, _)| display_width(text)).sum()
+fn ferris_column_width() -> usize {
+    display_width(FERRIS_LEFT_PADDING)
+        .saturating_add(FERRIS_ART.iter().map(|line| display_width(line)).max().unwrap_or(0))
 }
 
-fn logo_column_width() -> usize {
-    display_width(LOGO_LEFT_PADDING)
-        .saturating_add(LOGO_ART.iter().map(|row| logo_row_width(row)).max().unwrap_or(0))
-}
-
-fn logo_rows() -> Vec<Line<'static>> {
-    let body = Style::default().fg(theme::CLAWD_BODY);
-    LOGO_ART
+fn ferris_rows() -> Vec<Line<'static>> {
+    FERRIS_ART
         .iter()
-        .map(|row| {
-            let mut spans = vec![Span::raw(LOGO_LEFT_PADDING)];
-            spans.extend(row.iter().map(|&(text, eye)| {
-                Span::styled(text, if eye { body.bg(theme::CLAWD_EYES) } else { body })
-            }));
-            Line::from(spans)
+        .map(|art| {
+            Line::from(Span::styled(
+                format!("{FERRIS_LEFT_PADDING}{art}"),
+                Style::default().fg(theme::RUST_ORANGE),
+            ))
         })
         .collect()
 }
@@ -163,21 +141,11 @@ pub(crate) fn selected_tip(block: &WelcomeBlock) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{HOST_TIPS, Line, overview_lines};
-    use crate::ui::theme;
-
-    const LOGO_MIDDLE_ROW: &str =
-        "\u{259d}\u{259c}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2580}";
     use crate::app::{ChatMessage, MessageBlock};
-    use crate::ui::wrap::{display_width, line_display_width};
+    use crate::ui::wrap::line_display_width;
 
     fn line_text(line: &Line<'_>) -> String {
         line.spans.iter().map(|span| span.content.as_ref()).collect()
-    }
-
-    // The logo's glyphs are three bytes each, so a column is a display width,
-    // not a byte offset.
-    fn column_of(text: &str, needle: &str) -> Option<usize> {
-        text.find(needle).map(|byte| display_width(&text[..byte]))
     }
 
     #[test]
@@ -191,8 +159,7 @@ mod tests {
             .into_iter()
             .map(|line| line.spans.into_iter().map(|s| s.content).collect())
             .collect();
-        assert!(lines.iter().any(|line| line.contains(LOGO_MIDDLE_ROW)));
-        assert!(!lines.iter().any(|line| line.contains("_~^~^~_")));
+        assert!(lines.iter().any(|line| line.contains("_~^~^~_")));
         assert!(!lines.iter().any(|line| line.contains("Welcome back to Claude, in Rust!")));
         assert!(lines.iter().any(|line| line.contains("Version:")));
         assert!(lines.iter().any(|line| line.contains("Subscription: Loading")));
@@ -213,13 +180,13 @@ mod tests {
         };
         block.tip_seed = 7;
 
-        let lines = overview_lines(block, None, 103);
+        let lines = overview_lines(block, None, 110);
         let text = lines.iter().map(line_text).collect::<Vec<_>>();
         let tip_row = text.iter().position(|line| line.contains("Tips: Start")).expect("tip row");
 
-        assert_eq!(column_of(&text[tip_row], "Tips:"), Some(13));
-        assert_eq!(text[tip_row + 1].find(|ch: char| !ch.is_whitespace()), Some(19));
-        assert!(lines.iter().all(|line| line_display_width(line) <= 103));
+        assert_eq!(text[tip_row].find("Tips:"), Some(20));
+        assert_eq!(text[tip_row + 1].find("noise"), Some(26));
+        assert!(lines.iter().all(|line| line_display_width(line) <= 110));
     }
 
     #[test]
@@ -234,55 +201,28 @@ mod tests {
             panic!("expected welcome block");
         };
 
-        let text = overview_lines(block, None, 63).iter().map(line_text).collect::<Vec<_>>();
+        let text = overview_lines(block, None, 70).iter().map(line_text).collect::<Vec<_>>();
         let cwd_row = text.iter().position(|line| line.contains("Cwd: alpha")).expect("cwd row");
 
-        assert_eq!(column_of(&text[cwd_row], "Cwd:"), Some(13));
-        assert_eq!(text[cwd_row + 1].find(|ch: char| !ch.is_whitespace()), Some(18));
+        assert_eq!(text[cwd_row].find("Cwd:"), Some(20));
+        assert_eq!(text[cwd_row + 1].find("iota"), Some(25));
     }
 
     #[test]
-    fn narrow_overview_hides_logo_and_keeps_hanging_indent() {
+    fn narrow_overview_hides_ferris_and_keeps_hanging_indent() {
         let mut message = ChatMessage::welcome("1.2.3", "Pro", "/workspace/demo", "session-123");
         let MessageBlock::Welcome(block) = &mut message.blocks[0] else {
             panic!("expected welcome block");
         };
         block.tip_seed = 7;
 
-        let lines = overview_lines(block, None, 32);
+        let lines = overview_lines(block, None, 36);
         let text = lines.iter().map(line_text).collect::<Vec<_>>();
         let tip_row =
             text.iter().position(|line| line.starts_with("Tips: Start")).expect("tip row");
 
-        assert!(!text.iter().any(|line| line.contains(LOGO_MIDDLE_ROW)));
+        assert!(!text.iter().any(|line| line.contains("_~^~^~_")));
         assert_eq!(text[tip_row + 1].find(|ch: char| !ch.is_whitespace()), Some(6));
-        assert!(lines.iter().all(|line| line_display_width(line) <= 32));
-    }
-
-    #[test]
-    fn logo_draws_claude_code_glyphs_with_black_eye_cells() {
-        let message = ChatMessage::welcome("1.2.3", "Pro", "/workspace/demo", "session-123");
-        let MessageBlock::Welcome(block) = &message.blocks[0] else {
-            panic!("expected welcome block");
-        };
-        let lines = overview_lines(block, None, 120);
-        let logo = &lines[..3];
-
-        let rows = logo.iter().map(line_text).collect::<Vec<_>>();
-        assert!(rows[0].starts_with("   \u{2590}\u{259b}\u{2588}\u{2588}\u{2588}\u{259b}\u{2588}"));
-        assert!(rows[1].starts_with(&format!("  {LOGO_MIDDLE_ROW}")));
-        assert!(rows[2].starts_with("   \u{259d}\u{259d}   \u{259d}\u{259d}"));
-
-        let eye_span = logo[0]
-            .spans
-            .iter()
-            .find(|span| span.content.starts_with('\u{259b}'))
-            .expect("eye cells");
-        assert_eq!(eye_span.style.fg, Some(theme::CLAWD_BODY));
-        assert_eq!(eye_span.style.bg, Some(theme::CLAWD_EYES));
-        let foot_span =
-            logo[2].spans.iter().find(|span| span.content.contains('\u{259d}')).expect("feet");
-        assert_eq!(foot_span.style.fg, Some(theme::CLAWD_BODY));
-        assert_eq!(foot_span.style.bg, None);
+        assert!(lines.iter().all(|line| line_display_width(line) <= 36));
     }
 }
