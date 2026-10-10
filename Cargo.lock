@@ -574,7 +574,7 @@ dependencies = [
 
 [[package]]
 name = "claude-code-rust"
-version = "0.15.1-fork.2"
+version = "0.15.2-fork.1"
 dependencies = [
  "ansi-to-tui",
  "anyhow",
