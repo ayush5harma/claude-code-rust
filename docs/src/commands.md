@@ -68,11 +68,9 @@ to inspect the current session's full command list. The output includes app-owne
 
 ## Session Name
 
-The session name changes through Claude Code's own `/rename <name>`, forwarded to the session, or through the Status tab, where `r` renames the session and `g` asks Claude Code for a generated title. Claude Code generates one only for a session that has no title yet; otherwise `g` keeps the current one.
+The Status tab shows the session name. Its rename draft (`r`) starts from that name, and title generation (`g`) uses it as the description when there is one.
 
-The name shown is the title the Agent SDK's session API reports for the session. It is read when a session connects or resumes, when the session is replaced, when the conversation resets, after each turn and after a Status-tab rename. After a reset such as `/clear`, the name shown is whatever the API reports for the session at that point, which can be the title it had before. A `/rename` reaches the API with its turn, so the name shows once that turn completes.
-
-The API also reports Claude Code's generated title for a session nobody named, and has no field that tells the two apart. Such a session therefore shows its generated title after its first turn, where Claude Code's own prompt bar shows none. When the session has a title, a rule directly above the composer carries it at its right, `──── name ─`, in the shape of Claude Code's prompt bar for a named session; without one the composer stays plain. The terminal tab title shows the name instead of the folder, and the Status tab lists it as the session name.
+The name is whatever the Agent SDK's session API reports as the session's title; claude-rs keeps no title of its own. It is read when a session connects or resumes, when the session is replaced, when the conversation resets, after each turn, and after a Status-tab rename or title generation. A `/rename` typed in the composer therefore shows once its turn completes. For a session nobody named, the API reports a generated title instead, so such a session shows that title after its first turn.
 
 ## Session Commands
 

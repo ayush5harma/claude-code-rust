@@ -40,9 +40,8 @@ pub struct SessionRuntimeState {
     pub last_rate_limit_update: Option<model::RateLimitUpdate>,
     /// Account info from the bridge status snapshot (email, org, subscription).
     pub account_info: Option<model::AccountInfo>,
-    /// The title Claude Code persisted for the active session, as the bridge
-    /// last read it through the Agent SDK's session API; the only title the
-    /// app shows.
+    /// The active session's title, as the bridge last read it through the
+    /// Agent SDK's session API.
     pub session_title: Option<String>,
 }
 
