@@ -37,23 +37,12 @@ The fullscreen settings surface has its own keys for tabs, panes, search and edi
 | `Tab` | Focus prompts or accept suggestions. |
 | `Shift+Tab` | Cycle mode. |
 | `Up` | Move up through text, or recall the latest user message when the input is empty. |
-| `Left` | Open Claude Code's agent view when the input is empty; otherwise move left through text. |
-| `Down`, `Right` | Move through text. |
+| `Down`, `Left`, `Right` | Move through text. |
 | `Home`, `End` | Move to line start or line end. |
 | `Ctrl+Left`, `Ctrl+Right` | Move by word. |
 | `Alt+Left`, `Alt+Right` | Move by word. |
 | `Ctrl+Backspace`, `Ctrl+Delete` | Delete by word. |
 | `Alt+Backspace`, `Alt+Delete` | Delete by word. |
-
-### Agent View
-
-As in Claude Code, `Left` on an empty prompt opens the agent view: claude-rs hands the terminal to `claude agents` (the stock list of background sessions, where you can peek, attach, reply, dispatch and stop them) and comes back when it exits. Press `Esc`, or `Ctrl+C` twice, in the agent view to return. A `Ctrl+C` pressed while the view is still starting never quits claude-rs or its session: it closes the view, or is dropped if claude-rs had not handed over the terminal yet. Repeated `Left` presses open the view once.
-
-Your claude-rs session keeps running while the agent view is open. A turn in progress continues and its output appears when you return. Permission prompts and questions wait in the transcript for you, but their timers keep running: a question with a configured timeout can time out and continue while the view is open. Notifications are still delivered as usual: the terminal can ring its bell or show a desktop notification over the agent view.
-
-claude-rs runs the same Claude Code the session runs (`CLAUDE_CODE_EXECUTABLE`), or `claude` from `PATH` when that is not set. When `Left` would open the view, the footer's first row shows Claude Code's background sessions after the mode badges, for example `← 2 agents · 1 awaiting input · 1 working`: the sessions `claude agents --json` lists, without completed ones. claude-rs reads them from Claude Code's own files in its config directory (`jobs/*/state.json`, the daemon roster and the session registry) every 10 seconds and right after the agent view closes, re-reading only files that changed, so the status costs a few file checks rather than a Claude Code process. If those files are in a layout claude-rs does not recognise, it runs `claude agents --json` instead, at most once a minute. The status is hidden when there are none, when neither source can be read, when the input is not empty, while a permission prompt or question has focus, and while the input is unavailable.
-
-Claude Code's `leftArrowOpensAgents` setting (in its global config, `.claude.json`, also under `/config` in Claude Code) turns both off when it is `false`: `Left` then only moves the cursor and the footer shows no agent status. claude-rs re-reads it when the file changes, so a change applies within 10 seconds. The action is `app.open_agents_or_move_left`; bind it to another key to open the agent view from an empty prompt with that key instead, and the footer then names that key in place of `←`. `Ctrl+B` always moves left. claude-rs does not take over `/agents`: that command stays Claude Code's subagent configuration.
 
 Readline-style bindings are also supported:
 

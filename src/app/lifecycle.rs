@@ -8,7 +8,6 @@ pub enum ReleaseReason {
     SlashCommand,
     AuthFlow,
     ExternalEditor,
-    AgentView,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
