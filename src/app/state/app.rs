@@ -84,6 +84,8 @@ pub struct App {
     /// consumed on submit. No cap on count — this is a developer tool, so
     /// users are trusted to attach as many images as they need.
     pub(crate) pending_images: Vec<crate::app::clipboard_image::ImageAttachment>,
+    /// Trigger key event and pixel source for Ctrl+V image paste.
+    pub(crate) clipboard_paste: crate::app::clipboard_image::ClipboardImagePaste,
     /// Session-scoped projection of user messages accepted locally while an agent turn is active.
     pub pending_user_messages: PendingUserMessages,
     /// Session-run side-question status, independent from queued main prompts.
@@ -92,6 +94,8 @@ pub struct App {
     pub(crate) git_context: GitContextState,
     /// Update prompt state for the startup fullscreen surface.
     pub(crate) update_prompt: Option<UpdatePromptState>,
+    /// Failed automatic install awaiting its one startup notice.
+    pub(crate) update_install_failure: Option<String>,
     /// Work to run after the TUI has restored the user's terminal.
     pub post_exit_action: Option<super::PostExitAction>,
     /// Config > Usage snapshot and refresh lifecycle.
@@ -273,10 +277,16 @@ impl App {
             pending_submit: None,
             paste: PasteState::default(),
             pending_images: Vec::new(),
+            // Tests never reach the system clipboard unless they install a reader.
+            clipboard_paste: crate::app::clipboard_image::ClipboardImagePaste {
+                read: || crate::app::clipboard_image::ClipboardRead::NoImage,
+                ..crate::app::clipboard_image::ClipboardImagePaste::system()
+            },
             pending_user_messages: PendingUserMessages::default(),
             btw: BtwRequests::default(),
             git_context: GitContextState::default(),
             update_prompt: None,
+            update_install_failure: None,
             post_exit_action: None,
             usage: UsageState::default(),
             mcp: McpState::default(),

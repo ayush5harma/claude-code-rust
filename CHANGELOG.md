@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Features
+
+- **Background automatic updates** (#437, @srothgan): Install automatic updates in the background after exit, and show a warning at startup when the last one failed.
+
+### Upstream sync
+
+- **Upstream 0.15.2 merged**: the fork's own Ctrl+V and EAGAIN fixes give way to upstream's versions (#432, #434), and Wayland clipboard support (#435) and background automatic updates (#437) come in. The crate version stays `0.15.1-fork.2` until the next fork release.
+
 ## [0.15.1-fork.2] - 2026-10-09
 
 ### Features
@@ -25,6 +33,18 @@ All notable changes to this project will be documented in this file.
 ### Verification
 
 - Add the stock-versus-fork parity suite, launcher coverage and the measured parity/performance report in `docs/src/parity.md`. The report records remaining gaps and the limits of the measurements.
+
+## [0.15.2] - 2026-10-08 [Changes][v0.15.2]
+
+### Fixes
+
+- **Clipboard image paste on macOS and Linux** (#432, @freddysae0): Attach clipboard images with Ctrl+V on macOS and Linux. Fixes #431.
+- **Clipboard image paste on Wayland** (#435, @srothgan): Attach clipboard images with Ctrl+V in Wayland sessions without XWayland. Fixes #385.
+- **Session connect with large configurations** (#434, @freddysae0): Stop sessions from failing to connect when the Claude Code configuration has many plugins or MCP servers. Fixes #433.
+
+### CI and Dependencies
+
+- **Clipboard paste coverage** (#435, @srothgan): Add workflow, encoder, and PTY tests for Ctrl+V image paste, and run the system clipboard test on the Linux, macOS, and Windows runners.
 
 ## [0.15.1-fork.1] - 2026-10-07
 
@@ -969,6 +989,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.15.2]: https://github.com/srothgan/claude-code-rust/compare/v0.15.1...v0.15.2
 [v0.15.1]: https://github.com/srothgan/claude-code-rust/compare/v0.15.0...v0.15.1
 [v0.15.0]: https://github.com/srothgan/claude-code-rust/compare/v0.14.9...v0.15.0
 [v0.14.9]: https://github.com/srothgan/claude-code-rust/compare/v0.14.8...v0.14.9

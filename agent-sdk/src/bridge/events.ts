@@ -25,17 +25,15 @@ const SESSION_LIST_LIMIT = 50;
 let sessionListingDir: string | undefined;
 type ProtocolEventWriter = (line: string) => void;
 
-// A non-blocking stdout pipe makes writeSync throw EAGAIN once its 64 KB
-// buffer is full, so without a retry any event larger than that (a slash
-// command list of a few hundred skills, a long resumed history) reached the
-// TUI cut at byte 65536 and the session died decoding it. Wait 1 ms and try
-// again, up to 30 s, then fail as before. system-config's launcher looks for
-// this function's name before it routes a session to claude-rs.
-const EAGAIN_RETRY_LIMIT = 30_000;
-const eagainWaitCell = new Int32Array(new SharedArrayBuffer(4));
+const STDOUT_RETRY_DELAY_MS = 1;
+const stdoutRetrySignal = new Int32Array(new SharedArrayBuffer(4));
 
-function scWriteSync(payload: Buffer, offset: number): number {
-  for (let waits = 0; ; waits++) {
+function isWouldBlock(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | null)?.code === "EAGAIN";
+}
+
+function writeChunkToStdout(payload: Buffer, offset: number): number {
+  for (;;) {
     try {
       return writeSync(
         process.stdout.fd,
@@ -44,20 +42,19 @@ function scWriteSync(payload: Buffer, offset: number): number {
         payload.length - offset,
       );
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException | undefined)?.code;
-      if (code !== "EAGAIN" || waits >= EAGAIN_RETRY_LIMIT) {
+      if (!isWouldBlock(error)) {
         throw error;
       }
-      Atomics.wait(eagainWaitCell, 0, 0, 1);
+      Atomics.wait(stdoutRetrySignal, 0, 0, STDOUT_RETRY_DELAY_MS);
     }
   }
 }
 
-function writeProtocolEventToStdout(line: string): void {
+export function writeProtocolEventToStdout(line: string): void {
   const payload = Buffer.from(line);
   let offset = 0;
   while (offset < payload.length) {
-    const written = scWriteSync(payload, offset);
+    const written = writeChunkToStdout(payload, offset);
     if (written <= 0) {
       throw new Error("bridge stdout write made no progress");
     }
