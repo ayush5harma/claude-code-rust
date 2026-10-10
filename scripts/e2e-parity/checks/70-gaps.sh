@@ -56,3 +56,24 @@ chk_gap_vim() {
   keys main Escape
   wait_for main "$EMPTY_COMPOSER" 5 || keys main Escape
 }
+
+# 2026-10-10: claude-rs no longer draws the session colour or opens the agent
+# view, since both depended on Claude Code internals the upstream maintainer
+# rejected. They are recorded without a probe: an unnamed session has no rule
+# to read a colour from, and the hint needs a background session the suite no
+# longer starts (it cost a Haiku turn per run).
+
+def gap.session_color gaps "Session colour on the composer rule" "/color paints the prompt bar and the name badge"
+chk_gap_session_color() {
+  res GAP "/color runs inside Claude Code and its reply shows, but claude-rs draws no session colour"
+}
+
+def gap.agents_hint gaps "\`← N agents\` in the footer" "Dim hint while the input is empty, from the background sessions"
+chk_gap_agents_hint() {
+  res GAP "claude-rs draws no agent hint in the footer; list sessions with \`claude agents\` from a shell"
+}
+
+def gap.agent_view gaps "Agent view from ← on an empty prompt" "Opens the agent view (list, peek, attach, dispatch); Esc returns"
+chk_gap_agent_view() {
+  res GAP "claude-rs has no agent view; run \`claude agents\` from a shell"
+}

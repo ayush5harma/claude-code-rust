@@ -29,11 +29,9 @@ Code and spends real (small) model usage.
 ## Cost and time
 
 Every model turn uses Haiku (`--model haiku`). A full run took about eight
-minutes and cost about $0.40 on 2026-10-08, before the owned background
-fixture added one Haiku turn. Most of that measured cost came from the
-plan-mode check: the stock child plans on Sonnet even when the session runs
-on Haiku. The run prints a TUI Usage subtotal; it excludes the owned
-background fixture. Idle CPU and memory now use a 120-second settling period
+minutes and cost about $0.40 on 2026-10-08. Most of that measured cost came
+from the plan-mode check: the stock child plans on Sonnet even when the
+session runs on Haiku. The run prints a TUI Usage subtotal. Idle CPU and memory now use a 120-second settling period
 per target before the 60-second sample (`PARITY_PERF_SETTLE` and
 `PARITY_PERF_IDLE`). Allow about 15 minutes for a full run; model usage does
 not increase during these idle waits.
@@ -75,10 +73,8 @@ result rows and suite-owned fixture directories are replaced.
   first launch in each directory answers claude-rs's trust prompt with Yes.
 - The suite never edits the config directory's `settings.json`; setting-
   dependent checks use project settings in the scratch directory.
-- Agent hint checks create one named background Haiku job in the isolated
-  config and wait for its AskUserQuestion state. The suite records that job's
-  new ID, stops only that ID at exit, and only reads agent view rows; it never
-  sends Enter, Space or Ctrl+X there.
+- The suite starts no background sessions. The agent-view gap row presses
+  Left once on an empty prompt and leaves with Esc if anything opens.
 - Resume rendering uses an offline 400-record synthetic transcript under the
   isolated config and scratch cwd, without a model call to generate history.
   The performance row fails when the build exceeds stock or the installed

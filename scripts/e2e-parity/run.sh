@@ -243,7 +243,6 @@ cleanup() {
     done
   fi
   tm kill-server 2>/dev/null || true
-  stop_background_fixture
   collect_session_ids
 }
 trap cleanup EXIT
