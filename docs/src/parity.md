@@ -39,6 +39,10 @@ running these commands. The suite refuses the owner's real Claude profiles.
 
 See `scripts/e2e-parity/README.md` for the options and the safety rules.
 
+> This run predates 0.15.2-fork.1, which removed the session colour, the agent
+> view and the footer's agent counts. Their rows below describe 0.15.1-fork.1;
+> the suite now records them as gaps. Re-run the suite to refresh this page.
+
 ## Last run
 
 - Date: 2026-10-08 22:32 UTC

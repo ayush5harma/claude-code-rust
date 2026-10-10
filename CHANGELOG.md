@@ -7,6 +7,19 @@ All notable changes to this project will be documented in this file.
 ### Features
 
 - **Background automatic updates** (#437, @srothgan): Install automatic updates in the background after exit, and show a warning at startup when the last one failed.
+- **Agent SDK 0.3.296** (Claude Code 2.1.296): the two new startup failure reasons, `org_config_required_unavailable` and `org_config_refused`, get their own guidance.
+
+### Fixes
+
+- **Session names from the session API**: the name is Claude Code's own session title, read with the SDK's `getSessionInfo` after a connect, a resume, `/clear` and each turn, and sent only when it changed. It no longer comes from undeclared stream messages or raw transcript records. The API falls back to Claude Code's generated title, so an unnamed session shows that title after its first turn. A resume no longer passes `--name` to Claude Code, so `claude agents` lists a resumed session under its folder until it is renamed.
+- **Local command replies**: a complete top-level reply whose response never streamed is shown once, keyed on the API response ID rather than on undeclared fields. This also shows replies from Claude Code's non-streaming fallback.
+- **Title control characters**: stripped once, where the title enters the app, including C1 controls that end a terminal title on some terminals.
+
+### Removed
+
+- **Session colour**: the coloured composer rule, the name badge and `/color` value completion. `/color` still runs in Claude Code and its reply shows.
+- **Agent view**: the Left-arrow hand-over to Claude Code's `claude agents`, the footer's agent counts, the reader of Claude Code's job files and the bridge's own process group. These depended on Claude Code's private files and screens.
+- **Welcome mascot**: the upstream welcome crab is back, per the Agent SDK branding guidelines.
 
 ### Upstream sync
 
