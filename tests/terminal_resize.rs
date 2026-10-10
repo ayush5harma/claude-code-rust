@@ -2144,19 +2144,21 @@ fn status_tab_rename_updates_the_shown_session_name() {
     test.wait_for("the resumed title in Status", |test| status_name_row(test, "resumed-name"));
     test.send(b"r");
     test.wait_screen("Rename session");
-    for ch in "status-name".chars() {
+    // The draft starts from the shown title, which the fake bridge never
+    // listed, so the edit extends it.
+    for ch in "-2".chars() {
         test.send(ch.encode_utf8(&mut [0; 4]).as_bytes());
     }
-    test.wait_screen("status-name");
+    test.wait_screen("resumed-name-2");
     test.send(b"\r");
     // The name shown is the title the bridge reads back, not the typed draft.
-    test.wait_for("the renamed title in Status", |test| status_name_row(test, "status-name"));
+    test.wait_for("the renamed title in Status", |test| status_name_row(test, "resumed-name-2"));
     let renames = test.commands("rename_session");
     assert_eq!(renames.len(), 1, "{renames:?}");
-    assert_eq!(renames[0]["title"], "status-name");
+    assert_eq!(renames[0]["title"], "resumed-name-2");
 
     test.send(b"\x1b");
-    test.wait_for("the renamed title in the rule", |test| session_rule_row(test, "status-name"));
+    test.wait_for("the renamed title in the rule", |test| session_rule_row(test, "resumed-name-2"));
     test.shutdown();
 }
 
