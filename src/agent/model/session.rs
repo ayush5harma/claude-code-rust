@@ -306,7 +306,7 @@ pub enum SessionUpdate {
         error: ApiRetryError,
     },
     PromptSuggestionUpdate(String),
-    /// The child's title for the session; `None` when it announced an empty one.
+    /// Claude Code's title for the session; `None` when nothing printable is left.
     SessionTitleUpdate(Option<String>),
     RuntimeSessionStateUpdate(RuntimeSessionState),
     SettingsParseError {

@@ -252,7 +252,7 @@ fn connected_resets_session_scoped_view_data() {
     });
     app.plugins.installed.push(installed_plugin_entry("old-plugin"));
     app.plugins.last_inventory_refresh_at = Some(Instant::now());
-    // The previous session's name; the connected one announces its own.
+    // The previous session's name; the bridge sends the connected one's.
     app.session_runtime.session_id = Some(model::SessionId::new("old-session"));
     app.session_runtime.session_title = Some("Old session name".to_owned());
 

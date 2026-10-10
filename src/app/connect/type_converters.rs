@@ -523,8 +523,9 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
             Some(model::SessionUpdate::PromptSuggestionUpdate(suggestion))
         }
         types::SessionUpdate::SessionTitleUpdate { title } => {
-            // A title is user text, from the transcript on resume; every
-            // surface that shows it writes to the terminal.
+            // A title is user text. The tab title, the composer rule and the
+            // Status tab all write it to the terminal, where a BEL or ESC
+            // would end the tab title's OSC, so controls go here, once.
             let title: String = title.chars().filter(|ch| !ch.is_control()).collect();
             let title = title.trim();
             Some(model::SessionUpdate::SessionTitleUpdate(
@@ -1396,6 +1397,11 @@ mod tests {
         assert_eq!(
             decode(r#"{"type":"session_title_update","title":"a\u001b]52;c;eA==\u0007b"}"#),
             Some(model::SessionUpdate::SessionTitleUpdate(Some("a]52;c;eA==b".to_owned())))
+        );
+        // C1 controls such as ST (U+009C) also end an OSC on some terminals.
+        assert_eq!(
+            decode(r#"{"type":"session_title_update","title":"name\u009c\u007f\u001b[2J"}"#),
+            Some(model::SessionUpdate::SessionTitleUpdate(Some("name[2J".to_owned())))
         );
     }
 

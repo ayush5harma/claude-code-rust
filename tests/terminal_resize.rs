@@ -573,7 +573,7 @@ impl TerminalTest {
         self.submit_with_entry(text, text, |test, text| {
             if cfg!(windows) {
                 // ConPTY's key-burst path reordered this command on CI
-                // (2026-10-09). Model ordinary typing for the label test.
+                // (2026-10-09). Model ordinary typing for the name test.
                 let mut prefix = String::new();
                 for ch in text.chars() {
                     let offset = std::fs::read(test.temp.path().join("runtime.log"))
