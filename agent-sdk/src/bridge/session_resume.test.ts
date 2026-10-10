@@ -16,8 +16,8 @@ const CLEARED_SESSION_ID = "22222222-2222-4222-8222-222222222222";
  * A stand-in for the SDK's query: every prompt is a local command, answered
  * the way Claude Code 2.1.296 answers one (one complete assistant message, then
  * the result naming the prompt's uuid). /rename appends the `custom-title`
- * record Claude Code writes; /clear starts a new session id whose transcript
- * carries the title over. The public session APIs stay the real SDK's.
+ * record Claude Code writes, and so does a first turn under a launch-time `-n`
+ * name; /clear starts a new session id whose transcript carries the title over. The public session APIs stay the real SDK's.
  */
 function writeSdkFixture(fixturePath: string, projectDir: string, cwd: string): void {
   const sdkUrl = import.meta.resolve("@anthropic-ai/claude-agent-sdk");
@@ -51,6 +51,10 @@ function writeSdkFixture(fixturePath: string, projectDir: string, cwd: string): 
               title = text.slice("/rename ".length);
               appendFileSync(join(projectDir, sessionId + ".jsonl"), record(sessionId, { type: "custom-title", customTitle: title }));
               reply = "Session renamed to: " + title;
+            } else if (text === "first turn") {
+              title = "Launch name";
+              appendFileSync(join(projectDir, sessionId + ".jsonl"), record(sessionId, { type: "custom-title", customTitle: title }));
+              reply = "ok";
             } else if (text === "/clear") {
               sessionId = ${JSON.stringify(CLEARED_SESSION_ID)};
               writeFileSync(join(projectDir, sessionId + ".jsonl"),
@@ -82,7 +86,7 @@ function writeSdkFixture(fixturePath: string, projectDir: string, cwd: string): 
 const isTitleUpdate = (event: Envelope) =>
   event.event === "session_update" && (event.update as Envelope)?.type === "session_title_update";
 
-test("the session title follows Claude Code's persisted title through resume, /rename and /clear", async () => {
+test("the session title follows Claude Code's persisted title through resume, a first turn, /rename and /clear", async () => {
   for (const command of ["resume_session", "create_session"] as const) {
     const directory = realpathSync(mkdtempSync(join(tmpdir(), "bridge-title-")));
     const cwd = join(directory, "project");
@@ -142,8 +146,11 @@ test("the session title follows Claude Code's persisted title through resume, /r
       assert.equal(query.resume, SESSION_ID);
       assert.equal(query.extraArgs, undefined, `${command}: the bridge names no session itself`);
 
-      // A turn that ran no /rename leaves the title alone; the /rename turn
-      // refreshes it once its result is in.
+      // Claude Code writes a launch-time name with the first turn, so it shows
+      // once that turn's result is in. A turn that changes nothing sends no
+      // update; the /rename turn sends the new title.
+      prompt("prompt-first", "first turn");
+      await readUntil((event) => isTitleUpdate(event) && (event.update as Envelope).title === "Launch name");
       prompt("prompt-other", "/renamed elsewhere");
       await readUntil((event) => event.event === "turn_complete");
       prompt("prompt-rename", "/rename Fresh name");
@@ -155,14 +162,14 @@ test("the session title follows Claude Code's persisted title through resume, /r
 
       assert.deepEqual(
         events.filter(isTitleUpdate).map((event) => [event.session_id, (event.update as Envelope).title]),
-        [[SESSION_ID, "Saved name"], [SESSION_ID, "Fresh name"], [CLEARED_SESSION_ID, "Fresh name"]],
+        [[SESSION_ID, "Saved name"], [SESSION_ID, "Launch name"], [SESSION_ID, "Fresh name"], [CLEARED_SESSION_ID, "Fresh name"]],
         command,
       );
       const replies = events.flatMap((event) => {
         const update = event.update as Envelope | undefined;
         return update?.type === "agent_message_chunk" ? [(update.content as Envelope).text] : [];
       });
-      assert.deepEqual(replies, ["Unknown command: /renamed elsewhere", "Session renamed to: Fresh name"]);
+      assert.deepEqual(replies, ["ok", "Unknown command: /renamed elsewhere", "Session renamed to: Fresh name"]);
       assert.ok(events.some((event) => event.event === "session_replaced" && event.session_id === CLEARED_SESSION_ID));
     } finally {
       clearTimeout(timeout);

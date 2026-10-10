@@ -1,20 +1,31 @@
 import { getSessionInfo } from "@anthropic-ai/claude-agent-sdk";
-import type { BridgeCommand } from "../types.js";
 import { emitSessionUpdate, refreshSessionsList } from "./events.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import type { SessionState } from "./session_lifecycle.js";
 
-const RENAME_COMMAND = /^\/rename(?:\s|$)/;
-
 /**
  * Send the title Claude Code persisted for the session, read through the
- * public session API, so the app never keeps a title of its own making. This
- * runs after every connect and session replacement and after a /rename turn;
- * whether a title survives /clear is whatever the API reports for the new
- * session id (Claude Code 2.1.296 carries it over).
+ * public session API, so the app never keeps a title of its own making.
+ *
+ * Measured on Claude Code 2.1.296: a launch-time `-n` name and a /rename reach
+ * the transcript only with a turn (`getSessionInfo` reports nothing right
+ * after init), so the title is read after every connect and replacement, and
+ * again after every top-level turn, where only a changed title is sent. A
+ * title survives /clear when the API reports it for the new session id.
+ * `customTitle` also falls back to Claude Code's generated title, so an
+ * unnamed session shows that title after its first turn.
  */
-export async function emitSessionTitle(session: SessionState): Promise<void> {
+export async function emitSessionTitle(
+  session: SessionState,
+  after: "connect" | "turn",
+): Promise<void> {
+  if (after === "connect") {
+    // The app forgets the title when the session id changes.
+    session.sentTitle = undefined;
+  }
   const sessionId = session.sessionId;
+  const read = (session.titleReads ?? 0) + 1;
+  session.titleReads = read;
   let title: string | undefined;
   try {
     title = (await getSessionInfo(sessionId, { dir: session.cwd }))?.customTitle;
@@ -29,39 +40,20 @@ export async function emitSessionTitle(session: SessionState): Promise<void> {
     });
     return;
   }
-  // A replacement while reading sends its own title.
-  if (title === undefined || session.closing || session.sessionId !== sessionId) {
+  // A later read, a replacement or a close while reading supersedes this one.
+  if (
+    title === undefined ||
+    title === session.sentTitle ||
+    session.closing ||
+    session.sessionId !== sessionId ||
+    session.titleReads !== read
+  ) {
     return;
   }
+  session.sentTitle = title;
   emitSessionUpdate(sessionId, { type: "session_title_update", title });
-}
-
-/** Remember a prompt sent as /rename: its turn's result changes the title. */
-export function notePromptTitleChange(
-  session: SessionState,
-  command: Extract<BridgeCommand, { command: "prompt" }>,
-): void {
-  const text = command.chunks
-    .map((chunk) => (chunk.kind === "text" && typeof chunk.value === "string" ? chunk.value : ""))
-    .join("");
-  if (RENAME_COMMAND.test(text.trimStart())) {
-    session.renamePromptUuids ??= new Set();
-    session.renamePromptUuids.add(command.message_uuid);
+  if (after === "turn") {
+    // The resume picker lists sessions by their title.
+    refreshSessionsList();
   }
-}
-
-/** Refresh the title once a turn that ran one of those prompts has its result. */
-export function refreshTitleAfterTurn(
-  session: SessionState,
-  userMessageUuids: readonly string[],
-): void {
-  const pending = session.renamePromptUuids;
-  // Every uuid is consumed, since a batched turn can run several prompts.
-  const ran = pending ? userMessageUuids.filter((uuid) => pending.delete(uuid)) : [];
-  if (ran.length === 0) {
-    return;
-  }
-  void emitSessionTitle(session);
-  // The resume picker lists sessions by their title.
-  refreshSessionsList();
 }

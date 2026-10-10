@@ -63,10 +63,10 @@ const session = (sessionId: string, cwd: string) =>
 
 test("the title sent for a session is the one Claude Code persisted for its id", async () => {
   await withTranscripts(async (cwd) => {
-    assert.deepEqual(await titleUpdates(() => emitSessionTitle(session(TITLED, cwd))), [
+    assert.deepEqual(await titleUpdates(() => emitSessionTitle(session(TITLED, cwd), "connect")), [
       { session_id: TITLED, title: "persisted name" },
     ]);
-    assert.deepEqual(await titleUpdates(() => emitSessionTitle(session(UNTITLED, cwd))), []);
+    assert.deepEqual(await titleUpdates(() => emitSessionTitle(session(UNTITLED, cwd), "connect")), []);
   });
 });
 
@@ -74,10 +74,35 @@ test("a title read for a session that was replaced meanwhile is not sent", async
   await withTranscripts(async (cwd) => {
     const replaced = session(TITLED, cwd);
     const updates = await titleUpdates(async () => {
-      const read = emitSessionTitle(replaced);
+      const read = emitSessionTitle(replaced, "connect");
       replaced.sessionId = UNTITLED;
       await read;
     });
     assert.deepEqual(updates, []);
+  });
+});
+
+test("after a turn only a changed title is sent, and a connect sends it again", async () => {
+  await withTranscripts(async (cwd) => {
+    const titled = session(TITLED, cwd);
+    const updates = await titleUpdates(async () => {
+      await emitSessionTitle(titled, "connect");
+      await emitSessionTitle(titled, "turn");
+      await emitSessionTitle(titled, "connect");
+    });
+    assert.deepEqual(updates, [
+      { session_id: TITLED, title: "persisted name" },
+      { session_id: TITLED, title: "persisted name" },
+    ]);
+  });
+});
+
+test("of two overlapping reads only the later one is sent", async () => {
+  await withTranscripts(async (cwd) => {
+    const titled = session(TITLED, cwd);
+    const updates = await titleUpdates(async () => {
+      await Promise.all([emitSessionTitle(titled, "connect"), emitSessionTitle(titled, "turn")]);
+    });
+    assert.deepEqual(updates, [{ session_id: TITLED, title: "persisted name" }]);
   });
 });

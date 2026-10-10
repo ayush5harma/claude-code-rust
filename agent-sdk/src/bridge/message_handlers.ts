@@ -3,7 +3,7 @@ import { nativeNotification } from "./notifications.js";
 import { elapsedNumber, messageMetadata, turnTiming } from "./presentation_metadata.js";
 import { refreshUltracode } from "./ultracode.js";
 import { observeSessionEffort, refreshSessionEffort } from "./effort.js";
-import { refreshTitleAfterTurn } from "./session_title.js";
+import { emitSessionTitle } from "./session_title.js";
 import { observeSessionModel } from "./session_model.js";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
@@ -1569,7 +1569,7 @@ export function handleResultMessage(
     message.parent_tool_use_id === undefined
   ) {
     emitUserMessageStarted(session, message, "result");
-    refreshTitleAfterTurn(session, userMessageUuids(message));
+    void emitSessionTitle(session, "turn");
   }
   emitFastModeUpdateIfChanged(
     session,
