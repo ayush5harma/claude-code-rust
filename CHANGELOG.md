@@ -4,50 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-## [0.15.2-fork.1] - 2026-10-10
+## [0.15.2-fork.2] - 2026-10-11
+
+This fork release is upstream 0.15.2 (main at 26f9b12) plus two pull requests raised upstream, and nothing else. The only fork change is the release workflow, which publishes GitHub releases without npm.
+
+### Fixes
+
+- **Local command replies** (srothgan/claude-code-rust#444): `/rename`, `/color`, `/usage` and other commands Claude Code runs locally show their reply under the command.
+
+### Features
+
+- **Live session name** (srothgan/claude-code-rust#445): the Status tab shows the session name that the Agent SDK's session API reports, updated after each turn, a `/clear`, a conversation reset and a Status-tab rename.
 
 ### Features
 
 - **Background automatic updates** (#437, @srothgan): Install automatic updates in the background after exit, and show a warning at startup when the last one failed.
-- **Agent SDK 0.3.296** (Claude Code 2.1.296): the two new startup failure reasons, `org_config_required_unavailable` and `org_config_refused`, get their own guidance.
-
-### Fixes
-
-- **Session names from the session API**: the name is Claude Code's own session title, read with the SDK's `getSessionInfo` after a connect, a resume, `/clear` and each turn, and sent only when it changed. It no longer comes from undeclared stream messages or raw transcript records. The API falls back to Claude Code's generated title, so an unnamed session shows that title after its first turn. A resume no longer passes `--name` to Claude Code, so `claude agents` lists a resumed session under its folder until it is renamed.
-- **Local command replies**: a complete top-level reply whose response never streamed is shown once, keyed on the API response ID rather than on undeclared fields. This also shows replies from Claude Code's non-streaming fallback.
-- **Title control characters**: stripped once, where the title enters the app, including C1 controls that end a terminal title on some terminals.
-
-### Removed
-
-- **Session colour**: the coloured composer rule, the name badge and `/color` value completion. `/color` still runs in Claude Code and its reply shows.
-- **Agent view**: the Left-arrow hand-over to Claude Code's `claude agents`, the footer's agent counts, the reader of Claude Code's job files and the bridge's own process group. These depended on Claude Code's private files and screens.
-- **Welcome mascot**: the upstream welcome crab is back, per the Agent SDK branding guidelines.
-
-### Upstream sync
-
-- **Upstream 0.15.2 merged**: the fork's own Ctrl+V and EAGAIN fixes give way to upstream's versions (#432, #434), and Wayland clipboard support (#435) and background automatic updates (#437) come in.
-
-## [0.15.1-fork.2] - 2026-10-09
-
-### Features
-
-- **Welcome mascot**: draw the stock Claude Code mascot with its body and eye colours, while preserving narrow-terminal layout.
-- **Session name and colour**: `/rename` and `/color` now show their reply, and a named or coloured session shows a rule above the composer with the name right-aligned, drawn in the session colour with the name as a badge, as Claude Code does. The terminal tab title and the Status tab show the name, and resuming a session restores both.
-- **/color values**: Tab after `/color ` completes its colour values.
-- **Agent view**: `Left` on an empty prompt opens Claude Code's agent view (`claude agents`) through the terminal hand-over `/login` uses, and returns to claude-rs when it exits (`Esc`, or `Ctrl+C` twice). The session keeps running meanwhile; repeated presses open one view, and a Ctrl+C while the view starts closes only the view. The bridge now runs in its own process group so that Ctrl+C never reaches the session. The key is the rebindable `app.open_agents_or_move_left` action and honours Claude Code's `leftArrowOpensAgents` setting.
-- **Agent status in the footer**: while the input is empty, the footer shows Claude Code's background sessions after the mode badges, as `← N agents · K awaiting input · W working`, read every 10 seconds and right after the agent view closes from Claude Code's job files, with the same counts `claude agents --json` gives; the CLI is a once-a-minute fallback for an unknown file layout. It appears only when the key would open the view, and names the key if the action is rebound.
-
-### Fixes
-
-- **Bridge event writes**: retry partial writes and EAGAIN so large command lists and resumed histories do not terminate the session.
-- **Terminal hand-over cleanup**: preserve signal handling across agent-view transitions, including Ctrl+C during startup, Ctrl+Q, terminal close and suspend/resume.
-- **Local command output**: The reply of every command Claude Code runs locally (`/rename`, `/color`, `/usage`, ...) appears in chat instead of being dropped.
-- **Resumed local commands**: Resumed history shows a local command as its command line with its output under it, instead of the raw `<command-name>` record.
-- **Status tab rename**: Renaming or generating a name from the Status tab goes through Claude Code's `/rename`, so `claude agents` and the transcript agree with the app. An empty name is refused instead of clearing the name.
-
-### Verification
-
-- Add the stock-versus-fork parity suite, launcher coverage and the measured parity/performance report in `docs/src/parity.md`. The report records remaining gaps and the limits of the measurements.
 
 ## [0.15.2] - 2026-10-08 [Changes][v0.15.2]
 
@@ -60,14 +31,6 @@ All notable changes to this project will be documented in this file.
 ### CI and Dependencies
 
 - **Clipboard paste coverage** (#435, @srothgan): Add workflow, encoder, and PTY tests for Ctrl+V image paste, and run the system clipboard test on the Linux, macOS, and Windows runners.
-
-## [0.15.1-fork.1] - 2026-10-07
-
-A build of 0.15.1 from the ayush5harma fork, carrying one fix that is not yet released upstream (srothgan/claude-code-rust#430).
-
-### Fixes
-
-- **Clipboard images on macOS and Linux** (#430): Ctrl+V now attaches a clipboard image on the key press outside Windows, where terminals never report the key release the handler waited for.
 
 ## [0.15.1] - 2026-10-06 [Changes][v0.15.1]
 

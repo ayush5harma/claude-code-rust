@@ -123,6 +123,14 @@ pub enum BridgeCommand {
         session_id: String,
         enabled: bool,
     },
+    GenerateSessionTitle {
+        session_id: String,
+        description: String,
+    },
+    RenameSession {
+        session_id: String,
+        title: String,
+    },
     NewSession {
         cwd: String,
         #[serde(default, skip_serializing_if = "SessionLaunchSettings::is_empty")]
@@ -226,6 +234,8 @@ impl BridgeCommand {
             Self::SetUltracode { .. } => "set_ultracode",
             Self::RefreshUltracode { .. } => "refresh_ultracode",
             Self::SetFastMode { .. } => "set_fast_mode",
+            Self::GenerateSessionTitle { .. } => "generate_session_title",
+            Self::RenameSession { .. } => "rename_session",
             Self::NewSession { .. } => "new_session",
             Self::PermissionResponse { .. } => "permission_response",
             Self::QuestionResponse { .. } => "question_response",
@@ -266,6 +276,8 @@ impl BridgeCommand {
             | Self::SetUltracode { session_id, .. }
             | Self::RefreshUltracode { session_id }
             | Self::SetFastMode { session_id, .. }
+            | Self::GenerateSessionTitle { session_id, .. }
+            | Self::RenameSession { session_id, .. }
             | Self::PermissionResponse { session_id, .. }
             | Self::QuestionResponse { session_id, .. }
             | Self::UserDialogResponse { session_id, .. }
@@ -310,6 +322,8 @@ impl BridgeCommand {
             | Self::SetUltracode { .. }
             | Self::RefreshUltracode { .. }
             | Self::SetFastMode { .. }
+            | Self::GenerateSessionTitle { .. }
+            | Self::RenameSession { .. }
             | Self::NewSession { .. }
             | Self::UserDialogResponse { .. }
             | Self::ElicitationResponse { .. }
@@ -744,8 +758,6 @@ mod tests {
             Some("worktree_unverified"),
             Some("cli_version_too_old"),
             Some("bypass_root"),
-            Some("org_config_required_unavailable"),
-            Some("org_config_refused"),
             Some("future_reason"),
         ] {
             let mut json = serde_json::json!({

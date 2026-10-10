@@ -102,10 +102,12 @@ pub(super) fn handle_sessions_listed_event(
     sessions: Vec<crate::agent::types::SessionListEntry>,
 ) {
     let session_count = sessions.len();
+    let pending_title_change = app.config.pending_session_title_change.take();
     let selected_session_id = app
         .recent_sessions
         .get(app.session_picker.selected)
         .map(|session| session.session_id.clone());
+    let had_pending_title_change = pending_title_change.is_some();
     app.recent_sessions = sessions
         .into_iter()
         .map(|entry| RecentSessionInfo {
@@ -119,6 +121,28 @@ pub(super) fn handle_sessions_listed_event(
             first_prompt: entry.first_prompt,
         })
         .collect();
+    let mut pending_title_change_resolved = false;
+    if let Some(pending_title_change) = pending_title_change {
+        let renamed_session_present = app
+            .recent_sessions
+            .iter()
+            .any(|session| session.session_id == pending_title_change.session_id);
+        pending_title_change_resolved = renamed_session_present;
+        if renamed_session_present {
+            app.config.last_error = None;
+            app.config.status_message = Some(match pending_title_change.kind {
+                crate::app::config::PendingSessionTitleChangeKind::Rename { requested_title } => {
+                    match requested_title {
+                        Some(title) => format!("Renamed session to {title}"),
+                        None => "Cleared session name".to_owned(),
+                    }
+                }
+                crate::app::config::PendingSessionTitleChangeKind::Generate => {
+                    "Generated session title".to_owned()
+                }
+            });
+        }
+    }
     app.startup.mark_recent_sessions_loaded();
     reconcile_session_picker_selection(app, selected_session_id.as_deref());
     maybe_open_startup_session_picker(app);
@@ -128,6 +152,8 @@ pub(super) fn handle_sessions_listed_event(
         message = "sessions list applied",
         outcome = "success",
         session_count,
+        had_pending_title_change,
+        pending_title_change_resolved,
     );
 }
 
@@ -149,6 +175,7 @@ pub(super) fn handle_auth_required_event(
     app.turn.clear_cancel_state();
     app.session_runtime.account_info = None;
     app.mcp = super::super::McpState::default();
+    app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
     app.finalize_session_runtime_artifacts(model::ToolCallStatus::Failed);
     app.turn.reset_for_new_session();
@@ -170,6 +197,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
     app.session_runtime.last_rate_limit_update = None;
     app.session_runtime.account_info = None;
     app.mcp = super::super::McpState::default();
+    app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
     app.clear_pending_session_resume();
     app.finalize_session_runtime_artifacts(model::ToolCallStatus::Failed);
@@ -273,17 +301,17 @@ fn startup_failure_message(reason: &str) -> &'static str {
         "bypass_root" => {
             "Bypass-permissions mode cannot run as root. Use a non-root account or another permission mode."
         }
-        "org_config_required_unavailable" => {
-            "Your organization's required policy settings could not be loaded. Check connectivity and try again."
-        }
-        "org_config_refused" => {
-            "Your organization's required policy settings were refused for this sign-in. Sign in again or contact your administrator."
-        }
         _ => "Claude Code startup failed. Review diagnostic logs for details.",
     }
 }
 
 pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
+    if app.config.pending_session_title_change.take().is_some() {
+        app.config.last_error = Some(msg.to_owned());
+        app.config.status_message = None;
+        app.request_active_surface_repaint();
+        return;
+    }
     super::notices::emit_system_notice(app, SystemSeverity::Error, msg);
     clear_pending_command(app);
     app.clear_pending_session_resume();
@@ -364,6 +392,7 @@ pub(super) fn handle_logout_completed_event(app: &mut App) {
     app.clear_session_runtime_identity();
     app.session_runtime.account_info = None;
     app.mcp = super::super::McpState::default();
+    app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
     app.request_chat_visible_rebuild();
     tracing::info!(
@@ -737,8 +766,6 @@ mod tests {
             ("worktree_unverified", "manual retry may succeed"),
             ("cli_version_too_old", "Update claude-rs to a release containing a newer runtime"),
             ("bypass_root", "cannot run as root"),
-            ("org_config_required_unavailable", "Check connectivity and try again"),
-            ("org_config_refused", "Sign in again or contact your administrator"),
             ("future_reason", "Claude Code startup failed"),
         ] {
             let mut app = App::test_default();

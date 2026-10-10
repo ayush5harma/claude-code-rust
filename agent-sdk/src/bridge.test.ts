@@ -11,6 +11,9 @@ import {
   buildQueryOptions,
   buildPromptUserMessage,
   resolveClaudeCodeSpawnCommand,
+  canGenerateSessionTitle,
+  generatePersistedSessionTitle,
+  buildSessionMutationOptions,
   buildSessionListOptions,
   createToolCall,
   handleTaskSystemMessage,
@@ -130,8 +133,6 @@ const STARTUP_REASONS = {
   worktree_unverified: true,
   cli_version_too_old: true,
   bypass_root: true,
-  org_config_required_unavailable: true,
-  org_config_refused: true,
 } satisfies Record<import("@anthropic-ai/claude-agent-sdk").SDKStartupFailureReason, boolean>;
 
 test("startup result reasons remain structured, correlated, and exclusive", () => {
@@ -983,6 +984,44 @@ test("parseCommandEnvelope validates resume_session_at independently from plain 
     target_user_message_id: "user-2",
     launch_settings: {},
   });
+});
+
+test("parseCommandEnvelope validates rename_session command", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      request_id: "req-rename",
+      command: "rename_session",
+      session_id: "session-123",
+      title: "Renamed session",
+    }),
+  );
+
+  assert.equal(parsed.requestId, "req-rename");
+  assert.equal(parsed.command.command, "rename_session");
+  if (parsed.command.command !== "rename_session") {
+    throw new Error("unexpected command variant");
+  }
+  assert.equal(parsed.command.session_id, "session-123");
+  assert.equal(parsed.command.title, "Renamed session");
+});
+
+test("parseCommandEnvelope validates generate_session_title command", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      request_id: "req-generate",
+      command: "generate_session_title",
+      session_id: "session-123",
+      description: "Current custom title",
+    }),
+  );
+
+  assert.equal(parsed.requestId, "req-generate");
+  assert.equal(parsed.command.command, "generate_session_title");
+  if (parsed.command.command !== "generate_session_title") {
+    throw new Error("unexpected command variant");
+  }
+  assert.equal(parsed.command.session_id, "session-123");
+  assert.equal(parsed.command.description, "Current custom title");
 });
 
 test("parseCommandEnvelope validates mcp_toggle command", () => {
@@ -1899,6 +1938,8 @@ test("get_context_usage requests the SDK summary detail", async () => {
         { command: "get_context_usage", session_id: session.sessionId },
         "request-context-summary",
         {
+          generatePersistedSessionTitle: async () => "unused",
+          buildSessionMutationOptions: () => undefined,
           rewindTargetsFromSessionMessages: () => [],
           handleRewind: async () => undefined,
         },
@@ -2469,6 +2510,47 @@ test("MCP connection history is isolated between sessions with the same server n
   assert.deepEqual(first.knownConnectedMcpServers, new Set(["docs"]));
   assert.deepEqual(second.knownConnectedMcpServers, new Set());
   assert.equal(reconnectCalls, 0);
+});
+
+test("buildSessionMutationOptions scopes rename requests to the session cwd", () => {
+  assert.deepEqual(buildSessionMutationOptions("C:/worktree"), {
+    dir: "C:/worktree",
+  });
+  assert.equal(buildSessionMutationOptions(undefined), undefined);
+});
+
+test("canGenerateSessionTitle detects supported query objects", () => {
+  const query = {
+    async generateSessionTitle(): Promise<string> {
+      return "Generated";
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  assert.equal(canGenerateSessionTitle(query), true);
+  assert.equal(
+    canGenerateSessionTitle(
+      {} as import("@anthropic-ai/claude-agent-sdk").Query,
+    ),
+    false,
+  );
+});
+
+test("generatePersistedSessionTitle calls sdk query with persist true", async () => {
+  const calls: Array<{ description: string; persist?: boolean }> = [];
+  const query = {
+    async generateSessionTitle(
+      description: string,
+      options?: { persist?: boolean },
+    ): Promise<string> {
+      calls.push({ description, persist: options?.persist });
+      return "Generated title";
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  const title = await generatePersistedSessionTitle(query, "Current summary");
+
+  assert.equal(title, "Generated title");
+  assert.deepEqual(calls, [{ description: "Current summary", persist: true }]);
 });
 
 test("buildQueryOptions includes resumeSessionAt when provided", () => {
@@ -4001,7 +4083,6 @@ test("handleSdkMessage emits SDK-owned context Markdown exactly once", () => {
       parent_tool_use_id: null,
       context_usage: { used_percentage: 42 },
       message: {
-        id: "2f9c6d1e-0d4b-4a39-9a43-5d0f3c1e7a21",
         role: "assistant",
         content: [
           { type: "text", text: "## Context usage" },
@@ -4030,84 +4111,46 @@ test("handleSdkMessage emits SDK-owned context Markdown exactly once", () => {
   ]);
 });
 
-// Measured on Claude Code 2.1.296: a local command (/rename, /color, /usage,
-// ...) replies with one complete top-level assistant message and no stream
-// events, so its text exists only in that message.
-test("handleSdkMessage shows a complete reply whose response never streamed", () => {
+test("handleSdkMessage does not replay ordinary or invalid completed assistant text", () => {
   const session = makeSessionState();
-  const reply = (uuid: string, responseId: string, text: string) => ({
-    type: "assistant",
-    uuid,
-    session_id: "session-1",
-    parent_tool_use_id: null,
-    message: {
-      id: responseId,
-      role: "assistant",
-      stop_reason: "end_turn",
-      content: [{ type: "text", text }],
-    },
-  });
   const events = captureBridgeEvents(() => {
     for (const message of [
-      reply("rename-reply", "a4cc84fe-7eb1-48bf-8fcd-0a11a7d5e251", "Session renamed to: probe"),
-      reply("color-reply", "5142ce8e-bb1c-4d99-a882-5752dd24280b", "Session color set to: blue"),
+      {
+        type: "assistant",
+        uuid: "ordinary-assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "already streamed" }],
+        },
+      },
+      {
+        type: "assistant",
+        uuid: "malformed-context",
+        context_usage: "invalid",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "not context" }],
+        },
+      },
+      {
+        type: "assistant",
+        uuid: "empty-context",
+        context_usage: {},
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "   " }],
+        },
+      },
     ]) {
-      handleSdkMessage(
-        session,
-        message as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage,
-      );
+      handleSdkMessage(session, {
+        ...message,
+        session_id: "session-1",
+        parent_tool_use_id: null,
+      } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
     }
   });
 
-  const chunks = events
-    .map((event) => event.update as Record<string, unknown> | undefined)
-    .filter((update) => update?.type === "agent_message_chunk");
-  assert.deepEqual(chunks, [
-    {
-      type: "agent_message_chunk",
-      content: { type: "text", text: "Session renamed to: probe" },
-      source_message_uuid: "rename-reply",
-    },
-    {
-      type: "agent_message_chunk",
-      content: { type: "text", text: "Session color set to: blue" },
-      source_message_uuid: "color-reply",
-    },
-  ]);
-});
-
-test("handleSdkMessage never shows a streamed, subagent, empty or error reply again", () => {
-  const session = makeSessionState();
-  const emit = (message: Record<string, unknown>) =>
-    handleSdkMessage(session, {
-      session_id: "session-1",
-      parent_tool_use_id: null,
-      ...message,
-    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
-  const stream = (event: Record<string, unknown>) => emit({ type: "stream_event", uuid: "frame", event });
-  const complete = (uuid: string, message: Record<string, unknown>, extra = {}) =>
-    emit({ type: "assistant", uuid, message: { role: "assistant", ...message }, ...extra });
-  const events = captureBridgeEvents(() => {
-    stream({ type: "message_start", message: { id: "msg_streamed" } });
-    stream({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
-    stream({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "already streamed" } });
-    // The per-block message arrives inside the response; a terminal one may
-    // follow its stop. Neither is the reply's first appearance.
-    complete("streamed-block", { id: "msg_streamed", stop_reason: null, content: [{ type: "text", text: "already streamed" }] });
-    stream({ type: "content_block_stop", index: 0 });
-    stream({ type: "message_stop" });
-    complete("streamed-final", { id: "msg_streamed", stop_reason: "end_turn", content: [{ type: "text", text: "already streamed" }] });
-    complete("subagent", { id: "msg_subagent", content: [{ type: "text", text: "subagent text" }] }, { parent_tool_use_id: "tool-1" });
-    complete("empty", { id: "local-empty", content: [{ type: "text", text: "   " }] });
-    // A synthetic API error is reported through the turn result.
-    complete("synthetic-error", { id: "local-error", content: [{ type: "text", text: "API Error: rate limited" }] }, { error: "rate_limit" });
-  });
-
-  const texts = events
-    .map((event) => event.update as { type?: string; content?: { text?: string } } | undefined)
-    .filter((update) => update?.type === "agent_message_chunk")
-    .map((update) => update?.content?.text);
-  assert.deepEqual(texts, ["already streamed"]);
+  assert.deepEqual(events, []);
 });
 
 test("handleSdkMessage refreshes Grep title when final assistant snapshot carries input", () => {
@@ -8673,7 +8716,7 @@ test("cut-short message_stop does not duplicate text or complete the model turn"
 });
 
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.296");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.288");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 use super::{
-    AddMarketplaceOverlayState, ConfigOverlayState, ConfirmationAction, SessionRenameOverlayState,
+    AddMarketplaceOverlayState, ConfigOverlayState, ConfirmationAction,
+    PendingSessionTitleChangeKind, PendingSessionTitleChangeState, SessionRenameOverlayState,
     SettingOverlayState,
 };
 use crate::agent::settings::{SettingDescriptor, SettingKind, SettingsMutation, SettingsOperation};
@@ -450,16 +451,32 @@ pub(super) fn open_session_rename_overlay(app: &mut App) {
     app.config.last_error = None;
 }
 
-/// Bare `/rename` makes Claude Code generate a name from the conversation.
 pub(super) fn generate_session_title(app: &mut App) {
-    if app.session_runtime.session_id.is_none() {
+    let Some(session_id) =
+        app.session_runtime.session_id.as_ref().map(std::string::ToString::to_string)
+    else {
         return;
-    }
-    match crate::app::input_submit::submit_session_command(app, "/rename") {
+    };
+    let Some(conn) = app.session_runtime.conn.clone() else {
+        app.config.last_error = Some("No active bridge connection".to_owned());
+        app.config.status_message = None;
+        return;
+    };
+    let Some(description) = session_title_generation_description(app, &session_id) else {
+        app.config.last_error =
+            Some("No session summary is available to generate a title".to_owned());
+        app.config.status_message = None;
+        return;
+    };
+
+    match conn.generate_session_title(session_id.clone(), description) {
         Ok(()) => {
+            app.config.pending_session_title_change = Some(PendingSessionTitleChangeState {
+                session_id,
+                kind: PendingSessionTitleChangeKind::Generate,
+            });
             app.config.last_error = None;
-            app.config.status_message =
-                Some("Sent /rename; Claude Code is generating a name".to_owned());
+            app.config.status_message = Some("Generating session title...".to_owned());
         }
         Err(err) => {
             app.config.last_error = Some(format!("Failed to generate session title: {err}"));
@@ -497,27 +514,38 @@ fn handle_session_rename_overlay_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// Rename through Claude Code's own `/rename`, the path a typed `/rename`
-/// takes, so the transcript, the `claude agents` registry and the composer
-/// agree. Claude Code has no way to clear a name, so an empty draft is refused.
 fn confirm_session_rename_overlay(app: &mut App) {
-    if app.session_runtime.session_id.is_none() {
+    let Some(session_id) =
+        app.session_runtime.session_id.as_ref().map(std::string::ToString::to_string)
+    else {
         app.config.clear_overlay();
         return;
-    }
+    };
+    let Some(conn) = app.session_runtime.conn.clone() else {
+        app.config.set_overlay_error("No active bridge connection");
+        return;
+    };
     let Some(overlay) = app.config.session_rename_overlay().cloned() else {
         return;
     };
-    let name = overlay.draft.split_whitespace().collect::<Vec<_>>().join(" ");
-    if name.is_empty() {
-        app.config.set_overlay_error("Enter a name, or press g to generate one");
-        return;
-    }
-    match crate::app::input_submit::submit_session_command(app, &format!("/rename {name}")) {
+
+    let trimmed = overlay.draft.trim().to_owned();
+    let requested_title = (!trimmed.is_empty()).then_some(trimmed.clone());
+    match conn.rename_session(session_id.clone(), trimmed) {
         Ok(()) => {
+            app.config.pending_session_title_change = Some(PendingSessionTitleChangeState {
+                session_id,
+                kind: PendingSessionTitleChangeKind::Rename {
+                    requested_title: requested_title.clone(),
+                },
+            });
             app.config.clear_overlay();
             app.config.last_error = None;
-            app.config.status_message = Some(format!("Sent /rename {name}"));
+            app.config.status_message = Some(if requested_title.is_some() {
+                "Renaming session...".to_owned()
+            } else {
+                "Clearing session name...".to_owned()
+            });
         }
         Err(err) => {
             app.config.set_overlay_error(format!("Failed to rename session: {err}"));
@@ -538,6 +566,20 @@ pub(super) fn step_index_clamped(current: usize, delta: isize, len: usize) -> us
 
 fn char_to_byte_index(text: &str, char_index: usize) -> usize {
     text.char_indices().nth(char_index).map_or(text.len(), |(idx, _)| idx)
+}
+
+fn session_title_generation_description(app: &App, session_id: &str) -> Option<String> {
+    let listed = app.recent_sessions.iter().find(|session| session.session_id == session_id);
+    [
+        app.session_runtime.session_title.as_deref(),
+        listed.map(|session| session.summary.as_str()),
+        listed.and_then(|session| session.first_prompt.as_deref()),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::trim)
+    .find(|value| !value.is_empty())
+    .map(str::to_owned)
 }
 
 pub(super) fn text_input_overlay_state<T>(

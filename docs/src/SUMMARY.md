@@ -9,7 +9,6 @@
   - [Diagnostics](diagnostics.md)
   - [Troubleshooting](troubleshooting.md)
   - [Help](help.md)
-  - [Claude Code Parity](parity.md)
 - [Development](development.md)
 - [Architecture](architecture.md)
 - [Governance](governance.md)

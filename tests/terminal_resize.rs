@@ -2095,37 +2095,28 @@ fn notifications_follow_focus_saved_categories_and_sdk_delivery_provenance_in_a_
     assert_eq!(bell["span"]["tool_call_id"], "push-1");
 }
 
-/// The composer's rule row carrying `name`, as (screen row, text): the full
-/// width rule with the name right-aligned before one last rule cell.
-fn session_rule_row(test: &TerminalTest, name: &str) -> Option<(u16, String)> {
-    let screen = test.screen();
-    let suffix = format!(" {name} ─");
-    screen.lines().enumerate().find_map(|(row, line)| {
-        let line = line.trim_end();
-        let row = u16::try_from(row).ok()?;
-        (line.starts_with('─') && line.ends_with(&suffix)).then(|| (row, line.to_owned()))
-    })
+/// The Status tab's "Session name" row, once it shows `name`.
+fn status_name_row(test: &TerminalTest, name: &str) -> Option<String> {
+    test.screen()
+        .lines()
+        .find(|line| line.contains("Session name") && line.contains(name))
+        .map(str::to_owned)
 }
 
 #[test]
-fn session_name_labels_the_rule_above_the_composer() {
+fn status_tab_shows_the_session_name_after_rename() {
     let mut test = TerminalTest::start("session-name", 3);
-    // The bridge sends the title Claude Code persisted once it connects.
-    let (row, _) = test
-        .wait_for("the resumed title in the rule", |test| session_rule_row(test, "resumed-name"));
-    let screen = test.screen();
-    let below: Vec<&str> = screen.lines().skip(usize::from(row) + 1).take(2).collect();
-    assert!(
-        below.iter().any(|line| line.contains('\u{276f}')),
-        "the editor must follow the rule directly:\n{screen}"
-    );
-
     test.submit_command("/rename probe-e2e");
     test.wait_turn_finished("Session renamed to: probe-e2e");
-    test.wait_for("the new name in the rule", |test| session_rule_row(test, "probe-e2e"));
     test.assert_prompts(&["/rename probe-e2e"]);
+
+    // The fake bridge lists no sessions, so only the title it sent after the
+    // turn can name the session here.
+    test.submit("/status", "/status");
+    test.wait_for("the new name in Status", |test| status_name_row(test, "probe-e2e"));
     test.shutdown();
 }
+
 /// A terminal outside Windows sends Ctrl+V as one press byte and no release.
 /// Without a display server the clipboard cannot be opened, and the app has to
 /// say so: silence means the key never reached the clipboard path.
