@@ -16,6 +16,7 @@ import { emitSessionUpdate, slashError, writeEvent } from "./events.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import { refreshSessionEffort } from "./effort.js";
 import { refreshSessionModel } from "./session_model.js";
+import { notePromptTitleChange } from "./session_title.js";
 import { readQuerySettings } from "./query_settings.js";
 import { asRecordOrNull } from "./shared.js";
 import { FastModeVerificationError } from "./session_preferences.js";
@@ -167,6 +168,7 @@ function handlePrompt(
     );
     return;
   }
+  notePromptTitleChange(session, command);
   writeEvent(
     {
       event: "user_message_queued",

@@ -72,7 +72,7 @@ Commands that Claude Code runs locally, such as `/rename`, `/color` or `/context
 
 `/rename <name>` is Claude Code's own command, forwarded to the session. It names the session: `Session renamed to: <name>`. The name is what `claude agents` lists and what a later `claude-rs --resume` restores. Bare `/rename` asks Claude Code to generate a name from the conversation.
 
-A named session shows a rule directly above the composer with the name at its right, `──── name ─`, as Claude Code's prompt bar does. A session without a name keeps the plain composer. The terminal tab title shows the name instead of the folder, and the Status tab lists it as the session name. Resuming a session restores the name from its transcript, and `/clear` keeps it.
+The name shown is Claude Code's own session title, read through the Agent SDK's session API when a session connects or resumes, when `/clear` starts a new session, and after each `/rename` finishes; Claude Code keeps it across `/clear`. A named session shows a rule directly above the composer with the name at its right, `──── name ─`, as Claude Code's prompt bar does. A session without a name keeps the plain composer. The terminal tab title shows the name instead of the folder, and the Status tab lists it as the session name.
 
 `/color` also runs in Claude Code and its reply shows in the chat, but Claude Rust does not draw a session colour.
 

@@ -2471,31 +2471,6 @@ test("MCP connection history is isolated between sessions with the same server n
   assert.equal(reconnectCalls, 0);
 });
 
-// Claude Code's SDK mode does not restore a resumed session's name into its
-// registry entry, so the resume passes it back as `--name` (2.1.293 `-n, --name`).
-test("buildQueryOptions names a resumed session after its stored title", () => {
-  const input = new AsyncQueue<
-    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
-  >();
-  const build = (sessionName?: string) =>
-    buildQueryOptions({
-      resolvedSettings: {},
-      cwd: "C:/work",
-      resume: "session-1",
-      ...(sessionName ? { sessionName } : {}),
-      launchSettings: {},
-      provisionalSessionId: "session-1",
-      input,
-      canUseTool: async () => ({ behavior: "deny", message: "not used" }),
-      enableSdkDebug: false,
-      enableSpawnDebug: false,
-      sessionIdForLogs: () => "session-1",
-    });
-
-  assert.deepEqual(build("renamed-live").extraArgs, { name: "renamed-live" });
-  assert.equal(build().extraArgs, undefined);
-});
-
 test("buildQueryOptions includes resumeSessionAt when provided", () => {
   const input = new AsyncQueue<
     import("@anthropic-ai/claude-agent-sdk").SDKUserMessage

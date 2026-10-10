@@ -41,7 +41,7 @@ test("resume display restores compaction segments once and preserves SDK branch 
     writeFileSync(transcript, before);
     const script = `
       import { getSessionTranscriptMessages, mapSessionMessagesToUpdates } from ${JSON.stringify(new URL("./history.js", import.meta.url).href)};
-      const { messages } = await getSessionTranscriptMessages(${JSON.stringify(sessionId)});
+      const messages = await getSessionTranscriptMessages(${JSON.stringify(sessionId)});
       const updates = mapSessionMessagesToUpdates(messages);
       console.log(JSON.stringify({
         uuids: messages.map(message => message.uuid), updates
@@ -93,8 +93,8 @@ test("resume display shows a local command as its command line with its output u
     writeFileSync(join(projectDir, `${sessionId}.jsonl`), `${records.map(record => JSON.stringify(record)).join("\n")}\n`);
     const script = `
       import { getSessionTranscriptMessages, mapSessionMessagesToUpdates } from ${JSON.stringify(new URL("./history.js", import.meta.url).href)};
-      const { messages, label } = await getSessionTranscriptMessages(${JSON.stringify(sessionId)});
-      console.log(JSON.stringify({ updates: mapSessionMessagesToUpdates(messages), label }));
+      const messages = await getSessionTranscriptMessages(${JSON.stringify(sessionId)});
+      console.log(JSON.stringify({ updates: mapSessionMessagesToUpdates(messages) }));
     `;
     const child = spawnSync(process.execPath, ["--input-type=module", "-"], {
       input: script,
@@ -103,9 +103,7 @@ test("resume display shows a local command as its command line with its output u
       windowsHide: true,
     });
     assert.equal(child.status, 0, child.stderr);
-    const { updates, label } = JSON.parse(child.stdout) as { updates: SessionUpdate[]; label: unknown };
-    // The resumed session's name comes from the same SDK-loaded entries.
-    assert.deepEqual(label, { title: "renamed-live" });
+    const { updates } = JSON.parse(child.stdout) as { updates: SessionUpdate[] };
     const chunks = updates.filter(update => update.type === "user_message_chunk" || update.type === "agent_message_chunk");
     assert.deepEqual(chunks.map(update => [update.type, update.source_message_uuid, update.content]), [
       ["user_message_chunk", "4c688fd2-b3f0-4fe1-b7fc-58a45d22e9ee", { type: "text", text: "/rename renamed-live" }],

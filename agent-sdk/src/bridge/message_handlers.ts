@@ -3,7 +3,7 @@ import { nativeNotification } from "./notifications.js";
 import { elapsedNumber, messageMetadata, turnTiming } from "./presentation_metadata.js";
 import { refreshUltracode } from "./ultracode.js";
 import { observeSessionEffort, refreshSessionEffort } from "./effort.js";
-import { handleSessionTitleChanged } from "./session_label.js";
+import { refreshTitleAfterTurn } from "./session_title.js";
 import { observeSessionModel } from "./session_model.js";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
@@ -1569,6 +1569,7 @@ export function handleResultMessage(
     message.parent_tool_use_id === undefined
   ) {
     emitUserMessageStarted(session, message, "result");
+    refreshTitleAfterTurn(session, userMessageUuids(message));
   }
   emitFastModeUpdateIfChanged(
     session,
@@ -2104,13 +2105,6 @@ export function handleSdkMessage(
           ...(durationMs !== undefined ? { duration_ms: durationMs } : {}),
         });
       }
-      return;
-    }
-
-    // Claude Code 2.1.293 emits this for /rename, a generated name, `-n`,
-    // and the stored title on resume; SDK 0.3.288 does not declare it.
-    if (subtype === "session_title_changed") {
-      handleSessionTitleChanged(session, msg);
       return;
     }
 

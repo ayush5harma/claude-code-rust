@@ -292,11 +292,12 @@ async function resume(
       return;
     }
     setSessionListingDir(matched.cwd ?? process.cwd());
-    const { messages: historyMessages, label: storedLabel } =
-      await getSessionTranscriptMessages(
-        command.session_id,
-        matched.cwd ? { dir: matched.cwd } : {},
-      );
+    const historyMessages = await getSessionTranscriptMessages(
+      command.session_id,
+      matched.cwd
+        ? { dir: matched.cwd }
+        : {},
+    );
     const resumeUpdates = mapSessionMessagesToUpdates(historyMessages);
     const staleSessions = Array.from(sessions.values());
     const hadActiveSession = staleSessions.length > 0;
@@ -318,7 +319,6 @@ async function resume(
       resume: command.session_id,
       launchSettings: command.launch_settings,
       ...(resumeUpdates.length > 0 ? { resumeUpdates } : {}),
-      storedLabel,
       connectEvent: hadActiveSession ? "session_replaced" : "connected",
       requestId,
       ...(hadActiveSession

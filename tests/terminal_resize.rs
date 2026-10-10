@@ -2110,7 +2110,7 @@ fn session_rule_row(test: &TerminalTest, name: &str) -> Option<(u16, String)> {
 #[test]
 fn session_name_labels_the_rule_above_the_composer() {
     let mut test = TerminalTest::start("session-name", 3);
-    // The bridge re-sends the title Claude Code announced before connect.
+    // The bridge sends the title Claude Code persisted once it connects.
     let (row, _) = test
         .wait_for("the resumed title in the rule", |test| session_rule_row(test, "resumed-name"));
     let screen = test.screen();
