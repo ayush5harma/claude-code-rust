@@ -53,9 +53,11 @@ function replyChunks(run: () => void): Array<Record<string, unknown>> {
     .filter((update): update is Record<string, unknown> => update?.type === "agent_message_chunk");
 }
 
-// Measured on Claude Code 2.1.296: a local command (/rename, /color, /usage,
-// ...) replies with one complete top-level assistant message and no stream
-// events, so its text exists only in that message.
+// Measured on Claude Code 2.1.288, the version the pinned SDK bundles (2.1.296
+// behaves the same): a local command (/rename, /color, /usage, /context)
+// replies with one complete top-level assistant message and no stream events,
+// and no system/local_command_output message, so its text exists only in that
+// message.
 test("a complete top-level reply whose response never streamed is shown once", () => {
   const session = makeSession();
   const reply = (uuid: string, responseId: string, text: string) => ({
@@ -125,4 +127,46 @@ test("a streamed, subagent, empty, error or uncorrelated reply is never shown ag
   }).map((chunk) => (chunk.content as Record<string, unknown>).text);
 
   assert.deepEqual(texts, ["already streamed"]);
+});
+
+test("a non-streaming fallback after a partial stream is shown in full", () => {
+  const session = makeSession();
+  const emit = (message: Record<string, unknown>) =>
+    handleSdkMessage(session, {
+      session_id: "session-1",
+      parent_tool_use_id: null,
+      ...message,
+    } as unknown as SDKMessage);
+  const stream = (event: Record<string, unknown>) => emit({ type: "stream_event", uuid: "frame", event });
+
+  const texts = replyChunks(() => {
+    // The stream breaks off after a partial delta; the deltas already showed it.
+    stream({ type: "message_start", message: { id: "msg_partial" } });
+    stream({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+    stream({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "partial" } });
+    // The retried request answers without streaming, under a new response ID.
+    emit({
+      type: "assistant",
+      uuid: "fallback",
+      message: { id: "msg_fallback", role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "the full reply" }] },
+    });
+  }).map((chunk) => (chunk.content as Record<string, unknown>).text);
+
+  assert.deepEqual(texts, ["partial", "the full reply"]);
+});
+
+test("SDK context usage Markdown is shown even without a response ID", () => {
+  const session = makeSession();
+  const texts = replyChunks(() => {
+    handleSdkMessage(session, {
+      type: "assistant",
+      uuid: "context-reply",
+      session_id: "session-1",
+      parent_tool_use_id: null,
+      context_usage: { categories: [] },
+      message: { role: "assistant", content: [{ type: "text", text: "## Context Usage" }] },
+    } as unknown as SDKMessage);
+  }).map((chunk) => (chunk.content as Record<string, unknown>).text);
+
+  assert.deepEqual(texts, ["## Context Usage"]);
 });
