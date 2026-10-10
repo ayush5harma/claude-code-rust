@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.15.2-fork.1] - 2026-10-10
+
 ### Features
 
 - **Background automatic updates** (#437, @srothgan): Install automatic updates in the background after exit, and show a warning at startup when the last one failed.
@@ -23,7 +25,7 @@ All notable changes to this project will be documented in this file.
 
 ### Upstream sync
 
-- **Upstream 0.15.2 merged**: the fork's own Ctrl+V and EAGAIN fixes give way to upstream's versions (#432, #434), and Wayland clipboard support (#435) and background automatic updates (#437) come in. The crate version stays `0.15.1-fork.2` until the next fork release.
+- **Upstream 0.15.2 merged**: the fork's own Ctrl+V and EAGAIN fixes give way to upstream's versions (#432, #434), and Wayland clipboard support (#435) and background automatic updates (#437) come in.
 
 ## [0.15.1-fork.2] - 2026-10-09
 
