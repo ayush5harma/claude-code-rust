@@ -306,6 +306,9 @@ pub enum SessionUpdate {
         error: ApiRetryError,
     },
     PromptSuggestionUpdate(String),
+    /// The session's title as the SDK session API reports it; `None` when
+    /// nothing printable is left.
+    SessionTitleUpdate(Option<String>),
     RuntimeSessionStateUpdate(RuntimeSessionState),
     SettingsParseError {
         file: Option<String>,

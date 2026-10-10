@@ -566,9 +566,46 @@ impl TerminalTest {
     }
 
     fn submit(&mut self, text: &str, visible: &str) {
+        self.submit_with_entry(text, visible, Self::paste);
+    }
+
+    fn submit_command(&mut self, text: &str) {
+        self.submit_with_entry(text, text, |test, text| {
+            if cfg!(windows) {
+                // ConPTY's key-burst path reordered this command on CI
+                // (2026-10-09). Model ordinary typing for the name test.
+                let mut prefix = String::new();
+                for ch in text.chars() {
+                    let offset = std::fs::read(test.temp.path().join("runtime.log"))
+                        .expect("runtime log")
+                        .len();
+                    test.send(ch.encode_utf8(&mut [0; 4]).as_bytes());
+                    prefix.push(ch);
+                    // Screen contents trim trailing blanks; the next prefix
+                    // and final command still verify the space between words.
+                    test.wait_composer_text(offset, prefix.trim_end());
+                    std::thread::sleep(Duration::from_millis(80));
+                }
+            } else {
+                test.paste(text);
+            }
+        });
+    }
+
+    fn submit_with_entry(
+        &mut self,
+        text: &str,
+        visible: &str,
+        enter: impl FnOnce(&mut Self, &str),
+    ) {
         let log_offset =
             std::fs::read(self.temp.path().join("runtime.log")).expect("runtime log").len();
-        self.paste(text);
+        enter(self, text);
+        self.wait_composer_text(log_offset, visible);
+        self.submit_draft();
+    }
+
+    fn wait_composer_text(&mut self, log_offset: usize, visible: &str) {
         // The overview, tips, and transcript can already mention the command.
         // Check the editor region from a subsequent draw. ConPTY's native cursor
         // can remain on the spinner instead of the editor.
@@ -592,7 +629,6 @@ impl TerminalTest {
             };
             test.screen().lines().skip(top).take(height).any(|line| line.contains(visible))
         });
-        self.submit_draft();
     }
 
     fn submit_draft(&mut self) {
@@ -2057,6 +2093,28 @@ fn notifications_follow_focus_saved_categories_and_sdk_delivery_provenance_in_a_
         .expect("bell result");
     assert_eq!(bell["outcome"], "success");
     assert_eq!(bell["span"]["tool_call_id"], "push-1");
+}
+
+/// The Status tab's "Session name" row, once it shows `name`.
+fn status_name_row(test: &TerminalTest, name: &str) -> Option<String> {
+    test.screen()
+        .lines()
+        .find(|line| line.contains("Session name") && line.contains(name))
+        .map(str::to_owned)
+}
+
+#[test]
+fn status_tab_shows_the_session_name_after_rename() {
+    let mut test = TerminalTest::start("session-name", 3);
+    test.submit_command("/rename probe-e2e");
+    test.wait_turn_finished("Session renamed to: probe-e2e");
+    test.assert_prompts(&["/rename probe-e2e"]);
+
+    // The fake bridge lists no sessions, so only the title it sent after the
+    // turn can name the session here.
+    test.submit("/status", "/status");
+    test.wait_for("the new name in Status", |test| status_name_row(test, "probe-e2e"));
+    test.shutdown();
 }
 
 /// A terminal outside Windows sends Ctrl+V as one press byte and no release.
