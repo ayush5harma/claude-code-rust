@@ -366,34 +366,34 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          signer_workflow="srothgan/claude-code-rust/.github/workflows/_release-build.yml@refs/heads/main"
+          signer_workflow="${{ github.repository }}/.github/workflows/_release-build.yml@refs/heads/main"
           gh attestation verify dist-assets/claude-code-rust-x86_64-unknown-linux-gnu \
-            --repo srothgan/claude-code-rust \
+            --repo ${{ github.repository }} \
             --signer-workflow "$signer_workflow" \
             --source-ref refs/heads/main \
             --deny-self-hosted-runners
           gh attestation verify dist-assets/claude-code-rust-aarch64-unknown-linux-gnu \
-            --repo srothgan/claude-code-rust \
+            --repo ${{ github.repository }} \
             --signer-workflow "$signer_workflow" \
             --source-ref refs/heads/main \
             --deny-self-hosted-runners
           gh attestation verify dist-assets/claude-code-rust-x86_64-pc-windows-msvc.exe \
-            --repo srothgan/claude-code-rust \
+            --repo ${{ github.repository }} \
             --signer-workflow "$signer_workflow" \
             --source-ref refs/heads/main \
             --deny-self-hosted-runners
           gh attestation verify dist-assets/claude-code-rust-aarch64-pc-windows-msvc.exe \
-            --repo srothgan/claude-code-rust \
+            --repo ${{ github.repository }} \
             --signer-workflow "$signer_workflow" \
             --source-ref refs/heads/main \
             --deny-self-hosted-runners
           gh attestation verify dist-assets/claude-code-rust-x86_64-apple-darwin \
-            --repo srothgan/claude-code-rust \
+            --repo ${{ github.repository }} \
             --signer-workflow "$signer_workflow" \
             --source-ref refs/heads/main \
             --deny-self-hosted-runners
           gh attestation verify dist-assets/claude-code-rust-aarch64-apple-darwin \
-            --repo srothgan/claude-code-rust \
+            --repo ${{ github.repository }} \
             --signer-workflow "$signer_workflow" \
             --source-ref refs/heads/main \
             --deny-self-hosted-runners
@@ -403,7 +403,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          signer_workflow="srothgan/claude-code-rust/.github/workflows/release.yml@refs/heads/main"
+          signer_workflow="${{ github.repository }}/.github/workflows/release.yml@refs/heads/main"
           VERSION="${{ needs.verify.outputs.version }}"
           for subject in \
             dist-install/*.tar.gz \
@@ -412,111 +412,16 @@ jobs:
             SHA256SUMS
           do
             gh attestation verify "$subject" \
-              --repo srothgan/claude-code-rust \
+              --repo ${{ github.repository }} \
               --signer-workflow "$signer_workflow" \
               --source-ref refs/heads/main \
               --deny-self-hosted-runners
           done
 
-  publish-platform-packages:
-    needs: [verify, verify-release-attestations]
-    name: Publish platform npm packages
-    runs-on: ubuntu-latest
-    environment: npm-release
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version: "24"
-          registry-url: "https://registry.npmjs.org"
-          package-manager-cache: false
-
-      - name: Download release package set
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: release-package-set-${{ needs.verify.outputs.version }}
-          path: .
-
-      - name: Ensure npm supports trusted publishing
-        run: |
-          npm install -g npm@11
-          npm --version
-
-      - name: Dry-run npm tarball publish
-        run: node scripts/npm/dry-run-npm-publish.mjs --pack-dir dist-pack --version "${{ needs.verify.outputs.version }}"
-
-      - name: Publish platform tarballs
-        run: node scripts/npm/publish-npm-platform-packages.mjs --pack-dir dist-pack --ledger-dir dist-publish-ledger --version "${{ needs.verify.outputs.version }}"
-
-      - name: Upload platform publish ledger
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: npm-platform-publish-ledger-${{ needs.verify.outputs.version }}
-          path: dist-publish-ledger/
-          if-no-files-found: error
-
-  publish-root-package:
-    needs: [verify, publish-platform-packages]
-    name: Publish root npm package
-    runs-on: ubuntu-latest
-    environment: npm-release
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version: "24"
-          registry-url: "https://registry.npmjs.org"
-          package-manager-cache: false
-
-      - name: Download release package set
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: release-package-set-${{ needs.verify.outputs.version }}
-          path: .
-
-      - name: Ensure npm supports trusted publishing
-        run: |
-          npm install -g npm@11
-          npm --version
-
-      - name: Publish root tarball
-        run: |
-          set -euo pipefail
-          VERSION="${{ needs.verify.outputs.version }}"
-          package_name="claude-code-rust"
-          tarball="./dist-pack/claude-code-rust-${{ needs.verify.outputs.version }}.tgz"
-          if [ ! -f "$tarball" ]; then
-            echo "::error::Missing npm package tarball: $tarball"
-            exit 1
-          fi
-
-          set +e
-          output="$(npm view "${package_name}@${VERSION}" version --json 2>&1)"
-          status=$?
-          set -e
-          if [ "$status" -eq 0 ]; then
-            echo "SKIP: ${package_name}@${VERSION} already published"
-            exit 0
-          fi
-          if ! printf '%s\n' "$output" | grep -q 'E404'; then
-            echo "::error::Could not inspect npm package state for ${package_name}@${VERSION}"
-            echo "$output"
-            exit 1
-          fi
-
-          npm publish "$tarball" --access public
-
   create-github-release:
-    needs: [verify, publish-root-package]
+    needs: [verify, verify-release-attestations]
     name: Create draft GitHub Release
     runs-on: ubuntu-latest
-    environment: npm-release
     permissions:
       contents: write
     steps:
@@ -572,7 +477,6 @@ jobs:
     needs: [verify, create-github-release]
     name: Publish GitHub Release
     runs-on: ubuntu-latest
-    environment: npm-release
     permissions:
       contents: write
     steps:
@@ -581,4 +485,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release edit "${{ needs.verify.outputs.tag }}" --draft=false --repo srothgan/claude-code-rust
+          gh release edit "${{ needs.verify.outputs.tag }}" --draft=false --repo ${{ github.repository }}

@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.15.2-fork.2] - 2026-10-11
+
+This fork release is upstream 0.15.2 (main at 26f9b12) plus two pull requests raised upstream, and nothing else. The only fork change is the release workflow, which publishes GitHub releases without npm.
+
+### Fixes
+
+- **Local command replies** (srothgan/claude-code-rust#444): `/rename`, `/color`, `/usage` and other commands Claude Code runs locally show their reply under the command.
+
+### Features
+
+- **Live session name** (srothgan/claude-code-rust#445): the Status tab shows the session name that the Agent SDK's session API reports, updated after each turn, a `/clear`, a conversation reset and a Status-tab rename.
+
 ### Features
 
 - **Background automatic updates** (#437, @srothgan): Install automatic updates in the background after exit, and show a warning at startup when the last one failed.
