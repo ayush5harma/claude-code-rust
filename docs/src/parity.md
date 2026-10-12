@@ -50,30 +50,30 @@ cleanup works.
 
 ## Last run
 
-- Date: 2026-10-12 18:38 UTC
+- Date: 2026-10-12 18:49 UTC
 - claude-rs: 0.15.2-fork.2
 - Tested binary: `target/debug/claude-rs`
-- Source checkout: `v0.15.2-fork.2-4-gcf03cab-dirty` (git describe --always --dirty)
+- Source checkout: `v0.15.2-fork.2-4-ge4c5df2` (git describe --always --dirty)
 - Profile: the owner's own (--owner-profile): its settings, hooks, plugins and MCP servers applied
 - Model: haiku
 - Installed baseline binary: `~/.local/share/claude-rs/0.15.2-fork.2/claude-rs`
 - Claude Code: 2.1.296
-- Results: 58 PASS, 6 FAIL, 13 GAP, 9 SKIP
-- Duration: 333s over the recorded checks
-- Cost of this run: $0.4414, summed from the `/usage` readout of each claude-rs session when the suite stopped it (the performance group runs no model turns)
+- Results: 59 PASS, 5 FAIL, 13 GAP, 9 SKIP
+- Duration: 285s over the recorded checks
+- Cost of this run: $0.4321, summed from the `/usage` readout of each claude-rs session when the suite stopped it (the performance group runs no model turns)
 - 4 row(s) are marked `[environment: ...]`: their reading depends on the profile the run used, not on claude-rs alone.
 
 ## Launch and resume
 
 | Functionality | Claude Code | claude-rs (fork) | Evidence / notes |
 | --- | --- | --- | --- |
-| New session starts | Starts at the prompt; the session is registered | PASS | `launch.new` composer ready; registry: {"kind":"interactive","sessionId":"f94688fc-aec4-4abc-b8c1-935d868a8af3","status":"idle"} |
+| New session starts | Starts at the prompt; the session is registered | PASS | `launch.new` composer ready; registry: {"kind":"interactive","sessionId":"3c4fc1bd-6037-442c-9443-719f378b69f2","status":"idle"} |
 | Prompt round trip | Answer streamed into the transcript | PASS | `launch.roundtrip` reply line: PARITY_PONG |
-| Registry busy during a turn, idle after | `claude agents --json` status busy, then idle | PASS | `launch.busy_idle` busy while the turn ran, then {"status":"idle","name":"main-5c"} |
-| Initial prompt argument | `claude "prompt"` sends it once ready | PASS | `launch.initial_prompt` argv prompt answered: PARITY_RESUME_SEED (session c18b98e8-cce6-4384-b590-e89ed62b5597) |
-| Continue latest session (-c) | Reopens the latest conversation in the cwd | PASS | `launch.continue` history replayed; registry id c18b98e8-cce6-4384-b590-e89ed62b5597, seed c18b98e8-cce6-4384-b590-e89ed62b5597 |
-| Resume by id (-r &lt;id&gt;) | Reopens that conversation | PASS | `launch.resume_id` -r c18b98e8-cce6-4384-b590-e89ed62b5597 replayed the seed turn |
-| Resume picker (-r without id) | Lists recent sessions to pick from | **FAIL** | `launch.resume_picker` no picker row for the seed session: ┌Resume Session────────────────────────────────────────────────────────────────────────────────────────────────────────┐ │ Select a session to resume │ │ │ |
+| Registry busy during a turn, idle after | `claude agents --json` status busy, then idle | PASS | `launch.busy_idle` busy while the turn ran, then {"status":"idle","name":"main-02"} |
+| Initial prompt argument | `claude "prompt"` sends it once ready | PASS | `launch.initial_prompt` argv prompt answered: PARITY_RESUME_SEED (session f4474561-0a82-4ba0-8126-c8e7c58ba641) |
+| Continue latest session (-c) | Reopens the latest conversation in the cwd | PASS | `launch.continue` history replayed; registry id f4474561-0a82-4ba0-8126-c8e7c58ba641, seed f4474561-0a82-4ba0-8126-c8e7c58ba641 |
+| Resume by id (-r &lt;id&gt;) | Reopens that conversation | PASS | `launch.resume_id` -r f4474561-0a82-4ba0-8126-c8e7c58ba641 replayed the seed turn |
+| Resume picker (-r without id) | Lists recent sessions to pick from | PASS | `launch.resume_picker` picker lists the seed: │ &gt; 2s ago - PARITY_RESUME_SEED messages › │ |
 | --model | Starts on the given model | PASS | `launch.model_flag` --model haiku: [Bypass Permissions] [Haiku 5.5/Med] [FAST:OFF] |
 | --permission-mode | Starts in the given mode | PASS | `launch.permission_mode_flag` --permission-mode plan: [Plan] [Sonnet 5.5/Med] [FAST:OFF] |
 | --effort | Starts at the given effort | PASS | `launch.effort_flag` --effort low: [Auto] [Haiku 5.5/Low] [FAST:OFF] |
@@ -89,8 +89,8 @@ cleanup works.
 | /fast | Toggles fast mode, or says the model has none | PASS | `cmd.fast` reported for Haiku: failed to enable fast mode: SDK reported state off |
 | /compact | Summarises the conversation, keeps the session | PASS | `cmd.compact` Session successfully compacted. |
 | /context | Shows the context usage breakdown | PASS | `cmd.context` breakdown shown: dataviz Built-in ~480 |
-| /usage (stock 2.1.293 has no /cost) | Plan limits and session cost | PASS | `cmd.usage` │ $0.0232 cost · 1m 36s elapsed · 16s API time · +0 / -0 lines · 1 model │ \| 5-hour 77% used |
-| /status | Version, session id, account, model | PASS | `cmd.status` Session ID: f94688fc-aec4-4abc-b8c1-935d868a8af3 \| Model: Haiku 5.5 |
+| /usage (stock 2.1.293 has no /cost) | Plan limits and session cost | PASS | `cmd.usage` │ $0.0226 cost · 1m 7s elapsed · 17s API time · +0 / -0 lines · 1 model │ \| 5-hour 94% used |
+| /status | Version, session id, account, model | PASS | `cmd.status` Session ID: 3c4fc1bd-6037-442c-9443-719f378b69f2 \| Model: Haiku 5.5 |
 | /help | Shortcuts and commands | PASS | `cmd.help` Help tab: Shortcuts Commands Subagents 1/32 |
 | /mcp | Server list with status | PASS | `cmd.mcp` 1/30 total 30 connected 17 needs auth 10 pending 0 disabled 0 failed 3; project server: › parity connected project stdio |
 | /config | Settings UI | PASS | `cmd.config` Settings opened: General Memory Permissions Sandbox Hooks Workflows & Worktrees \| Save in: User (all projects) 1/27 |
@@ -102,19 +102,19 @@ cleanup works.
 | /init | Writes CLAUDE.md for the project | PASS | `cmd.init` CLAUDE.md written in the scratch cwd: # CLAUDE.md |
 | /rewind (stock: Esc Esc) | Restores the conversation to an earlier message | **FAIL** | `cmd.rewind` [environment: the model and mode a restart falls back to are the profile's settings] conversation rewound, but the session came back as '[Auto] [Opus 5.5/XHigh] [FAST:OFF]' (was '[Bypass Permissions] [Haiku 5.5/Med] [FAS |
 | /copy | Copies the last response to the clipboard | SKIP | `cmd.copy` clipboard holds non-text data («class furl» «class icns» «class AVIF» «class 8BPS» GIF picture «class jp2 » JPEG picture TIFF picture «class PNGf» «class BMP » «class TPIC»); not overwriting it |
-| /clear | Starts a fresh conversation (new session id) | PASS | `cmd.clear` new session 9520e4f1-95ea-44e1-a79e-4f780978a51a (was f94688fc-aec4-4abc-b8c1-935d868a8af3); transcript cleared |
+| /clear | Starts a fresh conversation (new session id) | PASS | `cmd.clear` new session d9e3f3a1-3d1d-4048-817a-16295a0dd91c (was 3c4fc1bd-6037-442c-9443-719f378b69f2); transcript cleared |
 | /exit | Exits the TUI | **GAP** | `cmd.exit` /exit is not yet supported; Ctrl+Q quits instead |
 
 ## Session name and colour (/rename, /color)
 
 | Functionality | Claude Code | claude-rs (fork) | Evidence / notes |
 | --- | --- | --- | --- |
-| /rename output, live | Prints `Session renamed to: <name>` | PASS | `rename.live_output` Session renamed to: parity-rn-000255 |
-| /rename persisted | sessions/&lt;pid&gt;.json, transcript custom-title and `claude agents --json` carry the name | PASS | `rename.persisted` sessions/91264.json name, transcript custom-title and `claude agents --json` all read parity-rn-000255 |
-| Session name in /status | Status shows the session name | PASS | `rename.status_tab` Session name: parity-rn-000255 |
+| /rename output, live | Prints `Session renamed to: <name>` | PASS | `rename.live_output` Session renamed to: parity-rn-001452 |
+| /rename persisted | sessions/&lt;pid&gt;.json, transcript custom-title and `claude agents --json` carry the name | PASS | `rename.persisted` sessions/80972.json name, transcript custom-title and `claude agents --json` all read parity-rn-001452 |
+| Session name in /status | Status shows the session name | PASS | `rename.status_tab` Session name: parity-rn-001452 |
 | /color replies | Set, reset-to-default and invalid-colour lines | PASS | `color.replies` invalid, reset and 'Session color set to: blue' replies shown |
 | /color persisted | Transcript `agent-color` entry | PASS | `color.persisted` transcript agent-color: blue |
-| Name kept after Ctrl+Q and resume | Registry keeps the name | **GAP** | `rename.resume_name` registry name after resume: 'identity-77' (session b1b988d2-738f-43e8-9465-8cabdfcdde57); it was parity-rn-000255 before Ctrl+Q, which stock keeps |
+| Name kept after Ctrl+Q and resume | Registry keeps the name | **GAP** | `rename.resume_name` registry name after resume: 'identity-39' (session 12ef2415-255b-4c62-9707-ffb23120cbf9); it was parity-rn-001452 before Ctrl+Q, which stock keeps |
 | /rename in the restored history | Shows `/rename <name>` and its output | **FAIL** | `rename.resume_history` restored history shows the raw record: &lt;command-name&gt;/rename&lt;/command-name&gt; |
 
 ## Input
@@ -126,14 +126,14 @@ cleanup works.
 | @file mention autocomplete | Suggests matching files | PASS | `input.at_mention` suggestion: [ &gt; parity_mention.txt |
 | ! bash mode | Runs the command locally, no model turn | **GAP** | `input.bang` sent to the model as a prompt; the model then ran Bash itself (transcript tool_use Bash 'echo PARITY_BANG_7') |
 | Up recalls the previous prompt | Previous prompt into the empty composer | PASS | `input.up_history` ❯ Reply with exactly: PARITY_HISTORY |
-| Esc cancels a running turn | Interrupts the turn | PASS | `input.esc_cancel` idle 0s after Esc, stopped at 21; Conversation interrupted. Tell the model how to proceed. |
+| Esc cancels a running turn | Interrupts the turn | PASS | `input.esc_cancel` idle 0s after Esc, stopped at 61; Conversation interrupted. Tell the model how to proceed. |
 | Esc Esc on an empty prompt | Opens the rewind / message picker | **GAP** | `input.esc_esc` nothing happens (stock opens the rewind picker); /rewind with arguments is the claude-rs route |
 | Shift+Tab cycles the mode | Cycles permission modes | PASS | `input.shift_tab` cycle from [Bypass Permissions]: [Default] [Auto] [Accept Edits] [Plan] [Bypass Permissions] |
 | Ctrl+L redraws | Redraws the screen | PASS | `input.ctrl_l` screen intact after redraw: ❯ Type a message... |
 | Ctrl+G edits the draft in $EDITOR | Opens the draft in the external editor | **GAP** | `input.ctrl_g` Ctrl+G does nothing (composer: ❯ pm_editor_seed); EDITOR was a script that writes PARITY_EDITOR_TEXT |
 | Ctrl+V pastes an image | Attaches the clipboard image | SKIP | `input.ctrl_v_image` needs an image on the system clipboard; the suite never overwrites the owner's clipboard with an image (covered by the fork's own Ctrl+V tests) |
 | Tab completes a slash command | Completes the highlighted command | PASS | `input.tab_complete` /statu -&gt; ❯ /ecc:instinct-status |
-| Ctrl+Z suspends, fg resumes | Suspends to the shell | PASS | `input.ctrl_z` '[1]+ Stopped env CLAUDE_CONFIG_DIR=~/.claude-personal CLAUDE_CODE_EXECUTABLE=/Users', then fg restored the composer |
+| Ctrl+Z suspends, fg resumes | Suspends to the shell | PASS | `input.ctrl_z` '[1]+ Stopped', then fg restored the composer |
 | Ctrl+D on an empty prompt exits | Exits (press twice) | **GAP** | `input.ctrl_d` Ctrl+D twice on an empty prompt does not exit (it is delete-after-cursor in claude-rs) |
 | Ctrl+C clears the draft, then quits | First clears input; twice on empty exits | PASS | `input.ctrl_c` first Ctrl+C cleared the draft; 1 press(es) on the empty prompt quit (stock asks for two) |
 | Ctrl+T toggles the task list | Shows/hides the todo list | **GAP** | `input.ctrl_t` screen unchanged after Ctrl+T (task rows are only inline in the transcript) |
@@ -156,8 +156,8 @@ cleanup works.
 | Subagent (Agent tool) | Agent row; the result comes back | PASS | `tools.subagent` ✓ ◇ Agent: general-purpose [depth: 1] [model: haiku] -&gt; PARITY_SUB_OK |
 | Background subagent | Runs in the background; result reported later | PASS | `tools.background_agent` '↗ ◇ Agent: general-purpose [depth: 1] [model: haiku] [backgrounded]'; result delivered: PARITY_BG_OK |
 | MCP tool call | Calls a project MCP server's tool | PASS | `tools.mcp` ✓ ⌬ Parity: Parity echo -&gt; └─ PARITY_MCP_ECHO:PARITY_MCP_IN |
-| SessionStart hook | Project hook runs at start | PASS | `tools.hook_start` project SessionStart hook wrote .parity/session-start at 1791830132 |
-| SessionEnd hook | Project hook runs at exit | PASS | `tools.hook_end` Ctrl+Q ran the project SessionEnd hook (.parity/session-end at 1791830287) |
+| SessionStart hook | Project hook runs at start | PASS | `tools.hook_start` project SessionStart hook wrote .parity/session-start at 1791830815 |
+| SessionEnd hook | Project hook runs at exit | PASS | `tools.hook_end` Ctrl+Q ran the project SessionEnd hook (.parity/session-end at 1791830959) |
 | Skill as a slash command | Project skill runs as /&lt;name&gt; | PASS | `tools.skill` advertised: yes; /parity-skill answered PARITY_SKILL_OK |
 | Plugin commands | Installed plugins' commands in the slash menu | PASS | `tools.plugin` 412 plugin commands advertised; menu lists e.g. /agent-skills:api-and-interface-design (not run: each is a full prompt) |
 
@@ -165,15 +165,15 @@ cleanup works.
 
 | Functionality | Claude Code | claude-rs (fork) | Evidence / notes |
 | --- | --- | --- | --- |
-| Context left in the footer | Context indicator near the prompt | PASS | `session.context` Loc: &lt;work&gt;/main … 91% |
+| Context left in the footer | Context indicator near the prompt | PASS | `session.context` Loc: &lt;work&gt;/main … 90% |
 | statusLine setting | Runs the command and shows its output under the prompt | **GAP** | `session.statusline` project statusLine (printf PARITY_STATUSLINE) not shown; footer: [Bypass Permissions] [Haiku 5.5/Med] [FAST:OFF] |
-| Session cost | Cost of the session on request | PASS | `session.cost` Usage tab: $0.0642 cost · 2m 53s elapsed · 46s API time · +3 / -1 lines · 1 model |
+| Session cost | Cost of the session on request | PASS | `session.cost` Usage tab: $0.0552 cost · 2m 39s elapsed · 34s API time · +3 / -1 lines · 1 model |
 
 ## Agents (the session registry)
 
 | Functionality | Claude Code | claude-rs (fork) | Evidence / notes |
 | --- | --- | --- | --- |
-| Session in `claude agents --json` | Interactive entry with name and status | PASS | `agents.registry` {"kind":"interactive","name":"main-5c","status":"idle","pid":69920} |
+| Session in `claude agents --json` | Interactive entry with name and status | PASS | `agents.registry` {"kind":"interactive","name":"main-02","status":"idle","pid":69318} |
 
 ## Known gaps
 
