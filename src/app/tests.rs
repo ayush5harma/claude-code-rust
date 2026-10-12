@@ -534,6 +534,7 @@ fn resume_selection_with_explicit_tab_then_enter_arms_submit() {
         git_branch: None,
         custom_title: None,
         first_prompt: None,
+        tag: None,
     }];
     app.input.set_text("/resume se");
     let _ = app.input.set_cursor(0, "/resume se".chars().count());

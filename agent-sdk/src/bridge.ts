@@ -1027,6 +1027,8 @@ async function handleCommand(
       return;
     case "generate_session_title":
     case "rename_session":
+    case "tag_session":
+    case "delete_session":
     case "get_status_snapshot":
     case "get_context_usage":
     case "get_usage":

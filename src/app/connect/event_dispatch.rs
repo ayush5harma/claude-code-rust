@@ -281,6 +281,24 @@ pub(super) async fn handle_bridge_event(
         crate::agent::wire::BridgeEvent::SessionsListed { sessions } => {
             let _ = event_tx.send(ClientEvent::SessionsListed { sessions }).await;
         }
+        crate::agent::wire::BridgeEvent::SessionMutationResult {
+            session_id,
+            operation,
+            error,
+            refresh_error,
+            sessions,
+        } => {
+            let _ = event_tx
+                .send(ClientEvent::SessionMutationResult {
+                    session_id,
+                    request_id,
+                    operation,
+                    error,
+                    refresh_error,
+                    sessions,
+                })
+                .await;
+        }
         crate::agent::wire::BridgeEvent::Initialized { .. } => {}
         crate::agent::wire::BridgeEvent::SettingsResult { session_id, result } => {
             let _ = event_tx

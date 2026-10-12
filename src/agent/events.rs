@@ -179,6 +179,14 @@ pub enum ClientEvent {
     },
     /// Recent sessions discovered via SDK session listing.
     SessionsListed { sessions: Vec<crate::agent::types::SessionListEntry> },
+    SessionMutationResult {
+        session_id: String,
+        request_id: Option<String>,
+        operation: String,
+        error: Option<String>,
+        refresh_error: Option<String>,
+        sessions: Option<Vec<crate::agent::types::SessionListEntry>>,
+    },
     /// Background app update check completed with current release metadata.
     UpdateCheckCompleted { result: crate::app::settings::UpdateCheckResult },
     /// Startup Claude Code status check detected degraded/outage conditions.
@@ -282,6 +290,7 @@ impl ClientEvent {
             | Self::TerminalReturnedFromChild { .. }
             | Self::SessionReplaced { .. }
             | Self::SessionsListed { .. }
+            | Self::SessionMutationResult { .. }
             | Self::RewindTargetsReceived { .. }
             | Self::UpdateCheckCompleted { .. }
             | Self::ServiceStatus { .. }

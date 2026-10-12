@@ -13,18 +13,32 @@ use super::theme;
 const SESSION_DESCRIPTION: &str = "Recent sessions for this project directory.";
 const TURN_DESCRIPTION: &str = "The original session will not change. The selected message and everything after it will be omitted from the fork.";
 
+#[allow(clippy::too_many_lines)]
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
     let selecting_turn = app.session_picker.turn_session_id.is_some();
+    let mutation = app.session_picker.mutation.as_deref();
     let outer = Block::default()
         .borders(Borders::ALL)
-        .title(if selecting_turn { "Fork Before Message" } else { "Resume Session" })
+        .title(if selecting_turn {
+            "Fork Before Message"
+        } else if mutation.is_some() {
+            "Manage Session"
+        } else {
+            "Resume Session"
+        })
         .border_style(Style::default().fg(theme::DIM));
     frame.render_widget(outer, area);
 
     let inner = area.inner(Margin { vertical: 1, horizontal: 2 });
-    let description = if selecting_turn { TURN_DESCRIPTION } else { SESSION_DESCRIPTION };
+    let description = if selecting_turn {
+        TURN_DESCRIPTION
+    } else if mutation.is_some() {
+        "The action applies to the selected session ID shown below."
+    } else {
+        SESSION_DESCRIPTION
+    };
     let description_height = wrapped_line_count(description, inner.width);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -40,6 +54,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         Paragraph::new(Line::from(Span::styled(
             if selecting_turn {
                 "Select where the fork should stop"
+            } else if mutation.is_some() {
+                "Edit tag or confirm deletion"
             } else {
                 "Select a session to resume"
             },
@@ -54,7 +70,25 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         chunks[1],
     );
 
-    if selecting_turn && app.sdk_inventory.rewind_targets_in_flight {
+    if let Some(mutation) = mutation {
+        let message = match mutation {
+            crate::app::SessionPickerMutation::Tag { session_id, draft, request_id, .. } => {
+                format!(
+                    "Session: {session_id}\nTag: {draft}\n{}",
+                    if request_id.is_some() {
+                        "Saving..."
+                    } else {
+                        "Enter saves; empty tag clears"
+                    }
+                )
+            }
+            crate::app::SessionPickerMutation::Delete { session_id, request_id, .. } => format!(
+                "Delete session {session_id}?\n{}",
+                if request_id.is_some() { "Deleting..." } else { "Press y to confirm" }
+            ),
+        };
+        frame.render_widget(Paragraph::new(message).wrap(Wrap { trim: false }), chunks[2]);
+    } else if selecting_turn && app.sdk_inventory.rewind_targets_in_flight {
         frame.render_widget(
             Paragraph::new("Loading session messages...")
                 .style(Style::default().fg(theme::DIM))
@@ -99,6 +133,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         Paragraph::new(footer_text(app)).style(Style::default().fg(theme::DIM)),
         chunks[3],
     );
+    if let Some(error) = app.session_picker.error.as_deref() {
+        frame.render_widget(
+            Paragraph::new(error).style(Style::default().fg(theme::STATUS_ERROR)),
+            chunks[1],
+        );
+    }
 }
 
 fn wrapped_line_count(text: &str, width: u16) -> u16 {
@@ -176,9 +216,14 @@ fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
             .as_ref()
             .is_some_and(|active| active.as_str() == session.session_id);
         let current_label = if current { " [current]" } else { "" };
+        let tag_label = session.tag.as_deref().map_or_else(String::new, |tag| {
+            let printable: String =
+                tag.chars().map(|ch| if ch.is_control() { ' ' } else { ch }).collect();
+            format!(" [tag: {}]", truncate(&printable, 24))
+        });
         lines.push(session_line(
             area.width,
-            &format!("{marker} {}{current_label}", display_primary(session)),
+            &format!("{marker} {}{tag_label}{current_label}", display_primary(session)),
             base_style,
             selected,
         ));
@@ -221,10 +266,17 @@ fn session_line(width: u16, left: &str, base_style: Style, selected: bool) -> Li
 fn footer_text(app: &App) -> &'static str {
     if crate::app::session_picker::startup_picker_is_loading(app) {
         "Preparing session picker | Ctrl+Q to quit"
+    } else if app.session_picker.mutation.as_deref().is_some_and(|mutation| match mutation {
+        crate::app::SessionPickerMutation::Tag { request_id, .. }
+        | crate::app::SessionPickerMutation::Delete { request_id, .. } => request_id.is_some(),
+    }) {
+        "Waiting for session service | Ctrl+Q to quit"
+    } else if app.session_picker.mutation.is_some() {
+        "Enter save tag / y confirm delete | Esc cancel"
     } else if app.session_picker.turn_session_id.is_some() {
         "Enter to fork before message | Left/Esc back | Ctrl+Q to quit"
     } else {
-        "Enter to resume | Right choose message | Esc close | Ctrl+Q to quit"
+        "Enter resume | Right choose message | t tag | d delete | Esc close"
     }
 }
 
@@ -318,6 +370,7 @@ mod tests {
             git_branch: Some("main".to_owned()),
             custom_title: Some(title.to_owned()),
             first_prompt: Some(format!("prompt {title}")),
+            tag: None,
         }
     }
 
@@ -349,6 +402,23 @@ mod tests {
 
         assert!(text.contains("Resume Session"));
         assert!(text.contains("just now - First Session"));
+    }
+
+    #[test]
+    fn renders_sdk_tag_on_the_selected_session_row() {
+        let mut app = App::test_default();
+        app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::SessionPicker);
+        let mut tagged = session("s1", "First Session");
+        tagged.tag = Some("review\nready\u{1b}".to_owned());
+        app.recent_sessions = vec![tagged, session("s2", "Second Session")];
+        let text = draw_text(&mut app);
+        assert!(
+            text.lines()
+                .any(|line| line.contains("> just now - First Session [tag: review ready ]"))
+        );
+        assert!(
+            text.lines().any(|line| line.contains("Second Session") && !line.contains("[tag:"))
+        );
     }
 
     #[test]

@@ -2195,6 +2195,57 @@ fn status_tab_shows_the_session_name_after_rename() {
     test.shutdown();
 }
 
+#[test]
+fn session_picker_confirms_exact_id_before_delete_and_shows_acknowledged_tag() {
+    let mut test = TerminalTest::start("session-management", 0);
+    test.submit("/resume", "/resume");
+    test.wait_screen_with("Resume Session", &["Saved project work"]);
+
+    test.send(b"d");
+    test.wait_screen("Switch sessions before deleting the active session.");
+    assert!(test.commands("delete_session").is_empty());
+    test.send(b"\x1b[A");
+    test.wait_until("saved session selected", |test| {
+        test.screen().contains("> just now - Saved project work")
+    });
+
+    test.send(b"d");
+    test.wait_screen_with("Delete session saved-session?", &["Press y to confirm"]);
+    test.send(b"\x1b");
+    test.wait_screen("Resume Session");
+    assert!(test.commands("delete_session").is_empty());
+
+    test.send(b"t");
+    test.wait_screen("Tag:");
+    test.send(b"fail");
+    test.wait_screen("Tag: fail");
+    test.send(b"\r");
+    test.wait_screen_with("Fixture refused mutation", &["Tag: fail"]);
+    assert_eq!(test.commands("tag_session")[0]["session_id"], "saved-session");
+    test.send(b"\x15");
+    test.wait_until("failed tag draft cleared", |test| {
+        test.screen().contains("Tag:") && !test.screen().contains("Tag: fail")
+    });
+    test.send(b"work");
+    test.wait_screen("Tag: work");
+    test.send(b"\r");
+    test.wait_until("tag command and SDK refresh", |test| {
+        test.commands("tag_session").len() == 2 && test.screen().contains("[tag: work]")
+    });
+    assert_eq!(test.commands("tag_session")[1]["session_id"], "saved-session");
+
+    test.send(b"d");
+    test.wait_screen("Delete session saved-session?");
+    test.send(b"y");
+    test.wait_until("confirmed deletion and refreshed picker", |test| {
+        test.commands("delete_session").len() == 1
+            && !test.screen().contains("Saved project work")
+            && test.screen().contains("Current conversation")
+    });
+    assert_eq!(test.commands("delete_session")[0]["session_id"], "saved-session");
+    test.shutdown();
+}
+
 /// The generator is the authority for `render-corpus.json`; this fails when the committed
 /// file no longer matches what the generator prints.
 #[test]

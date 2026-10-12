@@ -114,6 +114,8 @@ function commandSessionId(command: BridgeCommand): string | undefined {
     case "set_fast_mode":
     case "generate_session_title":
     case "rename_session":
+    case "tag_session":
+    case "delete_session":
     case "permission_response":
     case "question_response":
     case "elicitation_response":
@@ -164,6 +166,8 @@ function commandToolCallId(command: BridgeCommand): string | undefined {
     case "set_fast_mode":
     case "generate_session_title":
     case "rename_session":
+    case "tag_session":
+    case "delete_session":
     case "new_session":
     case "elicitation_response":
     case "get_status_snapshot":
@@ -215,6 +219,7 @@ function eventToolCallId(event: BridgeEvent): string | undefined {
     case "session_replaced":
     case "initialized":
     case "sessions_listed":
+    case "session_mutation_result":
     case "status_snapshot":
     case "settings_result":
     case "interaction_cancelled":
@@ -269,6 +274,7 @@ function protocolEventLevel(event: BridgeEvent): LogLevel {
     case "turn_complete":
       return "trace";
     case "sessions_listed":
+    case "session_mutation_result":
     case "status_snapshot":
     case "settings_result":
     case "context_usage":
