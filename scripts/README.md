@@ -3,6 +3,10 @@
 The scripts directory is grouped by release phase. These files are part of the
 active release tooling and are validated by PR, release, or nightly workflows.
 
+`e2e-parity/` is the exception: a local, opt-in live suite (tmux, a logged-in
+Claude Code, macOS or Linux) that no workflow runs, so it is not CI-validated.
+See `e2e-parity/README.md`.
+
 ## Runtime
 
 - `runtime/stage-bun-runtime.mjs` is a maintainer entry point. It validates the
@@ -95,8 +99,13 @@ release steps unless they expose their own command-line interface.
 - `quality/jscpd-warning-summary.mjs` is used by the nightly duplicate-code
   warning scan through `npm run quality:duplicates:summary`.
 
-## Dev
+## Development
 
+- `dev/bench-render.mjs` is a contributor tool that no workflow runs. It builds
+  two refs in temporary worktrees, runs the render benchmark on each, and fails
+  when a median frame time regresses by more than its gate. See `CONTRIBUTING.md`.
+- `dev/bench-render.test.mjs` covers its statistics, scenario matching, and input
+  validation, and runs in the PR npm packaging script tests.
 - `dev/check-all.mjs` is a contributor entry point (see CONTRIBUTING.md). It runs
   the PR-gating checks of `pr.yml` and `_agent-sdk.yml` locally and prints a
   PASS/FAIL table. It is not used by any workflow.
@@ -117,7 +126,7 @@ release steps unless they expose their own command-line interface.
 ```sh
 node scripts/runtime/stage-bun-runtime.mjs --check
 node scripts/shared/verify-third-party-notices.mjs
-node --test scripts/npm/npm-resolver.test.cjs scripts/npm/smoke-npm-package-install.test.mjs scripts/runtime/verify-staged-bun-runtimes.test.mjs scripts/npm/dry-run-npm-publish.test.mjs scripts/npm/publish-npm-platform-packages.test.mjs scripts/install/release-advisories.test.mjs
+node --test scripts/npm/npm-resolver.test.cjs scripts/npm/smoke-npm-package-install.test.mjs scripts/runtime/verify-staged-bun-runtimes.test.mjs scripts/npm/dry-run-npm-publish.test.mjs scripts/npm/publish-npm-platform-packages.test.mjs scripts/shared/deny-targets.test.mjs scripts/install/release-advisories.test.mjs scripts/dev/bench-render.test.mjs
 shellcheck -s sh scripts/install/install.sh
 pwsh -NoLogo -NoProfile -File scripts/install/install.ps1 -Help
 pwsh -NoLogo -NoProfile -File scripts/install/test-install-progress.ps1

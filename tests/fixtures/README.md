@@ -21,6 +21,7 @@ The PR workflow runs this suite on Ubuntu, Windows, and macOS, and requires all 
 | `resize-code` | Completes the first reply, then holds a second reply inside an unfinished code block. |
 | `export` | Answers `export_session_history` with a short conversation (messages, a Bash call with output, an Edit with a diff) in two chunks under the command's request id. |
 | `reload` | Answers the first `reload_skills_and_styles` command with two skills and three output styles, and every later one with a `slash_error`. |
+| `render-corpus` | Resumes the shared render corpus as history, then streams its long reply in 200 chunks on the first prompt. |
 
 `FAKE_BRIDGE_JOURNAL` records commands, events, and the `reply-held` coordination point as JSONL. `FAKE_BRIDGE_RELEASE_FILE` lets a test release a held turn after exercising the UI. Reply length and interval remain configurable with `FAKE_BRIDGE_LINES`, `FAKE_BRIDGE_FOLLOW_UP_LINES`, and `FAKE_BRIDGE_INTERVAL_MS`.
 
@@ -33,3 +34,9 @@ Resize tests inspect native terminal scrollback as well as the visible screen, i
 `fake-claude.rs` is a native stand-in for `claude auth login`, placed first on the child app's `PATH`. It reads one line from inherited stdin, records it inside the isolated profile, and waits for a release file. It can succeed using a clearly invalid fixture token or fail with exit code 7. The spawn-failure case uses an invalid executable on Windows and an executable script with a missing interpreter on Unix; plain executable text can run through a shell on macOS and does not reliably trigger a spawn error. The tests verify that the real TUI stays silent during child ownership, sends all input to the child, restores usable typing and paste after resizing, and stops an owned child during fatal shutdown. They do not exercise browser OAuth, real credential renewal, or the installed Claude CLI.
 
 Each test owns its temporary project, configuration directory, fake CLI, journal, and diagnostics log. No model, subscription, or user credential file is used. Add protocol behavior alongside a real workflow test; session resume/history reconstruction and SDK-specific cancellation races remain outside this fixture's coverage.
+
+## Render corpus
+
+`render-corpus.json` is a deterministic transcript that covers what a chat renders: Markdown (headings, nested lists, a table, a quote, inline code, links, a long paragraph), fenced code in six languages, a 2000-line Bash output with ANSI colour, small and 500-line Edit and Write diffs, a failed tool call, notices, and user messages. `history` is a resumed conversation and `stream` is one long reply in chunks, both as bridge `session_update` payloads. The `render-corpus` scenario above replays it through the real binary; `src/app/connect/render_corpus.rs` replays the same file through the app's event path for the render benchmark (`cargo test --release --lib render_bench -- --ignored --nocapture`, compared across refs by `scripts/dev/bench-render.mjs`). The app has no thinking text to render, so the corpus carries the one thing it shows: the `thinking` activity phase that opens the streamed reply.
+
+`generate-render-corpus.js` is the authority and the JSON is its committed output: edit the generator and rerun `node tests/fixtures/generate-render-corpus.js`. The test `render_corpus_fixture_matches_its_generator` runs it with `--check`, so a stale JSON fails `cargo test`. Changing the corpus changes every benchmark baseline, so compare refs that share one corpus.
