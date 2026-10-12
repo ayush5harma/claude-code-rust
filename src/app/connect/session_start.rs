@@ -41,8 +41,9 @@ pub(crate) fn session_launch_settings_for_reason(
     app: &App,
     reason: SessionStartReason,
 ) -> SessionLaunchSettings {
+    let config = Box::new(app.startup.session_config().clone());
     match reason {
-        SessionStartReason::Logout => SessionLaunchSettings::default(),
+        SessionStartReason::Logout => SessionLaunchSettings { config, ..Default::default() },
         SessionStartReason::Rewind => {
             let current_model = app.session_runtime.current_model.as_ref();
             SessionLaunchSettings {
@@ -61,6 +62,8 @@ pub(crate) fn session_launch_settings_for_reason(
                     .map(|mode| mode.current_mode_id.clone()),
                 effort: app.session_effort(),
                 agent: app.startup.session_options().and_then(|options| options.agent.clone()),
+                config,
+                ..Default::default()
             }
         }
         SessionStartReason::Startup
@@ -75,6 +78,9 @@ pub(crate) fn session_launch_settings_for_reason(
                     .map(|mode| mode.as_stored().to_owned()),
                 effort: options.and_then(|options| options.effort),
                 agent: options.and_then(|options| options.agent.clone()),
+                name: options.and_then(|options| options.name.clone()),
+                fork_session: options.is_some_and(|options| options.fork_session),
+                config,
             }
         }
     }
@@ -176,7 +182,9 @@ pub(crate) fn begin_rewind(
 mod tests {
     use super::{SessionStartReason, session_launch_settings_for_reason};
     use crate::agent::model::EffortLevel;
+    use crate::agent::wire::{SessionConfig, SessionLaunchSettings};
     use crate::app::App;
+    use clap::Parser;
 
     #[test]
     fn rewind_uses_current_model_mode_and_effort_after_startup_choices_change() {
@@ -219,7 +227,6 @@ mod tests {
 
     #[test]
     fn explicit_cli_choices_apply_until_startup_completes() {
-        use clap::Parser;
         let cli = crate::Cli::try_parse_from([
             "claude-rs",
             "--resume",
@@ -231,6 +238,8 @@ mod tests {
             "plan",
             "--agent",
             "reviewer",
+            "--name",
+            "Release prep",
         ])
         .expect("CLI");
         let mut app = App::test_default();
@@ -246,10 +255,47 @@ mod tests {
             assert_eq!(launch.permission_mode.as_deref(), Some("plan"));
             assert_eq!(launch.effort, Some(EffortLevel::Max));
             assert_eq!(launch.agent.as_deref(), Some("reviewer"));
+            assert_eq!(launch.name.as_deref(), Some("Release prep"));
         }
         assert_eq!(app.config.snapshot, saved);
         app.startup.complete_launch();
         let next = session_launch_settings_for_reason(&app, SessionStartReason::NewSession);
         assert_eq!(next, crate::agent::wire::SessionLaunchSettings::default());
+    }
+
+    #[test]
+    fn session_configuration_outlives_the_initial_session() {
+        let config = SessionConfig {
+            additional_directories: vec!["/work/shared".to_owned()],
+            settings: Some(r#"{"model":"haiku"}"#.to_owned()),
+            ..SessionConfig::default()
+        };
+        let cli = crate::Cli::try_parse_from(["claude-rs", "--model", "opus", "-n", "First"])
+            .expect("CLI");
+        let mut app = App::test_default();
+        app.startup =
+            crate::app::state::StartupState::from_cli(&cli).with_session_config(config.clone());
+        assert_eq!(
+            *session_launch_settings_for_reason(&app, SessionStartReason::Startup).config,
+            config
+        );
+        app.startup.complete_launch();
+        for reason in [
+            SessionStartReason::NewSession,
+            SessionStartReason::Resume,
+            SessionStartReason::Rewind,
+            SessionStartReason::Login,
+            SessionStartReason::Logout,
+        ] {
+            let launch = session_launch_settings_for_reason(&app, reason);
+            assert_eq!(
+                launch,
+                SessionLaunchSettings {
+                    config: Box::new(config.clone()),
+                    ..SessionLaunchSettings::default()
+                },
+                "{reason:?}"
+            );
+        }
     }
 }

@@ -1,6 +1,7 @@
 import {
   getSessionMessages,
   listSessions,
+  renameSession,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { BridgeCommand } from "../types.js";
 import {
@@ -14,6 +15,7 @@ import {
 } from "./events.js";
 import { getSessionTranscriptMessages, mapSessionMessagesToUpdates } from "./history.js";
 import { restoreSessionTitleAfterResume } from "./session_title.js";
+import { parseLaunchConfig } from "./launch_config.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import {
   awaitSessionInitialization,
@@ -246,6 +248,7 @@ async function create(
   await createSession({
     cwd: command.cwd,
     resume: command.resume,
+    ...(command.launch_settings.fork_session ? { forkSession: true } : {}),
     launchSettings: command.launch_settings,
     connectEvent: "connected",
     requestId,
@@ -287,6 +290,8 @@ async function resume(
       return;
     }
     setSessionListingDir(matched.cwd ?? process.cwd());
+    const launchConfig = parseLaunchConfig(command.launch_settings);
+    const renameError = await renameResumedSession(command, matched.cwd, requestId);
     const historyMessages = await getSessionTranscriptMessages(
       command.session_id,
       matched.cwd
@@ -309,10 +314,12 @@ async function resume(
         stale_session_count: staleSessions.length,
       },
     });
-    const candidate = await createSession({
+    const session = await createSession({
       cwd: matched.cwd ?? process.cwd(),
       resume: command.session_id,
+      ...(command.launch_settings.fork_session ? { forkSession: true } : {}),
       launchSettings: command.launch_settings,
+      launchConfig,
       ...(resumeUpdates.length > 0 ? { resumeUpdates } : {}),
       connectEvent: hadActiveSession ? "session_replaced" : "connected",
       requestId,
@@ -320,8 +327,24 @@ async function resume(
         ? { sessionsToCloseAfterConnect: staleSessions }
         : {}),
     });
-    await awaitSessionInitialization(candidate);
-    await restoreSessionTitleAfterResume(candidate, matched.customTitle);
+    if (renameError !== undefined) {
+      // A slash error ends the app's pending resume, so it is sent once the session connects.
+      session.deferredBridgeEvents = [
+        ...(session.deferredBridgeEvents ?? []),
+        {
+          event: {
+            event: "slash_error",
+            session_id: session.sessionId,
+            message: `failed to rename session: ${renameError}`,
+          },
+          ...(requestId ? { requestId } : {}),
+        },
+      ];
+    }
+    await awaitSessionInitialization(session);
+    if (!command.launch_settings.fork_session) {
+      await restoreSessionTitleAfterResume(session, command.launch_settings.name ?? matched.customTitle);
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     bridgeLogger.error({
@@ -338,6 +361,40 @@ async function resume(
       `failed to resume session: ${message}`,
       requestId,
     );
+  }
+}
+
+/**
+ * Apply a launch-time name to the session being resumed, before it connects, so the
+ * connect-time title read already reports it. A fork is new and takes the SDK title option
+ * instead (buildQueryOptions), leaving the original's title alone. A rename failure does
+ * not block the resume, because the conversation matters more than its label; its message
+ * is returned for reporting after connect.
+ */
+async function renameResumedSession(
+  command: Extract<LifecycleCommand, { command: "resume_session" }>,
+  cwd: string | undefined,
+  requestId: string | undefined,
+): Promise<string | undefined> {
+  const name = command.launch_settings.name;
+  if (name === undefined || command.launch_settings.fork_session) {
+    return undefined;
+  }
+  try {
+    await renameSession(command.session_id, name, cwd ? { dir: cwd } : undefined);
+    return undefined;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    bridgeLogger.warn({
+      target: LOG_TARGETS.APP_SESSION,
+      eventName: "session_launch_rename_failed",
+      message: "failed to apply the launch name to the resumed session",
+      outcome: "failure",
+      ...(requestId ? { requestId } : {}),
+      sessionId: command.session_id,
+      fields: { error_message: message },
+    });
+    return message;
   }
 }
 
