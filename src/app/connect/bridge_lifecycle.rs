@@ -1051,3 +1051,163 @@ mod tests {
         Ok((runtime_path, script_path))
     }
 }
+
+#[cfg(test)]
+mod launch_command_tests {
+    use super::{StartConnectionParams, build_session_command};
+    use crate::app::App;
+    use crate::app::connect::session_start::{
+        SessionStartReason, session_launch_settings_for_reason,
+    };
+    use clap::Parser;
+
+    /// The first command the app sends the bridge for a command line, as JSON.
+    fn startup_command(args: &[&str]) -> serde_json::Value {
+        let cli = crate::Cli::try_parse_from(args).expect("parse CLI");
+        cli.validate().expect("valid launch");
+        let mut app = App::test_default();
+        app.startup = crate::app::state::StartupState::from_cli(&cli)
+            .with_session_config(cli.session_config().expect("session config"));
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
+        let params = StartConnectionParams {
+            event_tx,
+            cwd_raw: "/work/project".to_owned(),
+            bridge_script: None,
+            launch: cli.startup_launch(),
+            session_launch_settings: session_launch_settings_for_reason(
+                &app,
+                SessionStartReason::Startup,
+            ),
+        };
+        serde_json::to_value(build_session_command(&params)).expect("serialize command")
+    }
+
+    #[test]
+    fn name_reaches_new_continued_and_resumed_sessions() {
+        let created = startup_command(&["claude-rs", "-n", "Release\u{7} prep "]);
+        assert_eq!(created["command"], "create_session");
+        assert_eq!(created["launch_settings"], serde_json::json!({ "name": "Release prep" }));
+
+        let continued = startup_command(&["claude-rs", "--continue", "--name", "Follow-up"]);
+        assert_eq!(continued["continue_session"], true);
+        assert_eq!(continued["launch_settings"], serde_json::json!({ "name": "Follow-up" }));
+
+        let resumed = startup_command(&["claude-rs", "resume", "session-1", "-n", "Renamed"]);
+        assert_eq!(resumed["command"], "resume_session");
+        assert_eq!(resumed["session_id"], "session-1");
+        assert_eq!(resumed["launch_settings"], serde_json::json!({ "name": "Renamed" }));
+    }
+
+    #[test]
+    fn fork_session_reaches_resumed_and_continued_sessions() {
+        let resumed = startup_command(&["claude-rs", "-r", "session-1", "--fork-session"]);
+        assert_eq!(resumed["command"], "resume_session");
+        assert_eq!(resumed["launch_settings"], serde_json::json!({ "fork_session": true }));
+
+        let continued = startup_command(&["claude-rs", "-c", "--fork-session", "-n", "Branch"]);
+        assert_eq!(continued["continue_session"], true);
+        assert_eq!(
+            continued["launch_settings"],
+            serde_json::json!({ "fork_session": true, "name": "Branch" })
+        );
+    }
+
+    #[test]
+    fn settings_file_text_and_inline_json_reach_the_bridge_unparsed() {
+        let project = tempfile::tempdir().expect("project");
+        let file_text = "{ \"spinnerTipsEnabled\": false }\n";
+        std::fs::write(project.path().join("flag-settings.json"), file_text).expect("settings");
+        let project_dir = project.path().to_str().expect("UTF-8 path");
+        let from_file =
+            startup_command(&["claude-rs", "-C", project_dir, "--settings", "flag-settings.json"]);
+        assert_eq!(from_file["launch_settings"], serde_json::json!({ "settings": file_text }));
+
+        let inline = "  {\"model\": \"haiku\"}";
+        let resumed = startup_command(&["claude-rs", "-r", "session-1", "--settings", inline]);
+        assert_eq!(resumed["command"], "resume_session");
+        assert_eq!(resumed["launch_settings"], serde_json::json!({ "settings": inline }));
+    }
+
+    #[test]
+    fn mcp_configs_keep_command_line_order_with_strict_mode() {
+        let project = tempfile::tempdir().expect("project");
+        let file_text = r#"{"mcpServers":{"docs":{"command":"docs-mcp"}}}"#;
+        std::fs::write(project.path().join("mcp.json"), file_text).expect("MCP config");
+        let project_dir = project.path().to_str().expect("UTF-8 path");
+        let inline = r#"{"mcpServers":{"docs":{"command":"override"}}}"#;
+        let created = startup_command(&[
+            "claude-rs",
+            "-C",
+            project_dir,
+            "--mcp-config",
+            "mcp.json",
+            "--mcp-config",
+            inline,
+            "--strict-mcp-config",
+        ]);
+        assert_eq!(
+            created["launch_settings"],
+            serde_json::json!({ "mcp_configs": [file_text, inline], "strict_mcp_config": true })
+        );
+        let plain = startup_command(&["claude-rs", "-C", project_dir, "--mcp-config", "mcp.json"]);
+        assert_eq!(plain["launch_settings"], serde_json::json!({ "mcp_configs": [file_text] }));
+    }
+
+    #[test]
+    fn system_prompt_text_and_files_reach_the_bridge() {
+        let project = tempfile::tempdir().expect("project");
+        std::fs::write(project.path().join("prompt.md"), "You are a release bot.\n")
+            .expect("prompt file");
+        std::fs::write(project.path().join("append.md"), "End every reply with DONE.")
+            .expect("append file");
+        let project_dir = project.path().to_str().expect("UTF-8 path");
+        let from_files = startup_command(&[
+            "claude-rs",
+            "-C",
+            project_dir,
+            "--system-prompt-file",
+            "prompt.md",
+            "--append-system-prompt-file",
+            "append.md",
+        ]);
+        assert_eq!(
+            from_files["launch_settings"],
+            serde_json::json!({
+                "system_prompt": "You are a release bot.\n",
+                "append_system_prompt": "End every reply with DONE."
+            })
+        );
+        let inline = startup_command(&["claude-rs", "--append-system-prompt", "Answer in German."]);
+        assert_eq!(
+            inline["launch_settings"],
+            serde_json::json!({ "append_system_prompt": "Answer in German." })
+        );
+    }
+
+    #[test]
+    fn added_directories_resolve_against_the_working_directory() {
+        let project = tempfile::tempdir().expect("project");
+        let shared = tempfile::tempdir().expect("shared directory");
+        std::fs::create_dir(project.path().join("docs")).expect("docs directory");
+        let project_dir = project.path().to_str().expect("UTF-8 path");
+        let shared_dir = shared.path().to_str().expect("UTF-8 path");
+        let created = startup_command(&[
+            "claude-rs",
+            "-C",
+            project_dir,
+            "--add-dir",
+            "docs",
+            "--add-dir",
+            shared_dir,
+        ]);
+        assert_eq!(
+            created["launch_settings"],
+            serde_json::json!({
+                "additional_directories": [
+                    project.path().join("docs").to_str().expect("UTF-8 path"),
+                    shared_dir,
+                ]
+            })
+        );
+    }
+}
