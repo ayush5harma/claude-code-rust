@@ -731,6 +731,25 @@ impl AgentConnection {
         })
     }
 
+    pub fn tag_session(
+        &self,
+        session_id: String,
+        tag: Option<String>,
+        request_id: String,
+    ) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: Some(request_id),
+            command: BridgeCommand::TagSession { session_id, tag },
+        })
+    }
+
+    pub fn delete_session(&self, session_id: String, request_id: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: Some(request_id),
+            command: BridgeCommand::DeleteSession { session_id },
+        })
+    }
+
     pub fn set_model(&self, session_id: String, model: String) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: None,
@@ -780,6 +799,48 @@ impl AgentConnection {
         self.send(CommandEnvelope {
             request_id: None,
             command: BridgeCommand::GetUsage { session_id },
+        })
+    }
+
+    pub fn list_session_agents(
+        &self,
+        session_id: String,
+        request_id: String,
+    ) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: Some(request_id),
+            command: BridgeCommand::ListSessionAgents { session_id },
+        })
+    }
+
+    pub fn get_subagent_messages(
+        &self,
+        session_id: String,
+        agent_id: String,
+        request_id: String,
+    ) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: Some(request_id),
+            command: BridgeCommand::GetSubagentMessages { session_id, agent_id },
+        })
+    }
+
+    pub fn stop_subagent_task(
+        &self,
+        session_id: String,
+        agent_id: String,
+        request_id: String,
+    ) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: Some(request_id),
+            command: BridgeCommand::StopSubagentTask { session_id, agent_id },
+        })
+    }
+
+    pub fn get_working_diff(&self, session_id: String, request_id: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: Some(request_id),
+            command: BridgeCommand::GetWorkingDiff { session_id },
         })
     }
 

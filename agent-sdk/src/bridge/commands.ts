@@ -550,6 +550,14 @@ export function parseCommandEnvelope(line: string): {
           session_id: expectString(raw, "session_id", "rename_session"),
           title: expectString(raw, "title", "rename_session"),
         };
+      case "tag_session":
+        return {
+          command: "tag_session",
+          session_id: expectString(raw, "session_id", "tag_session"),
+          tag: expectNonEmptyStringOrNull(raw, "tag", "tag_session"),
+        };
+      case "delete_session":
+        return { command: "delete_session", session_id: expectString(raw, "session_id", "delete_session") };
       case "get_status_snapshot":
         return {
           command: "get_status_snapshot",
@@ -564,6 +572,17 @@ export function parseCommandEnvelope(line: string): {
         return {
           command: "get_usage",
           session_id: expectString(raw, "session_id", "get_usage"),
+        };
+      case "list_session_agents":
+        return { command: "list_session_agents", session_id: expectString(raw, "session_id", "list_session_agents") };
+      case "get_subagent_messages":
+        return { command: "get_subagent_messages", session_id: expectString(raw, "session_id", "get_subagent_messages"), agent_id: expectString(raw, "agent_id", "get_subagent_messages") };
+      case "stop_subagent_task":
+        return { command: "stop_subagent_task", session_id: expectString(raw, "session_id", "stop_subagent_task"), agent_id: expectString(raw, "agent_id", "stop_subagent_task") };
+      case "get_working_diff":
+        return {
+          command: "get_working_diff",
+          session_id: expectString(raw, "session_id", "get_working_diff"),
         };
       case "get_rewind_targets":
         return {

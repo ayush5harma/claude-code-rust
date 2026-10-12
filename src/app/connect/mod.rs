@@ -159,6 +159,8 @@ pub fn create_app(cli: &Cli, session_config: crate::agent::wire::SessionConfig) 
         verbose_view: None,
         chat_render: super::ChatRenderState::default(),
         copy_picker: None,
+        search: None,
+        diff_view: None,
         history_export: None,
         mention: None,
         committed_mentions: Vec::new(),
@@ -178,6 +180,7 @@ pub fn create_app(cli: &Cli, session_config: crate::agent::wire::SessionConfig) 
         post_exit_action: None,
         usage: super::UsageState::default(),
         mcp: super::McpState::default(),
+        session_agents: Box::default(),
         notifications: super::notify::NotificationManager::new(),
         render_cache_budget: RenderCacheBudget::default(),
         history_retention: HistoryRetentionPolicy::default(),
@@ -199,6 +202,7 @@ pub fn start_connection(app: &mut App) {
     if !app.startup.mark_connection_started() {
         return;
     }
+    app.startup.timeline.mark_bridge_launched(std::time::Instant::now());
 
     let params = StartConnectionParams {
         event_tx: app.event_tx.clone(),

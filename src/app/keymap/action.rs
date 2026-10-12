@@ -28,6 +28,7 @@ pub enum AppAction {
     ScrollChatUp,
     ScrollChatDown,
     FollowChat,
+    SearchTranscript,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

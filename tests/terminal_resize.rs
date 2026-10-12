@@ -221,6 +221,11 @@ impl TerminalTest {
         command.env("FAKE_BRIDGE_INTERVAL_MS", "15");
         command.env("FAKE_BRIDGE_FOLLOW_UP_LINES", "3");
         command.env("FAKE_BRIDGE_SCENARIO", scenario);
+        if scenario == "session-accent" {
+            command.env_remove("NO_COLOR");
+            command.env("TERM", "xterm-256color");
+            command.env("COLORTERM", "truecolor");
+        }
         command.env("FAKE_BRIDGE_JOURNAL", &journal);
         command.env("FAKE_BRIDGE_RELEASE_FILE", &release_file);
         if fake_editor {
@@ -259,7 +264,9 @@ impl TerminalTest {
         };
         test.wait_screen("Trust this project");
         test.send(b"y");
-        if has_initial_prompt {
+        if scenario.starts_with("resume-large") {
+            test.wait_screen("Large saved conversation");
+        } else if has_initial_prompt {
             test.wait_until("initial prompt", |test| !test.prompts().is_empty());
         } else {
             test.wait_screen("Type a message");
@@ -864,6 +871,30 @@ fn shutdown_force_interrupt_can_stop_pending_transcript_recovery() {
 }
 
 #[test]
+fn transcript_search_navigates_retained_matches_from_key_and_slash_command() {
+    let mut test = TerminalTest::start_with_options(
+        "search-retained",
+        3,
+        None,
+        &["--resume", "f96f66ae-b5d4-4bc2-b5a3-08336cf4e850"],
+        false,
+    );
+    test.send(b"\x06");
+    test.wait_screen("Transcript search");
+    test.paste("delta");
+    test.wait_screen_with("Match 1 of 2", &["User: Find delta"]);
+    test.send(b"\r");
+    test.wait_screen_with("Match 2 of 2", &["Claude: A later delta"]);
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+    test.submit_command("/search delta");
+    test.wait_screen_with("Match 1 of 2", &["User: Find delta"]);
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+    test.shutdown();
+}
+
+#[test]
 fn interactive_cli_startup_sends_overrides_and_initial_prompt_without_saving_them() {
     let common =
         ["--model", "opus", "--effort", "max", "--permission-mode", "plan", "--agent", "reviewer"];
@@ -902,6 +933,56 @@ fn interactive_cli_startup_sends_overrides_and_initial_prompt_without_saving_the
         );
         test.shutdown();
     }
+}
+
+#[test]
+fn large_session_picker_compacts_only_after_explicit_choice_before_initial_prompt() {
+    let mut test = TerminalTest::start_with_options(
+        "resume-large",
+        3,
+        None,
+        &["--resume", "--", "Review next"],
+        true,
+    );
+    test.wait_for("saved size in picker", |test| {
+        test.screen()
+            .lines()
+            .any(|line| line.contains("Large saved conversation") && line.contains("saved 2.0 MiB"))
+            .then_some(())
+    });
+    test.wait_journal("settings_result");
+    assert!(test.prompts().is_empty());
+    test.send(b"c");
+    test.wait_for("compaction then initial prompt", |test| {
+        (test.prompts().len() == 2).then_some(())
+    });
+    assert_eq!(test.commands("resume_session")[0]["session_id"], "saved-large");
+    test.assert_prompts(&["/compact", "Review next"]);
+    test.shutdown();
+}
+
+#[test]
+fn failed_compact_first_keeps_launch_prompt_unsent() {
+    let mut test = TerminalTest::start_with_options(
+        "resume-large-fail",
+        3,
+        None,
+        &["--resume", "--", "Review next"],
+        true,
+    );
+    test.wait_for("saved session picker", |test| {
+        test.screen().contains("Large saved conversation").then_some(())
+    });
+    test.wait_journal("settings_result");
+    test.send(b"c");
+    test.wait_for("compaction failure", |test| {
+        test.screen().contains("fixture compaction failed").then_some(())
+    });
+    test.assert_prompts(&["/compact"]);
+    test.wait_for("unsent launch prompt draft", |test| {
+        test.screen().contains("Review next").then_some(())
+    });
+    test.shutdown();
 }
 
 #[test]
@@ -2247,6 +2328,58 @@ fn status_name_row(test: &TerminalTest, name: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn composer_accent(test: &TerminalTest) -> Option<(vt100::Color, vt100::Color)> {
+    let captured = test.output.lock().ok()?;
+    let screen = captured.parser.screen();
+    let (rows, cols) = screen.size();
+    for row in (0..rows).rev() {
+        for col in 1..cols {
+            let glyph = screen.cell(row, col)?;
+            if glyph.contents() == "❯" {
+                let border = screen.cell(row, col - 1)?;
+                return Some((border.fgcolor(), glyph.fgcolor()));
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn session_accent_colors_the_composer_edge_and_glyph_then_resets_on_replacement() {
+    let mut test = TerminalTest::start("session-accent", 3);
+    let initial = test.wait_for("session-ID accent", |test| {
+        let accent = composer_accent(test)?;
+        (accent == (vt100::Color::Rgb(120, 175, 245), vt100::Color::Rgb(120, 175, 245)))
+            .then_some(accent)
+    });
+
+    test.submit_command("/color purple");
+    test.wait_for("confirmed purple composer accent", |test| {
+        (composer_accent(test)
+            == Some((vt100::Color::Rgb(190, 155, 240), vt100::Color::Rgb(190, 155, 240))))
+        .then_some(())
+    });
+    test.submit_command("/color default");
+    test.wait_for("default restores the session-ID accent", |test| {
+        (composer_accent(test) == Some(initial)).then_some(())
+    });
+    test.submit_command("/color purple");
+    test.wait_for("purple before session replacement", |test| {
+        (composer_accent(test)
+            == Some((vt100::Color::Rgb(190, 155, 240), vt100::Color::Rgb(190, 155, 240))))
+        .then_some(())
+    });
+    test.submit_command("/new-session");
+    test.wait_for("replacement session accent", |test| {
+        (composer_accent(test)
+            == Some((vt100::Color::Rgb(220, 195, 85), vt100::Color::Rgb(220, 195, 85))))
+        .then_some(())
+    });
+    assert_eq!(test.commands("new_session").len(), 1);
+    test.assert_prompts(&["/color purple", "/color default", "/color purple"]);
+    test.shutdown();
+}
+
 #[test]
 fn status_tab_shows_the_session_name_after_rename() {
     let mut test = TerminalTest::start("session-name", 3);
@@ -2258,6 +2391,163 @@ fn status_tab_shows_the_session_name_after_rename() {
     // turn can name the session here.
     test.submit("/status", "/status");
     test.wait_for("the new name in Status", |test| status_name_row(test, "probe-e2e"));
+    test.shutdown();
+}
+
+#[test]
+fn session_picker_confirms_exact_id_before_delete_and_shows_acknowledged_tag() {
+    let mut test = TerminalTest::start("session-management", 0);
+    test.submit("/resume", "/resume");
+    test.wait_screen_with("Resume Session", &["Saved project work"]);
+
+    test.send(b"d");
+    test.wait_screen("Switch sessions before deleting the active session.");
+    assert!(test.commands("delete_session").is_empty());
+    test.send(b"\x1b[A");
+    test.wait_until("saved session selected", |test| {
+        test.screen().contains("> just now - Saved project work")
+    });
+
+    test.send(b"d");
+    test.wait_screen_with("Delete session saved-session?", &["Press y to confirm"]);
+    test.send(b"\x1b");
+    test.wait_screen("Resume Session");
+    assert!(test.commands("delete_session").is_empty());
+
+    test.send(b"t");
+    test.wait_screen("Tag:");
+    test.send(b"fail");
+    test.wait_screen("Tag: fail");
+    test.send(b"\r");
+    test.wait_screen_with("Fixture refused mutation", &["Tag: fail"]);
+    assert_eq!(test.commands("tag_session")[0]["session_id"], "saved-session");
+    test.send(b"\x15");
+    test.wait_until("failed tag draft cleared", |test| {
+        test.screen().contains("Tag:") && !test.screen().contains("Tag: fail")
+    });
+    test.send(b"work");
+    test.wait_screen("Tag: work");
+    test.send(b"\r");
+    test.wait_until("tag command and SDK refresh", |test| {
+        test.commands("tag_session").len() == 2 && test.screen().contains("[tag: work]")
+    });
+    assert_eq!(test.commands("tag_session")[1]["session_id"], "saved-session");
+
+    test.send(b"d");
+    test.wait_screen("Delete session saved-session?");
+    test.send(b"y");
+    test.wait_until("confirmed deletion and refreshed picker", |test| {
+        test.commands("delete_session").len() == 1
+            && !test.screen().contains("Saved project work")
+            && test.screen().contains("Current conversation")
+    });
+    assert_eq!(test.commands("delete_session")[0]["session_id"], "saved-session");
+    test.shutdown();
+}
+
+#[test]
+fn native_diff_browses_session_and_working_tree_files() {
+    let mut test = TerminalTest::start("native-diff", 3);
+    test.submit("/diff", "/diff");
+    test.wait_for("session diff and both file rows", |test| {
+        let screen = test.screen();
+        (screen.contains("session-only.txt")
+            && screen.contains("tracked file.txt")
+            && screen.lines().any(|line| line.contains("Session line") && line.contains('+')))
+        .then_some(())
+    });
+    assert_eq!(test.commands("get_working_diff").len(), 1);
+
+    test.send(b"\x1b[B");
+    test.wait_for("selected working-tree diff", |test| {
+        let screen = test.screen();
+        (screen.contains("+Working line") && !screen.contains("Session line")).then_some(())
+    });
+    test.send(b"r");
+    test.wait_until("refresh command", |test| test.commands("get_working_diff").len() == 2);
+    test.send(b"\x1b");
+    test.wait_until("return to chat", |test| test.screen().contains("[READY]"));
+    test.shutdown();
+}
+
+/// The rows of `screen` that mention `needle`.
+fn rows_with<'a>(screen: &'a str, needle: &str) -> Vec<&'a str> {
+    screen.lines().filter(|line| line.contains(needle)).collect()
+}
+
+/// A slow `SessionStart` hook is reported while the app has not read its settings
+/// yet, so its notice has to wait for them; a failed `PreToolUse` hook is noticed
+/// as it finishes. The fast `SessionStart` hook is reported between the slow
+/// hook's two messages and gets no notice.
+#[test]
+fn slow_and_failed_hooks_leave_a_notice_and_fast_ones_do_not() {
+    let mut test = TerminalTest::start("hook-activity", 3);
+    test.submit("run the hooks", "run the hooks");
+    let screen = test.wait_screen_with(
+        "Hook turn done",
+        &[
+            "Hook SessionStart:startup took 1.2 s",
+            "Hook PreToolUse:Bash failed (exit 2): blocked by fixture policy",
+        ],
+    );
+    assert_eq!(rows_with(&screen, "Hook SessionStart").len(), 1, "{screen}");
+    assert_eq!(rows_with(&screen, "Hook PreToolUse").len(), 1, "{screen}");
+    assert_eq!(rows_with(&screen, "SessionStart:compact"), Vec::<&str>::new(), "{screen}");
+    test.assert_prompts(&["run the hooks"]);
+    test.shutdown();
+}
+
+/// The Status tab row that starts with `label`, trimmed.
+fn status_row(test: &TerminalTest, label: &str) -> Option<String> {
+    test.screen().lines().map(str::trim).find(|line| line.starts_with(label)).map(str::to_owned)
+}
+
+#[test]
+fn status_tab_shows_measured_startup_milestones_and_the_hook_summary() {
+    let mut test = TerminalTest::start("hook-activity", 3);
+    test.submit("run the hooks", "run the hooks");
+    test.wait_turn_finished("Hook turn done");
+    test.submit("/status", "/status");
+
+    test.wait_for("the hooks summary in Status", |test| {
+        status_row(test, "Runs:").filter(|row| row.contains("in total"))
+    });
+    // Three runs of 1200, 40 and 30 ms, and one failed.
+    assert_eq!(
+        status_row(&test, "Runs:").as_deref(),
+        Some("Runs: 3 (1 failed), 1.3 s in total"),
+        "{}",
+        test.screen()
+    );
+    assert_eq!(
+        status_row(&test, "Slowest 1:").as_deref(),
+        Some("Slowest 1: SessionStart:startup 1.2 s")
+    );
+    assert_eq!(
+        status_row(&test, "Slowest 2:").as_deref(),
+        Some("Slowest 2: SessionStart:compact 40 ms")
+    );
+    assert_eq!(
+        status_row(&test, "Slowest 3:").as_deref(),
+        Some("Slowest 3: PreToolUse:Bash 30 ms")
+    );
+
+    // Offsets depend on the machine; their order and the measured hook count do not.
+    let offset = |label: &str| {
+        let row =
+            status_row(&test, label).unwrap_or_else(|| panic!("{label} row:\n{}", test.screen()));
+        assert!(row.contains(": +"), "{row}");
+        test.screen().lines().position(|line| line.trim().starts_with(label)).expect("row")
+    };
+    let launched = offset("Bridge launched");
+    let hooks = offset("SessionStart hooks finished");
+    let connected = offset("SDK connected");
+    let ready = offset("Ready for input");
+    assert!(launched < hooks && hooks < connected && connected < ready);
+    assert!(
+        status_row(&test, "SessionStart hooks finished")
+            .is_some_and(|row| row.ends_with("(2 hooks)"))
+    );
     test.shutdown();
 }
 
@@ -2441,4 +2731,26 @@ fn ctrl_v_attaches_the_system_clipboard_image_and_sends_it_with_the_prompt() {
     test.assert_prompts(&["[Image #1]"]);
     test.shutdown();
     drop(clipboard);
+}
+
+#[test]
+fn agents_panel_shows_current_session_messages_and_stops_only_the_selected_running_agent() {
+    let mut test = TerminalTest::start("session-agents", 3);
+    test.submit_command("/agents");
+    test.wait_screen_with("Review parser", &["Session agents", "Running"]);
+    test.wait_screen("Parser path checked");
+    assert_eq!(test.commands("list_session_agents").len(), 1);
+    assert_eq!(test.commands("get_subagent_messages").len(), 1);
+    test.assert_prompts(&[]);
+
+    test.send(b"s");
+    test.wait_screen("Stop requested for the selected agent");
+    assert_eq!(test.commands("stop_subagent_task").len(), 1);
+    test.send(b"\x1b[B");
+    test.wait_screen_with("Docs path checked", &["Inspect docs", "Completed"]);
+    assert_eq!(test.commands("get_subagent_messages").len(), 2);
+    test.send(b"s");
+    test.wait_screen("no running task to stop");
+    assert_eq!(test.commands("stop_subagent_task").len(), 1);
+    test.shutdown();
 }

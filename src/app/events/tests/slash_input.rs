@@ -304,7 +304,6 @@ fn invalid_arguments_reach_usage_feedback_without_dispatch_or_input_capture() {
         "/btw ",
         "/new-session extra",
         "/effort high extra",
-        "/resume one two",
     ] {
         let (mut app, mut rx) = app_with_bridge_connection();
         draft(&mut app, input);
@@ -332,6 +331,7 @@ fn optional_resume_opens_the_picker_without_selecting_a_suggested_session() {
             git_branch: None,
             custom_title: None,
             first_prompt: None,
+            tag: None,
         }];
         draft(&mut app, input);
         enter(&mut app);
@@ -663,6 +663,7 @@ fn optional_resume_completion_opens_picker_and_explicit_tab_can_resume_a_suggest
             git_branch: None,
             custom_title: None,
             first_prompt: None,
+            tag: None,
         }];
         draft(&mut app, "/resu");
         key(&mut app, KeyCode::Tab);
@@ -707,7 +708,7 @@ async fn space_keeps_required_effort_assistance_and_dispatches_only_after_enter(
 
 #[test]
 fn missing_or_invalid_arguments_after_dismissal_still_reach_authoritative_validation() {
-    for text in ["/effort ", "/effort impossible", "/btw ", "/resume first second"] {
+    for text in ["/effort ", "/effort impossible", "/btw "] {
         let (mut app, mut rx) = app_with_bridge_connection();
         draft(&mut app, text);
         if app.slash.is_visible() {

@@ -39,6 +39,7 @@ The fullscreen settings surface has its own keys for tabs, panes, search and edi
 | `Ctrl+O` | Show a snapshot of retained user, assistant and visible tool text; press again or `Esc` to close. Reopen to refresh. |
 | `Ctrl+T` | Show SDK tasks; press again or `Esc` to close. |
 | `Alt+R` | Open the rewind picker directly. |
+| `Ctrl+F` | Search retained transcript text. |
 | `Tab` | Focus prompts or accept suggestions. |
 | `Shift+Tab` | Cycle mode. |
 | `Up` | Move up through text, or recall the latest user message when the input is empty. |
@@ -54,7 +55,7 @@ Readline-style bindings are also supported:
 | Shortcut | Action |
 | --- | --- |
 | `Ctrl+A`, `Ctrl+E` | Move to line start or line end. |
-| `Ctrl+B`, `Ctrl+F` | Move one character. |
+| `Ctrl+B` | Move one character left. |
 | `Ctrl+H` | Delete before cursor. |
 | `Ctrl+K` | Kill to line end. |
 | `Ctrl+U` | Kill to line start. |

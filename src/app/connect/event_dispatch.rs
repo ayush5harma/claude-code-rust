@@ -43,6 +43,11 @@ pub(super) async fn handle_bridge_event(
 ) {
     let EventEnvelope { request_id, event } = envelope;
     match event {
+        crate::agent::wire::BridgeEvent::WorkingDiff { session_id, files, error } => {
+            let _ = event_tx
+                .send(ClientEvent::WorkingDiffReceived { session_id, request_id, files, error })
+                .await;
+        }
         crate::agent::wire::BridgeEvent::Connected {
             session_id,
             cwd,
@@ -294,6 +299,24 @@ pub(super) async fn handle_bridge_event(
         crate::agent::wire::BridgeEvent::SessionsListed { sessions } => {
             let _ = event_tx.send(ClientEvent::SessionsListed { sessions }).await;
         }
+        crate::agent::wire::BridgeEvent::SessionMutationResult {
+            session_id,
+            operation,
+            error,
+            refresh_error,
+            sessions,
+        } => {
+            let _ = event_tx
+                .send(ClientEvent::SessionMutationResult {
+                    session_id,
+                    request_id,
+                    operation,
+                    error,
+                    refresh_error,
+                    sessions,
+                })
+                .await;
+        }
         crate::agent::wire::BridgeEvent::Initialized { .. } => {}
         crate::agent::wire::BridgeEvent::SettingsResult { session_id, result } => {
             let _ = event_tx
@@ -315,6 +338,26 @@ pub(super) async fn handle_bridge_event(
         crate::agent::wire::BridgeEvent::UsageSnapshot { session_id, snapshot, error } => {
             let _ = event_tx
                 .send(ClientEvent::StructuredUsageReceived { session_id, snapshot, error })
+                .await;
+        }
+        crate::agent::wire::BridgeEvent::SessionAgentsResult {
+            session_id,
+            action,
+            agent_id,
+            agent_ids,
+            messages,
+            error,
+        } => {
+            let _ = event_tx
+                .send(ClientEvent::SessionAgentsResultReceived {
+                    session_id,
+                    request_id,
+                    action,
+                    agent_id,
+                    agent_ids,
+                    messages,
+                    error,
+                })
                 .await;
         }
         crate::agent::wire::BridgeEvent::SessionHistoryExport {

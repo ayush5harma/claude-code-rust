@@ -245,8 +245,8 @@ function pushResumeToolResult(
 
 function summaryFromSession(info: SDKSessionInfo): string {
   return (
-    nonEmptyTrimmed(info.summary) ??
     nonEmptyTrimmed(info.customTitle) ??
+    nonEmptyTrimmed(info.summary) ??
     nonEmptyTrimmed(info.firstPrompt) ??
     info.sessionId
   );
@@ -268,6 +268,7 @@ export function mapSdkSessionInfo(info: SDKSessionInfo): SessionListEntry {
     ...(nonEmptyTrimmed(info.firstPrompt)
       ? { first_prompt: info.firstPrompt?.trim() }
       : {}),
+    ...(nonEmptyTrimmed(info.tag) ? { tag: info.tag?.trim() } : {}),
   };
 }
 

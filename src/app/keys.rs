@@ -349,6 +349,10 @@ fn execute_app_action(app: &mut App, action: AppAction) -> KeyOutcome {
             app.request_chat_repaint();
             true.into()
         }
+        AppAction::SearchTranscript => {
+            crate::app::search::open(app, "");
+            KeyOutcome::Handled(true)
+        }
         AppAction::CycleMode => handle_mode_cycle(app).into(),
     }
 }

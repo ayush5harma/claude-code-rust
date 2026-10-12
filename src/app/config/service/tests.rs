@@ -230,7 +230,7 @@ async fn permission_scope_selection_loads_only_its_rules_and_keeps_dialog_scope_
 async fn rule_item_editor_preserves_draft_across_resize_conflict_and_acknowledged_save() {
     use ratatui::{Terminal, backend::TestBackend};
     tokio::task::LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             let mut app = App::test_default();
             app.surface_mode =
                 crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
@@ -343,7 +343,7 @@ async fn rule_item_editor_preserves_draft_across_resize_conflict_and_acknowledge
                 Some(&json!(["Read(./src/**)", "Read(./docs/**)", "Bash(npm test *)"]))
             );
             assert!(app.config.setting_overlay().is_none());
-        })
+        }))
         .await;
 }
 
@@ -377,7 +377,7 @@ async fn structured_editor_reports_parse_error_and_saves_corrected_json_without_
 
 #[tokio::test(flavor = "current_thread")]
 async fn config_edits_and_resets_use_correlated_snapshot_mutations() {
-    tokio::task::LocalSet::new().run_until(async {
+    tokio::task::LocalSet::new().run_until(Box::pin(async {
         let mut app = App::test_default();
         let (connection, mut commands) = AgentConnection::test_channel();
         app.session_runtime.conn = Some(Rc::new(connection));
@@ -409,7 +409,7 @@ async fn config_edits_and_resets_use_correlated_snapshot_mutations() {
         crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
         let reset = commands.recv_envelope().await.expect("reset");
         assert!(matches!(reset.command, BridgeCommand::MutateSetting { mutation, .. } if mutation.operation == SettingsOperation::Remove && mutation.id == "language"));
-    }).await;
+    })).await;
 }
 
 #[test]
@@ -442,7 +442,7 @@ fn request_correlation_and_session_epoch_protect_editor_state() {
 async fn inline_arrows_and_space_cycle_choices_and_render_acknowledged_values() {
     use ratatui::{Terminal, backend::TestBackend};
     tokio::task::LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             let mut app = App::test_default();
             app.surface_mode =
                 crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
@@ -520,7 +520,7 @@ async fn inline_arrows_and_space_cycle_choices_and_render_acknowledged_values() 
                 "read-only controls must preserve the saved value"
             );
             assert_eq!(app.config.saved_value("language"), Some(&json!("medium")));
-        })
+        }))
         .await;
 }
 
@@ -727,7 +727,7 @@ async fn conflict_refresh_preserves_draft_and_deliberate_retry_uses_the_refreshe
 
 #[tokio::test(flavor = "current_thread")]
 async fn default_effort_cycles_and_resets_without_changing_session_effort() {
-    tokio::task::LocalSet::new().run_until(async {
+    Box::pin(tokio::task::LocalSet::new().run_until(async {
         let mut app = App::test_default();
         let (connection, mut commands) = AgentConnection::test_channel();
         app.session_runtime.conn = Some(Rc::new(connection));
@@ -762,7 +762,7 @@ async fn default_effort_cycles_and_resets_without_changing_session_effort() {
         apply_settings_result(&mut app, reset.request_id.as_deref(), SettingsResult { persistence: SettingsPersistence::Saved, application: SettingsApplication::NextSession, snapshot: Some(inherited), error: None });
         assert_eq!(app.config.saved_value("defaultEffort"), None);
         assert_eq!(app.session_runtime.config_options.get("effortLevel"), Some(&json!("max")));
-    }).await;
+    })).await;
 }
 
 #[tokio::test(flavor = "current_thread")]

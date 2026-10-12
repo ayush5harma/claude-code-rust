@@ -16,6 +16,8 @@ pub(crate) enum AppSlashCommand {
     Hooks,
 
     Copy,
+    Search,
+    Diff,
     Docs,
     Agent,
     Effort,
@@ -27,6 +29,7 @@ pub(crate) enum AppSlashCommand {
     Plugins,
     Status,
     Usage,
+    Agents,
     Login,
     Logout,
     Mode,
@@ -167,6 +170,22 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         args: NO_ARGS,
     },
     AppSlashCommandSpec {
+        command: AppSlashCommand::Search,
+        name: "/search",
+        usage: "Usage: /search [query]",
+        short_description: "Search retained transcript",
+        long_description: "Search retained user, assistant, and visible tool text. Archived history is excluded.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Diff,
+        name: "/diff",
+        usage: "Usage: /diff",
+        short_description: "Inspect file changes",
+        long_description: "Browse retained session tool diffs and current Git working-tree changes.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
         command: AppSlashCommand::Docs,
         name: "/docs",
         usage: "Usage: /docs <mode|models|shortcuts|commands|agents>",
@@ -266,6 +285,14 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         args: NO_ARGS,
     },
     AppSlashCommandSpec {
+        command: AppSlashCommand::Agents,
+        name: "/agents",
+        usage: "Usage: /agents",
+        short_description: "Inspect session agents",
+        long_description: "Open the current session agents panel.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
         command: AppSlashCommand::Login,
         name: "/login",
         usage: "Usage: /login",
@@ -308,8 +335,8 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
     AppSlashCommandSpec {
         command: AppSlashCommand::Resume,
         name: "/resume",
-        usage: "Usage: /resume [session_id]",
-        short_description: "Resume a session by ID",
+        usage: "Usage: /resume [session_id_or_title]",
+        short_description: "Resume a session by ID or title",
         long_description: "Open the session picker, or resume a manually supplied session ID.",
         args: NO_ARGS,
     },
@@ -357,6 +384,8 @@ impl AppSlashCommand {
             Self::Hooks => "/hooks",
 
             Self::Copy => "/copy",
+            Self::Search => "/search",
+            Self::Diff => "/diff",
             Self::Docs => "/docs",
             Self::Agent => "/agent",
             Self::Effort => "/effort",
@@ -368,6 +397,7 @@ impl AppSlashCommand {
             Self::Plugins => "/plugins",
             Self::Status => "/status",
             Self::Usage => "/usage",
+            Self::Agents => "/agents",
             Self::Login => "/login",
             Self::Logout => "/logout",
             Self::Mode => "/mode",
@@ -410,7 +440,9 @@ impl AppSlashCommand {
             | Self::Mcp
             | Self::Plugins
             | Self::Status
-            | Self::Usage => {
+            | Self::Usage
+            | Self::Agents
+            | Self::Diff => {
                 if args.is_empty() {
                     SubmissionClass::Fullscreen
                 } else {
@@ -424,13 +456,13 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
-            Self::Docs => {
-                if matches!(args, ["mode" | "models" | "shortcuts" | "commands" | "agents"]) {
+            Self::Search => SubmissionClass::Fullscreen,
+            Self::Docs => match args {
+                ["mode" | "models" | "shortcuts" | "commands" | "agents"] => {
                     SubmissionClass::Informational
-                } else {
-                    SubmissionClass::Invalid
                 }
-            }
+                _ => SubmissionClass::Invalid,
+            },
             Self::Compact | Self::Login | Self::Logout | Self::NewSession | Self::Reload => {
                 if args.is_empty() {
                     SubmissionClass::TurnExclusive
@@ -471,14 +503,7 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
-            Self::Export => SubmissionClass::TurnExclusive,
-            Self::Resume => {
-                if args.len() <= 1 {
-                    SubmissionClass::TurnExclusive
-                } else {
-                    SubmissionClass::Invalid
-                }
-            }
+            Self::Export | Self::Resume => SubmissionClass::TurnExclusive,
             Self::Rewind => {
                 if matches!(args, [_, "both" | "conversation" | "code"]) {
                     SubmissionClass::TurnExclusive

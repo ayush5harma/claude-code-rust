@@ -53,6 +53,7 @@ pub(super) fn handle_connected_client_event(app: &mut App, event: ConnectedEvent
         ultracode,
         history_updates,
     } = event;
+    app.startup.timeline.mark_connected(std::time::Instant::now());
     let session_id_for_log = session_id.to_string();
     let history_update_count = history_updates.len();
     let available_model_count = available_models.len();
@@ -97,7 +98,7 @@ pub(super) fn handle_connected_client_event(app: &mut App, event: ConnectedEvent
     );
 }
 
-pub(super) fn handle_sessions_listed_event(
+pub(crate) fn handle_sessions_listed_event(
     app: &mut App,
     sessions: Vec<crate::agent::types::SessionListEntry>,
 ) {
@@ -119,8 +120,10 @@ pub(super) fn handle_sessions_listed_event(
             git_branch: entry.git_branch,
             custom_title: entry.custom_title,
             first_prompt: entry.first_prompt,
+            tag: entry.tag,
         })
         .collect();
+    app.session_picker.list_revision = app.session_picker.list_revision.wrapping_add(1);
     let mut pending_title_change_resolved = false;
     if let Some(pending_title_change) = pending_title_change {
         let renamed_session_present = app
@@ -439,6 +442,9 @@ pub(super) fn handle_logout_completed_event(app: &mut App) {
 }
 
 pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplacedEventData) {
+    if app.diff_view.is_some() {
+        crate::app::view::set_chat_surface(app);
+    }
     let SessionReplacedEventData {
         session_id,
         cwd,
@@ -951,6 +957,99 @@ mod tests {
             "future-reason",
         ] {
             assert!(!fast_mode_disabled_message(reason).is_empty());
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn session_identity_change_clears_agent_selection_before_refresh_for_connect_and_replace()
+    {
+        use crate::agent::events::ClientEvent;
+        use crate::agent::types::{SessionAgentsAction, SubagentMessage};
+        use crate::agent::wire::BridgeCommand;
+        use crate::app::{FullscreenView, SurfaceMode};
+
+        for replacement in [false, true] {
+            let mut app = App::test_default();
+            let (conn, mut commands) = AgentConnection::test_channel();
+            app.session_runtime.conn = Some(Rc::new(conn));
+            app.session_runtime.session_id = Some(model::SessionId::new("old-session"));
+            app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Config);
+            app.config.active_tab = crate::app::config::ConfigTab::Agents;
+            crate::app::session_agents::refresh(&mut app);
+            let old_request = commands
+                .recv_envelope()
+                .await
+                .expect("old list request")
+                .request_id
+                .expect("old request id");
+            app.session_agents.agent_ids = vec!["shared-agent".to_owned()];
+            app.session_agents.messages = vec![SubagentMessage {
+                role: "assistant".to_owned(),
+                text: "old private message".to_owned(),
+            }];
+            app.session_agents.selected = 0;
+            let cwd = app.cwd_raw.clone();
+            let model = model::CurrentModel::new("model", "model", "model").authoritative(true);
+            if replacement {
+                handle_session_replaced_event(
+                    &mut app,
+                    SessionReplacedEventData {
+                        session_id: model::SessionId::new("new-session"),
+                        cwd,
+                        current_model: model,
+                        available_models: Vec::new(),
+                        mode: None,
+                        fast_mode_state: model::FastModeState::Off,
+                        fast_mode_disabled_reason: None,
+                        ultracode: None,
+                        history_updates: Vec::new(),
+                        restored_input: None,
+                    },
+                );
+            } else {
+                handle_connected_client_event(
+                    &mut app,
+                    ConnectedEventData {
+                        session_id: model::SessionId::new("new-session"),
+                        cwd,
+                        current_model: model,
+                        available_models: Vec::new(),
+                        mode: None,
+                        fast_mode_state: model::FastModeState::Off,
+                        fast_mode_disabled_reason: None,
+                        ultracode: None,
+                        history_updates: Vec::new(),
+                    },
+                );
+            }
+            let refreshed = commands.recv_envelope().await.expect("new list request");
+            assert!(matches!(refreshed.command,
+                BridgeCommand::ListSessionAgents { ref session_id } if session_id == "new-session"));
+            assert!(app.session_agents.agent_ids.is_empty());
+            assert!(app.session_agents.messages.is_empty());
+            assert_eq!(app.session_agents.selected, 0);
+            assert_eq!(app.session_agents.session_id.as_deref(), Some("new-session"));
+            app.sdk_inventory.tasks.push(model::TaskItem {
+                task_id: "shared-agent".to_owned(),
+                status: model::TaskStatus::InProgress,
+                metadata: Some(serde_json::json!({ "subagent_type": "general-purpose" })),
+                ..model::TaskItem::new("shared-agent", "New task", model::TaskStatus::InProgress)
+            });
+            crate::app::session_agents::stop_selected(&mut app);
+            assert!(commands.try_recv().is_err(), "old selection must not stop a new task");
+            crate::app::session_agents::apply_result(
+                &mut app,
+                ClientEvent::SessionAgentsResultReceived {
+                    session_id: "old-session".to_owned(),
+                    request_id: Some(old_request),
+                    action: SessionAgentsAction::ListSessionAgents,
+                    agent_id: None,
+                    agent_ids: vec!["shared-agent".to_owned()],
+                    messages: Vec::new(),
+                    error: None,
+                },
+            );
+            assert!(app.session_agents.agent_ids.is_empty(), "old list must stay discarded");
         }
     }
 

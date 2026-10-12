@@ -1,9 +1,11 @@
+import { confirmedColorFromResult } from "./session_color.js";
 import { observeMainAgentStream, resetMainAgentActivity, responseNeverStreamed } from "./activity.js";
 import { nativeNotification } from "./notifications.js";
 import { elapsedNumber, messageMetadata, turnTiming } from "./presentation_metadata.js";
 import { refreshUltracode } from "./ultracode.js";
 import { observeSessionEffort, refreshSessionEffort } from "./effort.js";
 import { emitSessionTitle } from "./session_title.js";
+import { handleHookSystemMessage } from "./hook_activity.js";
 import { observeSessionModel } from "./session_model.js";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
@@ -1598,6 +1600,8 @@ export function handleResultMessage(
   const terminalReason = terminalReasonFromValue(message.terminal_reason);
   const queuedTurnCount = nonNegativeIntegerField(message, "queued_turn_count");
 
+  const color = confirmedColorFromResult(session, message);
+  if (color) emitSessionUpdate(session.sessionId, { type: "session_color_update", color });
   const subtype = typeof message.subtype === "string" ? message.subtype : "";
   if (subtype === "success") {
     session.lastAssistantError = undefined;
@@ -1781,6 +1785,10 @@ export function handleSdkMessage(
 
     if (subtype === "informational") {
       handleInformationalSystemMessage(session, msg);
+      return;
+    }
+
+    if (handleHookSystemMessage(session, subtype, msg)) {
       return;
     }
 

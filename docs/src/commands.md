@@ -18,6 +18,8 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/sandbox` | `/sandbox` | Open sandbox settings without toggling sandboxing. |
 | `/hooks` | `/hooks` | Inspect and edit saved hook configuration without executing hooks. |
 | `/copy` | `/copy` | Copy the last completed response, or choose a code block from it. |
+| `/search` | `/search [query]` | Search retained user, assistant, and visible tool text. |
+| `/diff` | `/diff` | Browse retained session tool diffs and current Git working-tree changes. |
 | `/docs` | `/docs <mode\|models\|shortcuts\|commands\|agents>` | Render command, shortcut, model, mode, or subagent help into chat. |
 | `/agent` | `/agent <name\|reset>` | Change the main-thread agent for the active session. Applies on the next turn. |
 | `/effort` | `/effort <low\|medium\|high\|xhigh\|max\|reset>` | Change thinking effort for the active session. |
@@ -29,21 +31,24 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/plugins` | `/plugins` | Open plugin management. |
 | `/status` | `/status` | Open session and account status. |
 | `/usage` | `/usage` | Open quota and usage information. |
+| `/agents` | `/agents` | Inspect current-session subagents, their saved messages and running tasks. |
 | `/login` | `/login` | Run Claude CLI authentication and reconnect the session. |
 | `/logout` | `/logout` | Run Claude CLI logout and clear the active authenticated session. |
 | `/mode` | `/mode <id>` | Switch to a mode advertised by the active session. |
 | `/model` | `/model <id>` | Switch to a model advertised by the active session. |
 | `/new-session` | `/new-session` | Start a fresh bridge session in the current folder. |
-| `/resume` | `/resume [session_id]` | Open the session picker, or resume a supplied session id. |
+| `/resume` | `/resume [session_id_or_title]` | Open the session picker, or resume an exact ID or displayed title. |
 | `/rewind` | `/rewind <user_message_uuid> <both\|conversation\|code>` | Restore conversation, code, or both to a previous user message. |
 | `/reload` | `/reload` | Re-read skills and output styles from disk for the active session. |
 | `/export` | `/export [path]` | Save the complete conversation as a Markdown file. |
+
+In the `/resume` picker, `t` edits the selected session's SDK tag; `Ctrl+U` clears the draft and Enter saves it (an empty tag clears the saved tag). `d` opens deletion confirmation for the selected ID, and only `y` confirms it. Esc cancels either action before submission. The active session cannot be deleted; switch to another session first. Tags and deletions persist through the public Agent SDK session APIs, and the picker refreshes after the SDK acknowledges them.
 
 Enter completes the selected slash command or argument and submits it when ready. Tab completes without submitting. Exact command names appear ahead of substring matches; arrow keys can select a different match. App commands that still need required arguments stay in the composer; commands with argument choices show those choices, while `/btw` continues as ordinary question text. An empty suggestion menu allows Enter to submit the typed input for normal validation.
 
 Editing the draft cancels a pending submission. Editing, completion, and submission keys cannot change or send the draft while pasted text is awaiting insertion, including when suggestions are open or keys are remapped. Suggestions refresh after the pasted text is inserted.
 
-Completing the name of a command with no arguments or optional arguments closes the popup and returns focus to the draft. Optional arguments remain supported: `/resume` opens the session picker, and `/resume <session_id>` resumes directly. Pressing Tab again requests argument completion explicitly. When the SDK provides only an argument hint, Tab displays that hint without changing or sending the draft; Enter sends the typed command for SDK validation. SDK hints are descriptive text, so their brackets never determine whether the app allows submission. Empty hints and `none` or `[none]` do not produce argument help.
+Completing the name of a command with no arguments or optional arguments closes the popup and returns focus to the draft. Optional arguments remain supported: `/resume` opens the session picker, and `/resume <session_id_or_title>` resumes directly. A title must match the displayed title exactly; if it names more than one session, the app asks for an ID. Pressing Tab again requests argument completion explicitly. When the SDK provides only an argument hint, Tab displays that hint without changing or sending the draft; Enter sends the typed command for SDK validation. SDK hints are descriptive text, so their brackets never determine whether the app allows submission. Empty hints and `none` or `[none]` do not produce argument help.
 
 Space inserts a literal separator without accepting the highlighted suggestion. It ends command-name completion and continues argument assistance only when the app requires arguments, or when you explicitly requested argument help. There is no special Space dismissal state. Escape dismisses the current menu; argument edits, cursor movement within arguments, and metadata refreshes keep it closed. Tab requests completion again, and editing the command name starts a new completion interaction. A command is recognized only at the start of the draft, allowing leading whitespace; slashes on later lines remain literal prompt or argument text.
 
@@ -52,6 +57,8 @@ The command menu includes the full merged inventory and scrolls as you move thro
 ## Copying responses
 
 `/copy` copies the last completed assistant response as its original Markdown, without thinking or tool output. Responses loaded from session history can be copied too. If the response contains code blocks, choose Full response or a code block with Up/Down, then Enter; Escape cancels. Enable Skip the /copy picker in `/config` to copy the complete Markdown response directly. Responses without code blocks copy directly. If the clipboard is unavailable, the picker stays open so you can retry. The command can copy an earlier completed response while a new response is still running; it does not submit a model request.
+
+`/diff` opens a fullscreen file list. It combines diff content still retained in the current session's tool calls with the current Git working tree; the latter includes staged, unstaged, and untracked files. Choose a file with Up/Down, scroll its diff with Page Up/Page Down, refresh with `r`, and close with Escape. Git reads have bounded time and output; binary and oversized untracked files show an explicit preview message. Session-only entries reflect retained tool diff content, not a complete archive of every edit.
 
 ## Reloading skills and output styles
 
@@ -81,9 +88,19 @@ Use:
 
 to inspect the current session's full command list. The output includes app-owned commands and SDK-advertised commands, with descriptions when the SDK provides them.
 
-Commands that Claude Code runs locally, such as `/rename`, `/color` or `/context`, reply in the chat under the command as they do in Claude Code. `/color` runs in Claude Code and its reply shows, but Claude Rust does not draw a session colour.
+Commands that Claude Code runs locally, such as `/rename`, `/color` or `/context`, reply in the chat under the command as they do in Claude Code. The composer edge and prompt glyph use a stable color selected from the session ID. An explicit `/color <name>` changes that accent only when the SDK confirms a successful local `/color` result with the submitted prompt ID. If the SDK omits either confirmation field, claude-rs keeps the current accent; it never infers color from chat text. `/color default` restores the session-ID color. The accent resets when the session changes and does not recolor tool status indicators.
+
+`/search` and the remappable `Ctrl+F` shortcut open a local search viewer. Type or paste a query, use Enter or Down for the next match and Shift+Enter or Up for the previous match, and press Esc to return to chat. The highlighted excerpt is from retained session content only; older content evicted by the app's history limit and archived transcripts are not searched.
 
 Rewinding a conversation keeps the model, effort and permission mode currently selected in the session. On resume, the public Agent SDK can return a local command as XML-like user text without identifying its origin. The history preserves that text exactly, so a command such as `/rename` may appear in its raw record form until the SDK exposes a reliable command marker.
+
+## Status Tab
+
+`/status` opens the Status tab. Besides the session, account, model and settings rows it has two measured sections.
+
+**Startup** lists the launch milestones the app observed, as offsets from the moment the app started: the bridge launch, the `SessionStart` hooks that finished before the session connected (with their count), the SDK connection, and the first frame in which the composer accepts a prompt. A milestone that has not happened is not shown, and nothing is estimated. The offsets include any wait on the workspace trust prompt, because the bridge starts only after trust is accepted.
+
+**Hooks this session** gives the number of hook runs, how many failed, how many are still running, their total time, and the three slowest. It covers the last 200 runs of the active session and says how many older runs are not kept. It starts empty again when the session changes or the conversation is cleared. Hooks of the same event and matcher share one SDK name, so two runs of different commands can look alike here.
 
 ## Session Name
 
@@ -104,3 +121,5 @@ If the SDK accepts `/ultracode on` but reports Ultracode unavailable, the comman
 `/effort reset` uses the current model's native session default; it does not reload the saved per-model effort. `max` is session-only. `/thinking reset` removes the temporary override and restores the inherited thinking preference. Thinking is a preference, and the model may still require or restrict thinking. `/agent reset` clears the active main-thread agent rather than restoring its saved default.
 
 `/fast` changes fast mode only for the active session. It does not rewrite the persisted Fast mode setting. Use the settings surface to choose the fast-mode preference applied when future sessions start. If an accepted change cannot be verified, the footer shows `FAST:?`; retry explicitly with `/fast on` or `/fast off`.
+
+`/agents` shows subagents from the current SDK session. Up/Down selects one, `r` refreshes the list, and `s` asks the SDK to stop a selected running subagent task. Completed agents remain inspectable. The panel reads saved agent messages on selection and does not stop tasks outside the current session.

@@ -3,13 +3,15 @@
 
 use crate::agent::client::AgentConnection;
 use crate::agent::model;
-use crate::app::state::{LoginHint, ModeState, SessionUsageState};
+use crate::app::state::{HookRuns, LoginHint, ModeState, SessionUsageState};
+use ratatui::style::Color;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
 /// State owned by the active SDK session/runtime boundary.
 pub struct SessionRuntimeState {
     pub session_id: Option<model::SessionId>,
+    pub accent: Color,
     /// Active SDK conversation mounted inside the session after an explicit reset.
     pub conversation_id: Option<String>,
     /// Most recently established session, retained across live identity resets for the exit hint.
@@ -43,12 +45,15 @@ pub struct SessionRuntimeState {
     /// The active session's title, as the bridge last read it through the
     /// Agent SDK's session API.
     pub session_title: Option<String>,
+    /// Hook runs of the active session, from the bridge's hook activity.
+    pub hook_runs: HookRuns,
 }
 
 impl Default for SessionRuntimeState {
     fn default() -> Self {
         Self {
             session_id: None,
+            accent: crate::ui::theme::RUST_ORANGE,
             conversation_id: None,
             last_resumable_session_id: None,
             conn: None,
@@ -66,6 +71,7 @@ impl Default for SessionRuntimeState {
             last_rate_limit_update: None,
             account_info: None,
             session_title: None,
+            hook_runs: HookRuns::default(),
         }
     }
 }
@@ -88,9 +94,11 @@ impl SessionRuntimeState {
 
     pub(crate) fn activate_session(&mut self, session_id: model::SessionId) {
         if self.session_id.as_ref() != Some(&session_id) {
+            self.accent = crate::app::session_accent::for_session_id(session_id.as_str());
             self.ultracode = None;
             // The bridge sends a replacement session's own title after it connects.
             self.session_title = None;
+            self.hook_runs.clear();
         }
         self.last_resumable_session_id = Some(session_id.clone());
         self.session_id = Some(session_id);
@@ -104,8 +112,10 @@ impl SessionRuntimeState {
     }
 
     pub fn clear_identity(&mut self) {
+        self.accent = crate::ui::theme::RUST_ORANGE;
         self.ultracode = None;
         self.session_title = None;
+        self.hook_runs.clear();
         self.session_id = None;
         self.conversation_id = None;
         self.current_model = None;

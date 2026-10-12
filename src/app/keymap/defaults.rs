@@ -40,6 +40,11 @@ fn global_default_bindings() -> Vec<KeyBinding> {
         ),
         KeyBinding::default(
             KeyContext::Global,
+            KeySpec::char('f', KeyModifiers::CONTROL),
+            KeyAction::App(AppAction::SearchTranscript),
+        ),
+        KeyBinding::default(
+            KeyContext::Global,
             KeySpec::char('q', KeyModifiers::CONTROL),
             KeyAction::App(AppAction::Quit),
         ),
@@ -154,12 +159,11 @@ fn chat_navigation_default_bindings() -> [KeyBinding; 16] {
     ]
 }
 
-fn chat_readline_default_bindings() -> [KeyBinding; 13] {
+fn chat_readline_default_bindings() -> [KeyBinding; 12] {
     [
         chat_input('a', KeyModifiers::CONTROL, InputAction::MoveLineStartOrUp),
         chat_input('e', KeyModifiers::CONTROL, InputAction::MoveLineEndOrDown),
         chat_input('b', KeyModifiers::CONTROL, InputAction::MoveCharLeft),
-        chat_input('f', KeyModifiers::CONTROL, InputAction::MoveCharRight),
         KeyBinding::default(
             KeyContext::ChatInput,
             KeySpec::char('d', KeyModifiers::CONTROL),

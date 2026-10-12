@@ -2,6 +2,48 @@ use super::*;
 use pretty_assertions::assert_eq;
 
 #[test]
+fn diff_result_from_another_session_is_ignored_and_replacement_closes_pending_view() {
+    let (mut app, mut commands) = app_with_bridge_connection();
+    crate::app::diff_view::open(&mut app);
+    let request = commands.try_recv().expect("working diff request");
+    let request_id = request.request_id.expect("correlated request");
+    assert!(app.diff_view.as_ref().is_some_and(|view| view.loading));
+
+    let response = |session_id: &str| ClientEvent::WorkingDiffReceived {
+        session_id: session_id.to_owned(),
+        request_id: Some(request_id.clone()),
+        files: vec![crate::agent::wire::WorkingDiffFile {
+            path: "stale.txt".to_owned(),
+            status: " M".to_owned(),
+            diff: "+stale".to_owned(),
+        }],
+        error: None,
+    };
+    handle_client_event(&mut app, response("other-session"));
+    assert!(app.diff_view.as_ref().is_some_and(|view| view.loading && view.entries.is_empty()));
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionReplaced {
+            session_id: model::SessionId::new("replacement"),
+            cwd: "/replacement".into(),
+            current_model: test_current_model("new-model"),
+            available_models: Vec::new(),
+            mode: None,
+            fast_mode_state: model::FastModeState::Off,
+            fast_mode_disabled_reason: None,
+            ultracode: None,
+            history_updates: Vec::new(),
+            restored_input: None,
+        },
+    );
+    assert!(app.diff_view.is_none());
+    assert_eq!(app.surface_mode, SurfaceMode::Chat);
+    handle_client_event(&mut app, response("test-session"));
+    assert!(app.diff_view.is_none());
+}
+
+#[test]
 fn connected_updates_welcome_session_id_while_pristine() {
     let mut app = make_test_app();
     app.transcript.messages.push(ChatMessage::welcome(
@@ -1427,6 +1469,7 @@ fn sessions_listed_completes_pending_session_rename() {
                 git_branch: None,
                 custom_title: Some("Renamed session".to_owned()),
                 first_prompt: Some("prompt".to_owned()),
+                tag: None,
             }],
         },
     );
@@ -1509,6 +1552,7 @@ fn sessions_listed_completes_pending_session_title_generation() {
                 git_branch: None,
                 custom_title: Some("Generated session".to_owned()),
                 first_prompt: Some("prompt".to_owned()),
+                tag: None,
             }],
         },
     );
@@ -1583,6 +1627,7 @@ fn sessions_listed_refresh_preserves_picker_selection_by_session_id() {
             git_branch: Some("main".to_owned()),
             custom_title: Some("First".to_owned()),
             first_prompt: Some("prompt one".to_owned()),
+            tag: None,
         },
         crate::app::RecentSessionInfo {
             session_id: "session-2".to_owned(),
@@ -1593,6 +1638,7 @@ fn sessions_listed_refresh_preserves_picker_selection_by_session_id() {
             git_branch: Some("main".to_owned()),
             custom_title: Some("Second".to_owned()),
             first_prompt: Some("prompt two".to_owned()),
+            tag: None,
         },
     ];
     app.session_picker.selected = 1;
@@ -1833,6 +1879,46 @@ fn ultracode_lifecycle_preserves_conversation_state_and_rejects_stale_sessions()
     assert_eq!(app.session_runtime.ultracode, on);
     handle_client_event(&mut app, ClientEvent::ConnectionFailed("closed".to_owned().into()));
     assert!(app.session_runtime.ultracode.is_none());
+}
+
+fn hook_update(id: &str, phase: model::HookPhase, at: u64) -> ClientEvent {
+    session_update(model::SessionUpdate::HookActivity(model::HookActivity {
+        hook_id: id.to_owned(),
+        hook_name: "SessionStart:startup".to_owned(),
+        hook_event: "SessionStart".to_owned(),
+        phase,
+        outcome: (phase == model::HookPhase::Finished).then_some(model::HookOutcome::Success),
+        exit_code: None,
+        output: None,
+        observed_at_ms: at,
+    }))
+}
+
+#[test]
+fn hook_runs_follow_the_session_and_reset_with_its_conversation() {
+    let mut app = make_test_app();
+    handle_client_event(&mut app, hook_update("h1", model::HookPhase::Started, 1_000));
+    handle_client_event(&mut app, hook_update("h1", model::HookPhase::Finished, 3_500));
+    assert_eq!(app.session_runtime.hook_runs.summary().total, Duration::from_millis(2_500));
+
+    // Reconnecting the same session keeps them; another session starts clean.
+    app.session_runtime.activate_session(model::SessionId::new("test-session"));
+    assert_eq!(app.session_runtime.hook_runs.len(), 1);
+    app.session_runtime.activate_session(model::SessionId::new("other-session"));
+    assert!(app.session_runtime.hook_runs.is_empty());
+
+    app.session_runtime.session_id = Some(model::SessionId::new("test-session"));
+    handle_client_event(&mut app, hook_update("h2", model::HookPhase::Started, 1));
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::ConversationReset {
+            new_conversation_id: "conversation-2".to_owned(),
+            trigger: None,
+            timestamp: None,
+            user_message_uuid: None,
+        }),
+    );
+    assert!(app.session_runtime.hook_runs.is_empty());
 }
 
 #[test]

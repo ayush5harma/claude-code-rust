@@ -12,6 +12,8 @@ pub(crate) struct PendingSessionResume {
 pub struct App {
     pub surface_mode: SurfaceMode,
     pub(crate) copy_picker: Option<crate::app::copy::CopyPicker>,
+    pub(crate) search: Option<Box<crate::app::search::SearchState>>,
+    pub(crate) diff_view: Option<Box<crate::app::diff_view::DiffViewState>>,
     /// The `/export` waiting for its history from the bridge.
     pub(crate) history_export: Option<crate::app::export::PendingExport>,
     pub(crate) terminal_lifecycle: TerminalLifecycleState,
@@ -107,6 +109,7 @@ pub struct App {
     pub(crate) usage: UsageState,
     /// Config > MCP live server snapshot and refresh lifecycle.
     pub(crate) mcp: McpState,
+    pub(crate) session_agents: Box<crate::app::session_agents::SessionAgentsState>,
 
     /// Central notification manager (bell + desktop toast when unfocused).
     pub(crate) notifications: notify::NotificationManager,
@@ -266,6 +269,8 @@ impl App {
             verbose_view: None,
             chat_render: ChatRenderState::default(),
             copy_picker: None,
+            search: None,
+            diff_view: None,
             history_export: None,
             mention: None,
             committed_mentions: Vec::new(),
@@ -289,6 +294,7 @@ impl App {
             post_exit_action: None,
             usage: UsageState::default(),
             mcp: McpState::default(),
+            session_agents: Box::default(),
             notifications: notify::NotificationManager::new(),
             render_cache_budget: RenderCacheBudget::default(),
             history_retention: HistoryRetentionPolicy::default(),

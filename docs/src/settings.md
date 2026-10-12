@@ -278,6 +278,7 @@ These settings are User only: Disable filesystem isolation, Strict domain allowl
 | --- | --- | --- |
 | Definitions | `hooks` | See [Editing hooks](#editing-hooks). |
 | Disable all | `disableAllHooks` | Disables settings and plugin hooks, including status-line execution. |
+| Notices | `presentation.hookNotices` | `slow_and_failed` (default), `all` or `off`. Which finished hooks leave a line in the transcript; see [Hook notices](usage.md#hook-notices). An app preference, always saved for the user. |
 | Allowed HTTP URLs | `allowedHttpHookUrls` | One URL pattern per entry; `*` is a wildcard. An empty list blocks all HTTP hooks. |
 | Allowed environment variables | `httpHookAllowedEnvVars` | Variable names that HTTP hook headers may interpolate. |
 

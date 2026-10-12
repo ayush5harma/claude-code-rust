@@ -40,6 +40,12 @@ pub struct HistoryChunk {
 
 /// Messages sent from the backend bridge path to the App/UI layer.
 pub enum ClientEvent {
+    WorkingDiffReceived {
+        session_id: String,
+        request_id: Option<String>,
+        files: Vec<crate::agent::wire::WorkingDiffFile>,
+        error: Option<String>,
+    },
     SettingsResultReceived {
         session_id: String,
         request_id: Option<String>,
@@ -196,6 +202,14 @@ pub enum ClientEvent {
     },
     /// Recent sessions discovered via SDK session listing.
     SessionsListed { sessions: Vec<crate::agent::types::SessionListEntry> },
+    SessionMutationResult {
+        session_id: String,
+        request_id: Option<String>,
+        operation: String,
+        error: Option<String>,
+        refresh_error: Option<String>,
+        sessions: Option<Vec<crate::agent::types::SessionListEntry>>,
+    },
     /// Background app update check completed with current release metadata.
     UpdateCheckCompleted { result: crate::app::settings::UpdateCheckResult },
     /// Startup Claude Code status check detected degraded/outage conditions.
@@ -217,6 +231,16 @@ pub enum ClientEvent {
     RewindTargetsReceived {
         session_id: String,
         targets: Vec<model::RewindTarget>,
+        error: Option<String>,
+    },
+    /// Correlated current-session agent list, transcript, or stop result.
+    SessionAgentsResultReceived {
+        session_id: String,
+        request_id: Option<String>,
+        action: crate::agent::types::SessionAgentsAction,
+        agent_id: Option<String>,
+        agent_ids: Vec<String>,
+        messages: Vec<crate::agent::types::SubagentMessage>,
         error: Option<String>,
     },
     /// One chunk of the complete session history requested by /export.
@@ -290,6 +314,8 @@ impl ClientEvent {
             | Self::StatusSnapshotReceived { session_id, .. }
             | Self::ContextUsageReceived { session_id, .. }
             | Self::StructuredUsageReceived { session_id, .. }
+            | Self::SessionAgentsResultReceived { session_id, .. }
+            | Self::WorkingDiffReceived { session_id, .. }
             | Self::McpSnapshotReceived { session_id, .. } => Some(session_id),
             Self::SlashCommandError { session_id, .. } => session_id.as_deref(),
             Self::RewindResultReceived { result } => Some(result.session_id.as_str()),
@@ -303,6 +329,7 @@ impl ClientEvent {
             | Self::TerminalReturnedFromChild { .. }
             | Self::SessionReplaced { .. }
             | Self::SessionsListed { .. }
+            | Self::SessionMutationResult { .. }
             | Self::RewindTargetsReceived { .. }
             | Self::UpdateCheckCompleted { .. }
             | Self::ServiceStatus { .. }

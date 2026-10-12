@@ -12,6 +12,7 @@ pub(crate) mod config;
 mod connect;
 pub(crate) mod copy;
 mod dialog;
+pub(crate) mod diff_view;
 mod events;
 pub(crate) mod export;
 pub(crate) mod file_index;
@@ -32,7 +33,10 @@ pub(crate) mod plugins;
 pub(crate) mod presentation;
 mod questions;
 pub(crate) mod rewind_picker;
+pub(crate) mod search;
 mod service_status_check;
+mod session_accent;
+pub(crate) mod session_agents;
 pub(crate) mod session_picker;
 mod session_runtime;
 pub(crate) mod settings;
@@ -73,6 +77,9 @@ pub use lifecycle::{
 };
 pub use service_status_check::start_service_status_check;
 pub use settings::{AppSettings, UpdatePrompt};
+#[cfg(test)]
+pub(crate) use state::StartupTimeline;
+pub(crate) use state::format_elapsed;
 pub use state::{
     ActiveCompaction, App, AppStatus, AutocompleteKind, BlockCache, BtwExchangeBlock, CacheMetrics,
     ChatMessage, ChatMessageId, ChatRenderState, CompactionState, ComposerRenderState, ExtraUsage,
@@ -80,12 +87,12 @@ pub use state::{
     LayoutInvalidation, LiveRegionRenderState, LoginHint, McpState, MessageBlock, MessageBlockId,
     MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock, NoticeDedupKey, NoticeStage,
     PasteSessionState, PendingCommandAck, PostExitAction, RateLimitIncidentKey, RecentSessionInfo,
-    SelectionPoint, SessionPickerState, SessionUsageState, SessionUsageSummary, ShutdownState,
-    SubagentPermissionContext, SystemSeverity, TerminalSize, TerminalSizeChange, TextBlock,
-    TextBlockSpacing, ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef,
-    UpdatePromptAction, UpdatePromptState, UsageActivitySummary, UsageActivityWindow,
-    UsageBehaviorAttribution, UsageNamedAttribution, UsageSnapshot, UsageSourceKind,
-    UsageSourceMode, UsageState, UsageWindow, UserDialogBlock, WelcomeBlock,
+    SelectionPoint, SessionPickerMutation, SessionPickerState, SessionUsageState,
+    SessionUsageSummary, ShutdownState, SubagentPermissionContext, SystemSeverity, TerminalSize,
+    TerminalSizeChange, TextBlock, TextBlockSpacing, ToolCallInfo, ToolCallScope,
+    TurnNoticeLocation, TurnNoticeRef, UpdatePromptAction, UpdatePromptState, UsageActivitySummary,
+    UsageActivityWindow, UsageBehaviorAttribution, UsageNamedAttribution, UsageSnapshot,
+    UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, UserDialogBlock, WelcomeBlock,
     hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
 };
 pub(crate) use state::{
@@ -300,6 +307,9 @@ async fn run_tui_loop(
             tab_title::update_tab_title(app);
         }
         draw_pending_surface(app, terminal_runtime)?;
+        if app.startup.timeline.awaiting_ready() && app.composer_access().can_submit() {
+            app.startup.timeline.mark_ready(Instant::now());
+        }
 
         if app.shutdown_requested() {
             finish_shutdown_render(app, terminal_runtime, &mut events).await?;
