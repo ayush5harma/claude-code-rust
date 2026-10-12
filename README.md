@@ -33,6 +33,9 @@ The two SDK behavior fixes incorporate upstream pull requests [#444](https://git
 | Skill reload and conversation export ([#13](https://github.com/ayush5harma/claude-code-rust/pull/13)) | `/reload` refreshes available skills and completion without restarting the session. `/export` writes saved conversation history as Markdown and refuses to overwrite an existing file. |
 | Session regression fixes ([#16](https://github.com/ayush5harma/claude-code-rust/pull/16)) | Read symlinked settings without allowing writes through them, preserve active model/mode/effort and process configuration across rewind, and restore SDK session titles while honoring explicit launch names. Resumed command-like text stays verbatim because the SDK does not expose reliable provenance. |
 | Stable CI change comparison ([#17](https://github.com/ayush5harma/claude-code-rust/pull/17)) | Compare changes against the pull request's recorded base commit so parallel merges do not break checks with a missing merge base. |
+| Hook visibility ([#12](https://github.com/ayush5harma/claude-code-rust/pull/12)) | Progress and completion notices, per-hook duration, slow-hook summaries, and measured startup milestones in Status. Hook output is sanitized and redacted before retention. |
+| Native `/diff` viewer ([#15](https://github.com/ayush5harma/claude-code-rust/pull/15)) | Working-tree changes, including untracked files and repositories without a first commit, alongside retained current-session tool diffs. |
+| Session `/agents` panel ([#18](https://github.com/ayush5harma/claude-code-rust/pull/18)) | Public SDK subagent history and current-session task state, with stopping restricted to a matching currently running task. |
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development commands and verification requirements.
 
@@ -42,12 +45,9 @@ These are **not included in v0.15.2-fork.2**. Pull-request status is authoritati
 
 | Work | Status |
 | --- | --- |
-| Hook progress and completion notices, per-hook duration, slow-hook summary, and startup milestones in Status | [PR #12](https://github.com/ayush5harma/claude-code-rust/pull/12), under review and cross-platform verification. Hook output is sanitized and redacted before retention. |
-| Native `/diff` viewer | [PR #15](https://github.com/ayush5harma/claude-code-rust/pull/15): working-tree changes, including untracked files and repositories without a first commit, alongside retained current-session tool diffs. |
-| Session `/agents` panel | [PR #18](https://github.com/ayush5harma/claude-code-rust/pull/18): public SDK subagent history and current-session task state, with stopping restricted to a matching currently running task. |
 | Retained transcript search | [PR #19](https://github.com/ayush5harma/claude-code-rust/pull/19): `/search [query]` and remappable Ctrl+F search retained user, assistant, and visible tool text, with Unicode-aware matching. Archived history and hidden tool inputs are excluded. |
 | Resume ergonomics | In development: exact-title resolution with ambiguity reporting, session sizes in bytes, and an explicit compact-first option for large sessions. |
-| Session tags and deletion | In development: SDK-backed picker actions, confirmation before deletion, and protection for the active session. |
+| Session tags and deletion | [PR #21](https://github.com/ayush5harma/claude-code-rust/pull/21): SDK-backed picker actions, confirmation before deletion, and protection for the active session. |
 | Session accents | In development: stable session-ID colors, with `/color` changes applied only after a correlated successful SDK confirmation. |
 
 Further planned work includes measured output-presentation parity, composer and footer improvements, and keyboard parity. These remain backlog items until implemented and verified. Generic MCP resource attachments are blocked by the pinned public SDK: its resource-reading API supports MCP Apps `ui://` resources, not general resource discovery and reading. Features requiring SDK support remain conditional on that support.
