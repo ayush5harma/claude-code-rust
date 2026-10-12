@@ -837,6 +837,7 @@ mod tests {
             resume: None,
             continue_session: false,
             session_options: crate::SessionOptions::default(),
+            session_config: crate::SessionConfigArgs::default(),
             command: None,
             no_update_check: false,
             dir: Some(project_root.to_path_buf()),

@@ -731,6 +731,20 @@ export interface SessionLaunchSettings {
   permission_mode?: import("@anthropic-ai/claude-agent-sdk").PermissionMode;
   effort?: EffortLevel;
   agent?: string;
+  name?: string;
+  /** Resume under a new session ID; ignored by a launch that resumes nothing. */
+  fork_session?: boolean;
+  /** Absolute paths, resolved by the app. */
+  additional_directories?: string[];
+  /** Unparsed JSON text of a settings object; parsed by launch_config.ts. */
+  settings?: string;
+  /** Unparsed JSON texts of MCP configs in command-line order; parsed by launch_config.ts. */
+  mcp_configs?: string[];
+  strict_mcp_config?: boolean;
+  /** Replaces the claude_code preset; the runtime guard stays appended. */
+  system_prompt?: string;
+  /** Appended after the runtime guard. */
+  append_system_prompt?: string;
 }
 
 export interface RewindTarget {

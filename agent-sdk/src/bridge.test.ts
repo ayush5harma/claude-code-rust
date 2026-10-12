@@ -10544,6 +10544,53 @@ test("buildQueryOptions adapts resolved checkpoint preferences and keeps host re
   }
 });
 
+test("buildQueryOptions layers host restrictions over the user's --settings", () => {
+  const build = (
+    settings: import("@anthropic-ai/claude-agent-sdk").Settings,
+    resolvedSettings: import("@anthropic-ai/claude-agent-sdk").Settings = {},
+  ) => buildQueryOptions({
+    cwd: "C:/work", launchSettings: {}, launchConfig: { settings }, resolvedSettings,
+    provisionalSessionId: "session-flags", input: new AsyncQueue(),
+    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+    enableSdkDebug: false, enableSpawnDebug: false, sessionIdForLogs: () => "session-flags",
+  });
+
+  const restricted = build(
+    { spinnerTipsEnabled: false, feedbackDrafts: "notify", crossSessionInbound: "hold", fileCheckpointingEnabled: false },
+    { crossSessionInbound: "accept", fileCheckpointingEnabled: true },
+  );
+  assert.deepEqual(restricted.settings, {
+    spinnerTipsEnabled: false, feedbackDrafts: "off", crossSessionInbound: "refuse", fileCheckpointingEnabled: false,
+  });
+  assert.equal(restricted.enableFileCheckpointing, false);
+
+  const accepted = build({ crossSessionInbound: "accept" }, { crossSessionInbound: "hold" });
+  assert.deepEqual(accepted.settings, { crossSessionInbound: "accept", feedbackDrafts: "off" });
+
+  const saved = build({ spinnerTipsEnabled: true }, { crossSessionInbound: "refuse", fileCheckpointingEnabled: false });
+  assert.deepEqual(saved.settings, { spinnerTipsEnabled: true, feedbackDrafts: "off" });
+  assert.equal(saved.enableFileCheckpointing, false);
+});
+
+test("buildQueryOptions keeps the runtime guard with replaced and appended system prompts", () => {
+  const systemPrompt = (launchSettings: import("./types.js").SessionLaunchSettings) => buildQueryOptions({
+    cwd: "C:/work", launchSettings, resolvedSettings: {},
+    provisionalSessionId: "session-prompt", input: new AsyncQueue(),
+    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+    enableSdkDebug: false, enableSpawnDebug: false, sessionIdForLogs: () => "session-prompt",
+  }).systemPrompt;
+
+  assert.deepEqual(systemPrompt({ append_system_prompt: "End with DONE." }), {
+    type: "preset", preset: "claude_code", append: `${BRIDGE_RUNTIME_GUARD_PROMPT}\n\nEnd with DONE.`, snapshot: true,
+  });
+  assert.deepEqual(systemPrompt({ system_prompt: "You are a release bot." }), {
+    type: "custom", prompt: ["You are a release bot.", BRIDGE_RUNTIME_GUARD_PROMPT], snapshot: true,
+  });
+  assert.deepEqual(systemPrompt({ system_prompt: "You are a release bot.", append_system_prompt: "End with DONE." }), {
+    type: "custom", prompt: ["You are a release bot.", `${BRIDGE_RUNTIME_GUARD_PROMPT}\n\nEnd with DONE.`], snapshot: true,
+  });
+});
+
 test("inherited model identity follows SDK initialization metadata", async () => {
   const session = makeSessionState();
   session.requestedModelId = undefined;

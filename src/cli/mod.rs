@@ -123,6 +123,7 @@ mod tests {
             resume: None,
             continue_session: false,
             session_options: crate::SessionOptions::default(),
+            session_config: crate::SessionConfigArgs::default(),
             no_update_check: false,
             dir: None,
             bridge_script: None,
