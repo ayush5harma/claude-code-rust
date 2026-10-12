@@ -30,6 +30,9 @@ The two SDK behavior fixes incorporate upstream pull requests [#444](https://git
 | Live end-to-end harness ([#10](https://github.com/ayush5harma/claude-code-rust/pull/10)) | Repeatable real-SDK terminal scenarios with recorded pass, failure, gap, and skip outcomes. The initial baseline was **59 pass, 5 fail, 13 gap, 9 skip**; adding the harness does not mean all scenarios pass. |
 | Render corpus and benchmark comparison ([#9](https://github.com/ayush5harma/claude-code-rust/pull/9)) | Representative rendering workloads and repeated baseline/candidate measurements, with noise checks, invalid-result rejection, and temporary-worktree cleanup on interruption. These compare revisions of this application; they are not a benchmark against Anthropic's stock interface. |
 | Launch and session flags ([#11](https://github.com/ayush5harma/claude-code-rust/pull/11)) | `--name`, `--fork-session`, repeatable `--add-dir`, file or inline `--settings` and `--mcp-config`, `--strict-mcp-config`, and replacement/appended system prompts from text or files. Session names and forks apply to the initial session; directory and configuration overrides persist for sessions started within the process. |
+| Skill reload and conversation export ([#13](https://github.com/ayush5harma/claude-code-rust/pull/13)) | `/reload` refreshes available skills and completion without restarting the session. `/export` writes saved conversation history as Markdown and refuses to overwrite an existing file. |
+| Session regression fixes ([#16](https://github.com/ayush5harma/claude-code-rust/pull/16)) | Read symlinked settings without allowing writes through them, preserve active model/mode/effort and process configuration across rewind, and restore SDK session titles while honoring explicit launch names. Resumed command-like text stays verbatim because the SDK does not expose reliable provenance. |
+| Stable CI change comparison ([#17](https://github.com/ayush5harma/claude-code-rust/pull/17)) | Compare changes against the pull request's recorded base commit so parallel merges do not break checks with a missing merge base. |
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development commands and verification requirements.
 
@@ -40,12 +43,14 @@ These are **not included in v0.15.2-fork.2**. Pull-request status is authoritati
 | Work | Status |
 | --- | --- |
 | Hook progress and completion notices, per-hook duration, slow-hook summary, and startup milestones in Status | [PR #12](https://github.com/ayush5harma/claude-code-rust/pull/12), under review and cross-platform verification. Hook output is sanitized and redacted before retention. |
-| `/reload` skills and `/export` session history | [PR #13](https://github.com/ayush5harma/claude-code-rust/pull/13), under review and cross-platform verification. Export refuses to overwrite an existing file. |
-| Native `/diff` viewer | In development: working-tree changes and available current-session tool diffs in a native terminal view. |
-| Session regression fixes | In development: symlinked read-only settings, rewind configuration, and restored session titles. Resumed command-like text remains verbatim until the SDK exposes reliable provenance. |
-| Session `/agents` panel | In development using public SDK subagent history and current-session task state. |
+| Native `/diff` viewer | [PR #15](https://github.com/ayush5harma/claude-code-rust/pull/15): working-tree changes, including untracked files and repositories without a first commit, alongside retained current-session tool diffs. |
+| Session `/agents` panel | [PR #18](https://github.com/ayush5harma/claude-code-rust/pull/18): public SDK subagent history and current-session task state, with stopping restricted to a matching currently running task. |
+| Retained transcript search | [PR #19](https://github.com/ayush5harma/claude-code-rust/pull/19): `/search [query]` and remappable Ctrl+F search retained user, assistant, and visible tool text, with Unicode-aware matching. Archived history and hidden tool inputs are excluded. |
+| Resume ergonomics | In development: exact-title resolution with ambiguity reporting, session sizes in bytes, and an explicit compact-first option for large sessions. |
+| Session tags and deletion | In development: SDK-backed picker actions, confirmation before deletion, and protection for the active session. |
+| Session accents | In development: stable session-ID colors, with `/color` changes applied only after a correlated successful SDK confirmation. |
 
-Further planned work includes resume-by-title and large-session ergonomics, session tags and deletion, MCP resource references, transcript search, session accents, composer and footer improvements, and keyboard parity. These remain backlog items until implemented and verified. Features requiring SDK support remain conditional on that support.
+Further planned work includes measured output-presentation parity, composer and footer improvements, and keyboard parity. These remain backlog items until implemented and verified. Generic MCP resource attachments are blocked by the pinned public SDK: its resource-reading API supports MCP Apps `ui://` resources, not general resource discovery and reading. Features requiring SDK support remain conditional on that support.
 
 ## About
 
