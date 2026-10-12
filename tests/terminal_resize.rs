@@ -2117,6 +2117,21 @@ fn status_tab_shows_the_session_name_after_rename() {
     test.shutdown();
 }
 
+#[test]
+fn reload_reports_the_reloaded_counts_and_then_a_bridge_failure() {
+    let mut test = TerminalTest::start("reload", 3);
+    test.submit_command("/reload");
+    test.wait_turn_finished("Reloaded skills (2) and output styles (3)");
+
+    test.submit_command("/reload");
+    test.wait_turn_finished("style directory unreadable");
+
+    // /reload is app-owned: it reaches the bridge as its own command, never as a prompt.
+    assert_eq!(test.commands("reload_skills_and_styles").len(), 2);
+    test.assert_prompts(&[]);
+    test.shutdown();
+}
+
 /// A terminal outside Windows sends Ctrl+V as one press byte and no release.
 /// Without a display server the clipboard cannot be opened, and the app has to
 /// say so: silence means the key never reached the clipboard path.
