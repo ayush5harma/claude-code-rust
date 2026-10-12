@@ -1,3 +1,4 @@
+import { rememberColorPrompt } from "./session_color.js";
 import type { Query, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { BridgeCommand, EffortLevel, FastModeSnapshot } from "../types.js";
 import {
@@ -171,6 +172,7 @@ function handlePrompt(
     );
     return;
   }
+  rememberColorPrompt(session, command);
   writeEvent(
     {
       event: "user_message_queued",

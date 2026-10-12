@@ -517,6 +517,13 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         model::SessionUpdate::SessionTitleUpdate(title) => {
             app.session_runtime.session_title = title;
         }
+        model::SessionUpdate::SessionColorUpdate(color) => {
+            if let Some(session_id) = app.session_runtime.session_id.as_ref()
+                && let Some(accent) = crate::app::session_accent::named(&color, session_id.as_str())
+            {
+                app.session_runtime.accent = accent;
+            }
+        }
         model::SessionUpdate::HookActivity(activity) => {
             hooks::handle_hook_activity(app, &activity);
         }

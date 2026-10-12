@@ -19,7 +19,7 @@ use anyhow::Context;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Borders, Paragraph};
 use std::collections::BTreeSet;
 
 pub(super) struct ChatTerminalSession {
@@ -1196,11 +1196,17 @@ fn render_textarea_editor(frame: &mut ratatui::Frame<'_>, app: &mut App, area: R
         Paragraph::new("").style(Style::default().bg(theme::USER_MSG_BG)),
         geometry.field,
     );
+    frame.render_widget(
+        Block::default()
+            .borders(Borders::LEFT)
+            .border_style(Style::default().fg(app.session_runtime.accent)),
+        geometry.field,
+    );
     if !geometry.prompt.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 input::prompt_prefix_text(),
-                Style::default().fg(theme::RUST_ORANGE),
+                Style::default().fg(app.session_runtime.accent),
             ))),
             geometry.prompt,
         );

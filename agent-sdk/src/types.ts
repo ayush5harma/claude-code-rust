@@ -431,6 +431,7 @@ export type SessionUpdate =
     }
   | { type: "prompt_suggestion_update"; suggestion: string }
   | { type: "session_title_update"; title: string }
+  | { type: "session_color_update"; color: string }
   | {
       type: "hook_activity";
       hook_id: string;

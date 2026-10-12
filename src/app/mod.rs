@@ -34,6 +34,7 @@ pub(crate) mod presentation;
 mod questions;
 pub(crate) mod search;
 mod service_status_check;
+mod session_accent;
 pub(crate) mod session_agents;
 pub(crate) mod session_picker;
 mod session_runtime;

@@ -436,6 +436,11 @@ readline
         }
         if (SCENARIO === 'session-management') send({ event: 'sessions_listed', sessions: managedSessions() });
         if (SCENARIO.startsWith('resize-') || SCENARIO.startsWith('background-')) send({ event: 'status_snapshot', session_id: SESSION, account: { subscription_type: 'Fixture subscription' } });
+        if (SCENARIO === 'session-accent') {
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'available_commands_update', commands: [
+            { name: 'color', description: 'Set the session color', input_hint: '<color>' },
+          ] } });
+        }
         if (SCENARIO === 'session-agents') {
           send({ event: 'session_update', session_id: SESSION, update: { type: 'task_state_update', source: 'task_lifecycle', is_complete_snapshot: false, removed_task_ids: [], tasks: [
             { task_id: 'agent-running', subject: 'Review parser', status: 'in_progress', owner: null, blocks: [], blocked_by: [], metadata: { subagent_type: 'general-purpose' } },
@@ -500,6 +505,17 @@ readline
         }
         if (SCENARIO === 'session-name') {
           sessionNameReply(message);
+          break;
+        }
+        if (SCENARIO === 'session-accent') {
+          const command = message.chunks.map(chunk => chunk.value).join('').trim();
+          send({ event: 'user_message_started', session_id: SESSION, message_uuid: message.message_uuid, source: 'command_lifecycle' });
+          const color = /^\/color (purple|default)$/.exec(command)?.[1];
+          if (color) {
+            send({ event: 'session_update', session_id: SESSION, update: { type: 'session_color_update', color } });
+            send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text: `Session color set to: ${color}` } } });
+          }
+          send({ event: 'turn_complete', session_id: SESSION });
           break;
         }
         if (active) {

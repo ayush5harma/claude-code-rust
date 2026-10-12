@@ -24,6 +24,7 @@ The PR workflow runs this suite on Ubuntu, Windows, and macOS, and requires all 
 | `export` | Answers `export_session_history` with a short conversation (messages, a Bash call with output, an Edit with a diff) in two chunks under the command's request id. |
 | `reload` | Answers the first `reload_skills_and_styles` command with two skills and three output styles, and every later one with a `slash_error`. |
 | `render-corpus` | Resumes the shared render corpus as history, then streams its long reply in 200 chunks on the first prompt. |
+| `session-accent` | Sends confirmed color updates for `/color purple` and `/color default`; replacement checks the session-ID fallback. |
 | `resume-large` / `resume-large-fail` | Lists a 2 MiB saved session and returns a successful or failed compact-first turn after the picker choice. |
 | `session-management` | Lists a saved and active session; acknowledges tag and confirmed delete by exact ID with refreshed SDK-style metadata. |
 

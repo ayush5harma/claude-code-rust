@@ -220,6 +220,11 @@ impl TerminalTest {
         command.env("FAKE_BRIDGE_INTERVAL_MS", "15");
         command.env("FAKE_BRIDGE_FOLLOW_UP_LINES", "3");
         command.env("FAKE_BRIDGE_SCENARIO", scenario);
+        if scenario == "session-accent" {
+            command.env_remove("NO_COLOR");
+            command.env("TERM", "xterm-256color");
+            command.env("COLORTERM", "truecolor");
+        }
         command.env("FAKE_BRIDGE_JOURNAL", &journal);
         command.env("FAKE_BRIDGE_RELEASE_FILE", &release_file);
         for name in removed_env {
@@ -2260,6 +2265,58 @@ fn status_name_row(test: &TerminalTest, name: &str) -> Option<String> {
         .lines()
         .find(|line| line.contains("Session name") && line.contains(name))
         .map(str::to_owned)
+}
+
+fn composer_accent(test: &TerminalTest) -> Option<(vt100::Color, vt100::Color)> {
+    let captured = test.output.lock().ok()?;
+    let screen = captured.parser.screen();
+    let (rows, cols) = screen.size();
+    for row in (0..rows).rev() {
+        for col in 1..cols {
+            let glyph = screen.cell(row, col)?;
+            if glyph.contents() == "❯" {
+                let border = screen.cell(row, col - 1)?;
+                return Some((border.fgcolor(), glyph.fgcolor()));
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn session_accent_colors_the_composer_edge_and_glyph_then_resets_on_replacement() {
+    let mut test = TerminalTest::start("session-accent", 3);
+    let initial = test.wait_for("session-ID accent", |test| {
+        let accent = composer_accent(test)?;
+        (accent == (vt100::Color::Rgb(120, 175, 245), vt100::Color::Rgb(120, 175, 245)))
+            .then_some(accent)
+    });
+
+    test.submit_command("/color purple");
+    test.wait_for("confirmed purple composer accent", |test| {
+        (composer_accent(test)
+            == Some((vt100::Color::Rgb(190, 155, 240), vt100::Color::Rgb(190, 155, 240))))
+        .then_some(())
+    });
+    test.submit_command("/color default");
+    test.wait_for("default restores the session-ID accent", |test| {
+        (composer_accent(test) == Some(initial)).then_some(())
+    });
+    test.submit_command("/color purple");
+    test.wait_for("purple before session replacement", |test| {
+        (composer_accent(test)
+            == Some((vt100::Color::Rgb(190, 155, 240), vt100::Color::Rgb(190, 155, 240))))
+        .then_some(())
+    });
+    test.submit_command("/new-session");
+    test.wait_for("replacement session accent", |test| {
+        (composer_accent(test)
+            == Some((vt100::Color::Rgb(220, 195, 85), vt100::Color::Rgb(220, 195, 85))))
+        .then_some(())
+    });
+    assert_eq!(test.commands("new_session").len(), 1);
+    test.assert_prompts(&["/color purple", "/color default", "/color purple"]);
+    test.shutdown();
 }
 
 #[test]

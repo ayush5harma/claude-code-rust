@@ -740,6 +740,9 @@ pub enum SessionUpdate {
     SessionTitleUpdate {
         title: String,
     },
+    SessionColorUpdate {
+        color: String,
+    },
     HookActivity {
         hook_id: String,
         hook_name: String,

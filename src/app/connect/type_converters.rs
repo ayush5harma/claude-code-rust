@@ -546,6 +546,9 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
                 (!title.is_empty()).then(|| title.to_owned()),
             ))
         }
+        types::SessionUpdate::SessionColorUpdate { color } => {
+            Some(model::SessionUpdate::SessionColorUpdate(color))
+        }
         types::SessionUpdate::HookActivity {
             hook_id,
             hook_name,
