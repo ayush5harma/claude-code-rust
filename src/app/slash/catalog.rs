@@ -15,6 +15,8 @@ pub(crate) enum AppSlashCommand {
     Hooks,
 
     Copy,
+    Search,
+    Diff,
     Docs,
     Agent,
     Effort,
@@ -26,6 +28,7 @@ pub(crate) enum AppSlashCommand {
     Plugins,
     Status,
     Usage,
+    Agents,
     Login,
     Logout,
     Mode,
@@ -33,6 +36,8 @@ pub(crate) enum AppSlashCommand {
     NewSession,
     Resume,
     Rewind,
+    Reload,
+    Export,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,6 +161,22 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         args: NO_ARGS,
     },
     AppSlashCommandSpec {
+        command: AppSlashCommand::Search,
+        name: "/search",
+        usage: "Usage: /search [query]",
+        short_description: "Search retained transcript",
+        long_description: "Search retained user, assistant, and visible tool text. Archived history is excluded.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Diff,
+        name: "/diff",
+        usage: "Usage: /diff",
+        short_description: "Inspect file changes",
+        long_description: "Browse retained session tool diffs and current Git working-tree changes.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
         command: AppSlashCommand::Docs,
         name: "/docs",
         usage: "Usage: /docs <mode|models|shortcuts|commands|agents>",
@@ -255,6 +276,14 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         args: NO_ARGS,
     },
     AppSlashCommandSpec {
+        command: AppSlashCommand::Agents,
+        name: "/agents",
+        usage: "Usage: /agents",
+        short_description: "Inspect session agents",
+        long_description: "Open the current session agents panel.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
         command: AppSlashCommand::Login,
         name: "/login",
         usage: "Usage: /login",
@@ -310,6 +339,22 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         long_description: "Restore conversation, code, or both to a previous user message.",
         args: NO_ARGS,
     },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Reload,
+        name: "/reload",
+        usage: "Usage: /reload",
+        short_description: "Reload skills and output styles",
+        long_description: "Re-read skills and output styles from disk for the active session, so edits apply without restarting.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Export,
+        name: "/export",
+        usage: "Usage: /export [path]",
+        short_description: "Save the conversation as Markdown",
+        long_description: "Write the session's complete saved history to a Markdown file. Without a path it is created in the session directory; an existing file is never overwritten.",
+        args: NO_ARGS,
+    },
 ];
 
 impl AppSlashCommand {
@@ -329,6 +374,8 @@ impl AppSlashCommand {
             Self::Hooks => "/hooks",
 
             Self::Copy => "/copy",
+            Self::Search => "/search",
+            Self::Diff => "/diff",
             Self::Docs => "/docs",
             Self::Agent => "/agent",
             Self::Effort => "/effort",
@@ -340,6 +387,7 @@ impl AppSlashCommand {
             Self::Plugins => "/plugins",
             Self::Status => "/status",
             Self::Usage => "/usage",
+            Self::Agents => "/agents",
             Self::Login => "/login",
             Self::Logout => "/logout",
             Self::Mode => "/mode",
@@ -347,6 +395,8 @@ impl AppSlashCommand {
             Self::NewSession => "/new-session",
             Self::Resume => "/resume",
             Self::Rewind => "/rewind",
+            Self::Reload => "/reload",
+            Self::Export => "/export",
         }
     }
 
@@ -354,6 +404,7 @@ impl AppSlashCommand {
         command_spec(self.name()).map_or(self.name(), |spec| spec.usage)
     }
 
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn submission_class(self, args: &[&str]) -> SubmissionClass {
         match self {
             Self::Btw => {
@@ -379,7 +430,9 @@ impl AppSlashCommand {
             | Self::Mcp
             | Self::Plugins
             | Self::Status
-            | Self::Usage => {
+            | Self::Usage
+            | Self::Agents
+            | Self::Diff => {
                 if args.is_empty() {
                     SubmissionClass::Fullscreen
                 } else {
@@ -393,14 +446,14 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
-            Self::Docs => {
-                if matches!(args, ["mode" | "models" | "shortcuts" | "commands" | "agents"]) {
+            Self::Search => SubmissionClass::Fullscreen,
+            Self::Docs => match args {
+                ["mode" | "models" | "shortcuts" | "commands" | "agents"] => {
                     SubmissionClass::Informational
-                } else {
-                    SubmissionClass::Invalid
                 }
-            }
-            Self::Compact | Self::Login | Self::Logout | Self::NewSession => {
+                _ => SubmissionClass::Invalid,
+            },
+            Self::Compact | Self::Login | Self::Logout | Self::NewSession | Self::Reload => {
                 if args.is_empty() {
                     SubmissionClass::TurnExclusive
                 } else {
@@ -440,7 +493,7 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
-            Self::Resume => SubmissionClass::TurnExclusive,
+            Self::Export | Self::Resume => SubmissionClass::TurnExclusive,
             Self::Rewind => {
                 if matches!(args, [_, "both" | "conversation" | "code"]) {
                     SubmissionClass::TurnExclusive

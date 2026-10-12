@@ -331,6 +331,7 @@ fn optional_resume_opens_the_picker_without_selecting_a_suggested_session() {
             git_branch: None,
             custom_title: None,
             first_prompt: None,
+            tag: None,
         }];
         draft(&mut app, input);
         enter(&mut app);
@@ -662,6 +663,7 @@ fn optional_resume_completion_opens_picker_and_explicit_tab_can_resume_a_suggest
             git_branch: None,
             custom_title: None,
             first_prompt: None,
+            tag: None,
         }];
         draft(&mut app, "/resu");
         key(&mut app, KeyCode::Tab);

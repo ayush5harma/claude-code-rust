@@ -268,6 +268,7 @@ export function mapSdkSessionInfo(info: SDKSessionInfo): SessionListEntry {
     ...(nonEmptyTrimmed(info.firstPrompt)
       ? { first_prompt: info.firstPrompt?.trim() }
       : {}),
+    ...(nonEmptyTrimmed(info.tag) ? { tag: info.tag?.trim() } : {}),
   };
 }
 

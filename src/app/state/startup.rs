@@ -22,6 +22,8 @@ pub struct StartupState {
     session_config: Box<crate::agent::wire::SessionConfig>,
     initial_prompt: Option<String>,
     compact_first: Option<CompactFirst>,
+    /// Measured launch milestones, shown in the Status tab.
+    pub timeline: super::StartupTimeline,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

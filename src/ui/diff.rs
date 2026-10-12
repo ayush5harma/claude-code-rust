@@ -111,6 +111,14 @@ pub fn render_raw_unified_diff(text: &str) -> Vec<Line<'static>> {
     lines
 }
 
+pub(crate) fn render_raw_unified_diff_window(
+    text: &str,
+    scroll: usize,
+    height: usize,
+) -> Vec<Line<'static>> {
+    text.lines().skip(scroll).take(height).map(render_raw_diff_line).collect()
+}
+
 fn render_raw_diff_line(line: &str) -> Line<'static> {
     let style = if line.starts_with("diff --git ")
         || line.starts_with("index ")
