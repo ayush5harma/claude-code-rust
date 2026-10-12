@@ -125,6 +125,19 @@ The bridge announces each live top-level SDK response through the typed `agent_r
 
 The bridge reads `getSessionInfo().customTitle` after a connect, a replacement, a conversation reset, each top-level turn and each rename or title generation it performs, and sends every title it reads; a read that a later one overtakes is dropped. Rust keeps the active title as one value, strips control characters once in the converter, stores a repeated title idempotently, and clears it when the session id changes or the conversation resets. Neither side derives a title of its own. The session listing is a separate snapshot of all sessions, refreshed by `listSessions()` on connect, replacement and the Status-tab rename and generate actions; the Status tab falls back to it only while the active session has no title. `customTitle` falls back to a generated title, so an unnamed session shows that title after its first turn.
 
+### Hook activity
+
+| Concern | Owner | Location |
+| --- | --- | --- |
+| Asking the SDK for hook events (`includeHookEvents`) and normalising `hook_started`, `hook_progress` and `hook_response` into one `hook_activity` session update | Bridge | `agent-sdk/src/bridge/hook_activity.ts` |
+| Hook runs, their durations, the notice rule and its threshold | Rust | `src/app/state/hook_runs.rs` |
+| Which finished hooks leave a notice (`presentation.hookNotices`) | Bridge catalog, Rust reads the snapshot | `settings_catalog.ts`, `src/app/events/hooks.rs` |
+| Launch milestones and their placement on one timeline | Rust | `src/app/state/startup_timeline.rs` |
+
+The bridge forwards what the SDK declares: hook id, name and event, phase, outcome, exit code and a bounded output excerpt (stderr for a failure, combined output otherwise). It reads no hook files or settings. The SDK declares no hook timing, so each update carries the epoch milliseconds at which the bridge saw it, and Rust derives a duration from the started and finished observations. SessionStart hooks finish before the SDK answers its initialize request, and Rust drops session updates for a session it does not know yet, so the bridge holds hook updates until it sends the connect event and sends them right after it.
+
+Rust keeps the last 200 runs of the active session and clears them when the session id changes or the conversation resets. A run that finishes is judged once for a notice. Until the first settings snapshot is acknowledged it waits, so startup never decides from a guessed preference. The Startup section of the Status tab places the bridge's wall-clock stamps on the monotonic timeline through the wall-clock reading taken at app start, and counts only SessionStart hooks that finished before the connect.
+
 ### Notifications
 
 | Concern | Owner | Location |

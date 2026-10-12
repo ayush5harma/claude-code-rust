@@ -168,6 +168,16 @@ Common surfaces:
 
 Use `/help` for the fullscreen help tab, `/config` for settings, and `/docs <topic>` for live in-chat help generated from the running app state.
 
+## Hook Notices
+
+Hooks run invisibly, so a slow or failing one used to leave no trace. claude-rs asks the Agent SDK to report every hook event and shows a one-line notice in the transcript when a hook finishes:
+
+- `Hook SessionStart:startup took 2.5 s`, dim, when it took 500 ms or longer;
+- `Hook Stop failed (exit 1): <error output excerpt>`, as a warning, when it failed, with the SDK's exit code and a bounded excerpt of its error output (one line, control characters removed);
+- `Hook <name> was cancelled`, as a warning, when it was cancelled.
+
+Fast, successful hooks show nothing. The name is the SDK's: for events with a matcher it reads `Event:matcher`, and it does not identify the command. `presentation.hookNotices` in Settings > Hooks chooses `slow_and_failed` (the default), `all` (every finished hook) or `off`; the 500 ms threshold is fixed. A hook's duration is the time between the bridge seeing its start and its end, because the SDK reports no hook timing. `SessionStart` hooks finish before the app has read its settings, so their notices appear once the saved choice is known. The Status tab lists hook timings whatever the setting; see [Status Tab](commands.md#status-tab).
+
 ## More Usage Topics
 
 - [Slash Commands](commands.md)

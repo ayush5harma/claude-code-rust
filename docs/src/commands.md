@@ -68,6 +68,14 @@ to inspect the current session's full command list. The output includes app-owne
 
 Commands that Claude Code runs locally, such as `/rename`, `/color` or `/context`, reply in the chat under the command as they do in Claude Code. `/color` runs in Claude Code and its reply shows, but Claude Rust does not draw a session colour.
 
+## Status Tab
+
+`/status` opens the Status tab. Besides the session, account, model and settings rows it has two measured sections.
+
+**Startup** lists the launch milestones the app observed, as offsets from the moment the app started: the bridge launch, the `SessionStart` hooks that finished before the session connected (with their count), the SDK connection, and the first frame in which the composer accepts a prompt. A milestone that has not happened is not shown, and nothing is estimated. The offsets include any wait on the workspace trust prompt, because the bridge starts only after trust is accepted.
+
+**Hooks this session** gives the number of hook runs, how many failed, how many are still running, their total time, and the three slowest. It covers the last 200 runs of the active session and says how many older runs are not kept. It starts empty again when the session changes or the conversation is cleared. Hooks of the same event and matcher share one SDK name, so two runs of different commands can look alike here.
+
 ## Session Name
 
 The Status tab shows the session name. Its rename draft (`r`) starts from that name, and title generation (`g`) uses it as the description when there is one.
