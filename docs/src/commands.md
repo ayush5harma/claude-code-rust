@@ -71,11 +71,15 @@ Commands that Claude Code runs locally, such as `/rename`, `/color` or `/context
 
 `/search` and the remappable `Ctrl+F` shortcut open a local search viewer. Type or paste a query, use Enter or Down for the next match and Shift+Enter or Up for the previous match, and press Esc to return to chat. The highlighted excerpt is from retained session content only; older content evicted by the app's history limit and archived transcripts are not searched.
 
+Rewinding a conversation keeps the model, effort and permission mode currently selected in the session. On resume, the public Agent SDK can return a local command as XML-like user text without identifying its origin. The history preserves that text exactly, so a command such as `/rename` may appear in its raw record form until the SDK exposes a reliable command marker.
+
 ## Session Name
 
 The Status tab shows the session name. Its rename draft (`r`) starts from that name, and title generation (`g`) uses it as the description when there is one.
 
 The name is whatever the Agent SDK's session API reports as the session's title; claude-rs keeps no title of its own. It is read when a session connects or resumes, when the session is replaced, when the conversation resets, after each turn, and after a Status-tab rename or title generation. A `/rename` typed in the composer therefore shows once its turn completes. For a session nobody named, the API reports a generated title instead, so such a session shows that title after its first turn.
+
+If the SDK omits a saved custom title while resuming, claude-rs restores that title through the SDK session API so other clients see it too.
 
 ## Session Commands
 
