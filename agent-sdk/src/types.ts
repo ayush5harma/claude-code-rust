@@ -1010,6 +1010,10 @@ export type BridgeCommand =
       force?: boolean;
     }
   | {
+      command: "reload_skills_and_styles";
+      session_id: string;
+    }
+  | {
       command: "mcp_status";
       session_id: string;
     }
@@ -1217,6 +1221,12 @@ export type BridgeEvent =
       cache_impact: RuntimeReloadCacheImpact;
     }
   | { event: "runtime_reload_failed"; session_id: string; message: string }
+  | {
+      event: "skills_and_styles_reloaded";
+      session_id: string;
+      skills: string[];
+      output_styles: string[];
+    }
   | {
       event: "session_replaced";
       session_id: string;
