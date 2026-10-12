@@ -2163,7 +2163,15 @@ fn export_writes_the_saved_conversation_and_never_overwrites_it() {
 
     // A second export to the same path is refused before the bridge is asked.
     test.submit_command("/export transcript.md");
-    test.wait_screen("will not be overwritten");
+    test.wait_until("overwrite refusal across terminal wrapping", |test| {
+        let screen = test.screen();
+        screen.contains("Not exporting:")
+            && screen
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .contains("already exists and will not be overwritten.")
+    });
     assert_eq!(std::fs::read_to_string(&target).expect("kept file"), file);
     assert_eq!(test.commands("export_session_history").len(), 1);
 
