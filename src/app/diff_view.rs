@@ -59,7 +59,7 @@ pub(crate) fn open(app: &mut App) {
     };
     let request_id = uuid::Uuid::new_v4().to_string();
     let entries = session_entries(app).into_values().collect();
-    app.diff_view = Some(DiffViewState {
+    app.diff_view = Some(Box::new(DiffViewState {
         entries,
         selected: 0,
         scroll: 0,
@@ -67,7 +67,7 @@ pub(crate) fn open(app: &mut App) {
         error: None,
         rendered_session_diff: None,
         request_id: request_id.clone(),
-    });
+    }));
     view::set_fullscreen_view(app, FullscreenView::Diff);
     request(app, session_id, request_id);
 }
@@ -89,7 +89,7 @@ fn refresh(app: &mut App) {
     };
     let request_id = uuid::Uuid::new_v4().to_string();
     let entries = session_entries(app).into_values().collect();
-    app.diff_view = Some(DiffViewState {
+    app.diff_view = Some(Box::new(DiffViewState {
         entries,
         selected: 0,
         scroll: 0,
@@ -97,7 +97,7 @@ fn refresh(app: &mut App) {
         error: None,
         rendered_session_diff: None,
         request_id: request_id.clone(),
-    });
+    }));
     request(app, session_id, request_id);
     app.request_active_surface_repaint();
 }
