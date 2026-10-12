@@ -167,6 +167,9 @@ pub enum BridgeCommand {
     GetUsage {
         session_id: String,
     },
+    GetWorkingDiff {
+        session_id: String,
+    },
     GetRewindTargets {
         session_id: String,
     },
@@ -252,6 +255,7 @@ impl BridgeCommand {
             Self::GetStatusSnapshot { .. } => "get_status_snapshot",
             Self::GetContextUsage { .. } => "get_context_usage",
             Self::GetUsage { .. } => "get_usage",
+            Self::GetWorkingDiff { .. } => "get_working_diff",
             Self::GetRewindTargets { .. } => "get_rewind_targets",
             Self::ExportSessionHistory { .. } => "export_session_history",
             Self::Rewind { .. } => "rewind",
@@ -295,6 +299,7 @@ impl BridgeCommand {
             | Self::GetStatusSnapshot { session_id }
             | Self::GetContextUsage { session_id }
             | Self::GetUsage { session_id }
+            | Self::GetWorkingDiff { session_id }
             | Self::GetRewindTargets { session_id }
             | Self::ExportSessionHistory { session_id }
             | Self::Rewind { session_id, .. }
@@ -342,6 +347,7 @@ impl BridgeCommand {
             | Self::GetStatusSnapshot { .. }
             | Self::GetContextUsage { .. }
             | Self::GetUsage { .. }
+            | Self::GetWorkingDiff { .. }
             | Self::GetRewindTargets { .. }
             | Self::ExportSessionHistory { .. }
             | Self::Rewind { .. }
@@ -374,9 +380,21 @@ pub struct SideQuestionMetadata {
     pub refusal_fallback: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkingDiffFile {
+    pub path: String,
+    pub status: String,
+    pub diff: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum BridgeEvent {
+    WorkingDiff {
+        session_id: String,
+        files: Vec<WorkingDiffFile>,
+        error: Option<String>,
+    },
     SettingsResult {
         session_id: String,
         result: super::settings::SettingsResult,
@@ -592,6 +610,7 @@ impl BridgeEvent {
     #[must_use]
     pub fn event_name(&self) -> &'static str {
         match self {
+            Self::WorkingDiff { .. } => "working_diff",
             Self::Connected { .. } => "connected",
             Self::AuthRequired { .. } => "auth_required",
             Self::ConnectionFailed { .. } => "connection_failed",
@@ -636,7 +655,8 @@ impl BridgeEvent {
     #[must_use]
     pub fn session_id(&self) -> Option<&str> {
         match self {
-            Self::Connected { session_id, .. }
+            Self::WorkingDiff { session_id, .. }
+            | Self::Connected { session_id, .. }
             | Self::SessionUpdate { session_id, .. }
             | Self::BtwResult { session_id, .. }
             | Self::BtwFailed { session_id, .. }
@@ -685,6 +705,7 @@ impl BridgeEvent {
             }
             Self::QuestionRequest { request, .. } => Some(request.tool_call.tool_call_id.as_str()),
             Self::Connected { .. }
+            | Self::WorkingDiff { .. }
             | Self::AuthRequired { .. }
             | Self::ConnectionFailed { .. }
             | Self::SessionUpdate { .. }

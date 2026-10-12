@@ -439,6 +439,9 @@ pub(super) fn handle_logout_completed_event(app: &mut App) {
 }
 
 pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplacedEventData) {
+    if app.diff_view.is_some() {
+        crate::app::view::set_chat_surface(app);
+    }
     let SessionReplacedEventData {
         session_id,
         cwd,

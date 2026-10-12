@@ -163,6 +163,7 @@ pub fn create_app(cli: &Cli) -> App {
         chat_render: super::ChatRenderState::default(),
         copy_picker: None,
         history_export: None,
+        diff_view: None,
         mention: None,
         committed_mentions: Vec::new(),
         file_index: super::file_index::FileIndexState::default(),

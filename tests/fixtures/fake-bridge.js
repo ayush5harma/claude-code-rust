@@ -364,6 +364,13 @@ readline
           restored_input: null,
         });
         if (SCENARIO.startsWith('resize-') || SCENARIO.startsWith('background-')) send({ event: 'status_snapshot', session_id: SESSION, account: { subscription_type: 'Fixture subscription' } });
+        if (SCENARIO === 'native-diff') {
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call', tool_call: {
+            tool_call_id: 'session-edit', title: 'Edited session-only.txt', kind: 'edit', status: 'completed',
+            content: [{ type: 'diff', old_path: 'session-only.txt', new_path: 'session-only.txt', old: 'before\n', new: 'Session line\n' }],
+            raw_input: { file_path: 'session-only.txt' }, locations: [], meta: { claudeCode: { toolName: 'Edit' } },
+          } } });
+        }
         if (SCENARIO === 'disconnect-during-auth' && message.command === 'create_session') {
           const timer = setInterval(() => {
             if (fs.existsSync(RELEASE_FILE)) {
@@ -406,6 +413,11 @@ readline
         send(reloads === 1
           ? { event: 'skills_and_styles_reloaded', session_id: SESSION, skills: ['deploy', 'lint'], output_styles: ['default', 'Explanatory', 'mine'] }
           : { event: 'slash_error', session_id: SESSION, message: 'failed to reload skills and output styles: style directory unreadable' });
+        break;
+      case 'get_working_diff':
+        send({ event: 'working_diff', session_id: SESSION, request_id: message.request_id, files: SCENARIO === 'native-diff'
+          ? [{ path: 'tracked file.txt', status: 'MM', diff: 'diff --git a/tracked file.txt b/tracked file.txt\n--- a/tracked file.txt\n+++ b/tracked file.txt\n@@ -1 +1 @@\n-before\n+Working line\n' }]
+          : [], });
         break;
       case 'inspect_settings':
         if (notificationScenario) {

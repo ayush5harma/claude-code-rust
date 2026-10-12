@@ -17,6 +17,7 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/sandbox` | `/sandbox` | Open sandbox settings without toggling sandboxing. |
 | `/hooks` | `/hooks` | Inspect and edit saved hook configuration without executing hooks. |
 | `/copy` | `/copy` | Copy the last completed response, or choose a code block from it. |
+| `/diff` | `/diff` | Browse retained session tool diffs and current Git working-tree changes. |
 | `/docs` | `/docs <mode\|models\|shortcuts\|commands\|agents>` | Render command, shortcut, model, mode, or subagent help into chat. |
 | `/agent` | `/agent <name\|reset>` | Change the main-thread agent for the active session. Applies on the next turn. |
 | `/effort` | `/effort <low\|medium\|high\|xhigh\|max\|reset>` | Change thinking effort for the active session. |
@@ -63,6 +64,7 @@ The command menu includes the full merged inventory and scrolls as you move thro
 The file starts with the session title, id, directory, model and export time. Your messages and the assistant's text are written as they were. Each tool call is a heading with the tool name and a short summary of its input, followed by its result in a fenced block and, for edits and new files, a `diff` block. Long results and diffs are cut with a note, and terminal colour codes are removed. A session too large to send at once is cut from its end, and the file says how many later entries were left out.
 
 `/export` never overwrites a file and creates no directories: if the target exists, or its directory does not, it says so and writes nothing. When it finishes it shows the absolute path it wrote.
+`/diff` opens a fullscreen file list. It combines diff content still retained in the current session's tool calls with the current Git working tree; the latter includes staged, unstaged, and untracked files. Choose a file with Up/Down, scroll its diff with Page Up/Page Down, refresh with `r`, and close with Escape. Git reads have bounded time and output; binary and oversized untracked files show an explicit preview message. Session-only entries reflect retained tool diff content, not a complete archive of every edit.
 
 ## Side Questions
 

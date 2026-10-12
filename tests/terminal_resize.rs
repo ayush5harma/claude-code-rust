@@ -2146,6 +2146,31 @@ fn export_writes_the_saved_conversation_and_never_overwrites_it() {
     test.shutdown();
 }
 
+#[test]
+fn native_diff_browses_session_and_working_tree_files() {
+    let mut test = TerminalTest::start("native-diff", 3);
+    test.submit("/diff", "/diff");
+    test.wait_for("session diff and both file rows", |test| {
+        let screen = test.screen();
+        (screen.contains("session-only.txt")
+            && screen.contains("tracked file.txt")
+            && screen.lines().any(|line| line.contains("Session line") && line.contains('+')))
+        .then_some(())
+    });
+    assert_eq!(test.commands("get_working_diff").len(), 1);
+
+    test.send(b"\x1b[B");
+    test.wait_for("selected working-tree diff", |test| {
+        let screen = test.screen();
+        (screen.contains("+Working line") && !screen.contains("Session line")).then_some(())
+    });
+    test.send(b"r");
+    test.wait_until("refresh command", |test| test.commands("get_working_diff").len() == 2);
+    test.send(b"\x1b");
+    test.wait_until("return to chat", |test| test.screen().contains("[READY]"));
+    test.shutdown();
+}
+
 /// A terminal outside Windows sends Ctrl+V as one press byte and no release.
 /// Without a display server the clipboard cannot be opened, and the app has to
 /// say so: silence means the key never reached the clipboard path.
