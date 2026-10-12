@@ -839,6 +839,84 @@ fn interactive_cli_startup_sends_overrides_and_initial_prompt_without_saving_the
 }
 
 #[test]
+fn session_configuration_reaches_later_sessions_while_the_launch_name_stays_initial() {
+    let files = tempfile::tempdir().expect("flag files");
+    let settings_text = r#"{"spinnerTipsEnabled":false}"#;
+    let settings = files.path().join("settings.json");
+    std::fs::write(&settings, settings_text).expect("settings file");
+    let append = files.path().join("append.md");
+    std::fs::write(&append, "End every reply with DONE.").expect("append file");
+    let mcp = r#"{"mcpServers":{"docs":{"command":"docs-mcp"}}}"#;
+    let args = [
+        "--add-dir",
+        "..",
+        "--settings",
+        settings.to_str().expect("UTF-8 path"),
+        "--mcp-config",
+        mcp,
+        "--strict-mcp-config",
+        "--append-system-prompt-file",
+        append.to_str().expect("UTF-8 path"),
+        "-n",
+        "Launch name",
+    ];
+    let mut test = TerminalTest::start_with_options("stream", 3, None, &args, false);
+    test.submit_command("/new-session");
+    test.wait_until("the replacement session request", |test| {
+        !test.commands("new_session").is_empty()
+    });
+
+    let created = test.commands("create_session").remove(0)["launch_settings"].clone();
+    let replaced = test.commands("new_session").remove(0)["launch_settings"].clone();
+    // `--add-dir ..` resolves against --dir, the fixture's project inside its temp root.
+    let added = created["additional_directories"][0].as_str().expect("added directory");
+    assert!(Path::new(added).is_absolute(), "{added}");
+    assert_eq!(
+        Path::new(added).canonicalize().expect("added directory exists"),
+        test.temp.path().canonicalize().expect("temp root")
+    );
+    let config = serde_json::json!({
+        "additional_directories": [added],
+        "settings": settings_text,
+        "mcp_configs": [mcp],
+        "strict_mcp_config": true,
+        "append_system_prompt": "End every reply with DONE.",
+    });
+    let mut named = config.clone();
+    named["name"] = "Launch name".into();
+    assert_eq!(created, named);
+    assert_eq!(replaced, config, "the name is for the initial session only");
+    test.shutdown();
+}
+
+#[test]
+fn forked_resume_continues_under_the_new_session_id() {
+    let mut test = TerminalTest::start_with_options(
+        "stream",
+        3,
+        None,
+        &["-r", "chosen-session", "--fork-session", "Continue the fork"],
+        true,
+    );
+    test.wait_journal("turn_complete");
+    assert_eq!(test.commands("resume_session")[0]["launch_settings"]["fork_session"], true);
+    assert_eq!(test.prompts()[0]["session_id"], "chosen-session-fork");
+    test.shutdown();
+    // ConPTY can report process exit before the capture thread drains its final output
+    // (Windows CI, 2026-10-13); wait for the resume hint itself.
+    let started = Instant::now();
+    loop {
+        let output =
+            String::from_utf8_lossy(&test.output.lock().expect("output lock").raw).into_owned();
+        if output.contains("Resume this session: claude-rs resume chosen-session-fork") {
+            break;
+        }
+        assert!(started.elapsed() < WAIT_LIMIT, "{}", tail(&output, 400));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
 fn auth_child_owns_stdin_and_output_and_returns_a_resized_usable_terminal() {
     for mode in ["success", "failure"] {
         let mut test = TerminalTest::start_with_auth("stream", 3, Some(mode));
@@ -2139,6 +2217,54 @@ fn native_diff_browses_session_and_working_tree_files() {
     test.wait_until("refresh command", |test| test.commands("get_working_diff").len() == 2);
     test.send(b"\x1b");
     test.wait_until("return to chat", |test| test.screen().contains("[READY]"));
+    test.shutdown();
+}
+
+/// The generator is the authority for `render-corpus.json`; this fails when the committed
+/// file no longer matches what the generator prints.
+#[test]
+#[allow(clippy::expect_used)]
+fn render_corpus_fixture_matches_its_generator() {
+    let runtime = which::which("bun")
+        .or_else(|_| which::which("node"))
+        .expect("terminal tests need bun or node on PATH");
+    let generator =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generate-render-corpus.js");
+    let output = std::process::Command::new(runtime)
+        .arg(generator)
+        .arg("--check")
+        .output()
+        .expect("run the corpus generator");
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+}
+
+/// The shared render corpus through the real binary: a resumed conversation (Markdown, fenced
+/// code, tool output, diffs, a failed tool, notices, user messages) followed by one long
+/// reply streamed in chunks. The rows are one distinctive line per kind, in conversation order.
+#[test]
+fn render_corpus_resumes_then_streams_into_scrollback_in_order() {
+    let mut test = TerminalTest::start("render-corpus", 0);
+    test.submit("continue", "continue");
+    test.wait_turn_finished("That is the full picture.");
+    let expected = [
+        "Transcript renderer overview",
+        "1992 lines hidden",
+        "(+500)",
+        "unresolved import `crate::ui::render_cache`",
+        "Good catch. Keep the generated file",
+        "Finding 11: layout",
+        "That is the full picture.",
+    ];
+    test.wait_until("every corpus kind in scrollback, in order", |test| {
+        let rows = test.transcript_rows();
+        let mut from = 0;
+        expected.iter().all(|needle| {
+            rows[from..].iter().position(|row| row.contains(needle)).is_some_and(|at| {
+                from += at + 1;
+                true
+            })
+        })
+    });
     test.shutdown();
 }
 

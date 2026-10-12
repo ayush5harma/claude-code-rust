@@ -83,6 +83,15 @@ fn contradictory_or_invalid_startup_arguments_are_rejected() {
         vec!["claude-rs", "--permission-mode", "invalid"],
         vec!["claude-rs", "--model", ""],
         vec!["claude-rs", "--agent", ""],
+        vec!["claude-rs", "--name", ""],
+        vec!["claude-rs", "-n", "\u{1b}\t "],
+        vec!["claude-rs", "doctor", "--name", "Release prep"],
+        vec!["claude-rs", "--system-prompt", "a", "--system-prompt-file", "prompt.md"],
+        vec!["claude-rs", "--append-system-prompt", "a", "--append-system-prompt-file", "a.md"],
+        vec!["claude-rs", "--system-prompt", ""],
+        vec!["claude-rs", "doctor", "--append-system-prompt", "a"],
+        vec!["claude-rs", "--fork-session"],
+        vec!["claude-rs", "--fork-session", "explain this project"],
     ] {
         assert!(
             Cli::try_parse_from(&args).and_then(|cli| cli.validate()).is_err(),
@@ -124,6 +133,24 @@ fn executable_rejects_startup_conflicts_before_resolving_the_bridge() {
         assert!(error.contains("error:"), "{error}");
         assert!(!error.contains("missing-bridge.js"), "runtime resolved the bridge: {error}");
     }
+}
+
+#[test]
+fn executable_rejects_a_missing_added_directory_before_resolving_the_bridge() {
+    let project = tempfile::tempdir().expect("project");
+    let output = Command::new(env!("CARGO_BIN_EXE_claude-rs"))
+        .args(["--bridge-script", "missing-bridge.js", "--add-dir", "not-there", "-C"])
+        .arg(project.path())
+        .output()
+        .expect("run with a missing directory");
+    assert_eq!(output.status.code(), Some(2));
+    let error = String::from_utf8_lossy(&output.stderr);
+    let missing = project.path().join("not-there");
+    assert!(
+        error.contains(&format!("--add-dir: {} is not an existing directory", missing.display())),
+        "{error}"
+    );
+    assert!(!error.contains("missing-bridge.js"), "runtime resolved the bridge: {error}");
 }
 
 #[test]

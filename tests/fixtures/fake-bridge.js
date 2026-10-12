@@ -45,6 +45,10 @@ if (activityScenario) {
   const setting = settingsUiFixture.catalog.find(setting => setting.id === 'spinnerTipsEnabled');
   settingDefinitions.push([setting.id, setting.label, setting.description, setting.kind, setting.key_path]);
 }
+// The shared render corpus (see generate-render-corpus.js): a resumed conversation, then one
+// long reply streamed in small chunks, the same transcript the Rust render benchmark draws.
+const renderCorpusScenario = SCENARIO === 'render-corpus';
+const renderCorpus = renderCorpusScenario ? JSON.parse(fs.readFileSync(path.join(__dirname, 'render-corpus.json'), 'utf8')) : null;
 const hooksScenario = SCENARIO === 'hold-hooks';
 if (hooksScenario) {
   preferences.hooks = { Stop: [{ hooks: [{ type: 'command', command: 'keep-original', future: 'keep' }] }] };
@@ -111,6 +115,15 @@ const model = {
 function streamReply(messageUuid) {
   send({ event: 'user_message_started', session_id: SESSION, message_uuid: messageUuid, source: 'command_lifecycle' });
   replyNumber++;
+  if (renderCorpusScenario) {
+    const updates = renderCorpus.stream.slice();
+    active = { timer: setInterval(() => {
+      const update = updates.shift();
+      if (update) send({ event: 'session_update', session_id: SESSION, update });
+      else finish({ event: 'turn_complete', session_id: SESSION });
+    }, INTERVAL_MS) };
+    return;
+  }
   if (SCENARIO === 'background-replies') {
     const update = update => send({ event: 'session_update', session_id: SESSION, update });
     const text = text => update({ type: 'agent_message_chunk', content: { type: 'text', text } });
@@ -358,7 +371,8 @@ readline
       case 'new_session':
       case 'resume_session':
         if (message.command === 'new_session') SESSION = 'fake-session-after-login';
-        if (message.command === 'resume_session') SESSION = message.session_id;
+        // Like the SDK's forkSession, a forked resume continues under a new session ID.
+        if (message.command === 'resume_session') SESSION = message.launch_settings?.fork_session ? `${message.session_id}-fork` : message.session_id;
         if (message.continue_session) SESSION = 'fake-recent-session';
         send({
           event: message.command === 'new_session' ? 'session_replaced' : 'connected',
@@ -369,7 +383,7 @@ readline
           mode: null,
           fast_mode_state: 'off',
           fast_mode_disabled_reason: null,
-          history_updates: SCENARIO === 'background-resume' ? [
+          history_updates: renderCorpusScenario ? renderCorpus.history : SCENARIO === 'background-resume' ? [
             { type: 'user_message_chunk', content: { type: 'text', text: 'Resumed background launch' }, source_message_uuid: 'saved-user' },
             { type: 'tool_call', tool_call: { tool_call_id: 'background-primary', title: 'PRIMARY_TASK', kind: 'execute', status: 'in_progress', content: [], raw_input: { command: 'PRIMARY_TASK' }, locations: [], meta: { claudeCode: { toolName: 'Bash' } } } },
             { type: 'tool_call_update', tool_call_update: { tool_call_id: 'background-primary', fields: { status: 'detached' } } },
