@@ -3,7 +3,7 @@
 # Tools and permissions, subagents, MCP, hooks, skills and plugins. Prompts
 # name tokens indirectly where the reply must not match the prompt's echo.
 
-ensure_perm() { ensure perm --model haiku --permission-mode default; }
+ensure_perm() { ensure perm --model "$MODEL" --permission-mode default; }
 
 # perm_prompt <file>: ask for a write the default mode must confirm.
 perm_prompt() {
@@ -243,7 +243,7 @@ chk_tools_ask() {
 def tools.plan tools "Plan mode and plan approval" "Plan shown for approval; work starts once approved"
 chk_tools_plan() {
   local f
-  ensure plan --model haiku --permission-mode plan || { res FAIL "plan session did not start"; return; }
+  ensure plan --model "$MODEL" --permission-mode plan || { res FAIL "plan session did not start"; return; }
   f=$(cwd_of plan)/parity_plan.txt
   submit plan "Plan how to create a file named parity_plan.txt containing PLAN_OK. Keep the plan to one line and present it with ExitPlanMode right away." ||
     { res FAIL "could not submit"; return; }
@@ -333,7 +333,7 @@ chk_tools_hook_start() {
 
 def tools.hook_end tools "SessionEnd hook" "Project hook runs at exit (the owner's archive hook rides on it)"
 chk_tools_hook_end() {
-  rs_start hooks --model haiku || { res FAIL "hooks session did not start"; return; }
+  rs_start hooks --model "$MODEL" || { res FAIL "hooks session did not start"; return; }
   local f end
   f=$(cwd_of hooks)/.parity/session-end
   keys hooks C-q

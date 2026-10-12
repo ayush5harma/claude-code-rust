@@ -16,7 +16,7 @@ ID_STARTED='' ID_RENAMED='' ID_COLORED='' ID_RESUMED='' ID_SID=''
 # id_live: the live session, started once.
 id_live() {
   [[ -n $ID_STARTED ]] && return 0
-  rs_start "$ID_SESS" --model haiku || return 1
+  rs_start "$ID_SESS" --model "$MODEL" || return 1
   ID_STARTED=1
   ID_SID=$(jq -r .sessionId <<<"$REG")
 }
@@ -43,7 +43,7 @@ id_resumed() {
   id_colored || return 1
   wait_registry "$(cwd_of "$ID_SESS")" ".name == \"$ID_TITLE\"" 10 || true
   rs_stop "$ID_SESS"
-  rs_start "$ID_SESS" --model haiku -r "$ID_SID" || return 1
+  rs_start "$ID_SESS" --model "$MODEL" -r "$ID_SID" || return 1
   ID_RESUMED=1
   wait_for "$ID_SESS" "$EMPTY_COMPOSER" 10 || true
   sleep 1

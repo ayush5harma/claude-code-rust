@@ -236,16 +236,24 @@ def input.tab_complete input "Tab completes a slash command" "Completes the high
 chk_input_tab_complete() {
   ensure_main || { res FAIL "main session did not start"; return; }
   clear_draft main
-  # /stat also matches /stats; use an unambiguous completion prefix.
+  # Which command ranks first depends on the profile's plugins and skills, so
+  # the check is that Tab completes whatever the menu highlights.
   type_slow main "/statu"
   local top
   wait_for main '> /[a-z]' 3 || true
   top=$(first_match '> /[a-z:-]+' | grep -Eo '/[a-z:-]+' | head -1)
+  if [[ -z $top ]]; then
+    shot
+    res FAIL "no highlighted completion after /statu"
+    keys main Escape
+    clear_draft main
+    return
+  fi
   keys main Tab
-  if wait_for main '❯ /status' 3; then
-    res PASS "$(composer_line)"
+  if wait_for main "❯ $(ere_escape "$top")" 3; then
+    res PASS "/statu -> $(composer_line)"
   else
-    res FAIL "Tab did not complete /statu to /status; highlighted '$top'; composer: $(composer_line)"
+    res FAIL "Tab did not complete /statu to the highlighted '$top'; composer: $(composer_line)"
   fi
   keys main Escape
   clear_draft main
@@ -260,7 +268,7 @@ chk_input_ctrl_z() {
   tm new-session -d -s shell -x "$COLS" -y "$ROWS" -c "$cwd" env PS1='PARITY_SHELL$ ' bash --norc --noprofile -i
   wait_for shell 'PARITY_SHELL\$' 10 || { res FAIL "shell did not start"; return; }
   rs_cmd shell
-  line=$(printf '%q ' "${RS_CMD[@]}" --model haiku)
+  line=$(printf '%q ' "${RS_CMD[@]}" --model "$MODEL")
   tm send-keys -t shell -l -- "$line"
   keys shell Enter
   if ! rs_wait_ready shell; then
@@ -292,7 +300,7 @@ chk_input_ctrl_z() {
 # The quit keys end the session they run in, so they get their own.
 def input.ctrl_d input "Ctrl+D on an empty prompt exits" "Exits (press twice)"
 chk_input_ctrl_d() {
-  rs_start quit --model haiku || { res FAIL "quit session did not start"; return; }
+  rs_start quit --model "$MODEL" || { res FAIL "quit session did not start"; return; }
   keys quit C-d
   sleep 0.4
   keys quit C-d
@@ -307,7 +315,7 @@ chk_input_ctrl_d() {
 def input.ctrl_c input "Ctrl+C clears the draft, then quits" "First clears input; twice on empty exits"
 chk_input_ctrl_c() {
   if ! session_exists quit || pane_dead quit; then
-    rs_start quit --model haiku || { res FAIL "quit session did not start"; return; }
+    rs_start quit --model "$MODEL" || { res FAIL "quit session did not start"; return; }
   fi
   type_text quit "pm_ctrl_c_draft"
   keys quit C-c

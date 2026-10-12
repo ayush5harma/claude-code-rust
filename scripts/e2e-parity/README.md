@@ -1,45 +1,80 @@
 # Claude Code parity suite
 
-End-to-end checks that drive claude-rs in a private tmux server against the
-real stock Claude Code and record, per functionality, whether claude-rs does
-what stock does. The results table is `docs/src/parity.md`.
+End-to-end checks that drive a real claude-rs build in a private tmux server
+against the real, logged-in stock Claude Code and record, per functionality,
+whether claude-rs does what stock does. The results table is
+`docs/src/parity.md`. New features add their live checks here: a `def` line and
+a `chk_<id>` function in the matching `checks/NN-<group>.sh`.
 
 It is local and opt-in. **It is never run in CI**: it needs a logged-in Claude
 Code and spends real (small) model usage.
 
 ## What it needs
 
-- A logged-in stock Claude Code (`claude`; by default the installed
-  `~/.local/share/claude/ClaudeCode.app` binary) and an explicit, isolated
-  config directory (`--config-dir` or `$PARITY_CONFIG_DIR`). The suite refuses
-  `~/.claude` and `~/.claude-personal`, including paths that resolve to them.
-- tmux, jq, node (for the fixture MCP server) and bash 4 or later.
+- tmux, jq, node (for the fixture MCP server) and bash 4 or later (on macOS:
+  not `/bin/bash`; the scripts' `env bash` finds a newer one on PATH).
 - A claude-rs build: an installed release (default `~/.local/bin/claude-rs`;
   its bridge and Bun runtime sit next to it), or a source build with
-  `--bin target/debug/claude-rs --bridge agent-sdk/dist/bridge.js` (the Bun
-  runtime defaults to the newest installed release's).
+  `--bin target/debug/claude-rs --bridge agent-sdk/dist/bridge.js` after
+  `cargo build` and `npm run build --prefix agent-sdk` (the Bun runtime
+  defaults to the newest installed release's). A debug build skips the
+  performance group, which would otherwise fail by construction; use
+  `cargo build --release` to measure it.
+- A **logged-in stock Claude Code binary**, started directly. Resolution:
+  `--claude`, else `$PARITY_CLAUDE_BIN`, else the installed
+  `~/.local/share/claude/ClaudeCode.app` binary, else `~/.local/bin/claude`,
+  else `claude` on PATH. A script in that place is refused: a launcher such as
+  system-config's `claude-launch` can route a bare `claude` to claude-rs, which
+  would make the stock side of every comparison claude-rs. (That launcher's
+  own switch for stock is `SC_CLAUDE_TUI=stock`; the suite never needs it
+  because it never runs the launcher.)
+- A logged-in config directory (see below).
+
+## Which profile
+
+On macOS the login is stored in the keychain under a name that depends on the
+config directory's path, so a fresh, isolated directory is not logged in.
+Two ways in:
+
+- `--config-dir DIR` or `$PARITY_CONFIG_DIR`: a directory that is already
+  logged in and is not the owner's. The suite refuses `~/.claude` and
+  `~/.claude-personal`, including paths that resolve to them.
+- `--owner-profile`: use `$CLAUDE_CONFIG_DIR` (else `~/.claude`) itself. The
+  sessions still run in scratch directories, never a real project, but the
+  owner's settings, hooks and plugins apply and everything Claude Code writes
+  lands in that profile: transcripts under `projects/<scratch cwd>`,
+  `file-history/<id>` and `session-env/<id>` are removed at exit (see Safety),
+  while entries Claude Code adds to its own `.claude.json` for the scratch
+  directories and anything a SessionStart or SessionEnd hook does with the
+  sessions (an archiver, for one) are not undone.
 
 ## Cost and time
 
-Every model turn uses Haiku (`--model haiku`). A full run took about eight
-minutes and cost about $0.40 on 2026-10-08. Most of that measured cost came
-from the plan-mode check: the stock child plans on Sonnet even when the
-session runs on Haiku. The run prints a TUI Usage subtotal. Idle CPU and memory now use a 120-second settling period
-per target before the 60-second sample (`PARITY_PERF_SETTLE` and
-`PARITY_PERF_IDLE`). Allow about 15 minutes for a full run; model usage does
-not increase during these idle waits.
+Every model turn uses Haiku by default (`--model haiku|sonnet|opus` or
+`$PARITY_MODEL`). The run ends with the cost, summed from the `/usage`
+readout of each claude-rs session when the suite stops it, and warns above
+`$PARITY_COST_BUDGET` (default 0.60). The performance group runs no model
+turns but idles 120 s of settling plus a 60 s sample per target
+(`PARITY_PERF_SETTLE`, `PARITY_PERF_IDLE`), so a full run with it takes about
+15 minutes; without it (a debug build) about 5. Measured 2026-10-12 on Haiku,
+86 checks, owner profile: $0.43 to $0.48, 277 to 322 s; the plan-mode check is
+$0.35 of it because the stock child plans on Sonnet.
 
 ## Running
 
 ```sh
 scripts/e2e-parity/run.sh --list                        # the checks
-export PARITY_CONFIG_DIR=/path/to/isolated-claude-config
+export PARITY_CONFIG_DIR=/path/to/logged-in-claude-config   # or --owner-profile
 scripts/e2e-parity/run.sh --only cmd.model              # one check
 scripts/e2e-parity/run.sh --only identity 'agents.*'    # groups or globs
+scripts/e2e-parity/run.sh --only '10-*'                 # one check file
 scripts/e2e-parity/run.sh --report docs/src/parity.md   # full run + table
 scripts/e2e-parity/run.sh --bin target/debug/claude-rs \
-  --bridge agent-sdk/dist/bridge.js --report docs/src/parity.md
+  --bridge agent-sdk/dist/bridge.js --model haiku --only '10-*'
 ```
+
+`--only` takes check ids, group names and globs over ids or over the check
+file names (`10-*` is `checks/10-launch.sh`).
 
 Each check prints one line, `PASS`, `FAIL` (claude-rs attempts it and the
 result differs from stock), `GAP` (stock has it, claude-rs does not) or
@@ -48,26 +83,30 @@ it read. Checks synchronise on what the screen, `claude agents --json` or the
 files show, polling with a timeout, never on fixed sleeps alone.
 
 The work directory (`--work`, default a new unique directory under `$TMPDIR`)
-holds one
-scratch cwd per session (a copy of `fixtures/project`: a project skill, agent,
-hooks, statusLine and an MCP server), `logs/` (claude-rs bridge diagnostics),
-`screens/` (the capture a failing check judged by), `results.tsv` and
-`inventory.tsv`. An explicit `--work` must be empty for a fresh run. `--keep`
+holds one scratch cwd per session while the run lasts (a copy of
+`fixtures/project`: a project skill, agent, hooks, statusLine and an MCP
+server), and keeps `logs/` (claude-rs bridge diagnostics), `screens/` (the
+capture a failing check judged by), `results.tsv` and `inventory.tsv` as the
+evidence. An explicit `--work` must be empty for a fresh run. `--keep`
 requires an explicit directory marked by an earlier suite run; only selected
-result rows and suite-owned fixture directories are replaced.
+result rows and suite-owned fixture directories are replaced, and nothing is
+cleaned up at exit.
 
 ## Safety
 
-- tmux runs on a unique per-run socket. The suite kills only that server at
-  exit, including on failure or Ctrl+C. It clears inherited `NO_COLOR` and
+- tmux runs on a unique per-run socket. At exit (also on failure or Ctrl+C)
+  the suite stops each session, kills only that server, and unless `--keep`
+  deletes the scratch cwds and the transcripts, `file-history` and
+  `session-env` entries Claude Code wrote for them under the config
+  directory, after waiting for hooks still reading them. It clears inherited `NO_COLOR` and
   uses a color-capable terminal before starting tmux.
 - Sessions run in scratch directories under the work directory, never a real
   repository, so `/init` and the file tools write nothing that matters. The
   first launch in each directory answers claude-rs's trust prompt with Yes.
 - The suite never edits the config directory's `settings.json`; setting-
   dependent checks use project settings in the scratch directory.
-- The suite starts no background sessions. The agent-view gap row presses
-  Left once on an empty prompt and leaves with Esc if anything opens.
+- The suite starts no background sessions of its own beyond the one the
+  background-subagent check asks a model turn to start.
 - Resume rendering uses an offline 400-record synthetic transcript under the
   isolated config and scratch cwd, without a model call to generate history.
   The performance row fails when the build exceeds stock or the installed

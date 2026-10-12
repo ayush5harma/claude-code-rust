@@ -48,14 +48,14 @@ perf_cmd() {
   case $1 in
     test)
       rs_env
-      PERF_CMD=(env "${RS_ENV[@]}" "$BIN" --no-update-check --model haiku)
+      PERF_CMD=(env "${RS_ENV[@]}" "$BIN" --no-update-check --model "$MODEL")
       ;;
     base)
       PERF_CMD=(env CLAUDE_CONFIG_DIR="$CONFIG_DIR" CLAUDE_CODE_EXECUTABLE="$CLAUDE_BIN"
-        CLAUDE_RUST_NO_UPDATE_CHECK=1 "$BASE_BIN" --no-update-check --model haiku)
+        CLAUDE_RUST_NO_UPDATE_CHECK=1 "$BASE_BIN" --no-update-check --model "$MODEL")
       ;;
     stock)
-      PERF_CMD=(env CLAUDE_CONFIG_DIR="$CONFIG_DIR" "$CLAUDE_BIN" --model haiku)
+      PERF_CMD=(env CLAUDE_CONFIG_DIR="$CONFIG_DIR" "$CLAUDE_BIN" --model "$MODEL")
       ;;
   esac
 }
@@ -249,11 +249,21 @@ perf_collect() {
   fi
 }
 
+# perf_skip_debug: an unoptimised build is slower than the release baseline
+# and stock by construction, so comparing it would record a FAIL the code
+# does not deserve (and spend minutes of idle sampling on it). Build with
+# --release, or set PARITY_PERF_DEBUG=1 to measure anyway.
+perf_skip_debug() {
+  [[ $BIN == */target/debug/* && -z ${PARITY_PERF_DEBUG:-} ]] || return 1
+  res SKIP "debug build ($BIN): not comparable with the release baseline; use cargo build --release or PARITY_PERF_DEBUG=1"
+}
+
 # perf_row <metric> <unit> <slack> <label>: record the three values and read
 # the result: FAIL when the build under test is worse than either stock or the
 # installed baseline by more than 10% plus the metric's absolute slack.
 perf_row() {
   local m=$1 unit=$2 slack=$3 tv bv sv verdict note=""
+  perf_skip_debug && return
   perf_collect
   tv=${PERF[$m.test]:-}
   bv=${PERF[$m.base]:-}
@@ -296,6 +306,7 @@ chk_perf_input_latency() { perf_row input_latency ms 15; }
 
 def perf.resume_render perf "Resume a synthetic long transcript" "Offline 400-record fixture; launch with -r until its final marker shows, median of 3, ms"
 chk_perf_resume_render() {
+  perf_skip_debug && return
   perf_collect
   if [[ -z ${PERF[resume_lines]:-} ]]; then
     printf '%s\t%s\t%s\t%s\t%s\n' resume_render n/a n/a n/a ms >>"$WORK/perf.tsv"

@@ -4,7 +4,7 @@
 
 # The shared session most checks run in. bypassPermissions keeps tool checks
 # free of prompts; the permission checks use their own default-mode session.
-MAIN_ARGS=(--model haiku --permission-mode bypassPermissions)
+MAIN_ARGS=(--model "$MODEL" --permission-mode bypassPermissions)
 ensure_main() { ensure main "${MAIN_ARGS[@]}"; }
 
 # main_turn <prompt> <ERE> [timeout]: a model turn in the shared session.
@@ -58,7 +58,7 @@ chk_launch_busy_idle() {
 RESUME_SEED_ID=
 seed_resume() {
   [[ -n $RESUME_SEED_ID ]] && return 0
-  rs_start resume --model haiku "Reply with exactly: PARITY_RESUME_SEED" || return 1
+  rs_start resume --model "$MODEL" "Reply with exactly: PARITY_RESUME_SEED" || return 1
   wait_for resume '^ *PARITY_RESUME_SEED *$' 60 || return 1
   wait_idle resume 30 || true
   RESUME_SEED_ID=$(jq -r .sessionId <<<"$(registry_entry "$(cwd_of resume)")")
@@ -137,16 +137,16 @@ chk_launch_resume_picker() {
 def launch.model_flag launch "--model" "Starts on the given model"
 chk_launch_model_flag() {
   ensure_main || { res FAIL "main session did not start"; return; }
-  if wait_for main '^\[[A-Za-z ]+\] +\[Haiku' 10; then
-    res PASS "--model haiku: $(footer | head -1)"
+  if wait_for main "^\\[[A-Za-z ]+\\] +\\[$MODEL_LABEL" 10; then
+    res PASS "--model $MODEL: $(footer | head -1)"
   else
-    res FAIL "footer does not show Haiku: $(footer | head -1)"
+    res FAIL "footer does not show $MODEL_LABEL: $(footer | head -1)"
   fi
 }
 
 def launch.permission_mode_flag launch "--permission-mode" "Starts in the given mode"
 chk_launch_permission_mode_flag() {
-  ensure plan --model haiku --permission-mode plan || { res FAIL "plan session did not start"; return; }
+  ensure plan --model "$MODEL" --permission-mode plan || { res FAIL "plan session did not start"; return; }
   if wait_for plan '^\[Plan\]' 10; then
     res PASS "--permission-mode plan: $(footer | head -1)"
   else
@@ -154,7 +154,7 @@ chk_launch_permission_mode_flag() {
   fi
 }
 
-ensure_agentflag() { ensure agentflag --model haiku --effort low --agent parity-agent; }
+ensure_agentflag() { ensure agentflag --model "$MODEL" --effort low --agent parity-agent; }
 
 def launch.effort_flag launch "--effort" "Starts at the given effort"
 chk_launch_effort_flag() {

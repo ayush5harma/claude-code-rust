@@ -10,6 +10,7 @@
   - [Troubleshooting](troubleshooting.md)
   - [Help](help.md)
 - [Development](development.md)
+  - [Live End-to-End Suite](parity.md)
 - [Architecture](architecture.md)
 - [Governance](governance.md)
 - [Changelog](changelog.md)

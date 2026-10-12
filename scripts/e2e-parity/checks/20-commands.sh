@@ -65,22 +65,22 @@ chk_cmd_inventory() {
 
 # ---------------------------------------------------------- session state
 
-def cmd.model commands "/model <id>" "Switches the session model"
+def cmd.model commands "/model <alias>" "Switches the session model"
 chk_cmd_model() {
   ensure_main || { res FAIL "main session did not start"; return; }
-  submit main "/model sonnet"
-  if ! wait_for main '\[Sonnet' 15; then
-    res FAIL "footer did not switch to Sonnet: $(footer | head -1)"
-    submit main "/model haiku"
+  submit main "/model $OTHER_MODEL"
+  if ! wait_for main "\\[$OTHER_LABEL" 15; then
+    res FAIL "footer did not switch to $OTHER_LABEL: $(footer | head -1)"
+    submit main "/model $MODEL"
     return
   fi
   local mid
   mid=$(footer | head -1)
-  submit main "/model haiku"
-  if wait_for main '\[Haiku' 15; then
-    res PASS "footer followed: $mid, then back to Haiku"
+  submit main "/model $MODEL"
+  if wait_for main "\\[$MODEL_LABEL" 15; then
+    res PASS "footer followed: $mid, then back to $MODEL_LABEL"
   else
-    res FAIL "switched to Sonnet but not back to Haiku: $(footer | head -1)"
+    res FAIL "switched to $OTHER_LABEL but not back to $MODEL_LABEL: $(footer | head -1)"
   fi
 }
 
@@ -108,7 +108,7 @@ chk_cmd_fast() {
     submit main "/fast off"
     res PASS "footer FAST:ON, then off again"
   elif wait_for main '[Ff]ast mode' 5; then
-    res PASS "reported for Haiku: $(first_match '[Ff]ast mode')"
+    res PASS "reported for $MODEL_LABEL: $(first_match '[Ff]ast mode')"
   else
     shot
     res FAIL "no fast-mode change or report: $(footer | head -1)"
@@ -196,13 +196,26 @@ chk_cmd_help() {
 def cmd.mcp commands "/mcp" "Server list with status"
 chk_cmd_mcp() {
   ensure_main || { res FAIL "main session did not start"; return; }
-  if open_view main /mcp 'total [0-9]+ +connected [0-9]+'; then
+  if open_view main /mcp 'total [1-9][0-9]* +connected [0-9]+'; then
     local summary
     summary=$(first_match 'total [0-9]+')
-    # The fixture's project server must be listed.
-    if wait_for main 'parity +connected' 5; then
+    # The fixture's project server must be listed. A profile with many
+    # servers pages the list ("1/30"), so walk down it.
+    local i
+    # Servers connect in the background and the tab shows a snapshot, so
+    # refresh (r) until nothing is pending.
+    for ((i = 0; i < 8; i++)); do
+      wait_for main 'pending 0 ' 8 && break
+      keys main r
+    done
+    for ((i = 0; i < 40; i++)); do
+      wait_for main 'parity +connected' 1 && break
+      keys main Down
+    done
+    if grep -Eq 'parity +connected' <<<"$SCREEN"; then
       res PASS "$summary; project server: $(first_match 'parity +connected')"
     else
+      shot
       res FAIL "$summary; the fixture's 'parity' server is not listed as connected"
     fi
   else
@@ -318,7 +331,7 @@ chk_cmd_btw() {
 def cmd.init commands "/init" "Writes CLAUDE.md for the project"
 chk_cmd_init() {
   local cwd end
-  rs_start init --model haiku --permission-mode bypassPermissions || { res FAIL "init session did not start"; return; }
+  rs_start init --model "$MODEL" --permission-mode bypassPermissions || { res FAIL "init session did not start"; return; }
   cwd=$(cwd_of init)
   submit init "/init" || { res FAIL "could not submit /init"; rs_stop init; return; }
   end=$(($(now) + 240))
@@ -337,7 +350,7 @@ chk_cmd_init() {
 def cmd.rewind commands "/rewind (stock: Esc Esc)" "Restores the conversation to an earlier message"
 chk_cmd_rewind() {
   # Its own session: a rewind restarts the session underneath.
-  rs_start rewind --model haiku --permission-mode bypassPermissions || { res FAIL "rewind session did not start"; return; }
+  rs_start rewind --model "$MODEL" --permission-mode bypassPermissions || { res FAIL "rewind session did not start"; return; }
   if ! turn rewind "Reply with exactly: PARITY_REWIND_ME" '^ *PARITY_REWIND_ME *$' 60; then
     res FAIL "seed turn failed"
     rs_stop rewind
@@ -432,7 +445,7 @@ chk_cmd_clear() {
 
 def cmd.exit commands "/exit" "Exits the TUI"
 chk_cmd_exit() {
-  rs_start exit --model haiku || { res FAIL "exit session did not start"; return; }
+  rs_start exit --model "$MODEL" || { res FAIL "exit session did not start"; return; }
   submit exit "/exit"
   sleep 2
   if pane_dead exit; then

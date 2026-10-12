@@ -171,7 +171,7 @@ submit() {
   type_text "$s" "$text"
   require_composer_text "$s" "$text" exact
   keys "$s" Enter
-  wait_for "$s" "$EMPTY_COMPOSER" 4
+  wait_for "$s" "$EMPTY_COMPOSER" 10
 }
 
 # ---------------------------------------------------------------- registry
@@ -276,6 +276,10 @@ rs_wait_ready() {
   wait_for "$s" "Loc: " 60 || return 1
   wait_registry "$(cwd_of "$s")" '.sessionId != null' 30 || return 1
   note_session "$(jq -r .sessionId <<<"$REG")"
+  # 2026-10-12: with the owner's SessionStart hooks and 30 MCP servers, an
+  # Enter pressed right after the footer appeared was lost (the draft stayed
+  # in the composer), so wait for the session to report idle as well.
+  wait_registry "$(cwd_of "$s")" '.status == "idle"' 30 || true
 }
 
 note_session() {
@@ -345,12 +349,14 @@ turn() {
 # ---------------------------------------------------------------- results
 
 declare -a CHECK_IDS=()
-declare -A CHECK_GROUP=() CHECK_NAME=() CHECK_STOCK=()
+declare -A CHECK_GROUP=() CHECK_NAME=() CHECK_STOCK=() CHECK_FILE=()
 CUR=
+CUR_FILE=
 
 # def <id> <group> <functionality> <stock behaviour>
 def() {
   CHECK_IDS+=("$1")
+  CHECK_FILE[$1]=$CUR_FILE
   CHECK_GROUP[$1]=$2
   CHECK_NAME[$1]=$3
   CHECK_STOCK[$1]=$4
