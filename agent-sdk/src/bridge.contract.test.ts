@@ -1105,6 +1105,29 @@ test("continue with no previous session starts a new session", async () => {
   } finally { await cleanup(); }
 });
 
+test("spawned bridge returns working diff for the connected session directory", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "claude-rs-bridge-diff-"));
+  const { bridge, cleanup } = ultracodeFixtureBridge();
+  try {
+    const { execFileSync } = await import("node:child_process");
+    execFileSync("git", ["-C", cwd, "init", "--quiet"]);
+    writeFileSync(join(cwd, "file with spaces.txt"), "base\n");
+    execFileSync("git", ["-C", cwd, "add", "."]);
+    execFileSync("git", ["-C", cwd, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "-m", "base"]);
+    writeFileSync(join(cwd, "file with spaces.txt"), "base\nchanged\n");
+    bridge.writeCommand({ command: "create_session", cwd, launch_settings: {} });
+    const connected = await nextMatching(bridge, event => event.event === "connected");
+    bridge.writeCommand({ command: "get_working_diff", session_id: connected.session_id, request_id: "diff-one" });
+    const result = await nextMatching(bridge, event => event.event === "working_diff");
+    assert.equal(result.request_id, "diff-one");
+    assert.equal(result.session_id, connected.session_id);
+    assert.match(JSON.stringify(result.files), /file with spaces\.txt[\s\S]*\+changed/);
+  } finally {
+    await cleanup();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("spawned bridge reports applied effort at startup, after caps and model changes, per turn and after resume", async () => {
   const { bridge, cleanup } = ultracodeFixtureBridge({ EFFORT_FIXTURE_CAP: "high" });
   const nextEffort = async (value: unknown) => {

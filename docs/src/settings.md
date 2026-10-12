@@ -90,6 +90,8 @@ Set `CLAUDE_CONFIG_DIR` before startup to use an isolated Claude profile. User s
 
 The Settings tab shows saved values. A running session can differ, because workspace trust, managed policy, model capabilities, startup arguments and session commands also apply. The Status tab and the chat footer show what the session is running with.
 
+Settings files that are symlinks to regular files can be read in the Permissions and Hooks panes. Editing a symlinked settings file is refused; change its source file through its owner instead.
+
 ## Reading the list
 
 Each row shows a setting and its value, and a counter such as `1/27` shows the position in the pane. Below the list, `Description:` explains the selected setting and a context line states where its value comes from at the selected scope:
@@ -276,6 +278,7 @@ These settings are User only: Disable filesystem isolation, Strict domain allowl
 | --- | --- | --- |
 | Definitions | `hooks` | See [Editing hooks](#editing-hooks). |
 | Disable all | `disableAllHooks` | Disables settings and plugin hooks, including status-line execution. |
+| Notices | `presentation.hookNotices` | `slow_and_failed` (default), `all` or `off`. Which finished hooks leave a line in the transcript; see [Hook notices](usage.md#hook-notices). An app preference, always saved for the user. |
 | Allowed HTTP URLs | `allowedHttpHookUrls` | One URL pattern per entry; `*` is a wildcard. An empty list blocks all HTTP hooks. |
 | Allowed environment variables | `httpHookAllowedEnvVars` | Variable names that HTTP hook headers may interpolate. |
 

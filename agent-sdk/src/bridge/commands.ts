@@ -571,10 +571,20 @@ export function parseCommandEnvelope(line: string): {
         return { command: "get_subagent_messages", session_id: expectString(raw, "session_id", "get_subagent_messages"), agent_id: expectString(raw, "agent_id", "get_subagent_messages") };
       case "stop_subagent_task":
         return { command: "stop_subagent_task", session_id: expectString(raw, "session_id", "stop_subagent_task"), agent_id: expectString(raw, "agent_id", "stop_subagent_task") };
+      case "get_working_diff":
+        return {
+          command: "get_working_diff",
+          session_id: expectString(raw, "session_id", "get_working_diff"),
+        };
       case "get_rewind_targets":
         return {
           command: "get_rewind_targets",
           session_id: expectString(raw, "session_id", "get_rewind_targets"),
+        };
+      case "export_session_history":
+        return {
+          command: "export_session_history",
+          session_id: expectString(raw, "session_id", "export_session_history"),
         };
       case "rewind":
         return {
@@ -599,6 +609,11 @@ export function parseCommandEnvelope(line: string): {
           ...(optionalBoolean(raw, "force", "reload_plugins") !== undefined
             ? { force: optionalBoolean(raw, "force", "reload_plugins") }
             : {}),
+        };
+      case "reload_skills_and_styles":
+        return {
+          command: "reload_skills_and_styles",
+          session_id: expectString(raw, "session_id", "reload_skills_and_styles"),
         };
       case "mcp_status":
       // Rust historically sends `get_mcp_snapshot`; normalize it to the bridge-internal command.

@@ -19,6 +19,10 @@ The PR workflow runs this suite on Ubuntu, Windows, and macOS, and requires all 
 | `resize-ready` | Streams a completed transcript for scrollback checks across zoom and reading-mode resizes. |
 | `resize-replay` | Emits a large completed reply in one chunk for interruption and replay-budget checks. |
 | `resize-code` | Completes the first reply, then holds a second reply inside an unfinished code block. |
+| `native-diff` | Emits a retained session tool diff and answers `/diff` Git refreshes with a separate working-tree file. |
+| `hook-activity` | Sends a slow and a fast SessionStart hook right after connecting, then answers the first prompt after a failed PreToolUse hook. |
+| `export` | Answers `export_session_history` with a short conversation (messages, a Bash call with output, an Edit with a diff) in two chunks under the command's request id. |
+| `reload` | Answers the first `reload_skills_and_styles` command with two skills and three output styles, and every later one with a `slash_error`. |
 | `render-corpus` | Resumes the shared render corpus as history, then streams its long reply in 200 chunks on the first prompt. |
 
 `FAKE_BRIDGE_JOURNAL` records commands, events, and the `reply-held` coordination point as JSONL. `FAKE_BRIDGE_RELEASE_FILE` lets a test release a held turn after exercising the UI. Reply length and interval remain configurable with `FAKE_BRIDGE_LINES`, `FAKE_BRIDGE_FOLLOW_UP_LINES`, and `FAKE_BRIDGE_INTERVAL_MS`.

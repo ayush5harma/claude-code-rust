@@ -17,6 +17,7 @@ import type {
   RewindTarget,
 } from "./types.js";
 import { parseCommandEnvelope } from "./bridge/commands.js";
+import { workingDiff } from "./bridge/git_diff.js";
 import {
   writeEvent,
   failConnection,
@@ -965,6 +966,14 @@ async function handleCommand(
   }
 
   switch (command.command) {
+    case "get_working_diff": {
+      const session = sessionById(command.session_id);
+      const result = session && !session.closing
+        ? await workingDiff(session.cwd)
+        : { files: [], error: "No active session is available." };
+      writeEvent({ event: "working_diff", session_id: command.session_id, ...result }, requestId);
+      return;
+    }
     case "initialize":
     case "create_session":
     case "resume_session":
@@ -1017,6 +1026,7 @@ async function handleCommand(
     case "refresh_ultracode":
     case "set_fast_mode":
     case "reload_plugins":
+    case "reload_skills_and_styles":
       await handleSessionControlCommand(command, requestId, {
         buildPromptUserMessage,
         applySessionEffort,
@@ -1037,6 +1047,7 @@ async function handleCommand(
     case "get_context_usage":
     case "get_usage":
     case "get_rewind_targets":
+    case "export_session_history":
     case "rewind":
       await handleSessionDataCommand(command, requestId, {
         generatePersistedSessionTitle,
