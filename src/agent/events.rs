@@ -164,6 +164,12 @@ pub enum ClientEvent {
     },
     /// Session runtime plugin reload failed after dispatch.
     RuntimeReloadFailed { session_id: String, message: String },
+    /// Skills and output styles were re-read from disk (names the SDK reported).
+    SkillsAndStylesReloaded {
+        session_id: String,
+        skill_names: Vec<String>,
+        output_style_names: Vec<String>,
+    },
     /// Custom slash command replaced the active session.
     SessionReplaced {
         session_id: model::SessionId,
@@ -265,6 +271,7 @@ impl ClientEvent {
             | Self::RuntimeReloadCompleted { session_id }
             | Self::RuntimeReloadHeld { session_id, .. }
             | Self::RuntimeReloadFailed { session_id, .. }
+            | Self::SkillsAndStylesReloaded { session_id, .. }
             | Self::SettingsResultReceived { session_id, .. }
             | Self::StatusSnapshotReceived { session_id, .. }
             | Self::ContextUsageReceived { session_id, .. }

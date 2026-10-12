@@ -1016,6 +1016,7 @@ async function handleCommand(
     case "refresh_ultracode":
     case "set_fast_mode":
     case "reload_plugins":
+    case "reload_skills_and_styles":
       await handleSessionControlCommand(command, requestId, {
         buildPromptUserMessage,
         applySessionEffort,

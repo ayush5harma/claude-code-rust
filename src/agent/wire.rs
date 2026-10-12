@@ -182,6 +182,9 @@ pub enum BridgeCommand {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         force: bool,
     },
+    ReloadSkillsAndStyles {
+        session_id: String,
+    },
     GetMcpSnapshot {
         session_id: String,
     },
@@ -249,6 +252,7 @@ impl BridgeCommand {
             Self::GetRewindTargets { .. } => "get_rewind_targets",
             Self::Rewind { .. } => "rewind",
             Self::ReloadPlugins { .. } => "reload_plugins",
+            Self::ReloadSkillsAndStyles { .. } => "reload_skills_and_styles",
             Self::GetMcpSnapshot { .. } => "get_mcp_snapshot",
             Self::McpReconnect { .. } => "mcp_reconnect",
             Self::McpToggle { .. } => "mcp_toggle",
@@ -290,6 +294,7 @@ impl BridgeCommand {
             | Self::GetRewindTargets { session_id }
             | Self::Rewind { session_id, .. }
             | Self::ReloadPlugins { session_id, .. }
+            | Self::ReloadSkillsAndStyles { session_id }
             | Self::GetMcpSnapshot { session_id }
             | Self::McpReconnect { session_id, .. }
             | Self::McpToggle { session_id, .. }
@@ -335,6 +340,7 @@ impl BridgeCommand {
             | Self::GetRewindTargets { .. }
             | Self::Rewind { .. }
             | Self::ReloadPlugins { .. }
+            | Self::ReloadSkillsAndStyles { .. }
             | Self::GetMcpSnapshot { .. }
             | Self::McpReconnect { .. }
             | Self::McpToggle { .. }
@@ -503,6 +509,11 @@ pub enum BridgeEvent {
         session_id: String,
         message: String,
     },
+    SkillsAndStylesReloaded {
+        session_id: String,
+        skills: Vec<String>,
+        output_styles: Vec<String>,
+    },
     SessionReplaced {
         session_id: String,
         cwd: String,
@@ -591,6 +602,7 @@ impl BridgeEvent {
             Self::RuntimeReloadCompleted { .. } => "runtime_reload_completed",
             Self::RuntimeReloadHeld { .. } => "runtime_reload_held",
             Self::RuntimeReloadFailed { .. } => "runtime_reload_failed",
+            Self::SkillsAndStylesReloaded { .. } => "skills_and_styles_reloaded",
             Self::SessionReplaced { .. } => "session_replaced",
             Self::Initialized { .. } => "initialized",
             Self::SessionsListed { .. } => "sessions_listed",
@@ -631,6 +643,7 @@ impl BridgeEvent {
             | Self::RuntimeReloadCompleted { session_id, .. }
             | Self::RuntimeReloadHeld { session_id, .. }
             | Self::RuntimeReloadFailed { session_id, .. }
+            | Self::SkillsAndStylesReloaded { session_id, .. }
             | Self::SessionReplaced { session_id, .. }
             | Self::SettingsResult { session_id, .. }
             | Self::StatusSnapshot { session_id, .. }
@@ -677,6 +690,7 @@ impl BridgeEvent {
             | Self::RuntimeReloadCompleted { .. }
             | Self::RuntimeReloadHeld { .. }
             | Self::RuntimeReloadFailed { .. }
+            | Self::SkillsAndStylesReloaded { .. }
             | Self::SessionReplaced { .. }
             | Self::Initialized { .. }
             | Self::SessionsListed { .. }
@@ -1149,6 +1163,47 @@ mod tests {
                 "session_id": "s1"
             })
         );
+    }
+
+    #[test]
+    fn reload_skills_and_styles_command_serializes_snake_case() {
+        let env = CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::ReloadSkillsAndStyles { session_id: "s1".to_owned() },
+        };
+
+        let json = serde_json::to_value(&env).expect("serialize");
+
+        assert_eq!(
+            json,
+            serde_json::json!({ "command": "reload_skills_and_styles", "session_id": "s1" })
+        );
+        assert_eq!(env.command.session_id(), Some("s1"));
+    }
+
+    #[test]
+    fn skills_and_styles_reloaded_event_deserializes_bridge_payload() {
+        let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "skills_and_styles_reloaded",
+            "session_id": "s1",
+            "skills": ["deploy", "lint"],
+            "output_styles": ["default", "Explanatory", "mine"]
+        }))
+        .expect("deserialize reload result");
+
+        assert_eq!(
+            decoded.event,
+            BridgeEvent::SkillsAndStylesReloaded {
+                session_id: "s1".to_owned(),
+                skills: vec!["deploy".to_owned(), "lint".to_owned()],
+                output_styles: vec![
+                    "default".to_owned(),
+                    "Explanatory".to_owned(),
+                    "mine".to_owned()
+                ],
+            }
+        );
+        assert_eq!(decoded.event.session_id(), Some("s1"));
     }
 
     #[test]

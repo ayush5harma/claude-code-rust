@@ -1855,3 +1855,53 @@ fn session_title_follows_the_child_until_another_session_connects() {
     app.session_runtime.activate_session(model::SessionId::new("other-session"));
     assert_eq!(app.session_runtime.session_title, None);
 }
+
+#[test]
+fn skills_and_styles_reload_result_is_noticed_and_releases_the_pending_reload() {
+    let mut app = make_test_app();
+    app.status = AppStatus::CommandPending;
+    app.turn.pending_command_label = Some("Reloading skills and output styles...".into());
+    app.turn.pending_command_ack = Some(PendingCommandAck::SkillsAndStylesReload);
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SkillsAndStylesReloaded {
+            session_id: "test-session".to_owned(),
+            skill_names: vec!["deploy".to_owned(), "lint".to_owned()],
+            output_style_names: vec![
+                "default".to_owned(),
+                "Explanatory".to_owned(),
+                "mine".to_owned(),
+            ],
+        },
+    );
+
+    assert!(matches!(app.status, AppStatus::Ready));
+    assert!(app.turn.pending_command_ack.is_none());
+    let last = app.transcript.messages.last().expect("reload notice");
+    let Some(MessageBlock::Notice(notice)) = last.blocks.first() else {
+        panic!("expected a notice block");
+    };
+    assert_eq!(notice.severity, SystemSeverity::Info);
+    assert_eq!(notice.text.text, "Reloaded skills (2) and output styles (3)");
+}
+
+#[test]
+fn skills_and_styles_reload_result_leaves_an_unrelated_pending_command_alone() {
+    let mut app = make_test_app();
+    app.status = AppStatus::CommandPending;
+    app.turn.pending_command_label = Some("Switching mode...".into());
+    app.turn.pending_command_ack = Some(PendingCommandAck::CurrentMode);
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SkillsAndStylesReloaded {
+            session_id: "test-session".to_owned(),
+            skill_names: Vec::new(),
+            output_style_names: Vec::new(),
+        },
+    );
+
+    assert!(matches!(app.status, AppStatus::CommandPending));
+    assert!(matches!(app.turn.pending_command_ack, Some(PendingCommandAck::CurrentMode)));
+}
