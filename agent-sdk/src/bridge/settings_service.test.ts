@@ -467,6 +467,24 @@ test("default agent is chosen from SDK inventory and scoped reset restores the s
 });
 
 
+test("hook notices are a user-scoped app preference that saves only its three modes beside the Hooks settings", async () => {
+  const appFile = path.join(root, "hook-notices.json");
+  await fs.writeFile(appFile, JSON.stringify({ presentation: { copyFullResponse: true } }));
+  const inspect = () => inspectSettings(cwd, [], [], appFile);
+  const shown = await inspect();
+  const row = shown.catalog.find(row => row.id === "presentation.hookNotices");
+  assert.ok(row);
+  assert.deepEqual(row.options, ["slow_and_failed", "all", "off"]);
+  assert.deepEqual(row.writable_scopes, ["user"]);
+  assert.equal(row.application, "host");
+  assert.equal(shown.values.find(value => value.id === row.id)?.value, undefined);
+  assert.equal(row.category, "hooks");
+  assert.equal((await mutateSetting(cwd, mutation(shown, row.id, "user", "loud"), [], [], appFile)).persistence, "failure");
+  const saved = await mutateSetting(cwd, mutation(shown, row.id, "user", "off"), [], [], appFile);
+  assert.equal(saved.persistence, "saved", saved.error ?? "save");
+  assert.deepEqual(JSON.parse(await fs.readFile(appFile, "utf8")), { presentation: { copyFullResponse: true, hookNotices: "off" } });
+});
+
 test("notification controls save, reset and reject concurrent edits without changing mobile or unrelated preferences", async () => {
   const appFile = path.join(root, "notification-settings.json");
   await fs.writeFile(appFile, JSON.stringify({ notifications: { future: 7 }, presentation: { copyFullResponse: true }, updates: { skipped_version: "keep" } }));

@@ -131,6 +131,19 @@ The bridge reads `getSessionInfo().customTitle` after a connect, a replacement, 
 
 A launch name (`-n, --name`) travels in the launch settings and the bridge applies it, because only the bridge knows which SDK path fits: the SDK's `title` option for a new or forked session, whose transcript file does not exist until its first turn and so cannot be renamed yet, and `renameSession()` for a resumed session, before it connects, because the SDK keeps a resumed session's persisted title over `title`. Either way the title reaches Rust through the same `getSessionInfo()` reads.
 
+### Hook activity
+
+| Concern | Owner | Location |
+| --- | --- | --- |
+| Asking the SDK for hook events (`includeHookEvents`) and normalising `hook_started`, `hook_progress` and `hook_response` into one `hook_activity` session update | Bridge | `agent-sdk/src/bridge/hook_activity.ts` |
+| Hook runs, their durations, the notice rule and its threshold | Rust | `src/app/state/hook_runs.rs` |
+| Which finished hooks leave a notice (`presentation.hookNotices`) | Bridge catalog, Rust reads the snapshot | `settings_catalog.ts`, `src/app/events/hooks.rs` |
+| Launch milestones and their placement on one timeline | Rust | `src/app/state/startup_timeline.rs` |
+
+The bridge forwards what the SDK declares: hook id, name and event, phase, outcome, exit code and a bounded output excerpt (stderr for a failure, combined output otherwise). It reads no hook files or settings. The SDK declares no hook timing, so each update carries the epoch milliseconds at which the bridge saw it, and Rust derives a duration from the started and finished observations. SessionStart hooks finish before the SDK answers its initialize request, and Rust drops session updates for a session it does not know yet, so the bridge holds hook updates until it sends the connect event and sends them right after it.
+
+Rust keeps the last 200 runs of the active session and clears them when the session id changes or the conversation resets. A run that finishes is judged once for a notice. Until the first settings snapshot is acknowledged it waits, so startup never decides from a guessed preference. The Startup section of the Status tab places the bridge's wall-clock stamps on the monotonic timeline through the wall-clock reading taken at app start, and counts only SessionStart hooks that finished before the connect.
+
 ### Notifications
 
 | Concern | Owner | Location |

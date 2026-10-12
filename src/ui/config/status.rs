@@ -3,6 +3,7 @@
 
 use super::common::{detail_kv, section_heading};
 use crate::app::App;
+use crate::app::format_elapsed;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -89,6 +90,59 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
     let sources = setting_sources(app);
     lines.push(detail_kv("Setting sources", &sources, Color::White));
 
+    lines.push(Line::default());
+    lines.extend(startup_lines(app));
+    lines.push(Line::default());
+    lines.extend(hook_lines(app));
+
+    lines
+}
+
+/// Launch milestones the app measured itself, as offsets from app start.
+fn startup_lines(app: &App) -> Vec<Line<'static>> {
+    let mut lines = vec![section_heading("Startup")];
+    let milestones = app.startup.timeline.milestones();
+    if milestones.is_empty() {
+        lines.push(detail_kv("Measured", "nothing yet", Color::White));
+    }
+    for milestone in milestones {
+        let note = milestone.note.map_or_else(String::new, |note| format!(" ({note})"));
+        let value = format!("+{}{note}", format_elapsed(milestone.at));
+        lines.push(detail_kv(milestone.label, &value, Color::White));
+    }
+    lines
+}
+
+/// Count, total time and slowest runs of the active session's hooks.
+fn hook_lines(app: &App) -> Vec<Line<'static>> {
+    let mut lines = vec![section_heading("Hooks this session")];
+    let summary = app.session_runtime.hook_runs.summary();
+    if summary.runs == 0 {
+        lines.push(detail_kv("Runs", "none reported", Color::White));
+        return lines;
+    }
+    let mut count = if summary.dropped == 0 {
+        summary.runs.to_string()
+    } else {
+        format!("{} kept, {} older not kept", summary.runs, summary.dropped)
+    };
+    if summary.failed > 0 {
+        count = format!("{count} ({} failed)", summary.failed);
+    }
+    let mut parts = vec![count];
+    if summary.runs > summary.finished {
+        parts.push(format!("{} still running", summary.runs - summary.finished));
+    }
+    parts.push(format!("{} in total", format_elapsed(summary.total)));
+    lines.push(detail_kv("Runs", &parts.join(", "), Color::White));
+    for (rank, run) in summary.slowest.iter().flatten().enumerate() {
+        let took = run.duration().map_or_else(String::new, format_elapsed);
+        lines.push(detail_kv(
+            &format!("Slowest {}", rank + 1),
+            &format!("{} {took}", run.label()),
+            Color::White,
+        ));
+    }
     lines
 }
 
@@ -232,6 +286,80 @@ mod tests {
         assert!(text.contains("Session"));
         assert!(text.contains("Model"));
         assert!(text.contains("Settings"));
+    }
+
+    fn kv_rows(app: &App) -> Vec<String> {
+        lines_to_string(&status_lines(app)).lines().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn startup_section_lists_only_the_milestones_measured_in_order() {
+        use crate::app::StartupTimeline;
+        use std::time::{Duration, Instant};
+        let mut app = App::test_default();
+        let rows = kv_rows(&app);
+        assert!(rows.iter().any(|row| row == "Startup"));
+        assert!(rows.iter().any(|row| row == "Measured: nothing yet"));
+
+        let origin = Instant::now();
+        app.startup.timeline = StartupTimeline::at(origin, 1_760_000_000_000);
+        app.startup.timeline.mark_bridge_launched(origin + Duration::from_millis(12));
+        app.startup.timeline.mark_connected(origin + Duration::from_millis(2_450));
+        app.startup.timeline.note_hook_finished("SessionStart", 1_760_000_002_400);
+        let rows = kv_rows(&app);
+        let at = |label: &str| rows.iter().position(|row| row.starts_with(label));
+        assert_eq!(
+            rows.iter().find(|row| row.starts_with("Bridge launched")).map(String::as_str),
+            Some("Bridge launched: +12 ms")
+        );
+        assert_eq!(
+            rows.iter().find(|row| row.starts_with("SessionStart hooks")).map(String::as_str),
+            Some("SessionStart hooks finished: +2.4 s (1 hook)")
+        );
+        assert_eq!(
+            rows.iter().find(|row| row.starts_with("SDK connected")).map(String::as_str),
+            Some("SDK connected: +2.5 s")
+        );
+        assert!(at("Bridge launched") < at("SessionStart hooks"));
+        assert!(at("SessionStart hooks") < at("SDK connected"));
+        assert_eq!(at("Ready for input"), None, "nothing is shown for a moment not yet measured");
+    }
+
+    #[test]
+    fn hooks_section_summarises_count_total_and_the_slowest_three() {
+        use crate::agent::model::{HookActivity, HookOutcome, HookPhase};
+        let mut app = App::test_default();
+        assert!(kv_rows(&app).iter().any(|row| row == "Runs: none reported"));
+
+        let mut report = |id: &str, name: &str, phase, at, outcome| {
+            app.session_runtime.hook_runs.record(&HookActivity {
+                hook_id: id.to_owned(),
+                hook_name: name.to_owned(),
+                hook_event: name.split(':').next().unwrap_or_default().to_owned(),
+                phase,
+                outcome,
+                exit_code: None,
+                output: None,
+                observed_at_ms: at,
+            });
+        };
+        for (id, name, took, outcome) in [
+            ("a", "SessionStart:startup", 1_200, HookOutcome::Success),
+            ("b", "SessionStart:compact", 40, HookOutcome::Success),
+            ("c", "PreToolUse:Bash", 300, HookOutcome::Error),
+            ("d", "Stop:*", 900, HookOutcome::Success),
+        ] {
+            report(id, name, HookPhase::Started, 5_000, None);
+            report(id, name, HookPhase::Finished, 5_000 + took, Some(outcome));
+        }
+        report("e", "PostToolUse:Edit", HookPhase::Started, 9_000, None);
+        let rows = kv_rows(&app);
+        let row = |label: &str| rows.iter().find(|row| row.starts_with(label)).map(String::as_str);
+        assert_eq!(row("Runs"), Some("Runs: 5 (1 failed), 1 still running, 2.4 s in total"));
+        assert_eq!(row("Slowest 1"), Some("Slowest 1: SessionStart:startup 1.2 s"));
+        assert_eq!(row("Slowest 2"), Some("Slowest 2: Stop:* 900 ms"));
+        assert_eq!(row("Slowest 3"), Some("Slowest 3: PreToolUse:Bash 300 ms"));
+        assert_eq!(row("Slowest 4"), None);
     }
 
     #[test]

@@ -34,6 +34,7 @@ The fullscreen settings surface has its own keys for tabs, panes, search and edi
 | `Shift+Enter`, `Ctrl+Enter` | Insert newline. |
 | `Esc` | Cancel the active assistant turn. |
 | `Ctrl+C` | Clear the local draft, or quit when the draft is empty. |
+| `Ctrl+F` | Search retained transcript text. |
 | `Tab` | Focus prompts or accept suggestions. |
 | `Shift+Tab` | Cycle mode. |
 | `Up` | Move up through text, or recall the latest user message when the input is empty. |
@@ -49,7 +50,7 @@ Readline-style bindings are also supported:
 | Shortcut | Action |
 | --- | --- |
 | `Ctrl+A`, `Ctrl+E` | Move to line start or line end. |
-| `Ctrl+B`, `Ctrl+F` | Move one character. |
+| `Ctrl+B` | Move one character left. |
 | `Ctrl+D` | Delete after cursor. |
 | `Ctrl+H` | Delete before cursor. |
 | `Ctrl+K` | Kill to line end. |

@@ -28,6 +28,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEventFamily::Session => session::handle(app, event),
         ClientEventFamily::Host => host::handle(app, event),
     }
+    crate::app::search::refresh(app);
 }
 
 fn is_stale_session_event(app: &App, event: &ClientEvent) -> bool {
@@ -93,8 +94,11 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         | ClientEvent::AuthCompleted { .. }
         | ClientEvent::LogoutCompleted
         | ClientEvent::StatusSnapshotReceived { .. }
+        | ClientEvent::WorkingDiffReceived { .. }
         | ClientEvent::ContextUsageReceived { .. }
         | ClientEvent::RewindTargetsReceived { .. }
+        | ClientEvent::SessionAgentsResultReceived { .. }
+        | ClientEvent::SessionHistoryChunk { .. }
         | ClientEvent::RewindResultReceived { .. }
         | ClientEvent::FatalError(_) => ClientEventFamily::Session,
         ClientEvent::UpdateCheckCompleted { .. }
@@ -103,6 +107,7 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         | ClientEvent::RuntimeReloadCompleted { .. }
         | ClientEvent::RuntimeReloadHeld { .. }
         | ClientEvent::RuntimeReloadFailed { .. }
+        | ClientEvent::SkillsAndStylesReloaded { .. }
         | ClientEvent::StructuredUsageReceived { .. }
         | ClientEvent::UsageRefreshStarted { .. }
         | ClientEvent::UsageSnapshotReceived { .. }

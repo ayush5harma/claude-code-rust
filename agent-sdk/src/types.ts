@@ -431,6 +431,18 @@ export type SessionUpdate =
     }
   | { type: "prompt_suggestion_update"; suggestion: string }
   | { type: "session_title_update"; title: string }
+  | {
+      type: "hook_activity";
+      hook_id: string;
+      hook_name: string;
+      hook_event: string;
+      phase: "started" | "progress" | "finished";
+      outcome?: "success" | "error" | "cancelled";
+      exit_code?: number;
+      output?: string;
+      /** Epoch milliseconds at which the bridge saw the SDK message; the SDK declares no hook timing. */
+      observed_at_ms: number;
+    }
   | { type: "runtime_session_state_update"; state: RuntimeSessionState }
   | ({ type: "settings_parse_error" } & SettingsParseErrorUpdate)
   | { type: "session_status_update"; status: "requesting" | "idle" }
@@ -874,6 +886,7 @@ export interface SettingsResult {
 }
 
 export type BridgeCommand =
+  | { command: "get_working_diff"; session_id: string }
   | { command: "inspect_settings"; session_id: string; app_settings_path?: string }
   | { command: "mutate_setting"; session_id: string; app_settings_path?: string; mutation: SettingsMutation }
   | {
@@ -1011,8 +1024,15 @@ export type BridgeCommand =
       command: "get_usage";
       session_id: string;
     }
+  | { command: "list_session_agents"; session_id: string }
+  | { command: "get_subagent_messages"; session_id: string; agent_id: string }
+  | { command: "stop_subagent_task"; session_id: string; agent_id: string }
   | {
       command: "get_rewind_targets";
+      session_id: string;
+    }
+  | {
+      command: "export_session_history";
       session_id: string;
     }
   | {
@@ -1026,6 +1046,10 @@ export type BridgeCommand =
       command: "reload_plugins";
       session_id: string;
       force?: boolean;
+    }
+  | {
+      command: "reload_skills_and_styles";
+      session_id: string;
     }
   | {
       command: "mcp_status";
@@ -1111,6 +1135,7 @@ export interface SideQuestionMetadata {
 }
 
 export type BridgeEvent =
+  | { event: "working_diff"; session_id: string; files: Array<{ path: string; status: string; diff: string }>; error?: string }
   | { event: "settings_result"; session_id: string; result: SettingsResult }
   | {
       event: "connected";
@@ -1236,6 +1261,12 @@ export type BridgeEvent =
     }
   | { event: "runtime_reload_failed"; session_id: string; message: string }
   | {
+      event: "skills_and_styles_reloaded";
+      session_id: string;
+      skills: string[];
+      output_styles: string[];
+    }
+  | {
       event: "session_replaced";
       session_id: string;
       cwd: string;
@@ -1264,9 +1295,26 @@ export type BridgeEvent =
       error?: string;
     }
   | {
+      event: "session_agents_result";
+      session_id: string;
+      action: "list_session_agents" | "get_subagent_messages" | "stop_subagent_task";
+      agent_id?: string;
+      agent_ids: string[];
+      messages: { role: "user" | "assistant"; text: string }[];
+      error?: string;
+    }
+  | {
       event: "rewind_targets";
       session_id: string;
       targets: RewindTarget[];
+      error?: string;
+    }
+  | {
+      event: "session_history_export";
+      session_id: string;
+      updates: SessionUpdate[];
+      last: boolean;
+      omitted_updates: number;
       error?: string;
     }
   | {
