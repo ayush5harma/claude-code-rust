@@ -1025,6 +1025,10 @@ export type BridgeCommand =
       session_id: string;
     }
   | {
+      command: "export_session_history";
+      session_id: string;
+    }
+  | {
       command: "rewind";
       session_id: string;
       target_user_message_id: string;
@@ -1035,6 +1039,10 @@ export type BridgeCommand =
       command: "reload_plugins";
       session_id: string;
       force?: boolean;
+    }
+  | {
+      command: "reload_skills_and_styles";
+      session_id: string;
     }
   | {
       command: "mcp_status";
@@ -1245,6 +1253,12 @@ export type BridgeEvent =
     }
   | { event: "runtime_reload_failed"; session_id: string; message: string }
   | {
+      event: "skills_and_styles_reloaded";
+      session_id: string;
+      skills: string[];
+      output_styles: string[];
+    }
+  | {
       event: "session_replaced";
       session_id: string;
       cwd: string;
@@ -1275,6 +1289,14 @@ export type BridgeEvent =
       event: "rewind_targets";
       session_id: string;
       targets: RewindTarget[];
+      error?: string;
+    }
+  | {
+      event: "session_history_export";
+      session_id: string;
+      updates: SessionUpdate[];
+      last: boolean;
+      omitted_updates: number;
       error?: string;
     }
   | {

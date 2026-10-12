@@ -94,6 +94,7 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         | ClientEvent::StatusSnapshotReceived { .. }
         | ClientEvent::ContextUsageReceived { .. }
         | ClientEvent::RewindTargetsReceived { .. }
+        | ClientEvent::SessionHistoryChunk { .. }
         | ClientEvent::RewindResultReceived { .. }
         | ClientEvent::FatalError(_) => ClientEventFamily::Session,
         ClientEvent::UpdateCheckCompleted { .. }
@@ -102,6 +103,7 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         | ClientEvent::RuntimeReloadCompleted { .. }
         | ClientEvent::RuntimeReloadHeld { .. }
         | ClientEvent::RuntimeReloadFailed { .. }
+        | ClientEvent::SkillsAndStylesReloaded { .. }
         | ClientEvent::StructuredUsageReceived { .. }
         | ClientEvent::UsageRefreshStarted { .. }
         | ClientEvent::UsageSnapshotReceived { .. }

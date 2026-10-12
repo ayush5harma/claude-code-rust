@@ -30,6 +30,26 @@ async function write(scope: SettingsScope, value: Json): Promise<void> {
   await fs.writeFile(source.path, JSON.stringify(value));
 }
 
+test("settings inspection reads a symlinked regular file but mutation leaves the link and target untouched", async () => {
+  const target = path.join(root, "nix-settings.json");
+  const saved = { permissions: { allow: ["Read(*)"] }, hooks: { SessionStart: [{ hooks: [{ type: "command", command: "true" }] }] } };
+  await fs.writeFile(target, JSON.stringify(saved));
+  const link = path.join(process.env.CLAUDE_CONFIG_DIR ?? "", "settings.json");
+  await fs.symlink(target, link);
+
+  const snapshot = await inspectSettings(cwd);
+  const user = snapshot.sources.find(source => source.scope === "user");
+  assert.equal(user?.status, "valid");
+  assert.deepEqual(user.values.find(value => value.id === "permissions.allow")?.value, ["Read(*)"]);
+  assert.deepEqual(user.values.find(value => value.id === "hooks")?.value, saved.hooks);
+
+  const result = await mutateSetting(cwd, mutation(snapshot, "permissions.allow", "user"));
+  assert.equal(result.persistence, "failure");
+  assert.match(result.error ?? "", /regular file/);
+  assert.equal((await fs.lstat(link)).isSymbolicLink(), true);
+  assert.deepEqual(JSON.parse(await fs.readFile(target, "utf8")), saved);
+});
+
 test("automatic updates are personal app preferences with targeted saves, reset and conflicts", async () => {
   const appFile = path.join(root, "updater-settings.json");
   await write("user", { updates: { autoInstall: true }, future: "Claude data" });

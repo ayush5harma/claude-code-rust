@@ -44,10 +44,31 @@ pub(crate) fn session_launch_settings_for_reason(
     let config = Box::new(app.startup.session_config().clone());
     match reason {
         SessionStartReason::Logout => SessionLaunchSettings { config, ..Default::default() },
+        SessionStartReason::Rewind => {
+            let current_model = app.session_runtime.current_model.as_ref();
+            SessionLaunchSettings {
+                model: current_model.filter(|model| model.is_authoritative).map(|model| {
+                    model
+                        .requested_id
+                        .as_ref()
+                        .or(model.catalog_id.as_ref())
+                        .unwrap_or(&model.resolved_id)
+                        .clone()
+                }),
+                permission_mode: app
+                    .session_runtime
+                    .mode
+                    .as_ref()
+                    .map(|mode| mode.current_mode_id.clone()),
+                effort: app.session_effort(),
+                agent: app.startup.session_options().and_then(|options| options.agent.clone()),
+                config,
+                ..Default::default()
+            }
+        }
         SessionStartReason::Startup
         | SessionStartReason::NewSession
         | SessionStartReason::Resume
-        | SessionStartReason::Rewind
         | SessionStartReason::Login => {
             let options = app.startup.session_options();
             SessionLaunchSettings {
@@ -166,6 +187,45 @@ mod tests {
     use clap::Parser;
 
     #[test]
+    fn rewind_uses_current_model_mode_and_effort_after_startup_choices_change() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "claude-rs",
+            "--model",
+            "opus",
+            "--permission-mode",
+            "plan",
+            "--effort",
+            "high",
+        ])
+        .expect("CLI");
+        let mut app = App::test_default();
+        app.startup = crate::app::state::StartupState::from_cli(&cli);
+        app.startup.complete_launch();
+        app.session_runtime.current_model = Some(
+            crate::agent::model::CurrentModel::new("claude-haiku-5-5", "Haiku", "Haiku")
+                .requested_id("haiku")
+                .authoritative(true),
+        );
+        app.session_runtime.mode = Some(crate::app::state::ModeState {
+            current_mode_id: "bypassPermissions".to_owned(),
+            current_mode_name: "Bypass Permissions".to_owned(),
+            available_modes: vec![],
+        });
+        app.session_runtime
+            .config_options
+            .insert("effortLevel".to_owned(), serde_json::Value::String("medium".to_owned()));
+        let launch = session_launch_settings_for_reason(&app, SessionStartReason::Rewind);
+        assert_eq!(launch.model.as_deref(), Some("haiku"));
+        assert_eq!(launch.permission_mode.as_deref(), Some("bypassPermissions"));
+        assert_eq!(launch.effort, Some(EffortLevel::Medium));
+        assert_eq!(
+            session_launch_settings_for_reason(&app, SessionStartReason::NewSession).model,
+            None
+        );
+    }
+
+    #[test]
     fn explicit_cli_choices_apply_until_startup_completes() {
         let cli = crate::Cli::try_parse_from([
             "claude-rs",
@@ -220,10 +280,17 @@ mod tests {
             config
         );
         app.startup.complete_launch();
+        assert_eq!(
+            session_launch_settings_for_reason(&app, SessionStartReason::Rewind),
+            SessionLaunchSettings {
+                model: Some("test-model".to_owned()),
+                config: Box::new(config.clone()),
+                ..Default::default()
+            }
+        );
         for reason in [
             SessionStartReason::NewSession,
             SessionStartReason::Resume,
-            SessionStartReason::Rewind,
             SessionStartReason::Login,
             SessionStartReason::Logout,
         ] {

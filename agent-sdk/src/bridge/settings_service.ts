@@ -26,10 +26,12 @@ function sourcePaths(cwd: string): Record<SettingsScope, string> {
   };
 }
 type Document = { status: "missing" | "valid" | "invalid" | "unreadable"; document?: Record<string, Json>; raw?: string; error?: string; mode?: number };
-async function readDocument(file: string): Promise<Document> {
+async function readDocument(file: string, forWrite = false): Promise<Document> {
   try {
-    const stat = await fs.lstat(file);
-    if (!stat.isFile() || stat.isSymbolicLink()) return { status: "unreadable", error: "Settings path must be a regular file." };
+    const entry = await fs.lstat(file);
+    if (entry.isSymbolicLink() && forWrite) return { status: "unreadable", error: "Settings path must be a regular file." };
+    const stat = entry.isSymbolicLink() ? await fs.stat(file) : entry;
+    if (!stat.isFile()) return { status: "unreadable", error: "Settings path must be a regular file." };
     const raw = await fs.readFile(file, "utf8");
     try {
       const document: unknown = JSON.parse(raw);
@@ -127,7 +129,7 @@ async function writeTarget(file: string, setting: SettingDescriptor, mutation: S
   const lock = await fs.open(lockPath, "wx", 0o600);
   try {
     for (let attempt = 0; attempt < 3; attempt++) {
-      const read = await readDocument(file);
+      const read = await readDocument(file, true);
       if (!read.document) throw new Error(read.error ?? "Cannot read settings.");
       const previous = leaf(read.document, setting.key_path);
       if (revision(previous) !== mutation.expected_revision) return "conflict";
@@ -139,7 +141,7 @@ async function writeTarget(file: string, setting: SettingDescriptor, mutation: S
       try {
         const handle = await fs.open(temp, "wx", read.mode ?? 0o600);
         try { await handle.writeFile(`${JSON.stringify(read.document, null, 2)}\n`); await handle.sync(); } finally { await handle.close(); }
-        const current = await readDocument(file);
+        const current = await readDocument(file, true);
         if (current.raw !== read.raw || current.status !== read.status) continue;
         await fs.rename(temp, file);
         return "saved";
