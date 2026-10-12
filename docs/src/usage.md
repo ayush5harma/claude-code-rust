@@ -29,7 +29,7 @@ claude-rs resume
 Resume by session id:
 
 ```bash
-claude-rs resume <session_id>
+claude-rs resume <session_id_or_title>
 ```
 
 The Claude-style flags use the same resume workflow:
@@ -41,7 +41,9 @@ claude-rs --continue
 claude-rs -c "Finish the review"
 ```
 
-`--resume` without an ID opens the session picker. `--continue` selects the most recently modified SDK-visible session for the working directory, including its git worktrees; this includes sessions created by `claude-rs`. If no session exists, it starts a new one. Resume accepts session IDs; name and transcript-path lookup are not supported. Use `--resume=<session_id>` to make the ID boundary explicit, or `--resume -- "prompt"` to open the picker with an initial prompt. `--resume`, `--continue`, and the `resume` subcommand cannot be combined.
+`--resume` without a value opens the session picker. `--continue` selects the most recently modified SDK-visible session for the working directory, including its git worktrees; this includes sessions created by `claude-rs`. Resume accepts an exact session ID or exact displayed title. IDs take priority; when multiple sessions share a title, use an ID. Transcript-path lookup is not supported. Use `--resume=<session_id_or_title>` to make the value boundary explicit, or `--resume -- "prompt"` to open the picker with an initial prompt. `--resume`, `--continue`, and the `resume` subcommand cannot be combined.
+
+The picker shows saved session size when the SDK supplies it. This is storage size, not context tokens. For a saved session of at least 1 MiB, press `c` to resume and request `/compact` before an initial prompt; Enter resumes normally. Compact-first may use a model and remains an explicit choice. If compaction fails, the initial prompt stays unsent and a draft already typed in the composer is preserved.
 
 Choose how the initial session starts:
 
@@ -80,7 +82,7 @@ The installed `claude-rs --help` command exposes these options:
 
 | Option | Purpose |
 | --- | --- |
-| `-r, --resume [ID]` | Resume by session ID, or open the picker without an ID. |
+| `-r, --resume [ID_OR_TITLE]` | Resume by exact ID or displayed title, or open the picker without a value. |
 | `-c, --continue` | Continue the latest session for the working directory and its git worktrees; start new if none exists. |
 | `--model <MODEL>` | Set the initial session model without changing saved preferences. |
 | `--effort <LEVEL>` | Set the initial session effort; availability depends on the model. |

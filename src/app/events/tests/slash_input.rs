@@ -304,7 +304,6 @@ fn invalid_arguments_reach_usage_feedback_without_dispatch_or_input_capture() {
         "/btw ",
         "/new-session extra",
         "/effort high extra",
-        "/resume one two",
     ] {
         let (mut app, mut rx) = app_with_bridge_connection();
         draft(&mut app, input);
@@ -709,7 +708,7 @@ async fn space_keeps_required_effort_assistance_and_dispatches_only_after_enter(
 
 #[test]
 fn missing_or_invalid_arguments_after_dismissal_still_reach_authoritative_validation() {
-    for text in ["/effort ", "/effort impossible", "/btw ", "/resume first second"] {
+    for text in ["/effort ", "/effort impossible", "/btw "] {
         let (mut app, mut rx) = app_with_bridge_connection();
         draft(&mut app, text);
         if app.slash.is_visible() {

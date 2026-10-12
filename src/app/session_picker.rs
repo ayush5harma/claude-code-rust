@@ -8,6 +8,7 @@ use super::{App, AppStatus, SessionPickerMutation, SystemSeverity};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 pub(crate) const MAX_PICKER_SESSIONS: usize = 10;
+pub(crate) const LARGE_SESSION_BYTES: u64 = 1024 * 1024;
 
 pub(crate) fn picker_session_count(app: &App) -> usize {
     app.recent_sessions.len().min(MAX_PICKER_SESSIONS)
@@ -62,6 +63,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         (KeyCode::Home, _) => app.session_picker.selected = 0,
         (KeyCode::End, _) => app.session_picker.selected = session_count.saturating_sub(1),
         (KeyCode::Enter, KeyModifiers::NONE) => activate_selection(app),
+        (KeyCode::Char('c'), KeyModifiers::NONE) => activate_compact_first(app),
         (KeyCode::Right, KeyModifiers::NONE) => open_turn_selection(app),
         (KeyCode::Char('t'), KeyModifiers::NONE) => open_mutation(app, false),
         (KeyCode::Char('d'), KeyModifiers::NONE) => open_mutation(app, true),
@@ -352,6 +354,20 @@ fn activate_turn_selection(app: &mut App) {
 }
 
 fn activate_selection(app: &mut App) {
+    resume_selected(app, false);
+}
+
+fn activate_compact_first(app: &mut App) {
+    let large = app
+        .recent_sessions
+        .get(app.session_picker.selected)
+        .is_some_and(|session| session.file_size_bytes >= LARGE_SESSION_BYTES);
+    if large {
+        resume_selected(app, true);
+    }
+}
+
+fn resume_selected(app: &mut App, compact_first: bool) {
     let Some(session) =
         app.recent_sessions.iter().take(MAX_PICKER_SESSIONS).nth(app.session_picker.selected)
     else {
@@ -365,6 +381,9 @@ fn activate_selection(app: &mut App) {
     };
 
     app.startup.resolve_session_picker();
+    if compact_first {
+        app.startup.queue_compact_first(session_id.clone());
+    }
     app.status = AppStatus::CommandPending;
     app.turn.pending_command_label = Some(format!("Resuming session {session_id}..."));
     app.turn.pending_command_ack = None;
@@ -589,6 +608,20 @@ mod tests {
                 ..
             } if session_id == "session-1"
         ));
+    }
+
+    #[test]
+    fn compact_first_key_resumes_only_large_selected_session() {
+        let mut app = picker_app();
+        let (connection, mut rx) = AgentConnection::test_channel();
+        app.session_runtime.conn = Some(Rc::new(connection));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        assert!(rx.try_recv().is_err());
+        app.recent_sessions[0].file_size_bytes = super::LARGE_SESSION_BYTES;
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        assert!(matches!(rx.try_recv().expect("resume command").command,
+            BridgeCommand::ResumeSession { session_id, .. } if session_id == "session-1"));
+        assert!(app.startup.pending_compact_first("session-1"));
     }
 
     #[test]

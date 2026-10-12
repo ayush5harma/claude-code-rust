@@ -127,6 +127,42 @@ pub(super) fn maybe_submit_initial_prompt(app: &mut App) {
     {
         return;
     }
+    let Some(session_id) =
+        app.session_runtime.session_id.as_ref().map(model::SessionId::as_str).map(str::to_owned)
+    else {
+        return;
+    };
+    if app.startup.pending_compact_first(&session_id) {
+        let submission = slash::ResolvedSubmission::resolve("/compact".to_owned());
+        if !slash::try_handle_submission(app, &submission)
+            && send_prompt_turn(app, "/compact", Vec::new(), Vec::new())
+        {
+            app.startup.compact_first_started(session_id);
+        } else {
+            app.startup.compact_first_failed();
+            app.turn.compaction.reset();
+            crate::app::events::push_submission_feedback(
+                app,
+                super::SystemSeverity::Error,
+                "Compact-first could not start; the initial prompt remains unsent.",
+            );
+        }
+        return;
+    }
+    if app.startup.compact_first_blocks_prompt() {
+        if let Some(prompt) = app.startup.take_blocked_initial_prompt() {
+            if app.input.text().is_empty() {
+                app.input.set_text(&prompt);
+            } else {
+                crate::app::events::push_submission_feedback(
+                    app,
+                    super::SystemSeverity::Error,
+                    &format!("Initial prompt remains unsent: {prompt}"),
+                );
+            }
+        }
+        return;
+    }
     let Some(prompt) = app.startup.take_initial_prompt() else { return };
     if prompt.trim().is_empty() || send_prompt_turn(app, &prompt, Vec::new(), Vec::new()) {
         return;
@@ -1230,7 +1266,7 @@ mod tests {
         app.status = AppStatus::Running;
         app.transcript.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
         app.bind_active_turn_assistant(0);
-        app.input.set_text("/resume one two");
+        app.input.set_text("/new-session extra");
 
         submit_input(&mut app);
 
@@ -1238,7 +1274,7 @@ mod tests {
         let [MessageBlock::Notice(notice)] = app.transcript.messages[0].blocks.as_slice() else {
             panic!("expected inline usage notice");
         };
-        assert_eq!(notice.text.text, "Usage: /resume [session_id]");
+        assert_eq!(notice.text.text, "Usage: /new-session");
         assert!(!notice.text.text.contains("between agent turns"));
         assert!(rx.try_recv().is_err());
     }

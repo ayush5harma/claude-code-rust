@@ -160,17 +160,12 @@ fn resolved_submission_is_the_active_turn_policy_authority() {
         "/model sonnet",
         "/new-session",
         "/resume",
+        "/resume Planning notes",
         "/rewind user-1 conversation",
     ] {
         assert_eq!(classify(input), SubmissionClass::TurnExclusive, "unexpected class for {input}");
     }
-    for input in [
-        "/cancel extra",
-        "/docs nope",
-        "/plugins extra",
-        "/resume one two",
-        "/rewind user-1 invalid",
-    ] {
+    for input in ["/cancel extra", "/docs nope", "/plugins extra", "/rewind user-1 invalid"] {
         assert_eq!(classify(input), SubmissionClass::Invalid, "unexpected class for {input}");
     }
 }
@@ -1283,17 +1278,15 @@ fn resume_picker_preselects_current_session_when_listed() {
 }
 
 #[test]
-fn resume_with_extra_args_returns_usage() {
+fn resume_with_title_words_sends_one_resume_request() {
     let mut app = App::test_default();
+    let mut commands = attach_test_connection(&mut app);
     let consumed = try_handle_submit(&mut app, "/resume abc-123 extra");
     assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected usage message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Usage: /resume [session_id]");
+    let request = commands.try_recv().expect("resume request");
+    assert!(
+        matches!(request.command, crate::agent::wire::BridgeCommand::ResumeSession { session_id, .. } if session_id == "abc-123 extra")
+    );
 }
 
 #[test]

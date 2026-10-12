@@ -63,7 +63,7 @@ pub struct Cli {
     #[arg(value_name = "PROMPT")]
     pub prompt: Option<String>,
 
-    /// Resume a session by ID, or open the session picker when no ID is given.
+    /// Resume by exact session ID or title, or open the picker with no value.
     // Clap uses the nested option for absent flag, picker, and explicit ID.
     #[allow(clippy::option_option)]
     #[arg(long, short = 'r', num_args = 0..=1, value_name = "ID", conflicts_with = "continue_session")]
@@ -214,9 +214,9 @@ impl StartupLaunch {
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 pub enum Command {
-    /// Resume a previous session by ID, or pick from recent sessions
+    /// Resume a previous session by exact ID or title, or pick from recent sessions
     Resume {
-        /// Session ID to resume directly. Omit to show a session picker.
+        /// Session ID or displayed title to resume directly. Omit to show a session picker.
         session_id: Option<String>,
         /// Initial prompt to send after resuming.
         prompt: Option<String>,
