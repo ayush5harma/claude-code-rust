@@ -193,24 +193,36 @@ chk_cmd_help() {
   close_view main
 }
 
+# mcp_row_visible: walk the MCP list once, looking for the fixture's server,
+# and return to the top; succeeds with the row on SCREEN.
+mcp_row_visible() {
+  local i
+  for ((i = 0; i < 40; i++)); do
+    wait_for main 'parity +connected' 1 && return 0
+    keys main Down
+  done
+  for ((i = 0; i < 40; i++)); do keys main Up; done
+  return 1
+}
+
 def cmd.mcp commands "/mcp" "Server list with status"
 chk_cmd_mcp() {
   ensure_main || { res FAIL "main session did not start"; return; }
   if open_view main /mcp 'total [1-9][0-9]* +connected [0-9]+'; then
     local summary
     summary=$(first_match 'total [0-9]+')
-    # The fixture's project server must be listed. A profile with many
-    # servers pages the list ("1/30"), so walk down it.
-    local i
-    # Servers connect in the background and the tab shows a snapshot, so
-    # refresh (r) until nothing is pending.
-    for ((i = 0; i < 8; i++)); do
-      wait_for main 'pending 0 ' 8 && break
-      keys main r
-    done
-    for ((i = 0; i < 40; i++)); do
-      wait_for main 'parity +connected' 1 && break
-      keys main Down
+    # The fixture's project server must be listed. Servers connect in the
+    # background and a profile with many pages the list ("1/30"), so poll the
+    # screen while walking down it. `r` reloads plugins and MCP servers (it
+    # restarts the connections, src/app/config/mcp/actions.rs), so it is
+    # pressed once at most, and only after the first rounds found nothing.
+    local round reloaded=''
+    for ((round = 0; round < 6; round++)); do
+      mcp_row_visible && break
+      if ((round == 2)) && [[ -z $reloaded ]]; then
+        reloaded=1
+        keys main r
+      fi
     done
     if grep -Eq 'parity +connected' <<<"$SCREEN"; then
       res PASS "$summary; project server: $(first_match 'parity +connected')"
@@ -274,6 +286,7 @@ chk_cmd_permissions() {
   row=$(first_match 'Allow rules')
   shot
   if ((n > 0)) && grep -q 'Not set here' <<<"$row"; then
+    [[ $(user_settings_kind) == "a symlink" ]] && ENV_NOTE="the profile's settings.json is a Nix symlink"
     res FAIL "User scope row '$row' although settings.json ($(user_settings_kind)) has $n allow rules; pane note: $(first_match 'Settings path must be|regular file' || echo none)"
   else
     res PASS "pane open; '$row' (settings.json allow rules: $n)"
@@ -295,6 +308,7 @@ chk_cmd_hooks() {
   row=$(first_match 'Definitions')
   shot
   if ((n > 0)) && grep -q 'Not set here' <<<"$row"; then
+    [[ $(user_settings_kind) == "a symlink" ]] && ENV_NOTE="the profile's settings.json is a Nix symlink"
     res FAIL "User scope '$row' although settings.json ($(user_settings_kind)) defines $n hook events; pane note: $(first_match 'Settings path must be|regular file' || echo none)"
   else
     res PASS "pane open; '$row' (settings.json hook events: $n)"
@@ -382,6 +396,7 @@ chk_cmd_rewind() {
   after_footer=$(footer | head -1)
   shot
   if [[ $after_footer != "$before_footer" ]]; then
+    ((OWNER_PROFILE)) && ENV_NOTE="the model and mode a restart falls back to are the profile's settings"
     res FAIL "conversation rewound, but the session came back as '$after_footer' (was '$before_footer'): launch model and mode lost"
   else
     res PASS "conversation rewound; draft restored: $(composer_line); footer kept: $after_footer"

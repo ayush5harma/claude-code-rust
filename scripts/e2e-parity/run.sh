@@ -156,6 +156,10 @@ for tool in tmux jq node; do
 done
 [[ -x $BIN ]] || { echo "claude-rs binary not executable: $BIN" >&2; exit 2; }
 [[ -x $CLAUDE_BIN ]] || { echo "stock Claude Code not found; pass --claude or set PARITY_CLAUDE_BIN" >&2; exit 2; }
+# --version names the product, which a wrapper or another CLI would not.
+[[ $("$CLAUDE_BIN" --version 2>/dev/null) == *"(Claude Code)"* ]] || {
+  echo "refusing $CLAUDE_BIN: --version does not say (Claude Code)" >&2; exit 2;
+}
 # A script (shebang) is a launcher or wrapper, not stock: it could route the
 # "stock" side of every comparison to claude-rs.
 [[ $(head -c 2 "$CLAUDE_BIN") != '#!' ]] || {
@@ -175,9 +179,18 @@ BASE_BIN=$(absolute_path "$BASE_BIN")
 [[ -z $BRIDGE ]] || BRIDGE=$(absolute_path "$BRIDGE")
 [[ -z $BRIDGE ]] || BRIDGE_RUNTIME=$(absolute_path "$BRIDGE_RUNTIME")
 SRC_DIR=$(cd "$SRC_DIR" && pwd -P)
+# CONFIG_ENV is what every child gets to select the profile. With
+# --owner-profile and no CLAUDE_CONFIG_DIR set, the default profile is
+# ~/.claude and nothing is exported: setting the variable to that same path
+# selects a different keychain item and config file path than leaving it unset.
+CONFIG_ENV=()
 if ((OWNER_PROFILE)); then
   [[ -z $CONFIG_DIR ]] || { echo "--owner-profile and --config-dir are exclusive" >&2; exit 2; }
+  ((KEEP == 0)) || { echo "--keep skips the exit cleanup, which --owner-profile needs; use an isolated --config-dir" >&2; exit 2; }
   CONFIG_DIR=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
+  [[ -z ${CLAUDE_CONFIG_DIR:-} ]] || CONFIG_ENV=(CLAUDE_CONFIG_DIR="$CONFIG_DIR")
+else
+  CONFIG_ENV=(CLAUDE_CONFIG_DIR="$CONFIG_DIR")
 fi
 [[ -n $CONFIG_DIR && -d $CONFIG_DIR ]] || { echo "pass an existing logged-in --config-dir or PARITY_CONFIG_DIR, or --owner-profile" >&2; exit 2; }
 CONFIG_DIR=$(cd "$CONFIG_DIR" && pwd -P)
@@ -229,9 +242,14 @@ else
 fi
 SESSIONS_FILE=${SESSIONS_FILE:-$WORK/test-sessions.txt}
 RESULTS=$WORK/results.tsv
+# A pattern that selects no check would write an empty report over the real one.
+n_selected=0
+for id in "${CHECK_IDS[@]}"; do selected "$id" && n_selected=$((n_selected + 1)); done
+((n_selected > 0)) || { echo "no check matches --only ${ONLY[*]}" >&2; exit 2; }
 if ((KEEP)); then
   # Re-run only the selected checks on top of an earlier run's readings:
-  # their old rows go, everything else (and the scratch cwds) stays.
+  # their old rows go, everything else stays. The exit cleanup is skipped
+  # (see remove_scratch), so the earlier scratch cwds stay as well.
   for f in "$RESULTS" "$WORK/timings.tsv"; do
     [[ -f $f ]] || continue
     while IFS=$'\t' read -r id rest; do
@@ -250,6 +268,9 @@ fi
 mkdir -p "$WORK/logs" "$WORK/screens"
 touch "$RESULTS" "$WORK/costs.tsv" "$WORK/timings.tsv" "$WORK/perf.tsv" "$WORK/run-sessions.txt" "$WORK/.run-start"
 touch "$SESSIONS_FILE"
+# Only the rows this run adds count toward its cost (a --keep run starts with
+# the earlier run's rows in the file).
+COST_BASE=$(wc -l <"$WORK/costs.tsv")
 
 cat >"$WORK/tmux.conf" <<'EOF'
 set -g default-terminal tmux-256color
@@ -303,31 +324,31 @@ remove_scratch() {
   local d mangled id i
   # The owner's SessionEnd hooks (a conversation archiver here) read each
   # transcript after its session ends; take it away only once they are done.
-  mangled=$(sed -E 's/[^A-Za-z0-9]/-/g' <<<"$WORK")
+  mangled=$(project_dir "$WORK") && mangled=${mangled##*/}
   for ((i = 0; i < 60; i++)); do
-    pgrep -f -- "$mangled" >/dev/null 2>&1 || break
+    [[ -n $mangled ]] && pgrep -f -- "$mangled" >/dev/null 2>&1 || break
     sleep 0.5
   done
   for d in "$WORK"/*/; do
     [[ -f $d/.parity-fixture ]] || continue
-    mangled=$(sed -E 's/[^A-Za-z0-9]/-/g' <<<"${d%/}")
-    [[ -n $mangled ]] && rm -rf "${CONFIG_DIR:?}/projects/$mangled"
+    mangled=$(project_dir "${d%/}") && rm -rf "$mangled"
     rm -rf "${d%/}"
   done
-  rm -rf "$WORK/stage"
+  # Per-session state Claude Code keeps beside the transcripts. Plan files are
+  # not here: the fixture's settings send them to .parity/plans in the cwd.
   while IFS= read -r id; do
-    [[ -n $id ]] || continue
-    rm -rf "${CONFIG_DIR:?}/file-history/$id" "${CONFIG_DIR:?}/session-env/$id"
+    [[ $id =~ ^[0-9a-f-]{36}$ ]] || continue
+    rm -rf "${CONFIG_DIR:?}/file-history/$id" "${CONFIG_DIR:?}/session-env/$id" "${CONFIG_DIR:?}/tasks/$id"
   done <"$WORK/run-sessions.txt"
 }
 
 # collect_session_ids: every transcript written under WORK during this run,
 # which also catches ids born from /clear or a resume fork.
 collect_session_ids() {
-  local d f mangled
+  local d f dir
   for d in "$WORK"/*/; do
-    mangled=$(sed -E 's/[^A-Za-z0-9]/-/g' <<<"${d%/}")
-    for f in "$CONFIG_DIR/projects/$mangled"/*.jsonl; do
+    dir=$(project_dir "${d%/}") || continue
+    for f in "$dir"/*.jsonl; do
       [[ -f $f && $f -nt $WORK/.run-start ]] && note_session "$(basename "$f" .jsonl)"
     done
   done
@@ -339,7 +360,7 @@ tm new-session -d -s _keep -x 20 -y 5 'sleep 86400'
 RS_VERSION=$("$BIN" --version 2>/dev/null | awk '{print $2}')
 BASE_VERSION=$("$BASE_BIN" --version 2>/dev/null | awk '{print $2}')
 CC_VERSION=$("$CLAUDE_BIN" --version 2>/dev/null | awk '{print $1}')
-SRC_REV=$(git -C "$SRC_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)
+SRC_REV=$(git -C "$SRC_DIR" describe --always --dirty 2>/dev/null || echo unknown)
 STARTED=$(now)
 echo "claude-rs $RS_VERSION ($BIN) vs Claude Code $CC_VERSION ($CLAUDE_BIN); model $MODEL; work $WORK"
 
@@ -350,6 +371,7 @@ for id in "${CHECK_IDS[@]}"; do
   CUR=$id
   RESULT_SET=0
   SCREEN=
+  ENV_NOTE=
   t0=$(now)
   "chk_${id//./_}"
   printf "%s\t%s\n" "$id" $(($(now) - t0)) >>"$WORK/timings.tsv"
@@ -365,13 +387,13 @@ collect_session_ids
 ELAPSED=$(($(now) - STARTED))
 # For the report: totals over every reading kept in WORK (see --keep).
 TOTAL_ELAPSED=$(awk -F'\t' '{s += $2} END {print s + 0}' "$WORK/timings.tsv")
-COST=$(awk -F'\t' '{s += $2} END {printf "%.4f", s}' "$WORK/costs.tsv")
+COST=$(awk -F'\t' -v n="$COST_BASE" 'NR > n {s += $2} END {printf "%.4f", s}' "$WORK/costs.tsv")
 
 echo
 awk -F'\t' '{n[$2]++} END {for (k in n) printf "%s %d  ", k, n[k]; print ""}' "$RESULTS"
 echo "model $MODEL; elapsed ${ELAPSED}s; cost \$$COST, summed from the /usage readout of each claude-rs session"
 echo "  (the performance checks run no model turns; a session killed before its readout is not counted)"
-sort -t$'\t' -k2 -nr "$WORK/costs.tsv" | head -5 | awk -F'\t' '{printf "  %-12s $%s\n", $1, $2}'
+tail -n +"$((COST_BASE + 1))" "$WORK/costs.tsv" | sort -t$'\t' -k2 -nr | head -5 | awk -F'\t' '{printf "  %-12s $%s\n", $1, $2}'
 if awk -v c="$COST" -v b="${PARITY_COST_BUDGET:-0.60}" 'BEGIN {exit !(c > b)}'; then
   echo "WARNING: cost \$$COST is over the \$${PARITY_COST_BUDGET:-0.60} a full run should stay under"
 fi

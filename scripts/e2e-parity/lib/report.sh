@@ -139,12 +139,24 @@ EOF
     printf '## Last run\n\n'
     printf -- '- Date: %s\n' "$(date -u '+%Y-%m-%d %H:%M UTC')"
     printf -- '- claude-rs: %s\n' "$RS_VERSION"
-    printf -- '- Tested binary: `%s`\n' "$BIN"
-    printf -- '- Source checkout revision: `%s`\n' "$SRC_REV"
+    printf -- '- Tested binary: `%s`\n' "${BIN#"$REPO_DIR"/}"
+    printf -- '- Source checkout: `%s` (git describe --always --dirty)\n' "$SRC_REV"
+    if ((OWNER_PROFILE)); then
+      printf -- '- Profile: the owner'"'"'s own (--owner-profile): its settings, hooks, plugins and MCP servers applied\n'
+    else
+      printf -- '- Profile: an isolated config directory (--config-dir)\n'
+    fi
+    printf -- '- Model: %s\n' "$MODEL"
     printf -- '- Installed baseline binary: `%s`\n' "$BASE_BIN"
     printf -- '- Claude Code: %s\n' "$CC_VERSION"
     printf -- '- Results: %s%s\n' "$counts" "$partial"
-    printf -- '- Duration: %ss of checks; TUI Usage subtotal: $%s (excludes the background fixture)\n\n' "$TOTAL_ELAPSED" "$COST"
+    printf -- '- Duration: %ss over the recorded checks\n' "$TOTAL_ELAPSED"
+    printf -- '- Cost of this run: $%s, summed from the `/usage` readout of each claude-rs session when the suite stopped it (the performance group runs no model turns)\n' "$COST"
+    n_env=$(grep -c $'\t\\[environment: ' "$RESULTS" || true)
+    if ((n_env > 0)); then
+      printf -- '- %s row(s) are marked `[environment: ...]`: their reading depends on the profile the run used, not on claude-rs alone.\n' "$n_env"
+    fi
+    printf '\n'
 
     for g in "${GROUP_ORDER[@]}"; do
       group_has_results "$g" || continue

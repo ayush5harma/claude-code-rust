@@ -39,14 +39,12 @@ Two ways in:
 - `--config-dir DIR` or `$PARITY_CONFIG_DIR`: a directory that is already
   logged in and is not the owner's. The suite refuses `~/.claude` and
   `~/.claude-personal`, including paths that resolve to them.
-- `--owner-profile`: use `$CLAUDE_CONFIG_DIR` (else `~/.claude`) itself. The
-  sessions still run in scratch directories, never a real project, but the
-  owner's settings, hooks and plugins apply and everything Claude Code writes
-  lands in that profile: transcripts under `projects/<scratch cwd>`,
-  `file-history/<id>` and `session-env/<id>` are removed at exit (see Safety),
-  while entries Claude Code adds to its own `.claude.json` for the scratch
-  directories and anything a SessionStart or SessionEnd hook does with the
-  sessions (an archiver, for one) are not undone.
+- `--owner-profile`: use `$CLAUDE_CONFIG_DIR` (else `~/.claude`) itself; the
+  variable is only passed to the sessions when it was set, because setting it
+  to the default path selects a different keychain item. The sessions still run
+  in scratch directories, never a real project, but the owner's settings,
+  hooks, plugins and MCP servers apply. It cannot be combined with `--keep`.
+  What the suite's own cleanup removes, and what stays, is under Safety.
 
 ## Cost and time
 
@@ -114,8 +112,20 @@ cleaned up at exit.
 - `/copy` saves and restores a plain-text clipboard and skips when the
   clipboard holds anything else; the Ctrl+V image check is skipped.
 - Every session id the run creates is appended to `--sessions-file` (default
-  `WORK/test-sessions.txt`) and printed at the end, for cleanup. The owner's
-  SessionEnd hooks still run for these sessions.
+  `WORK/test-sessions.txt`) and printed at the end. The owner's hooks still run
+  for these sessions; `CLAUDE_ARCHIVE_SKIP=1` is exported so a SessionEnd hook
+  that archives transcripts and honours it skips them.
+- Cleanup under the config directory is by this run's own ids and cwds only:
+  `projects/<scratch cwd>`, and `file-history/<id>`, `session-env/<id>` and
+  `tasks/<id>` for each session id (validated as a UUID first). Plan files are
+  written to `.parity/plans` in the scratch cwd, by the fixture's
+  `plansDirectory` setting, and go with it.
+- What `--owner-profile` still leaves behind, because it is Claude Code's own
+  bookkeeping that the suite will not edit: entries for the scratch cwds in
+  `.claude.json` (trust and per-project state) and the rotated
+  `backups/.claude.json.backup.*` copies of it, files under `shell-snapshots/`
+  and `telemetry/`, and whatever a hook does with a session beyond the
+  archive opt-out. An isolated `--config-dir` can simply be deleted.
 - Variables of an enclosing Claude Code session (`CLAUDECODE`,
   `CLAUDE_CODE_SESSION_ID`, ...) are scrubbed before tmux starts.
 

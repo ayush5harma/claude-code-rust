@@ -51,11 +51,11 @@ perf_cmd() {
       PERF_CMD=(env "${RS_ENV[@]}" "$BIN" --no-update-check --model "$MODEL")
       ;;
     base)
-      PERF_CMD=(env CLAUDE_CONFIG_DIR="$CONFIG_DIR" CLAUDE_CODE_EXECUTABLE="$CLAUDE_BIN"
+      PERF_CMD=(env ${CONFIG_ENV[@]+"${CONFIG_ENV[@]}"} CLAUDE_CODE_EXECUTABLE="$CLAUDE_BIN"
         CLAUDE_RUST_NO_UPDATE_CHECK=1 "$BASE_BIN" --no-update-check --model "$MODEL")
       ;;
     stock)
-      PERF_CMD=(env CLAUDE_CONFIG_DIR="$CONFIG_DIR" "$CLAUDE_BIN" --model "$MODEL")
+      PERF_CMD=(env ${CONFIG_ENV[@]+"${CONFIG_ENV[@]}"} "$CLAUDE_BIN" --model "$MODEL")
       ;;
   esac
 }
@@ -72,6 +72,8 @@ perf_launch() {
   local t=$1 s=perf-$1 cwd t0 ready="" reg="" re end
   cwd=$(perf_cwd "$t")
   mkdir -p "$cwd"
+  # The marker lets the exit cleanup find this cwd's transcripts.
+  printf 'parity-fixture-v1\n' >"$cwd/.parity-fixture"
   perf_cmd "$t"
   re=$(perf_ready_re "$t")
   session_exists "$s" && perf_kill "$s"
@@ -169,7 +171,7 @@ perf_resume_once() {
   local t=$1 id=$2 cwd=$3 marker=$4 warmup=$5 s=perf-resume-$1 t0 re end trusted='' transcript
   perf_cmd "$t"
   re=$(perf_ready_re "$t")
-  transcript="$CONFIG_DIR/projects/$(sed -E 's/[^A-Za-z0-9]/-/g' <<<"$cwd")/$id.jsonl"
+  transcript="$(project_dir "$cwd")/$id.jsonl"
   cp "$WORK/perf-resume-synthetic.source.jsonl" "$transcript" || return 1
   t0=$(ms_now)
   tm new-session -d -s "$s" -x "$COLS" -y "$ROWS" -c "$cwd" "${PERF_CMD[@]}" -r "$id"
@@ -254,6 +256,11 @@ perf_collect() {
 # does not deserve (and spend minutes of idle sampling on it). Build with
 # --release, or set PARITY_PERF_DEBUG=1 to measure anyway.
 perf_skip_debug() {
+  # ms_now reads $EPOCHREALTIME, which bash 5 introduced.
+  if ((BASH_VERSINFO[0] < 5)); then
+    res SKIP "the performance group needs bash 5 (EPOCHREALTIME); running bash $BASH_VERSION"
+    return 0
+  fi
   [[ $BIN == */target/debug/* && -z ${PARITY_PERF_DEBUG:-} ]] || return 1
   res SKIP "debug build ($BIN): not comparable with the release baseline; use cargo build --release or PARITY_PERF_DEBUG=1"
 }

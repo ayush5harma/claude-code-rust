@@ -120,9 +120,7 @@ chk_input_bang() {
 
 # transcript_of <sess> <session id>: the session's JSONL transcript.
 transcript_of() {
-  local mangled
-  mangled=$(sed -E 's/[^A-Za-z0-9]/-/g' <<<"$(cwd_of "$1")")
-  printf '%s/projects/%s/%s.jsonl\n' "$CONFIG_DIR" "$mangled" "$2"
+  printf '%s/%s.jsonl\n' "$(project_dir "$(cwd_of "$1")")" "$2"
 }
 
 def input.up_history input "Up recalls the previous prompt" "Previous prompt into the empty composer"
@@ -283,7 +281,7 @@ chk_input_ctrl_z() {
     return
   fi
   local stopped
-  stopped=$(first_match 'Stopped|suspended')
+  stopped=$(first_match 'Stopped|suspended' | grep -Eo '^\[[0-9]+\][+-]? +(Stopped|[Ss]uspended)' || echo suspended)
   tm send-keys -t shell -l -- "fg"
   keys shell Enter
   if wait_for shell "$EMPTY_COMPOSER" 10; then

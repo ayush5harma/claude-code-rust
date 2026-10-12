@@ -151,9 +151,10 @@ chk_color_persisted() {
   fi
 }
 
-# Under the Agent SDK, Claude Code does not put a resumed session's name back
-# into its registry the way its own TUI does, and the bridge does not pass it
-# back as --name, so a missing name reads GAP, not FAIL.
+# Stock keeps the name across a resume. Under claude-rs the registry entry of
+# the resumed session reads whatever Claude Code assigns it; the bridge passes
+# no --name on resume (the fork's resume handling went with 7bcd788), so a
+# missing name reads GAP, not FAIL. The evidence states only what was read.
 def rename.resume_name identity "Name kept after Ctrl+Q and resume" "Registry keeps the name"
 chk_rename_resume_name() {
   id_resumed
@@ -162,7 +163,7 @@ chk_rename_resume_name() {
     id_shot
     res PASS "after Ctrl+Q and resume the registry name is $ID_TITLE (session $(jq -r .sessionId <<<"$REG"))"
   else
-    res GAP "registry name after resume: '$(jq -r .name <<<"$REG")', stock keeps $ID_TITLE (session $(jq -r .sessionId <<<"$REG")); Claude Code does not restore it under the SDK"
+    res GAP "registry name after resume: '$(jq -r .name <<<"$REG")' (session $(jq -r .sessionId <<<"$REG")); it was $ID_TITLE before Ctrl+Q, which stock keeps"
   fi
 }
 

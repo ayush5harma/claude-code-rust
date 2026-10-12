@@ -128,6 +128,7 @@ chk_tools_grep_glob() {
     # Stock 2.1.29x may run without Glob/Grep ("find via the Bash tool
     # instead"); that is the stock child's tool set, not a claude-rs gap.
     if grep -q 'No such tool available: \(Glob\|Grep\)' <<<"$SCREEN"; then
+      ((OWNER_PROFILE)) && ENV_NOTE="the profile's settings decide the stock child's tool set"
       res SKIP "the stock child has no Glob/Grep tool in this configuration: $(first_match 'No such tool available'); README.md found via Bash"
       return
     fi
@@ -137,7 +138,17 @@ chk_tools_grep_glob() {
       res PASS "rows: '$g1' / '$g2'; answer README.md"
     else
       shot
-      res FAIL "answer README.md but rows missing: glob='$g1' grep='$g2'"
+      # Without a Glob or Grep call there is no row to judge, whichever tools
+      # the model chose this time; that is not a claude-rs fault.
+      local sid used
+      sid=$(jq -r .sessionId <<<"$(registry_entry "$(cwd_of main)")")
+      used=$(jq -r 'select(.type == "assistant") | .message.content[]? | select(.type == "tool_use") | .name' \
+        "$(transcript_of main "$sid")" 2>/dev/null | sort -u | paste -sd, -)
+      if ! grep -Eq '(^|,)(Glob|Grep)(,|$)' <<<"$used"; then
+        res SKIP "the model answered without calling Glob or Grep (tools used in the session: ${used:-none})"
+      else
+        res FAIL "answer README.md but rows missing: glob='$g1' grep='$g2' (tools used: $used)"
+      fi
     fi
   else
     shot
@@ -331,7 +342,7 @@ chk_tools_hook_start() {
   fi
 }
 
-def tools.hook_end tools "SessionEnd hook" "Project hook runs at exit (the owner's archive hook rides on it)"
+def tools.hook_end tools "SessionEnd hook" "Project hook runs at exit"
 chk_tools_hook_end() {
   rs_start hooks --model "$MODEL" || { res FAIL "hooks session did not start"; return; }
   local f end

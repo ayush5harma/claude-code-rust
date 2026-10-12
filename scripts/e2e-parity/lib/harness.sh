@@ -15,6 +15,17 @@ EMPTY_COMPOSER='❯ Type a message'
 
 tm() { tmux -L "$SOCKET" -f "$WORK/tmux.conf" "$@"; }
 
+# project_dir <cwd>: where Claude Code keeps the transcripts of sessions run in
+# <cwd> (every character outside [A-Za-z0-9] becomes "-"). The only copy of
+# this rule; it fails on an empty result so a caller never builds a path that
+# is the projects directory itself.
+project_dir() {
+  local m
+  m=$(sed -E 's/[^A-Za-z0-9]/-/g' <<<"$1")
+  [[ -n $m ]] || return 1
+  printf '%s/projects/%s\n' "$CONFIG_DIR" "$m"
+}
+
 now() { date +%s; }
 
 screen() { tm capture-pane -p -t "$1" 2>/dev/null; }
@@ -177,7 +188,7 @@ submit() {
 # ---------------------------------------------------------------- registry
 
 agents_json() {
-  timeout 10 env CLAUDE_CONFIG_DIR="$CONFIG_DIR" "$CLAUDE_BIN" agents --json 2>/dev/null
+  timeout 10 env ${CONFIG_ENV[@]+"${CONFIG_ENV[@]}"} "$CLAUDE_BIN" agents --json 2>/dev/null
 }
 
 # registry_entry <cwd>: the interactive registry entry whose cwd is <cwd>.
@@ -233,7 +244,7 @@ prepare_cwd() {
 
 rs_env() {
   RS_ENV=(
-    CLAUDE_CONFIG_DIR="$CONFIG_DIR"
+    ${CONFIG_ENV[@]+"${CONFIG_ENV[@]}"}
     CLAUDE_CODE_EXECUTABLE="$CLAUDE_BIN"
     CLAUDE_RUST_NO_UPDATE_CHECK=1
     EDITOR="$SUITE_DIR/fixtures/editor.sh"
@@ -282,8 +293,9 @@ rs_wait_ready() {
   wait_registry "$(cwd_of "$s")" '.status == "idle"' 30 || true
 }
 
+# Only a session id reaches the cleanup's rm, so anything else is refused here.
 note_session() {
-  [[ -n $1 && $1 != null ]] || return 0
+  [[ $1 =~ ^[0-9a-f-]{36}$ ]] || return 0
   grep -qx -- "$1" "$SESSIONS_FILE" 2>/dev/null || printf '%s\n' "$1" >>"$SESSIONS_FILE"
   grep -qx -- "$1" "$WORK/run-sessions.txt" 2>/dev/null || printf '%s\n' "$1" >>"$WORK/run-sessions.txt"
 }
@@ -352,6 +364,10 @@ declare -a CHECK_IDS=()
 declare -A CHECK_GROUP=() CHECK_NAME=() CHECK_STOCK=() CHECK_FILE=()
 CUR=
 CUR_FILE=
+# ENV_NOTE: set by a check whose reading depends on the profile it ran in (the
+# owner's settings, a Nix-symlinked settings.json) rather than on claude-rs
+# alone; res prefixes the evidence and the report counts those rows.
+ENV_NOTE=
 
 # def <id> <group> <functionality> <stock behaviour>
 def() {
@@ -364,7 +380,13 @@ def() {
 
 # res <PASS|FAIL|GAP|SKIP> <evidence>: record the current check's reading.
 res() {
-  local status=$1 ev=$2
+  local status=$1 ev=$2 tilde='~'
+  [[ -z ${ENV_NOTE:-} ]] || ev="[environment: $ENV_NOTE] $ev"
+  # The table is published: no private paths, whatever the evidence quoted.
+  # Replaced before the length cut so a path cannot be cut in half.
+  ev=${ev//"$WORK"/"<work>"}
+  ev=${ev//"$REPO_DIR/"/}
+  ev=${ev//"$HOME"/$tilde}
   ev=$(tr '\n\t' '  ' <<<"$ev" | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' | cut -c1-220)
   printf '%-5s %-28s %s\n' "$status" "$CUR" "$ev"
   printf '%s\t%s\t%s\n' "$CUR" "$status" "$ev" >>"$RESULTS"

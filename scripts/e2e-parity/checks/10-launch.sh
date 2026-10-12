@@ -122,8 +122,10 @@ chk_launch_resume_picker() {
   session_exists resume && tm kill-session -t resume
   rs_cmd resume
   tm new-session -d -s resume -x "$COLS" -y "$ROWS" -c "$cwd" "${RS_CMD[@]}" -r
-  if wait_for resume 'PARITY_RESUME_SEED|Reply with exactly' 30; then
-    res PASS "picker lists the seed: $(first_match 'PARITY_RESUME_SEED|Reply with exactly')"
+  # The row shows the prompt, or the session title once Claude Code has
+  # generated one from it ("Parity resume seed"), so accept either.
+  if wait_for resume 'PARITY_RESUME_SEED|Reply with exactly|[Pp]arity resume seed' 30; then
+    res PASS "picker lists the seed: $(first_match 'PARITY_RESUME_SEED|Reply with exactly|[Pp]arity resume seed')"
   else
     shot
     res FAIL "no picker row for the seed session: $(grep -v '^ *$' <<<"$SCREEN" | head -3 | tr '\n' ' ')"
