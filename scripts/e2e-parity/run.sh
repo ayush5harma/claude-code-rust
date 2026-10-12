@@ -267,6 +267,11 @@ while IFS= read -r var; do
 done < <(compgen -e | grep -E '^(CLAUDE|CLAUDECODE|AI_AGENT|ANTHROPIC_)' || true)
 unset NO_COLOR
 export TERM=xterm-256color COLORTERM=truecolor
+# Test sessions are throwaway. A SessionEnd hook that archives transcripts
+# shipped 74 of them to the owner's archive on the first live runs
+# (2026-10-12); hooks that honour this opt-out exit early. Set after the scrub
+# above, which would otherwise remove it.
+export CLAUDE_ARCHIVE_SKIP=1
 
 cleanup() {
   local status=$? s
