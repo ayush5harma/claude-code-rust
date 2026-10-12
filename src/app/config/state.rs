@@ -128,6 +128,12 @@ impl ConfigState {
         };
         self.saved_bool(id, default)
     }
+    pub fn hook_notice_mode_effective(&self) -> crate::app::state::HookNoticeMode {
+        self.saved_value("presentation.hookNotices")
+            .and_then(Value::as_str)
+            .and_then(crate::app::state::HookNoticeMode::from_stored)
+            .unwrap_or_default()
+    }
     pub fn time_format(&self) -> &str {
         self.saved_value("timeFormat").and_then(Value::as_str).unwrap_or("auto")
     }

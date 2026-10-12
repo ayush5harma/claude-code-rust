@@ -2,6 +2,7 @@
 // Copyright 2025 Simon Peter Rothgang
 
 mod action_overlay;
+mod agents;
 mod common;
 mod help;
 mod input;
@@ -88,6 +89,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         ConfigTab::Plugins => plugins::render(frame, chunks[2], app),
         ConfigTab::Status => status::render(frame, chunks[2], app),
         ConfigTab::Usage => usage::render(frame, chunks[2], app),
+        ConfigTab::Agents => agents::render(frame, chunks[2], app),
         ConfigTab::Mcp => mcp::render(frame, chunks[2], app),
         ConfigTab::Help => help::render(frame, chunks[2], app),
     }
@@ -144,6 +146,9 @@ fn config_help_text(app: &App, width: u16) -> String {
             }
         }
         ConfigTab::Usage => vec!["r refresh", "Tab/Shift+Tab tabs", "Enter close"],
+        ConfigTab::Agents => {
+            vec!["Tab/Shift+Tab tabs", "Up/Down select", "PgUp/Dn scroll", "s stop", "r refresh"]
+        }
         ConfigTab::Mcp => {
             vec!["Enter actions", "Up/Down select", "Tab/Shift+Tab tabs", "r refresh"]
         }
@@ -1279,6 +1284,7 @@ mod tests {
                     ConfigTab::Mcp => assert!(text.contains("server-8"), "{text}"),
                     ConfigTab::Status => assert!(text.contains("Session name"), "{text}"),
                     ConfigTab::Usage => assert!(text.contains("No usage snapshot yet"), "{text}"),
+                    ConfigTab::Agents => assert!(text.contains("Session agents"), "{text}"),
                     ConfigTab::Help => assert!(app.config.help_visible_count > 0),
                 }
             }

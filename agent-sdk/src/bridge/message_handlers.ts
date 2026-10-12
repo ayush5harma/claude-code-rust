@@ -5,6 +5,7 @@ import { elapsedNumber, messageMetadata, turnTiming } from "./presentation_metad
 import { refreshUltracode } from "./ultracode.js";
 import { observeSessionEffort, refreshSessionEffort } from "./effort.js";
 import { emitSessionTitle } from "./session_title.js";
+import { handleHookSystemMessage } from "./hook_activity.js";
 import { observeSessionModel } from "./session_model.js";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
@@ -1785,6 +1786,10 @@ export function handleSdkMessage(
 
     if (subtype === "informational") {
       handleInformationalSystemMessage(session, msg);
+      return;
+    }
+
+    if (handleHookSystemMessage(session, subtype, msg)) {
       return;
     }
 

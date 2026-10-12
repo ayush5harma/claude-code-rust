@@ -17,6 +17,7 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/sandbox` | `/sandbox` | Open sandbox settings without toggling sandboxing. |
 | `/hooks` | `/hooks` | Inspect and edit saved hook configuration without executing hooks. |
 | `/copy` | `/copy` | Copy the last completed response, or choose a code block from it. |
+| `/diff` | `/diff` | Browse retained session tool diffs and current Git working-tree changes. |
 | `/docs` | `/docs <mode\|models\|shortcuts\|commands\|agents>` | Render command, shortcut, model, mode, or subagent help into chat. |
 | `/agent` | `/agent <name\|reset>` | Change the main-thread agent for the active session. Applies on the next turn. |
 | `/effort` | `/effort <low\|medium\|high\|xhigh\|max\|reset>` | Change thinking effort for the active session. |
@@ -28,6 +29,7 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/plugins` | `/plugins` | Open plugin management. |
 | `/status` | `/status` | Open session and account status. |
 | `/usage` | `/usage` | Open quota and usage information. |
+| `/agents` | `/agents` | Inspect current-session subagents, their saved messages and running tasks. |
 | `/login` | `/login` | Run Claude CLI authentication and reconnect the session. |
 | `/logout` | `/logout` | Run Claude CLI logout and clear the active authenticated session. |
 | `/mode` | `/mode <id>` | Switch to a mode advertised by the active session. |
@@ -35,6 +37,8 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/new-session` | `/new-session` | Start a fresh bridge session in the current folder. |
 | `/resume` | `/resume [session_id]` | Open the session picker, or resume a supplied session id. |
 | `/rewind` | `/rewind <user_message_uuid> <both\|conversation\|code>` | Restore conversation, code, or both to a previous user message. |
+| `/reload` | `/reload` | Re-read skills and output styles from disk for the active session. |
+| `/export` | `/export [path]` | Save the complete conversation as a Markdown file. |
 
 Enter completes the selected slash command or argument and submits it when ready. Tab completes without submitting. Exact command names appear ahead of substring matches; arrow keys can select a different match. App commands that still need required arguments stay in the composer; commands with argument choices show those choices, while `/btw` continues as ordinary question text. An empty suggestion menu allows Enter to submit the typed input for normal validation.
 
@@ -49,6 +53,20 @@ The command menu includes the full merged inventory and scrolls as you move thro
 ## Copying responses
 
 `/copy` copies the last completed assistant response as its original Markdown, without thinking or tool output. Responses loaded from session history can be copied too. If the response contains code blocks, choose Full response or a code block with Up/Down, then Enter; Escape cancels. Enable Skip the /copy picker in `/config` to copy the complete Markdown response directly. Responses without code blocks copy directly. If the clipboard is unavailable, the picker stays open so you can retry. The command can copy an earlier completed response while a new response is still running; it does not submit a model request.
+
+`/diff` opens a fullscreen file list. It combines diff content still retained in the current session's tool calls with the current Git working tree; the latter includes staged, unstaged, and untracked files. Choose a file with Up/Down, scroll its diff with Page Up/Page Down, refresh with `r`, and close with Escape. Git reads have bounded time and output; binary and oversized untracked files show an explicit preview message. Session-only entries reflect retained tool diff content, not a complete archive of every edit.
+
+## Reloading skills and output styles
+
+`/reload` asks the active session to re-read skills and output styles from disk, so a skill or style you just edited applies without restarting. The input is blocked until the SDK answers, then a notice reports how many skills and output styles it found, or the error. The slash command list picks up new or changed skills through the SDK's own command-list update. `/reload` does not reload plugins; use the Plugins tab for that.
+
+## Exporting the conversation
+
+`/export` writes the session's complete saved history to a Markdown file. The history comes from the Agent SDK's saved transcript, not from the chat on screen, so it includes messages the app no longer keeps in memory. Without a path the file is `claude-rs-<session title or short id>-<YYYYMMDD-HHMMSS>.md` in the session directory. `/export <path>` writes there instead: a relative path is relative to the session directory, a leading `~` is your home directory, and spaces in the path are kept.
+
+The file starts with the session title, id, directory, model and export time. Your messages and the assistant's text are written as they were. Each tool call is a heading with the tool name and a short summary of its input, followed by its result in a fenced block and, for edits and new files, a `diff` block. Long results and diffs are cut with a note, and terminal colour codes are removed. A session too large to send at once is cut from its end, and the file says how many later entries were left out.
+
+`/export` never overwrites a file and creates no directories: if the target exists, or its directory does not, it says so and writes nothing. When it finishes it shows the absolute path it wrote.
 
 ## Side Questions
 
@@ -68,11 +86,23 @@ to inspect the current session's full command list. The output includes app-owne
 
 Commands that Claude Code runs locally, such as `/rename`, `/color` or `/context`, reply in the chat under the command as they do in Claude Code. The composer edge and prompt glyph use a stable color selected from the session ID. An explicit `/color <name>` changes that accent only when the SDK confirms a successful local `/color` result with the submitted prompt ID. If the SDK omits either confirmation field, claude-rs keeps the current accent; it never infers color from chat text. `/color default` restores the session-ID color. The accent resets when the session changes and does not recolor tool status indicators.
 
+Rewinding a conversation keeps the model, effort and permission mode currently selected in the session. On resume, the public Agent SDK can return a local command as XML-like user text without identifying its origin. The history preserves that text exactly, so a command such as `/rename` may appear in its raw record form until the SDK exposes a reliable command marker.
+
+## Status Tab
+
+`/status` opens the Status tab. Besides the session, account, model and settings rows it has two measured sections.
+
+**Startup** lists the launch milestones the app observed, as offsets from the moment the app started: the bridge launch, the `SessionStart` hooks that finished before the session connected (with their count), the SDK connection, and the first frame in which the composer accepts a prompt. A milestone that has not happened is not shown, and nothing is estimated. The offsets include any wait on the workspace trust prompt, because the bridge starts only after trust is accepted.
+
+**Hooks this session** gives the number of hook runs, how many failed, how many are still running, their total time, and the three slowest. It covers the last 200 runs of the active session and says how many older runs are not kept. It starts empty again when the session changes or the conversation is cleared. Hooks of the same event and matcher share one SDK name, so two runs of different commands can look alike here.
+
 ## Session Name
 
 The Status tab shows the session name. Its rename draft (`r`) starts from that name, and title generation (`g`) uses it as the description when there is one.
 
 The name is whatever the Agent SDK's session API reports as the session's title; claude-rs keeps no title of its own. It is read when a session connects or resumes, when the session is replaced, when the conversation resets, after each turn, and after a Status-tab rename or title generation. A `/rename` typed in the composer therefore shows once its turn completes. For a session nobody named, the API reports a generated title instead, so such a session shows that title after its first turn.
+
+If the SDK omits a saved custom title while resuming, claude-rs restores that title through the SDK session API so other clients see it too.
 
 ## Session Commands
 
@@ -85,3 +115,5 @@ If the SDK accepts `/ultracode on` but reports Ultracode unavailable, the comman
 `/effort reset` uses the current model's native session default; it does not reload the saved per-model effort. `max` is session-only. `/thinking reset` removes the temporary override and restores the inherited thinking preference. Thinking is a preference, and the model may still require or restrict thinking. `/agent reset` clears the active main-thread agent rather than restoring its saved default.
 
 `/fast` changes fast mode only for the active session. It does not rewrite the persisted Fast mode setting. Use the settings surface to choose the fast-mode preference applied when future sessions start. If an accepted change cannot be verified, the footer shows `FAST:?`; retry explicitly with `/fast on` or `/fast off`.
+
+`/agents` shows subagents from the current SDK session. Up/Down selects one, `r` refreshes the list, and `s` asks the SDK to stop a selected running subagent task. Completed agents remain inspectable. The panel reads saved agent messages on selection and does not stop tasks outside the current session.

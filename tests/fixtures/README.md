@@ -19,6 +19,10 @@ The PR workflow runs this suite on Ubuntu, Windows, and macOS, and requires all 
 | `resize-ready` | Streams a completed transcript for scrollback checks across zoom and reading-mode resizes. |
 | `resize-replay` | Emits a large completed reply in one chunk for interruption and replay-budget checks. |
 | `resize-code` | Completes the first reply, then holds a second reply inside an unfinished code block. |
+| `native-diff` | Emits a retained session tool diff and answers `/diff` Git refreshes with a separate working-tree file. |
+| `hook-activity` | Sends a slow and a fast SessionStart hook right after connecting, then answers the first prompt after a failed PreToolUse hook. |
+| `export` | Answers `export_session_history` with a short conversation (messages, a Bash call with output, an Edit with a diff) in two chunks under the command's request id. |
+| `reload` | Answers the first `reload_skills_and_styles` command with two skills and three output styles, and every later one with a `slash_error`. |
 | `render-corpus` | Resumes the shared render corpus as history, then streams its long reply in 200 chunks on the first prompt. |
 | `session-accent` | Sends confirmed color updates for `/color purple` and `/color default`; replacement checks the session-ID fallback. |
 
@@ -39,3 +43,5 @@ Each test owns its temporary project, configuration directory, fake CLI, journal
 `render-corpus.json` is a deterministic transcript that covers what a chat renders: Markdown (headings, nested lists, a table, a quote, inline code, links, a long paragraph), fenced code in six languages, a 2000-line Bash output with ANSI colour, small and 500-line Edit and Write diffs, a failed tool call, notices, and user messages. `history` is a resumed conversation and `stream` is one long reply in chunks, both as bridge `session_update` payloads. The `render-corpus` scenario above replays it through the real binary; `src/app/connect/render_corpus.rs` replays the same file through the app's event path for the render benchmark (`cargo test --release --lib render_bench -- --ignored --nocapture`, compared across refs by `scripts/dev/bench-render.mjs`). The app has no thinking text to render, so the corpus carries the one thing it shows: the `thinking` activity phase that opens the streamed reply.
 
 `generate-render-corpus.js` is the authority and the JSON is its committed output: edit the generator and rerun `node tests/fixtures/generate-render-corpus.js`. The test `render_corpus_fixture_matches_its_generator` runs it with `--check`, so a stale JSON fails `cargo test`. Changing the corpus changes every benchmark baseline, so compare refs that share one corpus.
+
+The `session-agents` scenario exposes two current-session subagents, their saved messages, and a running task. It records list, inspect, and stop commands; Stop produces a task update so the panel displays the canonical stopped state.

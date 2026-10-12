@@ -39,8 +39,9 @@ jobs:
           set -euo pipefail
 
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            git fetch --no-tags --prune --depth=1 origin "${{ github.base_ref }}"
-            git diff --name-only "origin/${{ github.base_ref }}"...HEAD > changed-files.txt
+            # A depth-one fetch lost the merge base when main advanced during CI (2026-10-13).
+            # Checkout already includes full history; compare against this event's base commit.
+            git diff --name-only "${{ github.event.pull_request.base.sha }}"...HEAD > changed-files.txt
           elif [[ "${{ github.event.before }}" =~ ^0+$ ]]; then
             git ls-tree -r --name-only HEAD > changed-files.txt
           else

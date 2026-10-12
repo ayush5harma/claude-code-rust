@@ -53,6 +53,10 @@ pub(crate) fn try_handle_submission(app: &mut App, submission: &ResolvedSubmissi
             crate::app::copy::open(app);
             true
         }
+        AppSlashCommand::Diff => {
+            crate::app::diff_view::open(app);
+            true
+        }
         AppSlashCommand::Docs => handle_docs_submit(app, &args),
         AppSlashCommand::Agent => handle_agent_submit(app, &args),
         AppSlashCommand::Effort => handle_effort_submit(app, &args),
@@ -64,6 +68,7 @@ pub(crate) fn try_handle_submission(app: &mut App, submission: &ResolvedSubmissi
         AppSlashCommand::Plugins => handle_plugins_submit(app),
         AppSlashCommand::Status => handle_status_submit(app),
         AppSlashCommand::Usage => handle_usage_submit(app),
+        AppSlashCommand::Agents => handle_agents_submit(app),
         AppSlashCommand::Login => handle_login_submit(app),
         AppSlashCommand::Logout => handle_logout_submit(app),
         AppSlashCommand::Mode => handle_mode_submit(app, &args),
@@ -71,6 +76,8 @@ pub(crate) fn try_handle_submission(app: &mut App, submission: &ResolvedSubmissi
         AppSlashCommand::NewSession => handle_new_session_submit(app),
         AppSlashCommand::Resume => handle_resume_submit(app, &args),
         AppSlashCommand::Rewind => handle_rewind_submit(app, &args),
+        AppSlashCommand::Reload => handle_reload_submit(app),
+        AppSlashCommand::Export => handle_export_submit(app, text),
     }
 }
 
@@ -193,6 +200,13 @@ fn handle_status_submit(app: &mut App) -> bool {
     if let Err(err) = crate::app::config::open_tab(app, crate::app::ConfigTab::Status) {
         push_system_message(app, format!("Failed to open status: {err}"));
         return true;
+    }
+    true
+}
+
+fn handle_agents_submit(app: &mut App) -> bool {
+    if let Err(err) = crate::app::config::open_tab(app, crate::app::ConfigTab::Agents) {
+        push_system_message(app, format!("Failed to open agents: {err}"));
     }
     true
 }
@@ -527,6 +541,77 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
                     })
                     .await;
             }
+        }
+    });
+    true
+}
+
+fn handle_reload_submit(app: &mut App) -> bool {
+    let Some((conn, sid)) = require_active_session(
+        app,
+        "Cannot reload: not connected yet.",
+        "Cannot reload: no active session.",
+    ) else {
+        return true;
+    };
+
+    set_command_pending(
+        app,
+        "Reloading skills and output styles...",
+        Some(crate::app::PendingCommandAck::SkillsAndStylesReload),
+    );
+
+    let tx = app.event_tx.clone();
+    let session_id = sid.to_string();
+    tokio::task::spawn_local(async move {
+        if let Err(e) = conn.reload_skills_and_styles(session_id.clone()) {
+            let _ = tx
+                .send(ClientEvent::SlashCommandError {
+                    session_id: Some(session_id),
+                    message: format!("Failed to run /reload: {e}"),
+                })
+                .await;
+        }
+    });
+    true
+}
+
+fn handle_export_submit(app: &mut App, text: &str) -> bool {
+    // Everything after the command is one path, so spaces in it are kept.
+    let requested =
+        text.trim_start().strip_prefix("/export").map(str::trim).unwrap_or_default().to_owned();
+
+    let Some((conn, sid)) = require_active_session(
+        app,
+        "Cannot export: not connected yet.",
+        "Cannot export: no active session.",
+    ) else {
+        return true;
+    };
+    let session_id = sid.to_string();
+    let request_id = match crate::app::export::begin(app, &session_id, &requested) {
+        Ok(request_id) => request_id,
+        Err(message) => {
+            push_system_message(app, message);
+            return true;
+        }
+    };
+
+    set_command_pending(
+        app,
+        "Exporting conversation...",
+        Some(crate::app::PendingCommandAck::HistoryExport),
+    );
+
+    let tx = app.event_tx.clone();
+    tokio::task::spawn_local(async move {
+        if let Err(e) = conn.export_session_history(session_id.clone(), request_id) {
+            let _ = tx
+                .send(ClientEvent::SlashCommandError {
+                    session_id: Some(session_id),
+                    message: format!("Failed to run /export: {e}"),
+                })
+                .await;
         }
     });
     true

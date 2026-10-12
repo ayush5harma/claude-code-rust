@@ -16,6 +16,7 @@ mod autocomplete;
 mod focus_runtime;
 mod footer;
 mod git_runtime;
+mod hook_runs;
 mod paste;
 mod pending_messages;
 mod repaint;
@@ -23,6 +24,7 @@ mod sdk_inventory;
 mod session_identity;
 mod session_runtime;
 mod startup;
+mod startup_timeline;
 mod tool_tracking;
 mod transcript;
 mod turn;
@@ -37,6 +39,9 @@ pub(crate) use btw::{BtwRequestState, BtwRequests};
 pub use cache_metrics::CacheMetrics;
 pub use chat_render::{
     ChatRenderState, ComposerRenderState, LiveRegionRenderState, TerminalSize, TerminalSizeChange,
+};
+pub use hook_runs::{
+    HOOK_NOTICE_SLOW_THRESHOLD, HookNoticeMode, HookRun, HookRuns, format_elapsed,
 };
 pub use messages::{
     BtwExchangeBlock, ChatMessage, ChatMessageId, HistoryOutputId, ImageAttachmentBlock,
@@ -53,6 +58,7 @@ pub use repaint::LayoutInvalidation;
 pub use sdk_inventory::SdkInventoryState;
 pub use session_runtime::SessionRuntimeState;
 pub use startup::StartupState;
+pub use startup_timeline::StartupTimeline;
 pub use tool_call_info::{
     InlinePermission, InlineQuestion, SubagentPermissionContext, ToolCallInfo, is_execute_tool_name,
 };

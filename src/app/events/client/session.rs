@@ -1,13 +1,64 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use super::super::{App, SystemSeverity, session};
+use super::super::{App, SystemSeverity, notices, session};
 use crate::agent::events::ClientEvent;
 
 pub(super) fn handle(app: &mut App, event: ClientEvent) {
     match event {
+        ClientEvent::WorkingDiffReceived { session_id, request_id, files, error } => {
+            crate::app::diff_view::apply(app, &session_id, request_id.as_deref(), files, error);
+        }
+        agents_result @ ClientEvent::SessionAgentsResultReceived { .. } => {
+            crate::app::session_agents::apply_result(app, agents_result);
+        }
         ClientEvent::SettingsResultReceived { request_id, result, .. } => {
             crate::app::config::apply_settings_result(app, request_id.as_deref(), result);
         }
+        connection_event
+        @ (ClientEvent::Connected { .. } | ClientEvent::SessionReplaced { .. }) => {
+            handle_session_connection(app, connection_event);
+        }
+        ClientEvent::SessionsListed { sessions } => {
+            session::handle_sessions_listed_event(app, sessions);
+        }
+        ClientEvent::AuthRequired { method_name, method_description } => {
+            session::handle_auth_required_event(app, method_name, method_description);
+        }
+        ClientEvent::ConnectionFailed(failure) => {
+            session::handle_connection_failure(app, &failure);
+        }
+        ClientEvent::SessionResumeFailed { session_id, operation_id, message } => {
+            session::handle_session_resume_failed_event(app, &session_id, &operation_id, &message);
+        }
+        ClientEvent::ServiceStatus { severity, message } => {
+            session::handle_service_status_event(app, severity, &message);
+        }
+        ClientEvent::AuthCompleted { conn } => {
+            session::handle_auth_completed_event(app, &conn);
+        }
+        ClientEvent::LogoutCompleted => session::handle_logout_completed_event(app),
+        ClientEvent::StatusSnapshotReceived { session_id, account } => {
+            apply_status_snapshot(app, &session_id, account);
+        }
+        ClientEvent::ContextUsageReceived { session_id: _, percentage } => {
+            crate::app::session_runtime::apply_context_usage_snapshot(app, percentage);
+        }
+        ClientEvent::RewindTargetsReceived { session_id, targets, error } => {
+            apply_rewind_targets(app, session_id, targets, error);
+        }
+        ClientEvent::SessionHistoryChunk { session_id: _, chunk } => {
+            apply_history_export_chunk(app, chunk);
+        }
+        ClientEvent::RewindResultReceived { result } => {
+            session::handle_rewind_result_event(app, &result);
+        }
+        ClientEvent::FatalError(error) => session::handle_fatal_error_event(app, error),
+        _ => unreachable!("client event family routed a non-session event to the session handler"),
+    }
+}
+
+fn handle_session_connection(app: &mut App, event: ClientEvent) {
+    match event {
         ClientEvent::Connected {
             session_id,
             cwd,
@@ -64,42 +115,25 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
             );
             refresh_session_snapshots(app);
         }
-        ClientEvent::SessionsListed { sessions } => {
-            session::handle_sessions_listed_event(app, sessions);
-        }
-        ClientEvent::AuthRequired { method_name, method_description } => {
-            session::handle_auth_required_event(app, method_name, method_description);
-        }
-        ClientEvent::ConnectionFailed(failure) => {
-            session::handle_connection_failure(app, &failure);
-        }
-        ClientEvent::SessionResumeFailed { session_id, operation_id, message } => {
-            session::handle_session_resume_failed_event(app, &session_id, &operation_id, &message);
-        }
-        ClientEvent::ServiceStatus { severity, message } => {
-            session::handle_service_status_event(app, severity, &message);
-        }
-        ClientEvent::AuthCompleted { conn } => {
-            session::handle_auth_completed_event(app, &conn);
-        }
-        ClientEvent::LogoutCompleted => {
-            session::handle_logout_completed_event(app);
-        }
-        ClientEvent::StatusSnapshotReceived { session_id, account } => {
-            apply_status_snapshot(app, &session_id, account);
-        }
-        ClientEvent::ContextUsageReceived { session_id: _, percentage } => {
-            crate::app::session_runtime::apply_context_usage_snapshot(app, percentage);
-        }
-        ClientEvent::RewindTargetsReceived { session_id, targets, error } => {
-            apply_rewind_targets(app, session_id, targets, error);
-        }
-        ClientEvent::RewindResultReceived { result } => {
-            session::handle_rewind_result_event(app, &result);
-        }
-        ClientEvent::FatalError(error) => session::handle_fatal_error_event(app, error),
-        _ => unreachable!("client event family routed a non-session event to the session handler"),
+        _ => unreachable!("only connection events reach this handler"),
     }
+}
+
+fn apply_history_export_chunk(app: &mut App, chunk: crate::agent::events::HistoryChunk) {
+    use crate::app::PendingCommandAck;
+    use crate::app::export::{ExportProgress, apply_chunk};
+
+    let (severity, message) = match apply_chunk(app, chunk) {
+        ExportProgress::Ignored | ExportProgress::Collecting => return,
+        ExportProgress::Failed(message) => (SystemSeverity::Error, message),
+        ExportProgress::Written(path) => {
+            (SystemSeverity::Info, format!("Exported the conversation to {}", path.display()))
+        }
+    };
+    if matches!(app.turn.pending_command_ack, Some(PendingCommandAck::HistoryExport)) {
+        session::clear_pending_command(app);
+    }
+    notices::emit_system_notice(app, severity, &message);
 }
 
 fn apply_rewind_targets(

@@ -52,7 +52,8 @@ type SessionControlCommand = Extract<
       | "set_ultracode"
       | "refresh_ultracode"
       | "set_fast_mode"
-      | "reload_plugins";
+      | "reload_plugins"
+      | "reload_skills_and_styles";
   }
 >;
 
@@ -122,6 +123,9 @@ export async function handleSessionControlCommand(
       return;
     case "reload_plugins":
       await reloadPlugins(command, requestId, deps);
+      return;
+    case "reload_skills_and_styles":
+      await reloadSkillsAndStyles(command, requestId);
   }
 }
 
@@ -537,6 +541,48 @@ async function reloadPlugins(
   const session = requireSession(command.session_id, requestId);
   if (session) {
     await deps.handleReloadPluginsCommand(session, requestId, command.force);
+  }
+}
+
+// The SDK also announces a changed command list (`commands_changed`), which the
+// existing inventory path applies; this command only reports what was reloaded.
+async function reloadSkillsAndStyles(
+  command: Extract<SessionControlCommand, { command: "reload_skills_and_styles" }>,
+  requestId: string | undefined,
+): Promise<void> {
+  const session = requireSession(command.session_id, requestId);
+  if (!session) {
+    return;
+  }
+  try {
+    const { skills } = await session.query.reloadSkills();
+    const { available_output_styles: outputStyles } =
+      await session.query.reloadOutputStyles();
+    writeEvent(
+      {
+        event: "skills_and_styles_reloaded",
+        session_id: session.sessionId,
+        skills: skills.map((skill) => skill.name),
+        output_styles: outputStyles,
+      },
+      requestId,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    bridgeLogger.warn({
+      target: LOG_TARGETS.APP_SESSION,
+      eventName: "reload_skills_and_styles_failed",
+      message: "failed to reload skills and output styles",
+      outcome: "failure",
+      ...(requestId ? { requestId } : {}),
+      sessionId: session.sessionId,
+      fields: { error_message: message },
+    });
+    slashError(
+      command.session_id,
+      `failed to reload skills and output styles: ${message}`,
+      requestId,
+    );
   }
 }
 

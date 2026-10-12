@@ -1,3 +1,4 @@
+import { flushPendingHookActivity } from "./hook_activity.js";
 import { emitSessionTitle } from "./session_title.js";
 import {
   listSessions,
@@ -391,6 +392,7 @@ export function emitConnectEvent(session: SessionState): void {
     }
   }
   emitAvailableAgentsSnapshot(session);
+  flushPendingHookActivity(session);
   void emitSessionTitle(session);
   session.resumeUpdates = undefined;
   session.restoredInput = undefined;
