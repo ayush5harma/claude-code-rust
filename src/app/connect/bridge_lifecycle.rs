@@ -1115,6 +1115,31 @@ mod launch_command_tests {
     }
 
     #[test]
+    fn mcp_configs_keep_command_line_order_with_strict_mode() {
+        let project = tempfile::tempdir().expect("project");
+        let file_text = r#"{"mcpServers":{"docs":{"command":"docs-mcp"}}}"#;
+        std::fs::write(project.path().join("mcp.json"), file_text).expect("MCP config");
+        let project_dir = project.path().to_str().expect("UTF-8 path");
+        let inline = r#"{"mcpServers":{"docs":{"command":"override"}}}"#;
+        let created = startup_command(&[
+            "claude-rs",
+            "-C",
+            project_dir,
+            "--mcp-config",
+            "mcp.json",
+            "--mcp-config",
+            inline,
+            "--strict-mcp-config",
+        ]);
+        assert_eq!(
+            created["launch_settings"],
+            serde_json::json!({ "mcp_configs": [file_text, inline], "strict_mcp_config": true })
+        );
+        let plain = startup_command(&["claude-rs", "-C", project_dir, "--mcp-config", "mcp.json"]);
+        assert_eq!(plain["launch_settings"], serde_json::json!({ "mcp_configs": [file_text] }));
+    }
+
+    #[test]
     fn added_directories_resolve_against_the_working_directory() {
         let project = tempfile::tempdir().expect("project");
         let shared = tempfile::tempdir().expect("shared directory");

@@ -1176,6 +1176,8 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     ...(params.launchSettings.additional_directories
       ? { additionalDirectories: params.launchSettings.additional_directories }
       : {}),
+    ...(params.launchConfig?.mcpServers ? { mcpServers: params.launchConfig.mcpServers } : {}),
+    ...(params.launchSettings.strict_mcp_config ? { strictMcpConfig: true } : {}),
     toolConfig: { askUserQuestion: { previewFormat: "markdown" as const } },
     systemPrompt,
     ...(params.claudeCodeExecutable

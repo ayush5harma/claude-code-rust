@@ -736,6 +736,9 @@ export interface SessionLaunchSettings {
   additional_directories?: string[];
   /** Unparsed JSON text of a settings object; parsed by launch_config.ts. */
   settings?: string;
+  /** Unparsed JSON texts of MCP configs in command-line order; parsed by launch_config.ts. */
+  mcp_configs?: string[];
+  strict_mcp_config?: boolean;
 }
 
 export interface RewindTarget {

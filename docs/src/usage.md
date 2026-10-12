@@ -68,11 +68,15 @@ Configure every session the process starts:
 claude-rs --add-dir ../shared-lib --add-dir ~/notes
 claude-rs --settings ./ci-settings.json
 claude-rs --settings '{"spinnerTipsEnabled": false}'
+claude-rs --mcp-config ./mcp.json --mcp-config '{"mcpServers": {"docs": {"command": "docs-mcp"}}}'
+claude-rs --mcp-config ./mcp.json --strict-mcp-config
 ```
 
 `--add-dir` gives Claude access to directories beyond the working directory. Unlike the options above, it applies to every session the process starts, including `/new` and sessions opened with `/resume`, as Claude Code keeps it for its whole process. Relative paths resolve against `--dir`, or the current directory without it, and each must be an existing directory; otherwise `claude-rs` exits with an error before starting.
 
 `--settings` takes a JSON object inline (a value starting with `{`) or a path to a JSON file, read once at startup. It becomes Claude Code's flag-settings layer, which outranks the user, project and local settings files. Two host restrictions stay in force over it: `feedbackDrafts` is always `off`, and `crossSessionInbound` is `refuse` unless the value in effect is `accept` or `refuse`, because draft review and held peer-message review need surfaces `claude-rs` does not have. A file that cannot be read stops the launch; invalid JSON, or JSON that is not an object, fails the session start with a message naming `--settings`. The Config window shows the saved settings files, not this layer.
+
+`--mcp-config` takes the same file-or-inline form, once per config, in Claude Code's `.mcp.json` shape: an object with an `mcpServers` object. The servers of all configs are merged in command-line order, and a later server with the same name replaces an earlier one. They join the session's other MCP servers in the MCP window under the dynamic scope. `--strict-mcp-config` drops every other MCP source (project `.mcp.json`, user settings, plugins and agent definitions), so only the `--mcp-config` servers remain; on its own it starts the session without MCP servers. A config without an `mcpServers` object, or a server that is not an object, fails the session start with a message naming the config.
 
 An initial prompt whose text matches a subcommand name can be passed after `--`, for example `claude-rs -- "doctor"`. Startup arguments cannot be combined with support commands such as `doctor`, `logs`, `config`, or `completions`.
 
@@ -118,6 +122,8 @@ The installed `claude-rs --help` command exposes these options; the session opti
 | `-n, --name <NAME>` | Name the initial new or resumed session. |
 | `--add-dir <DIR>` | Let Claude access another directory in every session; repeatable. |
 | `--settings <FILE-OR-JSON>` | Apply a settings file or inline JSON object as the flag-settings layer of every session. |
+| `--mcp-config <FILE-OR-JSON>` | Add the MCP servers of a config file or inline JSON object to every session; repeatable. |
+| `--strict-mcp-config` | Use only the `--mcp-config` servers, ignoring all other MCP configuration. |
 
 See [Diagnostics](diagnostics.md) before enabling verbose logs.
 

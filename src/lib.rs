@@ -169,6 +169,14 @@ pub struct SessionConfigArgs {
     /// Settings JSON file, or inline JSON, applied as Claude Code's --settings layer.
     #[arg(long, global = true, value_name = "FILE-OR-JSON")]
     pub settings: Option<String>,
+
+    /// MCP server config file, or inline JSON, with an `mcpServers` object (repeatable).
+    #[arg(long = "mcp-config", global = true, value_name = "FILE-OR-JSON")]
+    pub mcp_configs: Vec<String>,
+
+    /// Use only the MCP servers from --mcp-config, ignoring all other MCP configuration.
+    #[arg(long, global = true)]
+    pub strict_mcp_config: bool,
 }
 
 impl SessionConfigArgs {
@@ -191,7 +199,17 @@ impl SessionConfigArgs {
             .as_deref()
             .map(|value| json_or_file_text(base, value, "--settings"))
             .transpose()?;
-        Ok(agent::wire::SessionConfig { additional_directories, settings })
+        let mcp_configs = self
+            .mcp_configs
+            .iter()
+            .map(|value| json_or_file_text(base, value, "--mcp-config"))
+            .collect::<Result<_, String>>()?;
+        Ok(agent::wire::SessionConfig {
+            additional_directories,
+            settings,
+            mcp_configs,
+            strict_mcp_config: self.strict_mcp_config,
+        })
     }
 }
 
@@ -227,7 +245,9 @@ impl Cli {
             || self.session_options.agent.is_some()
             || self.session_options.name.is_some()
             || !self.session_config.add_dirs.is_empty()
-            || self.session_config.settings.is_some();
+            || self.session_config.settings.is_some()
+            || !self.session_config.mcp_configs.is_empty()
+            || self.session_config.strict_mcp_config;
         let conflict = match &self.command {
             Some(Command::Resume { .. }) => {
                 self.resume.is_some() || self.continue_session || self.prompt.is_some()

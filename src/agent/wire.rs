@@ -42,12 +42,20 @@ pub struct SessionConfig {
     /// Unparsed JSON text of a settings object; the bridge parses and merges it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings: Option<String>,
+    /// Unparsed JSON texts of MCP configs, in command-line order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_configs: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub strict_mcp_config: bool,
 }
 
 impl SessionConfig {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.additional_directories.is_empty() && self.settings.is_none()
+        self.additional_directories.is_empty()
+            && self.settings.is_none()
+            && self.mcp_configs.is_empty()
+            && !self.strict_mcp_config
     }
 }
 
@@ -1684,6 +1692,8 @@ mod tests {
             config: super::SessionConfig {
                 additional_directories: vec!["/work/shared".to_owned()],
                 settings: Some(r#"{"model":"haiku"}"#.to_owned()),
+                mcp_configs: vec![r#"{"mcpServers":{}}"#.to_owned()],
+                strict_mcp_config: true,
             },
         };
         let json = serde_json::to_value(&settings).expect("serialize");
@@ -1692,7 +1702,8 @@ mod tests {
             serde_json::json!({
                 "model": "haiku", "permission_mode": "plan", "effort": "max", "agent": "reviewer",
                 "name": "Release prep", "additional_directories": ["/work/shared"],
-                "settings": "{\"model\":\"haiku\"}"
+                "settings": "{\"model\":\"haiku\"}", "mcp_configs": ["{\"mcpServers\":{}}"],
+                "strict_mcp_config": true
             })
         );
         assert_eq!(

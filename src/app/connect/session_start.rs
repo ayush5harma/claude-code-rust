@@ -207,6 +207,7 @@ mod tests {
         let config = SessionConfig {
             additional_directories: vec!["/work/shared".to_owned()],
             settings: Some(r#"{"model":"haiku"}"#.to_owned()),
+            ..SessionConfig::default()
         };
         let cli = crate::Cli::try_parse_from(["claude-rs", "--model", "opus", "-n", "First"])
             .expect("CLI");

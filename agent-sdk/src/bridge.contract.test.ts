@@ -618,7 +618,7 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
     const saved = new Map();
     export function query({ prompt, options }) {
       record({ type: "query", cwd: options.cwd, resume: options.resume, model: options.model, effort: options.effort, permissionMode: options.permissionMode, agent: options.agent });
-      record({ type: "launch", resume: options.resume, sessionId: options.sessionId, forkSession: options.forkSession, title: options.title, additionalDirectories: options.additionalDirectories, settings: options.settings });
+      record({ type: "launch", resume: options.resume, sessionId: options.sessionId, forkSession: options.forkSession, title: options.title, additionalDirectories: options.additionalDirectories, settings: options.settings, mcpServers: options.mcpServers, strictMcpConfig: options.strictMcpConfig });
       const state = saved.get(options.resume) ?? { requested: false, effort: "high", cwd: options.cwd };
       saved.set(options.sessionId ?? options.resume, state);
       let model = options.model ?? "opus";
@@ -935,6 +935,11 @@ test("session configuration reaches the query options of created, replaced and r
   const launchSettings = {
     additional_directories: [shared, cwd],
     settings: JSON.stringify({ spinnerTipsEnabled: false, feedbackDrafts: "notify" }),
+    mcp_configs: [
+      JSON.stringify({ mcpServers: { docs: { command: "docs-v1" } } }),
+      JSON.stringify({ mcpServers: { docs: { command: "docs-v2" }, search: { type: "http", url: "https://search.example" } } }),
+    ],
+    strict_mcp_config: true,
   };
   const { bridge, cleanup } = ultracodeFixtureBridge({
     STARTUP_JOURNAL: journal,
@@ -953,6 +958,8 @@ test("session configuration reaches the query options of created, replaced and r
       assert.deepEqual(launch.additionalDirectories, [shared, cwd]);
       assert.equal((launch.settings as BridgeEnvelope).spinnerTipsEnabled, false);
       assert.equal((launch.settings as BridgeEnvelope).feedbackDrafts, "off");
+      assert.deepEqual(launch.mcpServers, { docs: { command: "docs-v2" }, search: { type: "http", url: "https://search.example" } });
+      assert.equal(launch.strictMcpConfig, true);
     }
   } finally {
     await cleanup();
