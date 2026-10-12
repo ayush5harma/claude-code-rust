@@ -50,6 +50,9 @@ pub(crate) fn serialize_footer_rows(app: &App, total_width: u16) -> SerializedFo
     if let Some(rate_row) = build_rate_line(app, total_width) {
         rows.push(rate_row);
     }
+    if let Some(agent_row) = build_agent_line(app, total_width) {
+        rows.push(agent_row);
+    }
     if let Some(plan_row) = build_plan_line(app, total_width) {
         rows.push(plan_row);
     }
@@ -128,22 +131,54 @@ fn build_rate_line(app: &App, width: u16) -> Option<Line<'static>> {
     })
 }
 
-fn build_plan_line(app: &App, width: u16) -> Option<Line<'static>> {
-    let mut steps = app
+fn build_agent_line(app: &App, width: u16) -> Option<Line<'static>> {
+    let mut total = 0usize;
+    let mut running = 0usize;
+    for task in app
         .sdk_inventory
         .tasks
         .iter()
-        .filter(|task| !crate::app::tasks::is_sdk_background_task(task))
+        .filter(|task| crate::app::session_agents::is_session_agent_task(task))
+    {
+        total += 1;
+        running += usize::from(task.status == model::TaskStatus::InProgress);
+    }
+    (total > 0).then(|| {
+        compose_footer_row(
+            Line::from(Span::styled(
+                format!("Agents: {running} running / {total}"),
+                Style::default().fg(FOOTER_CONTEXT_VALUE),
+            )),
+            None,
+            width,
+            0,
+        )
+    })
+}
+
+fn build_plan_line(app: &App, width: u16) -> Option<Line<'static>> {
+    let task_steps = app
+        .sdk_inventory
+        .tasks
+        .iter()
+        .filter(|task| crate::app::tasks::is_user_plan_task(task))
         .map(|task| (task.status, task.active_form.as_deref().unwrap_or(&task.subject)))
         .collect::<Vec<_>>();
-    if steps.is_empty() {
-        steps = app
+    let steps = match app.footer.plan_source {
+        crate::app::PlanSource::Todo => app
             .footer
             .todo_plan
             .iter()
             .map(|item| (item.status, item.active_form.as_deref().unwrap_or(&item.content)))
-            .collect();
-    }
+            .collect(),
+        crate::app::PlanSource::None if task_steps.is_empty() => app
+            .footer
+            .todo_plan
+            .iter()
+            .map(|item| (item.status, item.active_form.as_deref().unwrap_or(&item.content)))
+            .collect(),
+        crate::app::PlanSource::None | crate::app::PlanSource::Tasks => task_steps,
+    };
     if steps.is_empty() {
         return None;
     }
@@ -763,6 +798,47 @@ mod tests {
         app.sdk_inventory.tasks.clear();
         let fallback = serialize_footer_rows(&app, 80).rows;
         assert!(line_text(fallback.last().expect("TodoWrite row")).contains("0/1 Old todo"));
+    }
+
+    #[test]
+    fn latest_plan_source_controls_row_without_falling_back_to_stale_tasks() {
+        let mut app = App::test_default();
+        app.sdk_inventory.tasks.push(model::TaskItem::new(
+            "old-task",
+            "Old task plan",
+            model::TaskStatus::InProgress,
+        ));
+        app.footer.apply_todo_plan(vec![model::TodoPlanItem {
+            content: "Fresh todo plan".to_owned(),
+            active_form: None,
+            status: model::TaskStatus::InProgress,
+        }]);
+        let rows = serialize_footer_rows(&app, 100).rows;
+        assert!(line_text(rows.last().expect("todo row")).contains("Fresh todo plan"));
+        assert!(!line_text(rows.last().expect("todo row")).contains("Old task plan"));
+
+        app.footer.apply_todo_plan(Vec::new());
+        assert_eq!(serialize_footer_rows(&app, 100).rows.len(), 2);
+        app.footer.plan_source = crate::app::PlanSource::Tasks;
+        let rows = serialize_footer_rows(&app, 100).rows;
+        assert!(line_text(rows.last().expect("task row")).contains("Old task plan"));
+        app.sdk_inventory.tasks.clear();
+        assert_eq!(serialize_footer_rows(&app, 100).rows.len(), 2);
+    }
+
+    #[test]
+    fn footer_counts_canonical_session_agents_without_treating_them_as_plan_steps() {
+        let mut app = App::test_default();
+        let mut running = model::TaskItem::new("agent-1", "Review", model::TaskStatus::InProgress);
+        running.metadata = Some(serde_json::json!({"subagent_type":"general-purpose"}));
+        let mut done = model::TaskItem::new("agent-2", "Inspect", model::TaskStatus::Completed);
+        done.metadata = Some(serde_json::json!({"task_type":"local_agent"}));
+        app.sdk_inventory.tasks.extend([running, done]);
+
+        let rows = serialize_footer_rows(&app, 100).rows;
+        assert_eq!(rows.len(), 3);
+        assert!(line_text(&rows[2]).contains("Agents: 1 running / 2"));
+        assert!(!rows.iter().any(|row| line_text(row).contains("0/2")));
     }
 
     #[test]

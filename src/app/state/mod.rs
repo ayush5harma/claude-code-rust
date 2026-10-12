@@ -40,6 +40,7 @@ pub use cache_metrics::CacheMetrics;
 pub use chat_render::{
     ChatRenderState, ComposerRenderState, LiveRegionRenderState, TerminalSize, TerminalSizeChange,
 };
+pub(crate) use footer::PlanSource;
 pub use hook_runs::{
     HOOK_NOTICE_SLOW_THRESHOLD, HookNoticeMode, HookRun, HookRuns, format_elapsed,
 };

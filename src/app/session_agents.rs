@@ -94,12 +94,16 @@ pub(crate) fn is_running_task(app: &App, agent_id: &str) -> bool {
         if task.task_id != agent_id || task.status != crate::agent::model::TaskStatus::InProgress {
             return false;
         }
-        let Some(metadata) = task.metadata.as_ref().and_then(serde_json::Value::as_object) else {
-            return false;
-        };
-        metadata.get("subagent_type").is_some_and(serde_json::Value::is_string)
-            || metadata.get("task_type").and_then(serde_json::Value::as_str) == Some("local_agent")
+        is_session_agent_task(task)
     })
+}
+
+pub(crate) fn is_session_agent_task(task: &crate::agent::model::TaskItem) -> bool {
+    let Some(metadata) = task.metadata.as_ref().and_then(serde_json::Value::as_object) else {
+        return false;
+    };
+    metadata.get("subagent_type").is_some_and(serde_json::Value::is_string)
+        || metadata.get("task_type").and_then(serde_json::Value::as_str) == Some("local_agent")
 }
 
 pub(crate) fn stop_selected(app: &mut App) {

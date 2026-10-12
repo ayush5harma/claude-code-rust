@@ -410,7 +410,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             apply_task_state_update(app, update);
         }
         model::SessionUpdate::TodoPlanUpdate(items) => {
-            app.footer.todo_plan = items;
+            app.footer.apply_todo_plan(items);
             app.request_chat_repaint();
         }
         model::SessionUpdate::StatusLineUpdate(text) => {
