@@ -68,6 +68,7 @@ pub(crate) fn try_handle_submission(app: &mut App, submission: &ResolvedSubmissi
         AppSlashCommand::Plugins => handle_plugins_submit(app),
         AppSlashCommand::Status => handle_status_submit(app),
         AppSlashCommand::Usage => handle_usage_submit(app),
+        AppSlashCommand::Agents => handle_agents_submit(app),
         AppSlashCommand::Login => handle_login_submit(app),
         AppSlashCommand::Logout => handle_logout_submit(app),
         AppSlashCommand::Mode => handle_mode_submit(app, &args),
@@ -199,6 +200,13 @@ fn handle_status_submit(app: &mut App) -> bool {
     if let Err(err) = crate::app::config::open_tab(app, crate::app::ConfigTab::Status) {
         push_system_message(app, format!("Failed to open status: {err}"));
         return true;
+    }
+    true
+}
+
+fn handle_agents_submit(app: &mut App) -> bool {
+    if let Err(err) = crate::app::config::open_tab(app, crate::app::ConfigTab::Agents) {
+        push_system_message(app, format!("Failed to open agents: {err}"));
     }
     true
 }

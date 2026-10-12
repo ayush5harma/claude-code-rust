@@ -322,6 +322,26 @@ pub(super) async fn handle_bridge_event(
                 .send(ClientEvent::StructuredUsageReceived { session_id, snapshot, error })
                 .await;
         }
+        crate::agent::wire::BridgeEvent::SessionAgentsResult {
+            session_id,
+            action,
+            agent_id,
+            agent_ids,
+            messages,
+            error,
+        } => {
+            let _ = event_tx
+                .send(ClientEvent::SessionAgentsResultReceived {
+                    session_id,
+                    request_id,
+                    action,
+                    agent_id,
+                    agent_ids,
+                    messages,
+                    error,
+                })
+                .await;
+        }
         crate::agent::wire::BridgeEvent::SessionHistoryExport {
             session_id,
             updates,

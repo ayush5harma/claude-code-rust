@@ -783,6 +783,41 @@ impl AgentConnection {
         })
     }
 
+    pub fn list_session_agents(
+        &self,
+        session_id: String,
+        request_id: String,
+    ) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: Some(request_id),
+            command: BridgeCommand::ListSessionAgents { session_id },
+        })
+    }
+
+    pub fn get_subagent_messages(
+        &self,
+        session_id: String,
+        agent_id: String,
+        request_id: String,
+    ) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: Some(request_id),
+            command: BridgeCommand::GetSubagentMessages { session_id, agent_id },
+        })
+    }
+
+    pub fn stop_subagent_task(
+        &self,
+        session_id: String,
+        agent_id: String,
+        request_id: String,
+    ) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: Some(request_id),
+            command: BridgeCommand::StopSubagentTask { session_id, agent_id },
+        })
+    }
+
     pub fn get_working_diff(&self, session_id: String, request_id: String) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: Some(request_id),

@@ -225,6 +225,16 @@ pub enum ClientEvent {
         targets: Vec<model::RewindTarget>,
         error: Option<String>,
     },
+    /// Correlated current-session agent list, transcript, or stop result.
+    SessionAgentsResultReceived {
+        session_id: String,
+        request_id: Option<String>,
+        action: crate::agent::types::SessionAgentsAction,
+        agent_id: Option<String>,
+        agent_ids: Vec<String>,
+        messages: Vec<crate::agent::types::SubagentMessage>,
+        error: Option<String>,
+    },
     /// One chunk of the complete session history requested by /export.
     SessionHistoryChunk { session_id: String, chunk: HistoryChunk },
     /// Result of a rewind operation that touched files.
@@ -296,6 +306,7 @@ impl ClientEvent {
             | Self::StatusSnapshotReceived { session_id, .. }
             | Self::ContextUsageReceived { session_id, .. }
             | Self::StructuredUsageReceived { session_id, .. }
+            | Self::SessionAgentsResultReceived { session_id, .. }
             | Self::WorkingDiffReceived { session_id, .. }
             | Self::McpSnapshotReceived { session_id, .. } => Some(session_id),
             Self::SlashCommandError { session_id, .. } => session_id.as_deref(),

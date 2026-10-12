@@ -2486,3 +2486,25 @@ fn ctrl_v_attaches_the_system_clipboard_image_and_sends_it_with_the_prompt() {
     test.shutdown();
     drop(clipboard);
 }
+
+#[test]
+fn agents_panel_shows_current_session_messages_and_stops_only_the_selected_running_agent() {
+    let mut test = TerminalTest::start("session-agents", 3);
+    test.submit_command("/agents");
+    test.wait_screen_with("Review parser", &["Session agents", "Running"]);
+    test.wait_screen("Parser path checked");
+    assert_eq!(test.commands("list_session_agents").len(), 1);
+    assert_eq!(test.commands("get_subagent_messages").len(), 1);
+    test.assert_prompts(&[]);
+
+    test.send(b"s");
+    test.wait_screen("Stop requested for the selected agent");
+    assert_eq!(test.commands("stop_subagent_task").len(), 1);
+    test.send(b"\x1b[B");
+    test.wait_screen_with("Docs path checked", &["Inspect docs", "Completed"]);
+    assert_eq!(test.commands("get_subagent_messages").len(), 2);
+    test.send(b"s");
+    test.wait_screen("no running task to stop");
+    assert_eq!(test.commands("stop_subagent_task").len(), 1);
+    test.shutdown();
+}

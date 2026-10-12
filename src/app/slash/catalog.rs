@@ -27,6 +27,7 @@ pub(crate) enum AppSlashCommand {
     Plugins,
     Status,
     Usage,
+    Agents,
     Login,
     Logout,
     Mode,
@@ -266,6 +267,14 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         args: NO_ARGS,
     },
     AppSlashCommandSpec {
+        command: AppSlashCommand::Agents,
+        name: "/agents",
+        usage: "Usage: /agents",
+        short_description: "Inspect session agents",
+        long_description: "Open the current session agents panel.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
         command: AppSlashCommand::Login,
         name: "/login",
         usage: "Usage: /login",
@@ -368,6 +377,7 @@ impl AppSlashCommand {
             Self::Plugins => "/plugins",
             Self::Status => "/status",
             Self::Usage => "/usage",
+            Self::Agents => "/agents",
             Self::Login => "/login",
             Self::Logout => "/logout",
             Self::Mode => "/mode",
@@ -411,6 +421,7 @@ impl AppSlashCommand {
             | Self::Plugins
             | Self::Status
             | Self::Usage
+            | Self::Agents
             | Self::Diff => {
                 if args.is_empty() {
                     SubmissionClass::Fullscreen
@@ -418,17 +429,19 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
-            Self::Copy => match args {
-                [] => SubmissionClass::Informational,
-                _ => SubmissionClass::Invalid,
-            },
-            Self::Docs => {
-                if matches!(args, ["mode" | "models" | "shortcuts" | "commands" | "agents"]) {
+            Self::Copy => {
+                if args.is_empty() {
                     SubmissionClass::Informational
                 } else {
                     SubmissionClass::Invalid
                 }
             }
+            Self::Docs => match args {
+                ["mode" | "models" | "shortcuts" | "commands" | "agents"] => {
+                    SubmissionClass::Informational
+                }
+                _ => SubmissionClass::Invalid,
+            },
             Self::Compact | Self::Login | Self::Logout | Self::NewSession | Self::Reload => {
                 if args.is_empty() {
                     SubmissionClass::TurnExclusive

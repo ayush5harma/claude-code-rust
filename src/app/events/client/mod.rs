@@ -95,6 +95,7 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         | ClientEvent::WorkingDiffReceived { .. }
         | ClientEvent::ContextUsageReceived { .. }
         | ClientEvent::RewindTargetsReceived { .. }
+        | ClientEvent::SessionAgentsResultReceived { .. }
         | ClientEvent::SessionHistoryChunk { .. }
         | ClientEvent::RewindResultReceived { .. }
         | ClientEvent::FatalError(_) => ClientEventFamily::Session,
