@@ -1835,6 +1835,46 @@ fn ultracode_lifecycle_preserves_conversation_state_and_rejects_stale_sessions()
     assert!(app.session_runtime.ultracode.is_none());
 }
 
+fn hook_update(id: &str, phase: model::HookPhase, at: u64) -> ClientEvent {
+    session_update(model::SessionUpdate::HookActivity(model::HookActivity {
+        hook_id: id.to_owned(),
+        hook_name: "SessionStart:startup".to_owned(),
+        hook_event: "SessionStart".to_owned(),
+        phase,
+        outcome: (phase == model::HookPhase::Finished).then_some(model::HookOutcome::Success),
+        exit_code: None,
+        output: None,
+        observed_at_ms: at,
+    }))
+}
+
+#[test]
+fn hook_runs_follow_the_session_and_reset_with_its_conversation() {
+    let mut app = make_test_app();
+    handle_client_event(&mut app, hook_update("h1", model::HookPhase::Started, 1_000));
+    handle_client_event(&mut app, hook_update("h1", model::HookPhase::Finished, 3_500));
+    assert_eq!(app.session_runtime.hook_runs.summary().total, Duration::from_millis(2_500));
+
+    // Reconnecting the same session keeps them; another session starts clean.
+    app.session_runtime.activate_session(model::SessionId::new("test-session"));
+    assert_eq!(app.session_runtime.hook_runs.len(), 1);
+    app.session_runtime.activate_session(model::SessionId::new("other-session"));
+    assert!(app.session_runtime.hook_runs.is_empty());
+
+    app.session_runtime.session_id = Some(model::SessionId::new("test-session"));
+    handle_client_event(&mut app, hook_update("h2", model::HookPhase::Started, 1));
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::ConversationReset {
+            new_conversation_id: "conversation-2".to_owned(),
+            trigger: None,
+            timestamp: None,
+            user_message_uuid: None,
+        }),
+    );
+    assert!(app.session_runtime.hook_runs.is_empty());
+}
+
 #[test]
 fn session_title_follows_the_child_until_another_session_connects() {
     let mut app = make_test_app();

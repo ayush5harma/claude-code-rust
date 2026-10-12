@@ -196,6 +196,7 @@ pub fn start_connection(app: &mut App) {
     if !app.startup.mark_connection_started() {
         return;
     }
+    app.startup.timeline.mark_bridge_launched(std::time::Instant::now());
 
     let params = StartConnectionParams {
         event_tx: app.event_tx.clone(),

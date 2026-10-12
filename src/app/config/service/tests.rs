@@ -230,7 +230,7 @@ async fn permission_scope_selection_loads_only_its_rules_and_keeps_dialog_scope_
 async fn rule_item_editor_preserves_draft_across_resize_conflict_and_acknowledged_save() {
     use ratatui::{Terminal, backend::TestBackend};
     tokio::task::LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             let mut app = App::test_default();
             app.surface_mode =
                 crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
@@ -343,7 +343,7 @@ async fn rule_item_editor_preserves_draft_across_resize_conflict_and_acknowledge
                 Some(&json!(["Read(./src/**)", "Read(./docs/**)", "Bash(npm test *)"]))
             );
             assert!(app.config.setting_overlay().is_none());
-        })
+        }))
         .await;
 }
 
@@ -727,7 +727,7 @@ async fn conflict_refresh_preserves_draft_and_deliberate_retry_uses_the_refreshe
 
 #[tokio::test(flavor = "current_thread")]
 async fn default_effort_cycles_and_resets_without_changing_session_effort() {
-    tokio::task::LocalSet::new().run_until(async {
+    Box::pin(tokio::task::LocalSet::new().run_until(async {
         let mut app = App::test_default();
         let (connection, mut commands) = AgentConnection::test_channel();
         app.session_runtime.conn = Some(Rc::new(connection));
@@ -762,7 +762,7 @@ async fn default_effort_cycles_and_resets_without_changing_session_effort() {
         apply_settings_result(&mut app, reset.request_id.as_deref(), SettingsResult { persistence: SettingsPersistence::Saved, application: SettingsApplication::NextSession, snapshot: Some(inherited), error: None });
         assert_eq!(app.config.saved_value("defaultEffort"), None);
         assert_eq!(app.session_runtime.config_options.get("effortLevel"), Some(&json!("max")));
-    }).await;
+    })).await;
 }
 
 #[tokio::test(flavor = "current_thread")]

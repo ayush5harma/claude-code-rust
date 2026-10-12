@@ -2200,6 +2200,87 @@ fn status_tab_shows_the_session_name_after_rename() {
     test.shutdown();
 }
 
+/// The rows of `screen` that mention `needle`.
+fn rows_with<'a>(screen: &'a str, needle: &str) -> Vec<&'a str> {
+    screen.lines().filter(|line| line.contains(needle)).collect()
+}
+
+/// A slow `SessionStart` hook is reported while the app has not read its settings
+/// yet, so its notice has to wait for them; a failed `PreToolUse` hook is noticed
+/// as it finishes. The fast `SessionStart` hook is reported between the slow
+/// hook's two messages and gets no notice.
+#[test]
+fn slow_and_failed_hooks_leave_a_notice_and_fast_ones_do_not() {
+    let mut test = TerminalTest::start("hook-activity", 3);
+    test.submit("run the hooks", "run the hooks");
+    let screen = test.wait_screen_with(
+        "Hook turn done",
+        &[
+            "Hook SessionStart:startup took 1.2 s",
+            "Hook PreToolUse:Bash failed (exit 2): blocked by fixture policy",
+        ],
+    );
+    assert_eq!(rows_with(&screen, "Hook SessionStart").len(), 1, "{screen}");
+    assert_eq!(rows_with(&screen, "Hook PreToolUse").len(), 1, "{screen}");
+    assert_eq!(rows_with(&screen, "SessionStart:compact"), Vec::<&str>::new(), "{screen}");
+    test.assert_prompts(&["run the hooks"]);
+    test.shutdown();
+}
+
+/// The Status tab row that starts with `label`, trimmed.
+fn status_row(test: &TerminalTest, label: &str) -> Option<String> {
+    test.screen().lines().map(str::trim).find(|line| line.starts_with(label)).map(str::to_owned)
+}
+
+#[test]
+fn status_tab_shows_measured_startup_milestones_and_the_hook_summary() {
+    let mut test = TerminalTest::start("hook-activity", 3);
+    test.submit("run the hooks", "run the hooks");
+    test.wait_turn_finished("Hook turn done");
+    test.submit("/status", "/status");
+
+    test.wait_for("the hooks summary in Status", |test| {
+        status_row(test, "Runs:").filter(|row| row.contains("in total"))
+    });
+    // Three runs of 1200, 40 and 30 ms, and one failed.
+    assert_eq!(
+        status_row(&test, "Runs:").as_deref(),
+        Some("Runs: 3 (1 failed), 1.3 s in total"),
+        "{}",
+        test.screen()
+    );
+    assert_eq!(
+        status_row(&test, "Slowest 1:").as_deref(),
+        Some("Slowest 1: SessionStart:startup 1.2 s")
+    );
+    assert_eq!(
+        status_row(&test, "Slowest 2:").as_deref(),
+        Some("Slowest 2: SessionStart:compact 40 ms")
+    );
+    assert_eq!(
+        status_row(&test, "Slowest 3:").as_deref(),
+        Some("Slowest 3: PreToolUse:Bash 30 ms")
+    );
+
+    // Offsets depend on the machine; their order and the measured hook count do not.
+    let offset = |label: &str| {
+        let row =
+            status_row(&test, label).unwrap_or_else(|| panic!("{label} row:\n{}", test.screen()));
+        assert!(row.contains(": +"), "{row}");
+        test.screen().lines().position(|line| line.trim().starts_with(label)).expect("row")
+    };
+    let launched = offset("Bridge launched");
+    let hooks = offset("SessionStart hooks finished");
+    let connected = offset("SDK connected");
+    let ready = offset("Ready for input");
+    assert!(launched < hooks && hooks < connected && connected < ready);
+    assert!(
+        status_row(&test, "SessionStart hooks finished")
+            .is_some_and(|row| row.ends_with("(2 hooks)"))
+    );
+    test.shutdown();
+}
+
 #[test]
 fn reload_reports_the_reloaded_counts_and_then_a_bridge_failure() {
     let mut test = TerminalTest::start("reload", 3);
