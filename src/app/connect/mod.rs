@@ -301,4 +301,6 @@ fn log_bridge_task_join_result(result: Result<(), tokio::task::JoinError>) {
 }
 
 #[cfg(test)]
+pub(crate) mod render_corpus;
+#[cfg(test)]
 mod tests;
