@@ -42,7 +42,7 @@ These are **not included in v0.15.2-fork.2**. Pull-request status is authoritati
 | Hook progress and completion notices, per-hook duration, slow-hook summary, and startup milestones in Status | [PR #12](https://github.com/ayush5harma/claude-code-rust/pull/12), under review and cross-platform verification. Hook output is sanitized and redacted before retention. |
 | `/reload` skills and `/export` session history | [PR #13](https://github.com/ayush5harma/claude-code-rust/pull/13), under review and cross-platform verification. Export refuses to overwrite an existing file. |
 | Native `/diff` viewer | In development: working-tree changes and available current-session tool diffs in a native terminal view. |
-| Session regression fixes | In development: symlinked read-only settings, rewind configuration, resumed local-command history, and restored session titles. |
+| Session regression fixes | In development: symlinked read-only settings, rewind configuration, and restored session titles. Resumed command-like text remains verbatim until the SDK exposes reliable provenance. |
 | Session `/agents` panel | In development using public SDK subagent history and current-session task state. |
 
 Further planned work includes resume-by-title and large-session ergonomics, session tags and deletion, MCP resource references, transcript search, session accents, composer and footer improvements, and keyboard parity. These remain backlog items until implemented and verified. Features requiring SDK support remain conditional on that support.
