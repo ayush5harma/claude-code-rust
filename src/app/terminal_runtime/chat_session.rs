@@ -1351,6 +1351,9 @@ fn preview_rows(rows: &[Line<'static>], limit: usize) -> String {
 }
 
 #[cfg(test)]
+mod render_bench;
+
+#[cfg(test)]
 mod tests {
     use super::{
         ChatTerminalSession, ComposerEditor, ComposerSurface, HistoryCommitState,
