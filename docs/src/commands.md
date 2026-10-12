@@ -28,6 +28,7 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/plugins` | `/plugins` | Open plugin management. |
 | `/status` | `/status` | Open session and account status. |
 | `/usage` | `/usage` | Open quota and usage information. |
+| `/agents` | `/agents` | Inspect current-session subagents, their saved messages and running tasks. |
 | `/login` | `/login` | Run Claude CLI authentication and reconnect the session. |
 | `/logout` | `/logout` | Run Claude CLI logout and clear the active authenticated session. |
 | `/mode` | `/mode <id>` | Switch to a mode advertised by the active session. |
@@ -79,3 +80,5 @@ If the SDK accepts `/ultracode on` but reports Ultracode unavailable, the comman
 `/effort reset` uses the current model's native session default; it does not reload the saved per-model effort. `max` is session-only. `/thinking reset` removes the temporary override and restores the inherited thinking preference. Thinking is a preference, and the model may still require or restrict thinking. `/agent reset` clears the active main-thread agent rather than restoring its saved default.
 
 `/fast` changes fast mode only for the active session. It does not rewrite the persisted Fast mode setting. Use the settings surface to choose the fast-mode preference applied when future sessions start. If an accepted change cannot be verified, the footer shows `FAST:?`; retry explicitly with `/fast on` or `/fast off`.
+
+`/agents` shows subagents from the current SDK session. Up/Down selects one, `r` refreshes the list, and `s` asks the SDK to stop a selected running subagent task. Completed agents remain inspectable. The panel reads saved agent messages on selection and does not stop tasks outside the current session.

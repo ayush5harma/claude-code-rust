@@ -91,6 +91,9 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
         ClientEvent::ContextUsageReceived { session_id: _, percentage } => {
             crate::app::session_runtime::apply_context_usage_snapshot(app, percentage);
         }
+        agents_result @ ClientEvent::SessionAgentsResultReceived { .. } => {
+            crate::app::session_agents::apply_result(app, agents_result);
+        }
         ClientEvent::RewindTargetsReceived { session_id, targets, error } => {
             apply_rewind_targets(app, session_id, targets, error);
         }

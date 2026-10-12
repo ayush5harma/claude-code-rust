@@ -179,6 +179,7 @@ pub fn create_app(cli: &Cli) -> App {
         post_exit_action: None,
         usage: super::UsageState::default(),
         mcp: super::McpState::default(),
+        session_agents: super::session_agents::SessionAgentsState::default(),
         notifications: super::notify::NotificationManager::new(),
         render_cache_budget: RenderCacheBudget::default(),
         history_retention: HistoryRetentionPolicy::default(),

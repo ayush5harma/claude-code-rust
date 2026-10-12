@@ -577,6 +577,20 @@ pub enum ToolCallContent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum SessionAgentsAction {
+    ListSessionAgents,
+    GetSubagentMessages,
+    StopSubagentTask,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentMessage {
+    pub role: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
     Pending,
     InProgress,

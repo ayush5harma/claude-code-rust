@@ -619,7 +619,7 @@ async fn settings_load_automatically_after_startup_without_a_manual_refresh() {
 async fn language_save_and_editor_reset_show_the_remaining_value_or_default() {
     use crate::agent::settings::{ScopedSetting, SettingsSource};
     use ratatui::{Terminal, backend::TestBackend};
-    tokio::task::LocalSet::new().run_until(async {
+    Box::pin(tokio::task::LocalSet::new().run_until(async {
         for inherited in [Some("English"), None] {
             let mut app = App::test_default();
             let (connection, mut commands) = AgentConnection::test_channel();
@@ -668,7 +668,7 @@ async fn language_save_and_editor_reset_show_the_remaining_value_or_default() {
             crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
             assert_eq!(app.config.setting_overlay().expect("reset editor").draft, inherited.unwrap_or(""));
         }
-    }).await;
+    })).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -768,7 +768,7 @@ async fn default_effort_cycles_and_resets_without_changing_session_effort() {
 #[tokio::test(flavor = "current_thread")]
 async fn fixed_model_and_effort_choices_cycle_in_place_through_acknowledged_saves() {
     use ratatui::{Terminal, backend::TestBackend};
-    tokio::task::LocalSet::new().run_until(async {
+    Box::pin(tokio::task::LocalSet::new().run_until(async {
         for (id, label, choices) in [
             ("model", "Default model", (1..=12).map(|n| format!("model-{n}")).collect::<Vec<_>>()),
             ("defaultEffort", "Default effort", vec!["low".to_owned(), "medium".to_owned(), "high".to_owned()]),
@@ -807,5 +807,5 @@ async fn fixed_model_and_effort_choices_cycle_in_place_through_acknowledged_save
                 assert_eq!(app.config.selected_setting().expect("selection").id, id);
             }
         }
-    }).await;
+    })).await;
 }
