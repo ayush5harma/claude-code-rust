@@ -261,6 +261,8 @@ function optionalLaunchSettings(
     ? []
     : expectStringArray(parsed, "mcp_configs", `${context}.${key}`);
   const strictMcpConfig = optionalBoolean(parsed, "strict_mcp_config", `${context}.${key}`);
+  const systemPrompt = optionalString(parsed, "system_prompt", `${context}.${key}`);
+  const appendSystemPrompt = optionalString(parsed, "append_system_prompt", `${context}.${key}`);
   const additionalDirectories = parsed.additional_directories == null
     ? []
     : expectStringArray(parsed, "additional_directories", `${context}.${key}`);
@@ -274,6 +276,8 @@ function optionalLaunchSettings(
     ...(settings !== undefined ? { settings } : {}),
     ...(mcpConfigs.length > 0 ? { mcp_configs: mcpConfigs } : {}),
     ...(strictMcpConfig ? { strict_mcp_config: true } : {}),
+    ...(systemPrompt !== undefined ? { system_prompt: systemPrompt } : {}),
+    ...(appendSystemPrompt !== undefined ? { append_system_prompt: appendSystemPrompt } : {}),
   };
 }
 

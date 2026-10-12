@@ -1140,6 +1140,37 @@ mod launch_command_tests {
     }
 
     #[test]
+    fn system_prompt_text_and_files_reach_the_bridge() {
+        let project = tempfile::tempdir().expect("project");
+        std::fs::write(project.path().join("prompt.md"), "You are a release bot.\n")
+            .expect("prompt file");
+        std::fs::write(project.path().join("append.md"), "End every reply with DONE.")
+            .expect("append file");
+        let project_dir = project.path().to_str().expect("UTF-8 path");
+        let from_files = startup_command(&[
+            "claude-rs",
+            "-C",
+            project_dir,
+            "--system-prompt-file",
+            "prompt.md",
+            "--append-system-prompt-file",
+            "append.md",
+        ]);
+        assert_eq!(
+            from_files["launch_settings"],
+            serde_json::json!({
+                "system_prompt": "You are a release bot.\n",
+                "append_system_prompt": "End every reply with DONE."
+            })
+        );
+        let inline = startup_command(&["claude-rs", "--append-system-prompt", "Answer in German."]);
+        assert_eq!(
+            inline["launch_settings"],
+            serde_json::json!({ "append_system_prompt": "Answer in German." })
+        );
+    }
+
+    #[test]
     fn added_directories_resolve_against_the_working_directory() {
         let project = tempfile::tempdir().expect("project");
         let shared = tempfile::tempdir().expect("shared directory");

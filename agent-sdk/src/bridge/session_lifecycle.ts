@@ -1121,13 +1121,22 @@ function startupPermissionModeOptions(launchSettings: SessionLaunchSettings): {
     : { permissionMode };
 }
 
+/**
+ * The runtime guard is a bridge invariant, so it stays in every system prompt: appended to
+ * the claude_code preset, or after a --system-prompt that replaces the preset. Text from
+ * --append-system-prompt follows the guard.
+ */
+function buildSystemPrompt(launchSettings: SessionLaunchSettings) {
+  const append = [BRIDGE_RUNTIME_GUARD_PROMPT, launchSettings.append_system_prompt]
+    .filter((text): text is string => text !== undefined)
+    .join("\n\n");
+  return launchSettings.system_prompt !== undefined
+    ? { type: "custom" as const, prompt: [launchSettings.system_prompt, append], snapshot: true }
+    : { type: "preset" as const, preset: "claude_code" as const, append, snapshot: true };
+}
+
 export function buildQueryOptions(params: QueryOptionsBuilderParams) {
-  const systemPrompt = {
-    type: "preset" as const,
-    preset: "claude_code" as const,
-    append: BRIDGE_RUNTIME_GUARD_PROMPT,
-    snapshot: true,
-  };
+  const systemPrompt = buildSystemPrompt(params.launchSettings);
   const permissionModeOptions = startupPermissionModeOptions(
     params.launchSettings,
   );

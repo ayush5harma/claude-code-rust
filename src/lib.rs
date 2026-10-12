@@ -177,6 +177,22 @@ pub struct SessionConfigArgs {
     /// Use only the MCP servers from --mcp-config, ignoring all other MCP configuration.
     #[arg(long, global = true)]
     pub strict_mcp_config: bool,
+
+    /// Replace Claude Code's system prompt for new sessions.
+    #[arg(long, global = true, value_name = "TEXT", conflicts_with = "system_prompt_file", value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    pub system_prompt: Option<String>,
+
+    /// Replace Claude Code's system prompt for new sessions with a file's text.
+    #[arg(long, global = true, value_name = "FILE")]
+    pub system_prompt_file: Option<std::path::PathBuf>,
+
+    /// Append text to the system prompt of new sessions.
+    #[arg(long, global = true, value_name = "TEXT", conflicts_with = "append_system_prompt_file", value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    pub append_system_prompt: Option<String>,
+
+    /// Append a file's text to the system prompt of new sessions.
+    #[arg(long, global = true, value_name = "FILE")]
+    pub append_system_prompt_file: Option<std::path::PathBuf>,
 }
 
 impl SessionConfigArgs {
@@ -204,13 +220,50 @@ impl SessionConfigArgs {
             .iter()
             .map(|value| json_or_file_text(base, value, "--mcp-config"))
             .collect::<Result<_, String>>()?;
+        let system_prompt = text_or_file(
+            base,
+            self.system_prompt.as_deref(),
+            self.system_prompt_file.as_deref(),
+            "--system-prompt-file",
+        )?;
+        let append_system_prompt = text_or_file(
+            base,
+            self.append_system_prompt.as_deref(),
+            self.append_system_prompt_file.as_deref(),
+            "--append-system-prompt-file",
+        )?;
         Ok(agent::wire::SessionConfig {
             additional_directories,
             settings,
             mcp_configs,
             strict_mcp_config: self.strict_mcp_config,
+            system_prompt,
+            append_system_prompt,
         })
     }
+}
+
+/// The text of a flag pair whose two spellings clap keeps mutually exclusive.
+fn text_or_file(
+    base: &std::path::Path,
+    text: Option<&str>,
+    file: Option<&std::path::Path>,
+    file_flag: &str,
+) -> Result<Option<String>, String> {
+    match (text, file) {
+        (Some(text), _) => Ok(Some(text.to_owned())),
+        (None, Some(file)) => read_text_file(base, file, file_flag).map(Some),
+        (None, None) => Ok(None),
+    }
+}
+
+fn read_text_file(
+    base: &std::path::Path,
+    file: &std::path::Path,
+    flag: &str,
+) -> Result<String, String> {
+    let path = absolute_path(base, file, flag)?;
+    std::fs::read_to_string(&path).map_err(|error| format!("{flag}: cannot read {path}: {error}"))
 }
 
 /// Inline JSON is passed through; anything else is a file whose text is read once here.
@@ -219,8 +272,7 @@ fn json_or_file_text(base: &std::path::Path, value: &str, flag: &str) -> Result<
     if value.trim_start().starts_with('{') {
         return Ok(value.to_owned());
     }
-    let path = absolute_path(base, std::path::Path::new(value), flag)?;
-    std::fs::read_to_string(&path).map_err(|error| format!("{flag}: cannot read {path}: {error}"))
+    read_text_file(base, std::path::Path::new(value), flag)
 }
 
 fn absolute_path(
@@ -247,7 +299,11 @@ impl Cli {
             || !self.session_config.add_dirs.is_empty()
             || self.session_config.settings.is_some()
             || !self.session_config.mcp_configs.is_empty()
-            || self.session_config.strict_mcp_config;
+            || self.session_config.strict_mcp_config
+            || self.session_config.system_prompt.is_some()
+            || self.session_config.system_prompt_file.is_some()
+            || self.session_config.append_system_prompt.is_some()
+            || self.session_config.append_system_prompt_file.is_some();
         let conflict = match &self.command {
             Some(Command::Resume { .. }) => {
                 self.resume.is_some() || self.continue_session || self.prompt.is_some()

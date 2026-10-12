@@ -17,8 +17,10 @@ pub struct SessionLaunchSettings {
     pub agent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Boxed so the session commands that carry launch settings stay small enough for
+    /// clippy's `large_futures` limit in futures that hold a command across an await.
     #[serde(flatten)]
-    pub config: SessionConfig,
+    pub config: Box<SessionConfig>,
 }
 
 impl SessionLaunchSettings {
@@ -47,6 +49,12 @@ pub struct SessionConfig {
     pub mcp_configs: Vec<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub strict_mcp_config: bool,
+    /// Replaces Claude Code's system prompt; the bridge keeps its runtime guard appended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    /// Appended after the bridge's runtime guard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub append_system_prompt: Option<String>,
 }
 
 impl SessionConfig {
@@ -56,6 +64,8 @@ impl SessionConfig {
             && self.settings.is_none()
             && self.mcp_configs.is_empty()
             && !self.strict_mcp_config
+            && self.system_prompt.is_none()
+            && self.append_system_prompt.is_none()
     }
 }
 
@@ -1689,12 +1699,14 @@ mod tests {
             effort: Some(super::super::model::EffortLevel::Max),
             agent: Some("reviewer".to_owned()),
             name: Some("Release prep".to_owned()),
-            config: super::SessionConfig {
+            config: Box::new(super::SessionConfig {
                 additional_directories: vec!["/work/shared".to_owned()],
                 settings: Some(r#"{"model":"haiku"}"#.to_owned()),
                 mcp_configs: vec![r#"{"mcpServers":{}}"#.to_owned()],
                 strict_mcp_config: true,
-            },
+                system_prompt: Some("You are a release bot.".to_owned()),
+                append_system_prompt: Some("End with DONE.".to_owned()),
+            }),
         };
         let json = serde_json::to_value(&settings).expect("serialize");
         assert_eq!(
@@ -1703,7 +1715,8 @@ mod tests {
                 "model": "haiku", "permission_mode": "plan", "effort": "max", "agent": "reviewer",
                 "name": "Release prep", "additional_directories": ["/work/shared"],
                 "settings": "{\"model\":\"haiku\"}", "mcp_configs": ["{\"mcpServers\":{}}"],
-                "strict_mcp_config": true
+                "strict_mcp_config": true, "system_prompt": "You are a release bot.",
+                "append_system_prompt": "End with DONE."
             })
         );
         assert_eq!(

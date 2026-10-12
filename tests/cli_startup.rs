@@ -86,6 +86,10 @@ fn contradictory_or_invalid_startup_arguments_are_rejected() {
         vec!["claude-rs", "--name", ""],
         vec!["claude-rs", "-n", "\u{1b}\t "],
         vec!["claude-rs", "doctor", "--name", "Release prep"],
+        vec!["claude-rs", "--system-prompt", "a", "--system-prompt-file", "prompt.md"],
+        vec!["claude-rs", "--append-system-prompt", "a", "--append-system-prompt-file", "a.md"],
+        vec!["claude-rs", "--system-prompt", ""],
+        vec!["claude-rs", "doctor", "--append-system-prompt", "a"],
     ] {
         assert!(
             Cli::try_parse_from(&args).and_then(|cli| cli.validate()).is_err(),

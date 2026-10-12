@@ -17,8 +17,8 @@ pub struct StartupState {
     launch: StartupLaunch,
     phase: StartupPhase,
     session_options: Option<crate::SessionOptions>,
-    /// Unlike `session_options`, kept for every session the process starts. Boxed because
-    /// `App` lives in long-running futures that clippy's `large_futures` limit measures.
+    /// Unlike `session_options`, kept for every session the process starts. Boxed as in
+    /// the launch settings it is copied into, which keeps `App` small as well.
     session_config: Box<crate::agent::wire::SessionConfig>,
     initial_prompt: Option<String>,
 }

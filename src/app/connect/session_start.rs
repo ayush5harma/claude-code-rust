@@ -41,7 +41,7 @@ pub(crate) fn session_launch_settings_for_reason(
     app: &App,
     reason: SessionStartReason,
 ) -> SessionLaunchSettings {
-    let config = app.startup.session_config().clone();
+    let config = Box::new(app.startup.session_config().clone());
     match reason {
         SessionStartReason::Logout => SessionLaunchSettings { config, ..Default::default() },
         SessionStartReason::Startup
@@ -215,7 +215,7 @@ mod tests {
         app.startup =
             crate::app::state::StartupState::from_cli(&cli).with_session_config(config.clone());
         assert_eq!(
-            session_launch_settings_for_reason(&app, SessionStartReason::Startup).config,
+            *session_launch_settings_for_reason(&app, SessionStartReason::Startup).config,
             config
         );
         app.startup.complete_launch();
@@ -230,7 +230,7 @@ mod tests {
             assert_eq!(
                 launch,
                 SessionLaunchSettings {
-                    config: config.clone(),
+                    config: Box::new(config.clone()),
                     ..SessionLaunchSettings::default()
                 },
                 "{reason:?}"

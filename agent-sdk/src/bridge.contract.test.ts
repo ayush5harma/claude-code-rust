@@ -618,7 +618,7 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
     const saved = new Map();
     export function query({ prompt, options }) {
       record({ type: "query", cwd: options.cwd, resume: options.resume, model: options.model, effort: options.effort, permissionMode: options.permissionMode, agent: options.agent });
-      record({ type: "launch", resume: options.resume, sessionId: options.sessionId, forkSession: options.forkSession, title: options.title, additionalDirectories: options.additionalDirectories, settings: options.settings, mcpServers: options.mcpServers, strictMcpConfig: options.strictMcpConfig });
+      record({ type: "launch", resume: options.resume, sessionId: options.sessionId, forkSession: options.forkSession, title: options.title, additionalDirectories: options.additionalDirectories, settings: options.settings, mcpServers: options.mcpServers, strictMcpConfig: options.strictMcpConfig, systemPrompt: options.systemPrompt });
       const state = saved.get(options.resume) ?? { requested: false, effort: "high", cwd: options.cwd };
       saved.set(options.sessionId ?? options.resume, state);
       let model = options.model ?? "opus";
@@ -940,6 +940,7 @@ test("session configuration reaches the query options of created, replaced and r
       JSON.stringify({ mcpServers: { docs: { command: "docs-v2" }, search: { type: "http", url: "https://search.example" } } }),
     ],
     strict_mcp_config: true,
+    append_system_prompt: "End every reply with DONE.",
   };
   const { bridge, cleanup } = ultracodeFixtureBridge({
     STARTUP_JOURNAL: journal,
@@ -960,6 +961,9 @@ test("session configuration reaches the query options of created, replaced and r
       assert.equal((launch.settings as BridgeEnvelope).feedbackDrafts, "off");
       assert.deepEqual(launch.mcpServers, { docs: { command: "docs-v2" }, search: { type: "http", url: "https://search.example" } });
       assert.equal(launch.strictMcpConfig, true);
+      const systemPrompt = launch.systemPrompt as BridgeEnvelope;
+      assert.equal(systemPrompt.preset, "claude_code");
+      assert.match(String(systemPrompt.append), /claude-rs-bridge-bun[\s\S]*\n\nEnd every reply with DONE\.$/);
     }
   } finally {
     await cleanup();

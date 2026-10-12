@@ -739,6 +739,10 @@ export interface SessionLaunchSettings {
   /** Unparsed JSON texts of MCP configs in command-line order; parsed by launch_config.ts. */
   mcp_configs?: string[];
   strict_mcp_config?: boolean;
+  /** Replaces the claude_code preset; the runtime guard stays appended. */
+  system_prompt?: string;
+  /** Appended after the runtime guard. */
+  append_system_prompt?: string;
 }
 
 export interface RewindTarget {
