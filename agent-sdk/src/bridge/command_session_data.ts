@@ -31,6 +31,7 @@ import {
   writeEvent,
 } from "./events.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
+import { exportSessionHistory } from "./history_export.js";
 import {
   refreshCurrentModel,
   sessionById,
@@ -47,6 +48,7 @@ type SessionDataCommand = Extract<
       | "get_context_usage"
       | "get_usage"
       | "get_rewind_targets"
+      | "export_session_history"
       | "rewind";
   }
 >;
@@ -92,6 +94,13 @@ export async function handleSessionDataCommand(
     case "get_rewind_targets":
       await getRewindTargets(command, requestId, deps);
       return;
+    case "export_session_history": {
+      const session = requireSession(command.session_id, requestId);
+      if (session) {
+        await exportSessionHistory(session.sessionId, session.cwd, requestId);
+      }
+      return;
+    }
     case "rewind":
       await deps.handleRewind(command, requestId);
   }
