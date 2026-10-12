@@ -7,6 +7,7 @@
 pub(crate) enum AppSlashCommand {
     Btw,
     Cancel,
+    Exit,
     Compact,
     Config,
     Memory,
@@ -98,6 +99,14 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         usage: "Usage: /cancel",
         short_description: "Cancel active turn",
         long_description: "Cancel the currently thinking or running assistant turn.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Exit,
+        name: "/exit",
+        usage: "Usage: /exit",
+        short_description: "Exit the application",
+        long_description: "Exit after restoring the terminal and closing the session.",
         args: NO_ARGS,
     },
     AppSlashCommandSpec {
@@ -330,6 +339,7 @@ impl AppSlashCommand {
         match self {
             Self::Btw => "/btw",
             Self::Cancel => "/cancel",
+            Self::Exit => "/exit",
             Self::Compact => "/compact",
             Self::Config => "/config",
             Self::Memory => "/memory",
@@ -396,7 +406,7 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
-            Self::Copy => {
+            Self::Copy | Self::Exit => {
                 if args.is_empty() {
                     SubmissionClass::Informational
                 } else {

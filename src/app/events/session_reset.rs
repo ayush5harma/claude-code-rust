@@ -32,6 +32,13 @@ pub(super) fn reset_for_new_session(
     fast_mode: model::FastModeSnapshot,
     reset_kind: ChatResetKind,
 ) {
+    crate::app::verbose_view::reset_for_session_change(app);
+    if app.surface_mode
+        == super::super::SurfaceMode::Fullscreen(super::super::FullscreenView::Rewind)
+    {
+        app.rewind_picker = None;
+        super::super::view::set_chat_surface(app);
+    }
     reset_session_identity_state(app, session_id, current_model, mode, fast_mode);
     reset_messages_for_new_session(app, reset_kind.preserves_welcome_tip());
     reset_input_state_for_new_session(app, reset_kind);
@@ -48,6 +55,13 @@ pub(super) fn reset_for_conversation(
     timestamp: Option<&str>,
     user_message_uuid: Option<&str>,
 ) {
+    crate::app::verbose_view::reset_for_session_change(app);
+    if app.surface_mode
+        == super::super::SurfaceMode::Fullscreen(super::super::FullscreenView::Rewind)
+    {
+        app.rewind_picker = None;
+        super::super::view::set_chat_surface(app);
+    }
     app.pending_user_messages.clear();
     app.bump_session_scope_epoch();
     app.session_runtime.conversation_id = Some(new_conversation_id.to_owned());

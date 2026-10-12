@@ -19,14 +19,17 @@ mod markdown;
 mod message;
 mod message_rows;
 mod search;
+mod rewind_picker;
 mod session_picker;
 pub(crate) mod spinner_verbs;
+mod tasks;
 pub mod theme;
 mod tool_call;
 pub(crate) mod tool_display;
 mod trusted;
 mod two_column_list;
 mod update;
+mod verbose;
 mod welcome;
 mod wrap;
 
@@ -46,6 +49,9 @@ pub fn render_fullscreen_surface(frame: &mut Frame, app: &mut App) {
         SurfaceMode::Fullscreen(FullscreenView::Update) => update::render(frame, app),
         SurfaceMode::Fullscreen(FullscreenView::Copy) => copy::render(frame, app),
         SurfaceMode::Fullscreen(FullscreenView::Search) => search::render(frame, app),
+        SurfaceMode::Fullscreen(FullscreenView::Rewind) => rewind_picker::render(frame, app),
+        SurfaceMode::Fullscreen(FullscreenView::Tasks) => tasks::render(frame, app),
+        SurfaceMode::Fullscreen(FullscreenView::Verbose) => verbose::render(frame, app),
         SurfaceMode::Chat => {
             debug_assert!(false, "chat is rendered by the inline terminal session");
         }

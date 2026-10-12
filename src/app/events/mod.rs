@@ -259,6 +259,27 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> Termi
             super::search::handle_key(app, key);
             TerminalEventOutcome::handled(true)
         }
+        SurfaceMode::Fullscreen(FullscreenView::Rewind) => {
+            super::rewind_picker::handle_key(app, key);
+            TerminalEventOutcome::handled(true)
+        }
+        SurfaceMode::Fullscreen(FullscreenView::Tasks) => {
+            if matches!(key.code, crossterm::event::KeyCode::Esc)
+                || app.keymap.resolve_event(super::keymap::KeyContext::ChatInput, key).is_some_and(
+                    |binding| {
+                        binding.action
+                            == super::keymap::KeyAction::App(super::keymap::AppAction::ToggleTasks)
+                    },
+                )
+            {
+                super::view::set_chat_surface(app);
+            }
+            TerminalEventOutcome::handled(true)
+        }
+        SurfaceMode::Fullscreen(FullscreenView::Verbose) => {
+            super::verbose_view::handle_key(app, key);
+            TerminalEventOutcome::handled(true)
+        }
         SurfaceMode::Fullscreen(FullscreenView::Config) => {
             super::config::handle_key(app, key);
             TerminalEventOutcome::handled(true)
@@ -316,7 +337,10 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
             FullscreenView::Trusted
             | FullscreenView::SessionPicker
             | FullscreenView::Update
-            | FullscreenView::Copy,
+            | FullscreenView::Copy
+            | FullscreenView::Rewind
+            | FullscreenView::Tasks
+            | FullscreenView::Verbose,
         ) => false,
     }
 }
