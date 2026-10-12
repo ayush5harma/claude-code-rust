@@ -179,6 +179,7 @@ pub fn create_app(cli: &Cli, session_config: crate::agent::wire::SessionConfig) 
         update_install_failure,
         post_exit_action: None,
         usage: super::UsageState::default(),
+        footer: Box::default(),
         mcp: super::McpState::default(),
         session_agents: Box::default(),
         notifications: super::notify::NotificationManager::new(),

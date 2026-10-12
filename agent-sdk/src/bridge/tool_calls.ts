@@ -1,4 +1,5 @@
 import { proactiveNotification } from "./notifications.js";
+import { confirmedTodoPlan } from "./todo_plan.js";
 import type { TaskMetadata, ToolCall, ToolCallUpdateFields } from "../types.js";
 import { emitSessionUpdate } from "./events.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
@@ -587,6 +588,11 @@ export function emitToolResultUpdate(
     }
   }
   emitToolCallUpdate(session, toolUseId, fields, "result", sourceMessageUuid);
+  if (baseToolName === "TodoWrite" && fields.status === "completed" && !nonExecutionMetadata &&
+      !parentToolUseIdFromMeta(base?.meta)) {
+    const items = confirmedTodoPlan(base?.raw_input);
+    if (items) emitSessionUpdate(session.sessionId, { type: "todo_plan_update", items });
+  }
   if (fields.status === "completed" && !nonExecutionMetadata && base) {
     const notification = proactiveNotification(session.sessionId, baseToolName, base, rawResult, rawContent);
     if (notification) emitSessionUpdate(session.sessionId, { type: "notification_update", notification, replay });

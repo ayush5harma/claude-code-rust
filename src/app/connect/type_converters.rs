@@ -459,6 +459,28 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
         types::SessionUpdate::TaskStateUpdate { update: task_update } => {
             Some(model::SessionUpdate::TaskStateUpdate(convert_task_state_update(task_update)))
         }
+        types::SessionUpdate::TodoPlanUpdate { items } => {
+            Some(model::SessionUpdate::TodoPlanUpdate(
+                items
+                    .into_iter()
+                    .map(|item| model::TodoPlanItem {
+                        content: item.content,
+                        active_form: item.active_form,
+                        status: convert_task_status(item.status),
+                    })
+                    .collect(),
+            ))
+        }
+        types::SessionUpdate::StatusLineUpdate { text } => {
+            let text = text.map(|value| {
+                crate::ui::highlight::strip_ansi(&value)
+                    .chars()
+                    .filter(|ch| !ch.is_control())
+                    .take(512)
+                    .collect::<String>()
+            });
+            Some(model::SessionUpdate::StatusLineUpdate(text.filter(|value| !value.is_empty())))
+        }
         types::SessionUpdate::AvailableCommandsUpdate { commands, source, generation } => {
             Some(model::SessionUpdate::AvailableCommandsUpdate(map_available_commands_update(
                 commands, source, generation,
@@ -1544,6 +1566,18 @@ mod tests {
         assert_eq!(
             decode(r#"{"type":"session_title_update","title":"name\u009c\u007f\u001b[2J"}"#),
             Some(model::SessionUpdate::SessionTitleUpdate(Some("name[2J".to_owned())))
+        );
+    }
+
+    #[test]
+    fn status_line_update_strips_terminal_controls_before_footer_rendering() {
+        let update: types::SessionUpdate = serde_json::from_str(
+            r#"{"type":"status_line_update","text":"safe\u001b[2J\u001b]52;c;c2VjcmV0\u0007status\n"}"#,
+        )
+        .expect("status line wire");
+        assert_eq!(
+            map_session_update(update),
+            Some(model::SessionUpdate::StatusLineUpdate(Some("safestatus".to_owned())))
         );
     }
 

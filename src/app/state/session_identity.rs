@@ -44,6 +44,7 @@ impl App {
 
     pub fn clear_session_runtime_identity(&mut self) {
         self.session_runtime.clear_identity();
+        self.footer.clear();
         self.sdk_inventory.clear_rewind_targets();
         self.session_agents.clear();
         // Its chunks are scoped to the old session and would be dropped as stale.

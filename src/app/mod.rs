@@ -77,6 +77,7 @@ pub use lifecycle::{
 };
 pub use service_status_check::start_service_status_check;
 pub use settings::{AppSettings, UpdatePrompt};
+pub(crate) use state::PlanSource;
 #[cfg(test)]
 pub(crate) use state::StartupTimeline;
 pub(crate) use state::format_elapsed;

@@ -1602,6 +1602,7 @@ export function handleResultMessage(
 
   const color = confirmedColorFromResult(session, message);
   if (color) emitSessionUpdate(session.sessionId, { type: "session_color_update", color });
+  if (session.connected) void import("./status_line.js").then(({ scheduleStatusLine }) => scheduleStatusLine(session));
   const subtype = typeof message.subtype === "string" ? message.subtype : "";
   if (subtype === "success") {
     session.lastAssistantError = undefined;
@@ -2397,6 +2398,11 @@ export function handleSdkMessage(
     });
     if (update) {
       emitSessionUpdate(session.sessionId, update);
+      if (update.rate_limit_type && update.utilization !== undefined) {
+        const window = update.rate_limit_type === "five_hour" ? "five_hour" : update.rate_limit_type === "seven_day" ? "seven_day" : undefined;
+        if (window) session.statusRate = { ...session.statusRate, [window]: { used_percentage: update.utilization * 100, ...(update.resets_at !== undefined ? { resets_at: update.resets_at } : {}) } };
+      }
+      if (session.connected) void import("./status_line.js").then(({ scheduleStatusLine }) => scheduleStatusLine(session));
     }
     return;
   }

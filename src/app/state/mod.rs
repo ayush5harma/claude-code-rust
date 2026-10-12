@@ -14,6 +14,7 @@ pub mod types;
 mod app;
 mod autocomplete;
 mod focus_runtime;
+mod footer;
 mod git_runtime;
 mod hook_runs;
 mod paste;
@@ -39,6 +40,7 @@ pub use cache_metrics::CacheMetrics;
 pub use chat_render::{
     ChatRenderState, ComposerRenderState, LiveRegionRenderState, TerminalSize, TerminalSizeChange,
 };
+pub(crate) use footer::PlanSource;
 pub use hook_runs::{
     HOOK_NOTICE_SLOW_THRESHOLD, HookNoticeMode, HookRun, HookRuns, format_elapsed,
 };
@@ -81,6 +83,7 @@ mod prelude {
     pub(super) use super::app::App;
     pub(super) use super::cache_metrics;
     pub(super) use super::chat_render::ChatRenderState;
+    pub(super) use super::footer::FooterState;
     pub(super) use super::messages::{ChatMessage, MessageBlock, MessageRole, NoticeDedupKey};
     pub(super) use super::paste::PasteState;
     pub(super) use super::pending_messages::PendingUserMessages;

@@ -111,6 +111,9 @@ impl ConfigState {
     pub fn copy_full_response_effective(&self) -> bool {
         self.saved_bool("presentation.copyFullResponse", false)
     }
+    pub fn composer_rules_effective(&self) -> bool {
+        self.saved_value("presentation.composerStyle").and_then(Value::as_str) == Some("rules")
+    }
     pub fn status_in_terminal_tab_effective(&self) -> bool {
         self.saved_bool("presentation.showStatusInTerminalTab", true)
     }

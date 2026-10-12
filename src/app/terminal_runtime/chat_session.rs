@@ -465,7 +465,7 @@ impl ChatTerminalSession {
         let btw_rows = build_btw_status_rows(app, width);
         let btw_row_count = u16::try_from(btw_rows.len()).unwrap_or(u16::MAX);
         let footer = serialize_footer_rows(app, width);
-        let footer_rows = Vec::from(footer.rows);
+        let footer_rows = footer.rows;
         let footer_row_count = u16::try_from(footer_rows.len()).unwrap_or(u16::MAX);
 
         let editor = if let Some(reason) = app.composer_access().blocked_reason() {
@@ -1192,16 +1192,28 @@ fn render_composer_editor(
 
 fn render_textarea_editor(frame: &mut ratatui::Frame<'_>, app: &mut App, area: Rect) {
     let geometry = input::compute_render_geometry(area, 0);
-    frame.render_widget(
-        Paragraph::new("").style(Style::default().bg(theme::USER_MSG_BG)),
-        geometry.field,
-    );
-    frame.render_widget(
-        Block::default()
-            .borders(Borders::LEFT)
-            .border_style(Style::default().fg(app.session_runtime.accent)),
-        geometry.field,
-    );
+    let rules = app.config.composer_rules_effective();
+    if rules {
+        if geometry.field.height >= 3 {
+            frame.render_widget(
+                Block::default()
+                    .borders(Borders::TOP | Borders::BOTTOM)
+                    .border_style(Style::default().fg(app.session_runtime.accent)),
+                geometry.field,
+            );
+        }
+    } else {
+        frame.render_widget(
+            Paragraph::new("").style(Style::default().bg(theme::USER_MSG_BG)),
+            geometry.field,
+        );
+        frame.render_widget(
+            Block::default()
+                .borders(Borders::LEFT)
+                .border_style(Style::default().fg(app.session_runtime.accent)),
+            geometry.field,
+        );
+    }
     if !geometry.prompt.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
@@ -1503,6 +1515,30 @@ mod tests {
                 assert_eq!(buffer[(x, y)].style().bg, Some(theme::USER_MSG_BG));
             }
         }
+    }
+
+    #[test]
+    fn rules_composer_uses_session_accent_and_terminal_background_without_covering_input() {
+        let mut app = App::test_default();
+        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+            "presentation.composerStyle",
+            serde_json::json!("rules"),
+        ));
+        app.session_runtime.accent = ratatui::style::Color::Rgb(190, 155, 240);
+        app.input.set_text("hello");
+
+        let backend = render_textarea_to_test_backend(&mut app, Rect::new(0, 0, 20, 3));
+        let buffer = backend.buffer();
+        for x in 0..20 {
+            assert_eq!(buffer[(x, 0)].symbol(), "─");
+            assert_eq!(buffer[(x, 2)].symbol(), "─");
+            assert_eq!(buffer[(x, 0)].style().fg, Some(app.session_runtime.accent));
+            assert_eq!(buffer[(x, 2)].style().fg, Some(app.session_runtime.accent));
+        }
+        assert_eq!(buffer[(1, 1)].symbol(), "❯");
+        assert_eq!(buffer[(1, 1)].style().fg, Some(app.session_runtime.accent));
+        assert_eq!(buffer[(3, 1)].symbol(), "h");
+        assert_ne!(buffer[(3, 1)].style().bg, Some(theme::USER_MSG_BG));
     }
 
     #[test]

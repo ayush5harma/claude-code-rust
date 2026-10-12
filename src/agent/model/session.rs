@@ -343,6 +343,8 @@ pub enum SessionUpdate {
     /// nothing printable is left.
     SessionTitleUpdate(Option<String>),
     SessionColorUpdate(String),
+    TodoPlanUpdate(Vec<super::tasks::TodoPlanItem>),
+    StatusLineUpdate(Option<String>),
     HookActivity(HookActivity),
     RuntimeSessionStateUpdate(RuntimeSessionState),
     SettingsParseError {
