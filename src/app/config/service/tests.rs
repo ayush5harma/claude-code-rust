@@ -768,7 +768,7 @@ async fn default_effort_cycles_and_resets_without_changing_session_effort() {
 #[tokio::test(flavor = "current_thread")]
 async fn fixed_model_and_effort_choices_cycle_in_place_through_acknowledged_saves() {
     use ratatui::{Terminal, backend::TestBackend};
-    tokio::task::LocalSet::new().run_until(async {
+    Box::pin(tokio::task::LocalSet::new().run_until(async {
         for (id, label, choices) in [
             ("model", "Default model", (1..=12).map(|n| format!("model-{n}")).collect::<Vec<_>>()),
             ("defaultEffort", "Default effort", vec!["low".to_owned(), "medium".to_owned(), "high".to_owned()]),
@@ -807,5 +807,5 @@ async fn fixed_model_and_effort_choices_cycle_in_place_through_acknowledged_save
                 assert_eq!(app.config.selected_setting().expect("selection").id, id);
             }
         }
-    }).await;
+    })).await;
 }
