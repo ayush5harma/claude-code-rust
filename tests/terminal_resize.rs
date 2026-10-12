@@ -902,13 +902,18 @@ fn forked_resume_continues_under_the_new_session_id() {
     assert_eq!(test.commands("resume_session")[0]["launch_settings"]["fork_session"], true);
     assert_eq!(test.prompts()[0]["session_id"], "chosen-session-fork");
     test.shutdown();
-    let output =
-        String::from_utf8_lossy(&test.output.lock().expect("output lock").raw).into_owned();
-    assert!(
-        output.contains("Resume this session: claude-rs resume chosen-session-fork"),
-        "{}",
-        tail(&output, 400)
-    );
+    // ConPTY can report process exit before the capture thread drains its final output
+    // (Windows CI, 2026-10-13); wait for the resume hint itself.
+    let started = Instant::now();
+    loop {
+        let output =
+            String::from_utf8_lossy(&test.output.lock().expect("output lock").raw).into_owned();
+        if output.contains("Resume this session: claude-rs resume chosen-session-fork") {
+            break;
+        }
+        assert!(started.elapsed() < WAIT_LIMIT, "{}", tail(&output, 400));
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 #[test]
