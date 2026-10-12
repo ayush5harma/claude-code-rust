@@ -17,6 +17,7 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/sandbox` | `/sandbox` | Open sandbox settings without toggling sandboxing. |
 | `/hooks` | `/hooks` | Inspect and edit saved hook configuration without executing hooks. |
 | `/copy` | `/copy` | Copy the last completed response, or choose a code block from it. |
+| `/search` | `/search [query]` | Search retained user, assistant, and visible tool text. |
 | `/docs` | `/docs <mode\|models\|shortcuts\|commands\|agents>` | Render command, shortcut, model, mode, or subagent help into chat. |
 | `/agent` | `/agent <name\|reset>` | Change the main-thread agent for the active session. Applies on the next turn. |
 | `/effort` | `/effort <low\|medium\|high\|xhigh\|max\|reset>` | Change thinking effort for the active session. |
@@ -67,6 +68,8 @@ Use:
 to inspect the current session's full command list. The output includes app-owned commands and SDK-advertised commands, with descriptions when the SDK provides them.
 
 Commands that Claude Code runs locally, such as `/rename`, `/color` or `/context`, reply in the chat under the command as they do in Claude Code. `/color` runs in Claude Code and its reply shows, but Claude Rust does not draw a session colour.
+
+`/search` and the remappable `Ctrl+F` shortcut open a local search viewer. Type or paste a query, use Enter or Down for the next match and Shift+Enter or Up for the previous match, and press Esc to return to chat. The highlighted excerpt is from retained session content only; older content evicted by the app's history limit and archived transcripts are not searched.
 
 ## Session Commands
 

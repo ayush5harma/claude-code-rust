@@ -45,6 +45,13 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         default_contexts: &[KeyContext::Global],
     },
     KeyActionDescriptor {
+        action: KeyAction::App(AppAction::SearchTranscript),
+        id: "app.search_transcript",
+        label: "Search transcript",
+        description: "Search retained user, assistant, and visible tool text.",
+        default_contexts: &[KeyContext::Global],
+    },
+    KeyActionDescriptor {
         action: KeyAction::App(AppAction::Quit),
         id: "app.quit",
         label: "Quit",
