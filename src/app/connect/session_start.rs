@@ -204,7 +204,10 @@ mod tests {
 
     #[test]
     fn session_configuration_outlives_the_initial_session() {
-        let config = SessionConfig { additional_directories: vec!["/work/shared".to_owned()] };
+        let config = SessionConfig {
+            additional_directories: vec!["/work/shared".to_owned()],
+            settings: Some(r#"{"model":"haiku"}"#.to_owned()),
+        };
         let cli = crate::Cli::try_parse_from(["claude-rs", "--model", "opus", "-n", "First"])
             .expect("CLI");
         let mut app = App::test_default();

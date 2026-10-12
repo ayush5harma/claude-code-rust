@@ -39,12 +39,15 @@ impl SessionLaunchSettings {
 pub struct SessionConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_directories: Vec<String>,
+    /// Unparsed JSON text of a settings object; the bridge parses and merges it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<String>,
 }
 
 impl SessionConfig {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.additional_directories.is_empty()
+        self.additional_directories.is_empty() && self.settings.is_none()
     }
 }
 
@@ -1680,6 +1683,7 @@ mod tests {
             name: Some("Release prep".to_owned()),
             config: super::SessionConfig {
                 additional_directories: vec!["/work/shared".to_owned()],
+                settings: Some(r#"{"model":"haiku"}"#.to_owned()),
             },
         };
         let json = serde_json::to_value(&settings).expect("serialize");
@@ -1687,7 +1691,8 @@ mod tests {
             json,
             serde_json::json!({
                 "model": "haiku", "permission_mode": "plan", "effort": "max", "agent": "reviewer",
-                "name": "Release prep", "additional_directories": ["/work/shared"]
+                "name": "Release prep", "additional_directories": ["/work/shared"],
+                "settings": "{\"model\":\"haiku\"}"
             })
         );
         assert_eq!(

@@ -256,6 +256,7 @@ function optionalLaunchSettings(
   const agent = optionalString(parsed, "agent", `${context}.${key}`);
   const effort = parsed.effort == null ? undefined : expectEffortLevel(parsed, "effort", `${context}.${key}`);
   const name = optionalString(parsed, "name", `${context}.${key}`)?.trim();
+  const settings = optionalString(parsed, "settings", `${context}.${key}`);
   const additionalDirectories = parsed.additional_directories == null
     ? []
     : expectStringArray(parsed, "additional_directories", `${context}.${key}`);
@@ -266,6 +267,7 @@ function optionalLaunchSettings(
     ...(effort !== undefined ? { effort } : {}),
     ...(name ? { name } : {}),
     ...(additionalDirectories.length > 0 ? { additional_directories: additionalDirectories } : {}),
+    ...(settings !== undefined ? { settings } : {}),
   };
 }
 

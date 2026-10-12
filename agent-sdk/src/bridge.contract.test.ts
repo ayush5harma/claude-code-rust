@@ -618,7 +618,7 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
     const saved = new Map();
     export function query({ prompt, options }) {
       record({ type: "query", cwd: options.cwd, resume: options.resume, model: options.model, effort: options.effort, permissionMode: options.permissionMode, agent: options.agent });
-      record({ type: "launch", resume: options.resume, sessionId: options.sessionId, forkSession: options.forkSession, title: options.title, additionalDirectories: options.additionalDirectories });
+      record({ type: "launch", resume: options.resume, sessionId: options.sessionId, forkSession: options.forkSession, title: options.title, additionalDirectories: options.additionalDirectories, settings: options.settings });
       const state = saved.get(options.resume) ?? { requested: false, effort: "high", cwd: options.cwd };
       saved.set(options.sessionId ?? options.resume, state);
       let model = options.model ?? "opus";
@@ -917,10 +917,10 @@ test("launch name titles a new session and renames a resumed one before it conne
     bridge.writeCommand({ command: "resume_session", session_id: "saved-session", launch_settings: { name: "Resumed name" } });
     await nextMatching(bridge, event => event.event === "session_replaced");
     const resumed = readJournal(journal).filter(entry => entry.type === "rename" || entry.type === "launch");
-    assert.deepEqual(resumed, [
-      { type: "rename", sessionId: "saved-session", title: "Resumed name", options: { dir: cwd } },
-      { type: "launch", resume: "saved-session" },
-    ]);
+    assert.deepEqual(resumed.map(entry => entry.type), ["rename", "launch"]);
+    assert.deepEqual(resumed[0], { type: "rename", sessionId: "saved-session", title: "Resumed name", options: { dir: cwd } });
+    assert.equal(resumed[1]?.resume, "saved-session");
+    assert.equal(resumed[1]?.title, undefined);
   } finally {
     await cleanup();
     rmSync(directory, { recursive: true, force: true });
@@ -932,7 +932,10 @@ test("session configuration reaches the query options of created, replaced and r
   const journal = join(directory, "query-options.jsonl");
   const cwd = process.cwd();
   const shared = join(directory, "shared");
-  const launchSettings = { additional_directories: [shared, cwd] };
+  const launchSettings = {
+    additional_directories: [shared, cwd],
+    settings: JSON.stringify({ spinnerTipsEnabled: false, feedbackDrafts: "notify" }),
+  };
   const { bridge, cleanup } = ultracodeFixtureBridge({
     STARTUP_JOURNAL: journal,
     STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId: "saved-session", cwd, lastModified: 1 }]),
@@ -948,11 +951,22 @@ test("session configuration reaches the query options of created, replaced and r
     assert.equal(launches.length, 3);
     for (const launch of launches) {
       assert.deepEqual(launch.additionalDirectories, [shared, cwd]);
+      assert.equal((launch.settings as BridgeEnvelope).spinnerTipsEnabled, false);
+      assert.equal((launch.settings as BridgeEnvelope).feedbackDrafts, "off");
     }
   } finally {
     await cleanup();
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("malformed --settings fails session creation with the flag's name", async () => {
+  const { bridge, cleanup } = ultracodeFixtureBridge();
+  try {
+    bridge.writeCommand({ command: "create_session", cwd: process.cwd(), launch_settings: { settings: "{\"model\":" } });
+    const failed = await nextMatching(bridge, event => event.event === "connection_failed");
+    assert.match(String(failed.message), /--settings is not valid JSON: /);
+  } finally { await cleanup(); }
 });
 
 test("continue with no previous session starts a new session", async () => {

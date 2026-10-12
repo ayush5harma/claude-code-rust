@@ -1099,6 +1099,22 @@ mod launch_command_tests {
     }
 
     #[test]
+    fn settings_file_text_and_inline_json_reach_the_bridge_unparsed() {
+        let project = tempfile::tempdir().expect("project");
+        let file_text = "{ \"spinnerTipsEnabled\": false }\n";
+        std::fs::write(project.path().join("flag-settings.json"), file_text).expect("settings");
+        let project_dir = project.path().to_str().expect("UTF-8 path");
+        let from_file =
+            startup_command(&["claude-rs", "-C", project_dir, "--settings", "flag-settings.json"]);
+        assert_eq!(from_file["launch_settings"], serde_json::json!({ "settings": file_text }));
+
+        let inline = "  {\"model\": \"haiku\"}";
+        let resumed = startup_command(&["claude-rs", "-r", "session-1", "--settings", inline]);
+        assert_eq!(resumed["command"], "resume_session");
+        assert_eq!(resumed["launch_settings"], serde_json::json!({ "settings": inline }));
+    }
+
+    #[test]
     fn added_directories_resolve_against_the_working_directory() {
         let project = tempfile::tempdir().expect("project");
         let shared = tempfile::tempdir().expect("shared directory");

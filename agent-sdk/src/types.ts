@@ -734,6 +734,8 @@ export interface SessionLaunchSettings {
   name?: string;
   /** Absolute paths, resolved by the app. */
   additional_directories?: string[];
+  /** Unparsed JSON text of a settings object; parsed by launch_config.ts. */
+  settings?: string;
 }
 
 export interface RewindTarget {

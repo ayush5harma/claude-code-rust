@@ -55,6 +55,8 @@ Each subsection names the owner of a concern and the invariants that keep the Ru
 
 Rust receives catalog descriptors and sanitized snapshots over NDJSON and renders them. It does not merge settings files, mirror scope rules, or supply defaults for unset values. Saved defaults stay separate from active session choices: a settings save never becomes a session flag override. Snapshots and pending drafts are invalidated when the session scope changes. Offline `claude-rs config` inspection is a separate read-only view of the physical files and does not resolve the cascade.
 
+A `--settings` value is the session's flag-settings layer. The SDK accepts one such layer, as a path or an object, so the bridge parses the user's JSON and lays its own host restrictions over it (`feedbackDrafts: "off"`, and `crossSessionInbound: "refuse"` unless the flag value or the saved cascade says `accept` or `refuse`); Rust only reads the file text. The Config snapshot does not include this layer.
+
 The snapshot is the SDK's raw file cascade. The running session additionally applies trust, managed policy, capability restrictions and explicit session choices, so an observed session value can differ from the saved one. SDK provenance is reported per top-level key, which does not prove that a particular leaf is enforced policy. `resolveSettings()` does not execute `policyHelper`.
 
 The write path has one implementation for every setting, including the app-owned `presentation.*`, `notifications.*` and `updates.*` leaves:

@@ -165,6 +165,10 @@ pub struct SessionConfigArgs {
     /// Additional directory Claude may access (repeatable).
     #[arg(long = "add-dir", global = true, value_name = "DIR")]
     pub add_dirs: Vec<std::path::PathBuf>,
+
+    /// Settings JSON file, or inline JSON, applied as Claude Code's --settings layer.
+    #[arg(long, global = true, value_name = "FILE-OR-JSON")]
+    pub settings: Option<String>,
 }
 
 impl SessionConfigArgs {
@@ -182,8 +186,23 @@ impl SessionConfigArgs {
                 Ok(path)
             })
             .collect::<Result<_, String>>()?;
-        Ok(agent::wire::SessionConfig { additional_directories })
+        let settings = self
+            .settings
+            .as_deref()
+            .map(|value| json_or_file_text(base, value, "--settings"))
+            .transpose()?;
+        Ok(agent::wire::SessionConfig { additional_directories, settings })
     }
+}
+
+/// Inline JSON is passed through; anything else is a file whose text is read once here.
+/// The bridge owns parsing, so only the leading brace is inspected.
+fn json_or_file_text(base: &std::path::Path, value: &str, flag: &str) -> Result<String, String> {
+    if value.trim_start().starts_with('{') {
+        return Ok(value.to_owned());
+    }
+    let path = absolute_path(base, std::path::Path::new(value), flag)?;
+    std::fs::read_to_string(&path).map_err(|error| format!("{flag}: cannot read {path}: {error}"))
 }
 
 fn absolute_path(
@@ -207,7 +226,8 @@ impl Cli {
             || self.session_options.permission_mode.is_some()
             || self.session_options.agent.is_some()
             || self.session_options.name.is_some()
-            || !self.session_config.add_dirs.is_empty();
+            || !self.session_config.add_dirs.is_empty()
+            || self.session_config.settings.is_some();
         let conflict = match &self.command {
             Some(Command::Resume { .. }) => {
                 self.resume.is_some() || self.continue_session || self.prompt.is_some()
@@ -627,6 +647,18 @@ mod tests {
                 format!("--add-dir: {} is not an existing directory", path.display())
             );
         }
+    }
+
+    #[test]
+    fn unreadable_settings_file_is_a_cli_error() {
+        let project = tempfile::tempdir().expect("project");
+        let cli = Cli::try_parse_from(["claude-rs", "--settings", "missing.json"]).expect("parse");
+        let error = cli.session_config.resolve(project.path()).expect_err("missing file");
+        let path = project.path().join("missing.json");
+        assert!(
+            error.starts_with(&format!("--settings: cannot read {}: ", path.display())),
+            "{error}"
+        );
     }
 
     #[test]
