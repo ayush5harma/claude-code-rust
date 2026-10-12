@@ -1,11 +1,51 @@
-# Claude Code Rust
+# Claude Code Rust — Ayush's fork
 
 A native Rust terminal interface for Claude Code. Drop-in replacement for Anthropic's stock Node.js/React Ink TUI, built for performance and a better user experience.
 
-[![Version](https://img.shields.io/github/v/release/srothgan/claude-code-rust?label=version)](https://github.com/srothgan/claude-code-rust/releases/latest)
-[![CI](https://github.com/srothgan/claude-code-rust/actions/workflows/pr.yml/badge.svg)](https://github.com/srothgan/claude-code-rust/actions/workflows/pr.yml)
-[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://srothgan.github.io/claude-code-rust/)
+[![Version](https://img.shields.io/github/v/release/ayush5harma/claude-code-rust?label=version)](https://github.com/ayush5harma/claude-code-rust/releases/latest)
+[![CI](https://github.com/ayush5harma/claude-code-rust/actions/workflows/pr.yml/badge.svg)](https://github.com/ayush5harma/claude-code-rust/actions/workflows/pr.yml)
+[![Docs](https://img.shields.io/badge/upstream%20docs-GitHub%20Pages-blue)](https://srothgan.github.io/claude-code-rust/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](https://www.apache.org/licenses/LICENSE-2.0)
+
+## What this fork adds
+
+This is [Ayush's fork](https://github.com/ayush5harma/claude-code-rust) of [Simon Rothgang's Claude Code Rust](https://github.com/srothgan/claude-code-rust). It keeps the upstream architecture: the public Claude Agent SDK owns session behavior and the Rust application owns terminal presentation. The additions below are relative to upstream commit `26f9b12` (v0.15.2); ordinary upstream features are not fork additions.
+
+### Released in v0.15.2-fork.2
+
+| Change | Behavior |
+| --- | --- |
+| SDK local-command replies | Completed SDK replies such as `/rename`, `/color`, `/context`, and `/usage` appear in the transcript even when the SDK does not stream them. Streamed replies are not printed twice. This includes displaying `/color` replies, not applying a session accent color to the Rust UI. |
+| Live session names | The Status tab, rename dialog, and title-generation flow use the SDK's current session title. Names refresh when connecting, resuming, replacing or resetting a session, after turns, and after renaming. |
+| Fork release artifacts | GitHub releases publish platform archives, a release bundle, and SHA-256 checksums under fork version numbers, without publishing to the upstream npm package. |
+
+The two SDK behavior fixes incorporate upstream pull requests [#444](https://github.com/srothgan/claude-code-rust/pull/444) and [#445](https://github.com/srothgan/claude-code-rust/pull/445). See the [fork changelog](CHANGELOG.md) and [v0.15.2-fork.2 release](https://github.com/ayush5harma/claude-code-rust/releases/tag/v0.15.2-fork.2).
+
+### Merged on main, awaiting the next fork release
+
+| Change | What it adds |
+| --- | --- |
+| Bridge test discovery and fixtures ([#7](https://github.com/ayush5harma/claude-code-rust/pull/7)) | Portable test discovery and a corrected TypeScript fixture loader so local and CI checks exercise the intended bridge tests. |
+| Local CI runner and development shell ([#8](https://github.com/ayush5harma/claude-code-rust/pull/8)) | A single local check runner and a Nix development shell for the repository's Rust, bridge, and repository checks. |
+| Live end-to-end harness ([#10](https://github.com/ayush5harma/claude-code-rust/pull/10)) | Repeatable real-SDK terminal scenarios with recorded pass, failure, gap, and skip outcomes. The initial baseline was **59 pass, 5 fail, 13 gap, 9 skip**; adding the harness does not mean all scenarios pass. |
+| Render corpus and benchmark comparison ([#9](https://github.com/ayush5harma/claude-code-rust/pull/9)) | Representative rendering workloads and repeated baseline/candidate measurements, with noise checks, invalid-result rejection, and temporary-worktree cleanup on interruption. These compare revisions of this application; they are not a benchmark against Anthropic's stock interface. |
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development commands and verification requirements.
+
+### Under review and in development
+
+These are **not included in v0.15.2-fork.2**. Pull-request status is authoritative; this list is a development snapshot, not a promise that unfinished features are available.
+
+| Work | Status |
+| --- | --- |
+| Launch flags: `--name`, `--fork-session`, repeatable `--add-dir`, `--settings`, `--mcp-config`, `--strict-mcp-config`, and replacement/appended system prompts from text or files | [PR #11](https://github.com/ayush5harma/claude-code-rust/pull/11), under review and cross-platform verification. |
+| Hook progress and completion notices, per-hook duration, slow-hook summary, and startup milestones in Status | [PR #12](https://github.com/ayush5harma/claude-code-rust/pull/12), under review and cross-platform verification. Hook output is sanitized and redacted before retention. |
+| `/reload` skills and `/export` session history | [PR #13](https://github.com/ayush5harma/claude-code-rust/pull/13), under review and cross-platform verification. Export refuses to overwrite an existing file. |
+| Native `/diff` viewer | In development: working-tree changes and available current-session tool diffs in a native terminal view. |
+| Session regression fixes | In development: symlinked read-only settings, rewind configuration, resumed local-command history, and restored session titles. |
+| Session `/agents` panel | In development using public SDK subagent history and current-session task state. |
+
+Further planned work includes resume-by-title and large-session ergonomics, session tags and deletion, MCP resource references, transcript search, session accents, composer and footer improvements, and keyboard parity. These remain backlog items until implemented and verified. Features requiring SDK support remain conditional on that support.
 
 ## About
 
@@ -21,7 +61,15 @@ Install the Claude Code CLI and keep `claude` on `PATH` for some functionality n
 
 ## Install
 
-### Install script (recommended, v0.14.0+)
+### This fork
+
+Download the archive for your operating system and architecture from [this fork's releases](https://github.com/ayush5harma/claude-code-rust/releases/latest), and verify it against the release's `SHA256SUMS`. Keep the complete extracted layout, including the bundled bridge and runtime. Fork releases are distributed through GitHub; `npm install -g claude-code-rust` installs the upstream package.
+
+To build unreleased changes, clone `https://github.com/ayush5harma/claude-code-rust.git` and follow [CONTRIBUTING.md](CONTRIBUTING.md). Check the branch and release before assuming a feature listed above is installed.
+
+### Upstream install script (v0.14.0+)
+
+The following upstream installation methods install Simon Rothgang's distribution, not this fork.
 
 **macOS/Linux:**
 
@@ -58,7 +106,7 @@ claude-rs --continue
 
 See [Usage](https://srothgan.github.io/claude-code-rust/usage.html) for startup flags, shell completion setup, and man pages.
 
-Full documentation is available at [srothgan.github.io/claude-code-rust](https://srothgan.github.io/claude-code-rust/).
+The upstream manual is available at [srothgan.github.io/claude-code-rust](https://srothgan.github.io/claude-code-rust/).
 
 > **Note — Agent SDK billing unchanged.** Anthropic has paused the previously announced Agent SDK credit change. For now nothing changes: Claude Agent SDK usage (including `claude -p` and third-party apps like this one) still draws from your normal Claude subscription limits. See [Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan).
 
@@ -108,7 +156,7 @@ This project is licensed under the [Apache License 2.0](LICENSE). Apache-2.0 was
 
 This project is not affiliated with, endorsed by, or supported by Anthropic.
 
-A quick note on where this project stands, since I know people worry about this kind of thing: claude-code-rust is a terminal UI that I wrote from scratch in Rust. It is not a fork, copy or port of the latest Claude Code source leak. It talks to Anthropic's official [Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-sdk) as a runtime dependency instead, the same way any other third-party tool would. No Anthropic source code was read or used as reference at any point during development.
+The original author's clarification applies to this fork: claude-code-rust is a terminal UI written from scratch in Rust. It is not a fork, copy or port of the latest Claude Code source leak. It talks to Anthropic's official [Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-sdk) as a runtime dependency instead, the same way any other third-party tool would. No Anthropic source code was read or used as reference at any point during development.
 
 The project authenticates through your existing Claude Code account via the Agent SDK, and the Agent SDK's terms allow building on top of it. Billing, credits, limits, and overage behavior are controlled by Anthropic, including any future changes Anthropic may make to how Agent SDK usage is metered. Other community projects do the same. As far as I can tell, using this project is fine, but I am a single maintainer, not a lawyer. If anything changes on Anthropic's end, I will update this section and adjust the project accordingly.
 
