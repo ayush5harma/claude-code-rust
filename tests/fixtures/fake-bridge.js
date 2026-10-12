@@ -371,7 +371,8 @@ readline
       case 'new_session':
       case 'resume_session':
         if (message.command === 'new_session') SESSION = 'fake-session-after-login';
-        if (message.command === 'resume_session') SESSION = message.session_id;
+        // Like the SDK's forkSession, a forked resume continues under a new session ID.
+        if (message.command === 'resume_session') SESSION = message.launch_settings?.fork_session ? `${message.session_id}-fork` : message.session_id;
         if (message.continue_session) SESSION = 'fake-recent-session';
         send({
           event: message.command === 'new_session' ? 'session_replaced' : 'connected',

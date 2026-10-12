@@ -49,6 +49,13 @@ fn run() -> anyhow::Result<i32> {
     )? {
         return Ok(exit_code);
     }
+    let session_config = match cli.session_config() {
+        Ok(session_config) => session_config,
+        Err(error) => {
+            error.print()?;
+            return Ok(error.exit_code());
+        }
+    };
 
     let _logging = claude_code_rust::logging::LoggingRuntime::init(&cli)?;
     {
@@ -77,7 +84,7 @@ fn run() -> anyhow::Result<i32> {
 
     let exit_code = rt.block_on(local_set.run_until(async move {
         // Phase 1: create app in Connecting state (instant, no I/O)
-        let mut app = claude_code_rust::app::create_app(&cli);
+        let mut app = claude_code_rust::app::create_app(&cli, session_config);
 
         // Phase 2: start non-session startup work + TUI.
         // The bridge itself is started from the TUI loop only after trust is accepted.
