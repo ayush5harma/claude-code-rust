@@ -531,6 +531,9 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
                 (!title.is_empty()).then(|| title.to_owned()),
             ))
         }
+        types::SessionUpdate::SessionColorUpdate { color } => {
+            Some(model::SessionUpdate::SessionColorUpdate(color))
+        }
         types::SessionUpdate::RuntimeSessionStateUpdate { state } => {
             Some(model::SessionUpdate::RuntimeSessionStateUpdate(match state {
                 types::RuntimeSessionState::Idle => model::RuntimeSessionState::Idle,

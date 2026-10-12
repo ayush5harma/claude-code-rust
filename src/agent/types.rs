@@ -725,6 +725,9 @@ pub enum SessionUpdate {
     SessionTitleUpdate {
         title: String,
     },
+    SessionColorUpdate {
+        color: String,
+    },
     RuntimeSessionStateUpdate {
         state: RuntimeSessionState,
     },

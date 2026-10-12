@@ -31,6 +31,7 @@ pub(crate) mod plugins;
 pub(crate) mod presentation;
 mod questions;
 mod service_status_check;
+mod session_accent;
 pub(crate) mod session_picker;
 mod session_runtime;
 pub(crate) mod settings;

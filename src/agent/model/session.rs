@@ -309,6 +309,7 @@ pub enum SessionUpdate {
     /// The session's title as the SDK session API reports it; `None` when
     /// nothing printable is left.
     SessionTitleUpdate(Option<String>),
+    SessionColorUpdate(String),
     RuntimeSessionStateUpdate(RuntimeSessionState),
     SettingsParseError {
         file: Option<String>,

@@ -1,3 +1,4 @@
+import { confirmedColorFromResult } from "./session_color.js";
 import { observeMainAgentStream, resetMainAgentActivity, responseNeverStreamed } from "./activity.js";
 import { nativeNotification } from "./notifications.js";
 import { elapsedNumber, messageMetadata, turnTiming } from "./presentation_metadata.js";
@@ -1598,6 +1599,8 @@ export function handleResultMessage(
   const terminalReason = terminalReasonFromValue(message.terminal_reason);
   const queuedTurnCount = nonNegativeIntegerField(message, "queued_turn_count");
 
+  const color = confirmedColorFromResult(session, message);
+  if (color) emitSessionUpdate(session.sessionId, { type: "session_color_update", color });
   const subtype = typeof message.subtype === "string" ? message.subtype : "";
   if (subtype === "success") {
     session.lastAssistantError = undefined;

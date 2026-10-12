@@ -66,7 +66,7 @@ Use:
 
 to inspect the current session's full command list. The output includes app-owned commands and SDK-advertised commands, with descriptions when the SDK provides them.
 
-Commands that Claude Code runs locally, such as `/rename`, `/color` or `/context`, reply in the chat under the command as they do in Claude Code. `/color` runs in Claude Code and its reply shows, but Claude Rust does not draw a session colour.
+Commands that Claude Code runs locally, such as `/rename`, `/color` or `/context`, reply in the chat under the command as they do in Claude Code. The composer edge and prompt glyph use a stable color selected from the session ID. An explicit `/color <name>` changes that accent only when the SDK confirms a successful local `/color` result with the submitted prompt ID. If the SDK omits either confirmation field, claude-rs keeps the current accent; it never infers color from chat text. `/color default` restores the session-ID color. The accent resets when the session changes and does not recolor tool status indicators.
 
 ## Session Name
 

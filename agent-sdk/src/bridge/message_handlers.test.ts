@@ -3,7 +3,8 @@ import test from "node:test";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { replaceProtocolEventWriter } from "./events.js";
 import { handleSdkMessage } from "./message_handlers.js";
-import type { SessionState } from "./session_lifecycle.js";
+import { rememberColorPrompt } from "./session_color.js";
+import { type SessionState, updateSessionId } from "./session_lifecycle.js";
 
 function makeSession(): SessionState {
   return {
@@ -169,4 +170,77 @@ test("SDK context usage Markdown is shown even without a response ID", () => {
   }).map((chunk) => (chunk.content as Record<string, unknown>).text);
 
   assert.deepEqual(texts, ["## Context Usage"]);
+});
+
+function colorUpdates(run: () => void): string[] {
+  const writes: string[] = [];
+  const restore = replaceProtocolEventWriter((line) => writes.push(line));
+  try {
+    run();
+  } finally {
+    restore();
+  }
+  return writes.map((line) => JSON.parse(line) as Record<string, unknown>)
+    .map((event) => event.update as Record<string, unknown> | undefined)
+    .filter((update) => update?.type === "session_color_update")
+    .map((update) => String(update?.color));
+}
+
+test("only a correlated successful local /color result changes the session accent", () => {
+  const session = makeSession();
+  const prompt = (uuid: string, text: string) => ({
+    command: "prompt" as const, session_id: session.sessionId, message_uuid: uuid,
+    chunks: [{ kind: "text", value: text }],
+  });
+  const result = (uuid: string | undefined, localCommand: string | undefined, subtype = "success") => ({
+    type: "result", subtype, session_id: session.sessionId,
+    user_message_uuid: uuid, local_command: localCommand, permission_denials: [], errors: [],
+  });
+  const colors = colorUpdates(() => {
+    rememberColorPrompt(session, prompt("prose", "Please say /color red"));
+    handleSdkMessage(session, result("prose", "/color") as unknown as SDKMessage);
+    rememberColorPrompt(session, prompt("missing-id", "/color red"));
+    handleSdkMessage(session, result(undefined, "/color") as unknown as SDKMessage);
+    rememberColorPrompt(session, prompt("failed", "/color red"));
+    handleSdkMessage(session, result("failed", "/color", "error_during_execution") as unknown as SDKMessage);
+    rememberColorPrompt(session, prompt("other-command", "/color green"));
+    handleSdkMessage(session, result("other-command", "/model") as unknown as SDKMessage);
+    rememberColorPrompt(session, prompt("confirmed", "/color blue"));
+    handleSdkMessage(session, result("confirmed", "/color") as unknown as SDKMessage);
+  });
+  assert.deepEqual(colors, ["blue"]);
+});
+
+test("late, mismatched and replaced-session color results cannot overwrite a newer accent", () => {
+  const session = makeSession();
+  const prompt = (uuid: string, color: string) => rememberColorPrompt(session, {
+    command: "prompt", session_id: session.sessionId, message_uuid: uuid,
+    chunks: [{ kind: "text", value: `/color ${color}` }],
+  });
+  const result = (uuid: string, command = "/color", sessionId = session.sessionId) => handleSdkMessage(session, {
+    type: "result", subtype: "success", session_id: sessionId,
+    user_message_uuid: uuid, local_command: command, permission_denials: [], errors: [],
+  } as unknown as SDKMessage);
+  const colors = colorUpdates(() => {
+    prompt("red-1", "red");
+    prompt("blue-2", "blue");
+    result("blue-2");
+    result("red-1");
+    prompt("green-3", "green");
+    result("green-3", "/color red");
+    prompt("purple-4", "purple");
+    session.closing = true;
+    result("purple-4");
+    session.closing = false;
+    prompt("cyan-5", "cyan");
+    result("cyan-5", "/color", "");
+    result("cyan-5", "/color", "session-other");
+    result("cyan-5");
+    prompt("pink-old", "pink");
+    updateSessionId(session, "session-2");
+    result("pink-old", "/color", "session-1");
+    prompt("orange-new", "orange");
+    result("orange-new");
+  });
+  assert.deepEqual(colors, ["blue", "cyan", "orange"]);
 });

@@ -431,6 +431,7 @@ export type SessionUpdate =
     }
   | { type: "prompt_suggestion_update"; suggestion: string }
   | { type: "session_title_update"; title: string }
+  | { type: "session_color_update"; color: string }
   | { type: "runtime_session_state_update"; state: RuntimeSessionState }
   | ({ type: "settings_parse_error" } & SettingsParseErrorUpdate)
   | { type: "session_status_update"; status: "requesting" | "idle" }
