@@ -45,6 +45,9 @@ impl App {
     pub fn clear_session_runtime_identity(&mut self) {
         self.session_runtime.clear_identity();
         self.sdk_inventory.clear_rewind_targets();
+        self.session_agents.clear();
+        // Its chunks are scoped to the old session and would be dropped as stale.
+        self.history_export = None;
     }
 
     pub fn reconcile_trust_state_from_preferences_and_cwd(&mut self) {

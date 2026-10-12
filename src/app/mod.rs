@@ -12,7 +12,9 @@ pub(crate) mod config;
 mod connect;
 pub(crate) mod copy;
 mod dialog;
+pub(crate) mod diff_view;
 mod events;
+pub(crate) mod export;
 pub(crate) mod file_index;
 mod focus;
 mod git_context;
@@ -32,6 +34,7 @@ pub(crate) mod presentation;
 mod questions;
 pub(crate) mod search;
 mod service_status_check;
+pub(crate) mod session_agents;
 pub(crate) mod session_picker;
 mod session_runtime;
 pub(crate) mod settings;
@@ -71,6 +74,9 @@ pub use lifecycle::{
 };
 pub use service_status_check::start_service_status_check;
 pub use settings::{AppSettings, UpdatePrompt};
+#[cfg(test)]
+pub(crate) use state::StartupTimeline;
+pub(crate) use state::format_elapsed;
 pub use state::{
     ActiveCompaction, App, AppStatus, AutocompleteKind, BlockCache, BtwExchangeBlock, CacheMetrics,
     ChatMessage, ChatMessageId, ChatRenderState, CompactionState, ComposerRenderState, ExtraUsage,
@@ -293,6 +299,9 @@ async fn run_tui_loop(
             tab_title::update_tab_title(app);
         }
         draw_pending_surface(app, terminal_runtime)?;
+        if app.startup.timeline.awaiting_ready() && app.composer_access().can_submit() {
+            app.startup.timeline.mark_ready(Instant::now());
+        }
 
         if app.shutdown_requested() {
             finish_shutdown_render(app, terminal_runtime, &mut events).await?;

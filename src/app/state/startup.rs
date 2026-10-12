@@ -21,6 +21,8 @@ pub struct StartupState {
     /// the launch settings it is copied into, which keeps `App` small as well.
     session_config: Box<crate::agent::wire::SessionConfig>,
     initial_prompt: Option<String>,
+    /// Measured launch milestones, shown in the Status tab.
+    pub timeline: super::StartupTimeline,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

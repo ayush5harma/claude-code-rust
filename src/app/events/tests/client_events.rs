@@ -2,6 +2,48 @@ use super::*;
 use pretty_assertions::assert_eq;
 
 #[test]
+fn diff_result_from_another_session_is_ignored_and_replacement_closes_pending_view() {
+    let (mut app, mut commands) = app_with_bridge_connection();
+    crate::app::diff_view::open(&mut app);
+    let request = commands.try_recv().expect("working diff request");
+    let request_id = request.request_id.expect("correlated request");
+    assert!(app.diff_view.as_ref().is_some_and(|view| view.loading));
+
+    let response = |session_id: &str| ClientEvent::WorkingDiffReceived {
+        session_id: session_id.to_owned(),
+        request_id: Some(request_id.clone()),
+        files: vec![crate::agent::wire::WorkingDiffFile {
+            path: "stale.txt".to_owned(),
+            status: " M".to_owned(),
+            diff: "+stale".to_owned(),
+        }],
+        error: None,
+    };
+    handle_client_event(&mut app, response("other-session"));
+    assert!(app.diff_view.as_ref().is_some_and(|view| view.loading && view.entries.is_empty()));
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionReplaced {
+            session_id: model::SessionId::new("replacement"),
+            cwd: "/replacement".into(),
+            current_model: test_current_model("new-model"),
+            available_models: Vec::new(),
+            mode: None,
+            fast_mode_state: model::FastModeState::Off,
+            fast_mode_disabled_reason: None,
+            ultracode: None,
+            history_updates: Vec::new(),
+            restored_input: None,
+        },
+    );
+    assert!(app.diff_view.is_none());
+    assert_eq!(app.surface_mode, SurfaceMode::Chat);
+    handle_client_event(&mut app, response("test-session"));
+    assert!(app.diff_view.is_none());
+}
+
+#[test]
 fn connected_updates_welcome_session_id_while_pristine() {
     let mut app = make_test_app();
     app.transcript.messages.push(ChatMessage::welcome(
@@ -1835,6 +1877,46 @@ fn ultracode_lifecycle_preserves_conversation_state_and_rejects_stale_sessions()
     assert!(app.session_runtime.ultracode.is_none());
 }
 
+fn hook_update(id: &str, phase: model::HookPhase, at: u64) -> ClientEvent {
+    session_update(model::SessionUpdate::HookActivity(model::HookActivity {
+        hook_id: id.to_owned(),
+        hook_name: "SessionStart:startup".to_owned(),
+        hook_event: "SessionStart".to_owned(),
+        phase,
+        outcome: (phase == model::HookPhase::Finished).then_some(model::HookOutcome::Success),
+        exit_code: None,
+        output: None,
+        observed_at_ms: at,
+    }))
+}
+
+#[test]
+fn hook_runs_follow_the_session_and_reset_with_its_conversation() {
+    let mut app = make_test_app();
+    handle_client_event(&mut app, hook_update("h1", model::HookPhase::Started, 1_000));
+    handle_client_event(&mut app, hook_update("h1", model::HookPhase::Finished, 3_500));
+    assert_eq!(app.session_runtime.hook_runs.summary().total, Duration::from_millis(2_500));
+
+    // Reconnecting the same session keeps them; another session starts clean.
+    app.session_runtime.activate_session(model::SessionId::new("test-session"));
+    assert_eq!(app.session_runtime.hook_runs.len(), 1);
+    app.session_runtime.activate_session(model::SessionId::new("other-session"));
+    assert!(app.session_runtime.hook_runs.is_empty());
+
+    app.session_runtime.session_id = Some(model::SessionId::new("test-session"));
+    handle_client_event(&mut app, hook_update("h2", model::HookPhase::Started, 1));
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::ConversationReset {
+            new_conversation_id: "conversation-2".to_owned(),
+            trigger: None,
+            timestamp: None,
+            user_message_uuid: None,
+        }),
+    );
+    assert!(app.session_runtime.hook_runs.is_empty());
+}
+
 #[test]
 fn session_title_follows_the_child_until_another_session_connects() {
     let mut app = make_test_app();
@@ -1854,4 +1936,117 @@ fn session_title_follows_the_child_until_another_session_connects() {
 
     app.session_runtime.activate_session(model::SessionId::new("other-session"));
     assert_eq!(app.session_runtime.session_title, None);
+}
+
+#[test]
+fn skills_and_styles_reload_result_is_noticed_and_releases_the_pending_reload() {
+    let mut app = make_test_app();
+    app.status = AppStatus::CommandPending;
+    app.turn.pending_command_label = Some("Reloading skills and output styles...".into());
+    app.turn.pending_command_ack = Some(PendingCommandAck::SkillsAndStylesReload);
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SkillsAndStylesReloaded {
+            session_id: "test-session".to_owned(),
+            skill_names: vec!["deploy".to_owned(), "lint".to_owned()],
+            output_style_names: vec![
+                "default".to_owned(),
+                "Explanatory".to_owned(),
+                "mine".to_owned(),
+            ],
+        },
+    );
+
+    assert!(matches!(app.status, AppStatus::Ready));
+    assert!(app.turn.pending_command_ack.is_none());
+    let last = app.transcript.messages.last().expect("reload notice");
+    let Some(MessageBlock::Notice(notice)) = last.blocks.first() else {
+        panic!("expected a notice block");
+    };
+    assert_eq!(notice.severity, SystemSeverity::Info);
+    assert_eq!(notice.text.text, "Reloaded skills (2) and output styles (3)");
+}
+
+#[test]
+fn skills_and_styles_reload_result_leaves_an_unrelated_pending_command_alone() {
+    let mut app = make_test_app();
+    app.status = AppStatus::CommandPending;
+    app.turn.pending_command_label = Some("Switching mode...".into());
+    app.turn.pending_command_ack = Some(PendingCommandAck::CurrentMode);
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SkillsAndStylesReloaded {
+            session_id: "test-session".to_owned(),
+            skill_names: Vec::new(),
+            output_style_names: Vec::new(),
+        },
+    );
+
+    assert!(matches!(app.status, AppStatus::CommandPending));
+    assert!(matches!(app.turn.pending_command_ack, Some(PendingCommandAck::CurrentMode)));
+}
+
+#[test]
+fn history_export_result_is_noticed_with_the_written_path_and_releases_the_command() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut app = make_test_app();
+    app.cwd_raw = dir.path().display().to_string();
+    let request_id = crate::app::export::begin(&mut app, "test-session", "out.md").expect("begin");
+    app.status = AppStatus::CommandPending;
+    app.turn.pending_command_ack = Some(PendingCommandAck::HistoryExport);
+
+    handle_client_event(&mut app, history_chunk(Some("older-request"), true, None));
+    assert!(matches!(app.status, AppStatus::CommandPending), "another request's chunk is dropped");
+
+    handle_client_event(&mut app, history_chunk(Some(&request_id), true, None));
+
+    assert!(matches!(app.status, AppStatus::Ready));
+    assert!(app.turn.pending_command_ack.is_none());
+    let last = app.transcript.messages.last().expect("export notice");
+    let Some(MessageBlock::Notice(notice)) = last.blocks.first() else {
+        panic!("expected a notice block");
+    };
+    assert_eq!(notice.severity, SystemSeverity::Info);
+    let written = std::path::absolute(dir.path().join("out.md")).expect("absolute");
+    assert_eq!(notice.text.text, format!("Exported the conversation to {}", written.display()));
+    assert!(written.is_file());
+}
+
+#[test]
+fn history_export_failure_is_reported_and_releases_the_command() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut app = make_test_app();
+    app.cwd_raw = dir.path().display().to_string();
+    let request_id = crate::app::export::begin(&mut app, "test-session", "out.md").expect("begin");
+    app.status = AppStatus::CommandPending;
+    app.turn.pending_command_ack = Some(PendingCommandAck::HistoryExport);
+
+    handle_client_event(
+        &mut app,
+        history_chunk(Some(&request_id), true, Some("failed to load session history: boom")),
+    );
+
+    assert!(matches!(app.status, AppStatus::Ready));
+    let last = app.transcript.messages.last().expect("failure notice");
+    let Some(MessageBlock::Notice(notice)) = last.blocks.first() else {
+        panic!("expected a notice block");
+    };
+    assert_eq!(notice.severity, SystemSeverity::Error);
+    assert_eq!(notice.text.text, "failed to load session history: boom");
+    assert!(!dir.path().join("out.md").exists());
+}
+
+fn history_chunk(request_id: Option<&str>, last: bool, error: Option<&str>) -> ClientEvent {
+    ClientEvent::SessionHistoryChunk {
+        session_id: "test-session".to_owned(),
+        chunk: crate::agent::events::HistoryChunk {
+            request_id: request_id.map(str::to_owned),
+            updates: Vec::new(),
+            last,
+            omitted_updates: 0,
+            error: error.map(str::to_owned),
+        },
+    }
 }

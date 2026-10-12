@@ -4,6 +4,7 @@
 mod api_retry;
 mod client;
 mod compaction;
+mod hooks;
 mod notices;
 mod notifications;
 mod rate_limit;
@@ -33,6 +34,7 @@ use crossterm::event::{Event, KeyEventKind};
 use std::fmt::Write as _;
 
 pub use client::handle_client_event;
+pub(crate) use hooks::flush_pending_hook_notices;
 pub(crate) use session::maybe_emit_fast_mode_disabled_notice;
 
 /// Apply the optimistic UI transition after a cancel command has entered the
@@ -259,6 +261,10 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> Termi
             super::search::handle_key(app, key);
             TerminalEventOutcome::handled(true)
         }
+        SurfaceMode::Fullscreen(FullscreenView::Diff) => {
+            super::diff_view::handle_key(app, key);
+            TerminalEventOutcome::handled(true)
+        }
         SurfaceMode::Fullscreen(FullscreenView::Config) => {
             super::config::handle_key(app, key);
             TerminalEventOutcome::handled(true)
@@ -316,7 +322,8 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
             FullscreenView::Trusted
             | FullscreenView::SessionPicker
             | FullscreenView::Update
-            | FullscreenView::Copy,
+            | FullscreenView::Copy
+            | FullscreenView::Diff,
         ) => false,
     }
 }
@@ -509,6 +516,9 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         }
         model::SessionUpdate::SessionTitleUpdate(title) => {
             app.session_runtime.session_title = title;
+        }
+        model::SessionUpdate::HookActivity(activity) => {
+            hooks::handle_hook_activity(app, &activity);
         }
         model::SessionUpdate::PromptSuggestionUpdate(suggestion) => {
             app.session_runtime.prompt_suggestion =
