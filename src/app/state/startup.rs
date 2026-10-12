@@ -21,6 +21,14 @@ pub struct StartupState {
     /// the launch settings it is copied into, which keeps `App` small as well.
     session_config: Box<crate::agent::wire::SessionConfig>,
     initial_prompt: Option<String>,
+    compact_first: Option<CompactFirst>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CompactFirst {
+    Pending(String),
+    InFlight(String),
+    Blocked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -85,6 +93,51 @@ impl StartupState {
             return None;
         }
         self.initial_prompt.take()
+    }
+
+    pub fn queue_compact_first(&mut self, session_id: String) {
+        self.compact_first = Some(CompactFirst::Pending(session_id));
+    }
+
+    pub fn pending_compact_first(&mut self, session_id: &str) -> bool {
+        match self.compact_first.as_ref() {
+            Some(CompactFirst::Pending(target)) if target == session_id => true,
+            Some(CompactFirst::Pending(_)) => {
+                self.compact_first = Some(CompactFirst::Blocked);
+                false
+            }
+            _ => false,
+        }
+    }
+
+    pub fn compact_first_started(&mut self, session_id: String) {
+        self.compact_first = Some(CompactFirst::InFlight(session_id));
+    }
+
+    pub fn compact_first_finished(&mut self, session_id: Option<&str>, success: bool) {
+        if let Some(CompactFirst::InFlight(target)) = self.compact_first.as_ref() {
+            self.compact_first = if success && Some(target.as_str()) == session_id {
+                None
+            } else {
+                Some(CompactFirst::Blocked)
+            };
+        }
+    }
+
+    pub fn compact_first_failed(&mut self) {
+        self.compact_first = Some(CompactFirst::Blocked);
+    }
+
+    pub fn compact_first_blocks_prompt(&self) -> bool {
+        self.compact_first.is_some()
+    }
+
+    pub fn take_blocked_initial_prompt(&mut self) -> Option<String> {
+        if matches!(self.compact_first, Some(CompactFirst::Blocked)) {
+            self.initial_prompt.take()
+        } else {
+            None
+        }
     }
 
     pub fn launch(&self) -> &StartupLaunch {

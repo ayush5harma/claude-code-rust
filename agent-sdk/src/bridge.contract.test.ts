@@ -1092,6 +1092,40 @@ test("continue with no previous session starts a new session", async () => {
   } finally { await cleanup(); }
 });
 
+test("resume resolves exact SDK title while an exact ID wins over another title", async () => {
+  const cwd = process.cwd();
+  const sessions = [
+    { sessionId: "id-one", summary: "Planning notes", customTitle: "Named plan", cwd, lastModified: 3 },
+    { sessionId: "id-two", summary: "id-one", cwd, lastModified: 2 },
+    { sessionId: "id-three", summary: "Fallback summary", cwd, lastModified: 1 },
+  ];
+  for (const [requested, expected] of [["Named plan", "id-one"], ["Fallback summary", "id-three"], ["id-one", "id-one"]]) {
+    const { bridge, cleanup } = ultracodeFixtureBridge({ STARTUP_SESSIONS_FIXTURE: JSON.stringify(sessions) });
+    try {
+      bridge.writeCommand({ command: "resume_session", session_id: requested, launch_settings: {}, request_id: "resume-title" });
+      const connected = await nextMatching(bridge, event => event.event === "connected");
+      assert.equal(connected.session_id, expected);
+      assert.equal(connected.request_id, "resume-title");
+    } finally { await cleanup(); }
+  }
+});
+
+test("resume refuses ambiguous SDK titles and lists candidate IDs", async () => {
+  const cwd = process.cwd();
+  const sessions = [
+    { sessionId: "first-id", summary: "Shared title", cwd, lastModified: 3 },
+    { sessionId: "second-id", summary: "Shared title", cwd, lastModified: 2 },
+  ];
+  const { bridge, cleanup } = ultracodeFixtureBridge({ STARTUP_SESSIONS_FIXTURE: JSON.stringify(sessions) });
+  try {
+    bridge.writeCommand({ command: "resume_session", session_id: "Shared title", launch_settings: {}, request_id: "ambiguous-title" });
+    const failure = await nextMatching(bridge, event => event.event === "slash_error");
+    assert.equal(failure.request_id, "ambiguous-title");
+    assert.match(String(failure.message), /first-id/);
+    assert.match(String(failure.message), /second-id/);
+  } finally { await cleanup(); }
+});
+
 test("spawned bridge reports applied effort at startup, after caps and model changes, per turn and after resume", async () => {
   const { bridge, cleanup } = ultracodeFixtureBridge({ EFFORT_FIXTURE_CAP: "high" });
   const nextEffort = async (value: unknown) => {

@@ -390,6 +390,13 @@ readline
           ] : null,
           restored_input: null,
         });
+        if (SCENARIO.startsWith('resume-large') && message.command === 'create_session') {
+          send({ event: 'sessions_listed', sessions: [{
+            session_id: 'saved-large', summary: 'Large saved conversation',
+            last_modified_ms: Date.now(), file_size_bytes: 2 * 1024 * 1024,
+            cwd, git_branch: 'main', custom_title: 'Large saved conversation',
+          }] });
+        }
         if (SCENARIO.startsWith('resize-') || SCENARIO.startsWith('background-')) send({ event: 'status_snapshot', session_id: SESSION, account: { subscription_type: 'Fixture subscription' } });
         if (SCENARIO === 'session-name') {
           // As the real bridge does after connect: the SDK-advertised commands.
@@ -408,6 +415,15 @@ readline
         }
         break;
       case 'prompt':
+        if (SCENARIO.startsWith('resume-large') && message.chunks?.some(chunk => chunk.value === '/compact')) {
+          send({ event: 'user_message_started', session_id: SESSION, message_uuid: message.message_uuid, source: 'command_lifecycle' });
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'compaction_update', phase: 'started' } });
+          send({ event: 'session_update', session_id: SESSION, update: SCENARIO === 'resume-large-fail'
+            ? { type: 'compaction_update', phase: 'finished', result: 'failed', error_code: 'unknown', error: 'fixture compaction failed' }
+            : { type: 'compaction_update', phase: 'finished', result: 'success' } });
+          send({ event: 'turn_complete', session_id: SESSION });
+          break;
+        }
         if (SCENARIO === 'session-name') {
           sessionNameReply(message);
           break;

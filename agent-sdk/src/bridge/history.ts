@@ -245,8 +245,8 @@ function pushResumeToolResult(
 
 function summaryFromSession(info: SDKSessionInfo): string {
   return (
-    nonEmptyTrimmed(info.summary) ??
     nonEmptyTrimmed(info.customTitle) ??
+    nonEmptyTrimmed(info.summary) ??
     nonEmptyTrimmed(info.firstPrompt) ??
     info.sessionId
   );
