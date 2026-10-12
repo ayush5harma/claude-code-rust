@@ -2117,6 +2117,33 @@ fn status_tab_shows_the_session_name_after_rename() {
     test.shutdown();
 }
 
+/// The rows of `screen` that mention `needle`.
+fn rows_with<'a>(screen: &'a str, needle: &str) -> Vec<&'a str> {
+    screen.lines().filter(|line| line.contains(needle)).collect()
+}
+
+/// A slow `SessionStart` hook is reported while the app has not read its settings
+/// yet, so its notice has to wait for them; a failed `PreToolUse` hook is noticed
+/// as it finishes. The fast `SessionStart` hook is reported between the slow
+/// hook's two messages and gets no notice.
+#[test]
+fn slow_and_failed_hooks_leave_a_notice_and_fast_ones_do_not() {
+    let mut test = TerminalTest::start("hook-activity", 3);
+    test.submit("run the hooks", "run the hooks");
+    let screen = test.wait_screen_with(
+        "Hook turn done",
+        &[
+            "Hook SessionStart:startup took 1.2 s",
+            "Hook PreToolUse:Bash failed (exit 2): blocked by fixture policy",
+        ],
+    );
+    assert_eq!(rows_with(&screen, "Hook SessionStart").len(), 1, "{screen}");
+    assert_eq!(rows_with(&screen, "Hook PreToolUse").len(), 1, "{screen}");
+    assert_eq!(rows_with(&screen, "SessionStart:compact"), Vec::<&str>::new(), "{screen}");
+    test.assert_prompts(&["run the hooks"]);
+    test.shutdown();
+}
+
 /// A terminal outside Windows sends Ctrl+V as one press byte and no release.
 /// Without a display server the clipboard cannot be opened, and the app has to
 /// say so: silence means the key never reached the clipboard path.

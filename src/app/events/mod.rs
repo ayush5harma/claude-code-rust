@@ -4,6 +4,7 @@
 mod api_retry;
 mod client;
 mod compaction;
+mod hooks;
 mod notices;
 mod notifications;
 mod rate_limit;
@@ -33,6 +34,7 @@ use crossterm::event::{Event, KeyEventKind};
 use std::fmt::Write as _;
 
 pub use client::handle_client_event;
+pub(crate) use hooks::flush_pending_hook_notices;
 pub(crate) use session::maybe_emit_fast_mode_disabled_notice;
 
 /// Apply the optimistic UI transition after a cancel command has entered the
@@ -506,7 +508,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             app.session_runtime.session_title = title;
         }
         model::SessionUpdate::HookActivity(activity) => {
-            app.session_runtime.hook_runs.record(&activity);
+            hooks::handle_hook_activity(app, &activity);
         }
         model::SessionUpdate::PromptSuggestionUpdate(suggestion) => {
             app.session_runtime.prompt_suggestion =

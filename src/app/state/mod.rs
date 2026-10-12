@@ -38,7 +38,7 @@ pub use cache_metrics::CacheMetrics;
 pub use chat_render::{
     ChatRenderState, ComposerRenderState, LiveRegionRenderState, TerminalSize, TerminalSizeChange,
 };
-pub use hook_runs::HookRuns;
+pub use hook_runs::{HOOK_NOTICE_SLOW_THRESHOLD, HookNoticeMode, HookRun, HookRuns};
 pub use messages::{
     BtwExchangeBlock, ChatMessage, ChatMessageId, HistoryOutputId, ImageAttachmentBlock,
     MessageBlock, MessageBlockId, MessageRole, NoticeBlock, NoticeDedupKey, RateLimitIncidentKey,

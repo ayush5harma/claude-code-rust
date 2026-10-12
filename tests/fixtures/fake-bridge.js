@@ -326,6 +326,31 @@ function sessionNameReply(message) {
   if (command === '/rename') update({ type: 'session_title_update', title: args.join(' ') });
 }
 
+// Hook activity as the real bridge sends it: SessionStart hooks right after the
+// connect event, stamped by when the bridge saw each message. The slow hook
+// started 1.2 s before the stamp that ends it; the fast one took 40 ms.
+function hookActivity(id, event, name, phase, observedAtMs, extra = {}) {
+  send({ event: 'session_update', session_id: SESSION, update: {
+    type: 'hook_activity', hook_id: id, hook_name: name, hook_event: event, phase, observed_at_ms: observedAtMs, ...extra,
+  } });
+}
+function startupHooks() {
+  const end = Date.now() - 5;
+  hookActivity('ss-slow', 'SessionStart', 'SessionStart:startup', 'started', end - 1200);
+  hookActivity('ss-fast', 'SessionStart', 'SessionStart:compact', 'started', end - 1000);
+  hookActivity('ss-fast', 'SessionStart', 'SessionStart:compact', 'finished', end - 960, { outcome: 'success', exit_code: 0, output: 'ok' });
+  hookActivity('ss-slow', 'SessionStart', 'SessionStart:startup', 'finished', end, { outcome: 'success', exit_code: 0, output: 'warmed' });
+}
+function hookActivityReply(message) {
+  const update = update => send({ event: 'session_update', session_id: SESSION, update });
+  send({ event: 'user_message_started', session_id: SESSION, message_uuid: message.message_uuid, source: 'command_lifecycle' });
+  const at = Date.now();
+  hookActivity('pre-deny', 'PreToolUse', 'PreToolUse:Bash', 'started', at);
+  hookActivity('pre-deny', 'PreToolUse', 'PreToolUse:Bash', 'finished', at + 30, { outcome: 'error', exit_code: 2, output: 'blocked by fixture policy' });
+  update({ type: 'agent_message_chunk', content: { type: 'text', text: 'Hook turn done' } });
+  send({ event: 'turn_complete', session_id: SESSION });
+}
+
 readline
   .createInterface({ input: process.stdin })
   .on('line', raw => {
@@ -383,6 +408,7 @@ readline
             { name: 'rename', description: 'Rename the current conversation', input_hint: '[name]' },
           ] } });
         }
+        if (SCENARIO === 'hook-activity') startupHooks();
         if (SCENARIO === 'disconnect-during-auth' && message.command === 'create_session') {
           const timer = setInterval(() => {
             if (fs.existsSync(RELEASE_FILE)) {
@@ -394,6 +420,10 @@ readline
         }
         break;
       case 'prompt':
+        if (SCENARIO === 'hook-activity') {
+          hookActivityReply(message);
+          break;
+        }
         if (SCENARIO === 'session-name') {
           sessionNameReply(message);
           break;

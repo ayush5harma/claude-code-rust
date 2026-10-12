@@ -7,6 +7,10 @@ use std::time::Duration;
 /// Hook runs kept per session; older runs are counted, not kept.
 pub const HOOK_RUN_CAPACITY: usize = 200;
 
+/// A finished hook at or above this duration gets a notice under the default
+/// `slow_and_failed` mode.
+pub const HOOK_NOTICE_SLOW_THRESHOLD: Duration = Duration::from_millis(500);
+
 /// The `presentation.hookNotices` setting: which finished hooks get a notice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HookNoticeMode {
@@ -40,6 +44,8 @@ pub struct HookRun {
     pub outcome: Option<HookOutcome>,
     pub exit_code: Option<i64>,
     pub output: Option<String>,
+    /// Finished, and no notice decision made for it yet.
+    pub notice_pending: bool,
 }
 
 /// What the Status tab and the notice rule need to say about a run, decided
@@ -178,6 +184,7 @@ impl HookRuns {
                     outcome: None,
                     exit_code: None,
                     output: None,
+                    notice_pending: false,
                 });
                 None
             }
@@ -199,6 +206,7 @@ impl HookRuns {
                         outcome: None,
                         exit_code: None,
                         output: None,
+                        notice_pending: false,
                     });
                 }
                 let run = self.open_run_mut(&activity.hook_id)?;
@@ -206,9 +214,23 @@ impl HookRuns {
                 run.outcome = activity.outcome;
                 run.exit_code = activity.exit_code;
                 run.output.clone_from(&activity.output);
+                run.notice_pending = true;
                 Some(&*run)
             }
         }
+    }
+
+    /// Finished runs that have not been judged for a notice, oldest first.
+    /// Each run is handed out once.
+    pub fn take_pending_notices(&mut self) -> Vec<HookRun> {
+        self.runs
+            .iter_mut()
+            .filter(|run| run.notice_pending)
+            .map(|run| {
+                run.notice_pending = false;
+                run.clone()
+            })
+            .collect()
     }
 
     #[must_use]
