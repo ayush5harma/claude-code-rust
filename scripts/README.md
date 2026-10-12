@@ -3,6 +3,10 @@
 The scripts directory is grouped by release phase. These files are part of the
 active release tooling and are validated by PR, release, or nightly workflows.
 
+`e2e-parity/` is the exception: a local, opt-in live suite (tmux, a logged-in
+Claude Code, macOS or Linux) that no workflow runs, so it is not CI-validated.
+See `e2e-parity/README.md`.
+
 ## Runtime
 
 - `runtime/stage-bun-runtime.mjs` is a maintainer entry point. It validates the
