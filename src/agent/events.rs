@@ -27,6 +27,17 @@ impl From<&str> for ConnectionFailure {
     }
 }
 
+/// One piece of the complete session history the bridge sends for `/export`.
+pub struct HistoryChunk {
+    /// The request the bridge answers; chunks of another request are ignored.
+    pub request_id: Option<String>,
+    pub updates: Vec<model::SessionUpdate>,
+    pub last: bool,
+    /// History entries left out of the whole export because the session is very large.
+    pub omitted_updates: u64,
+    pub error: Option<String>,
+}
+
 /// Messages sent from the backend bridge path to the App/UI layer.
 pub enum ClientEvent {
     SettingsResultReceived {
@@ -208,6 +219,8 @@ pub enum ClientEvent {
         targets: Vec<model::RewindTarget>,
         error: Option<String>,
     },
+    /// One chunk of the complete session history requested by /export.
+    SessionHistoryChunk { session_id: String, chunk: HistoryChunk },
     /// Result of a rewind operation that touched files.
     RewindResultReceived { result: model::RewindResult },
     /// MCP server snapshot received from bridge.
@@ -272,6 +285,7 @@ impl ClientEvent {
             | Self::RuntimeReloadHeld { session_id, .. }
             | Self::RuntimeReloadFailed { session_id, .. }
             | Self::SkillsAndStylesReloaded { session_id, .. }
+            | Self::SessionHistoryChunk { session_id, .. }
             | Self::SettingsResultReceived { session_id, .. }
             | Self::StatusSnapshotReceived { session_id, .. }
             | Self::ContextUsageReceived { session_id, .. }

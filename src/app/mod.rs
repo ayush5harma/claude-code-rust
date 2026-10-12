@@ -13,6 +13,7 @@ mod connect;
 pub(crate) mod copy;
 mod dialog;
 mod events;
+pub(crate) mod export;
 pub(crate) mod file_index;
 mod focus;
 mod git_context;
