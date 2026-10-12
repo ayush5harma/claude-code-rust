@@ -10,7 +10,7 @@ mod diff_view;
 mod document_table;
 pub(crate) mod footer_rows;
 pub(crate) mod help;
-mod highlight;
+pub(crate) mod highlight;
 pub(crate) mod host_tips;
 pub(crate) mod inline_chat_rows;
 pub(crate) mod input;

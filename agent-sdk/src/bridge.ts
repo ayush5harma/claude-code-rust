@@ -1025,6 +1025,7 @@ async function handleCommand(
     case "refresh_ultracode":
     case "set_fast_mode":
     case "reload_plugins":
+    case "reload_skills_and_styles":
       await handleSessionControlCommand(command, requestId, {
         buildPromptUserMessage,
         applySessionEffort,
@@ -1040,6 +1041,7 @@ async function handleCommand(
     case "get_context_usage":
     case "get_usage":
     case "get_rewind_targets":
+    case "export_session_history":
     case "rewind":
       await handleSessionDataCommand(command, requestId, {
         generatePersistedSessionTitle,

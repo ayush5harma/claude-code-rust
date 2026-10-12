@@ -165,6 +165,7 @@ pub(crate) fn apply_settings_result(
     if !previous_fast_mode && app.config.fast_mode_effective() {
         crate::app::events::maybe_emit_fast_mode_disabled_notice(app, None);
     }
+    crate::app::events::flush_pending_hook_notices(app);
     let operation_error = result.error.clone();
     app.config.last_error = result.error;
     app.config.status_message = match result.persistence {

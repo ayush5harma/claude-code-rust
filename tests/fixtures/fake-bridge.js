@@ -18,6 +18,7 @@ const activityScenario = SCENARIO.startsWith('hold-activity');
 const RELEASE_FILE = process.env.FAKE_BRIDGE_RELEASE_FILE;
 const JOURNAL = process.env.FAKE_BRIDGE_JOURNAL;
 let replyNumber = 0;
+let reloads = 0;
 let active = null;
 const pending = [];
 
@@ -339,6 +340,31 @@ function sessionNameReply(message) {
   if (command === '/rename') update({ type: 'session_title_update', title: args.join(' ') });
 }
 
+// Hook activity as the real bridge sends it: SessionStart hooks right after the
+// connect event, stamped by when the bridge saw each message. The slow hook
+// started 1.2 s before the stamp that ends it; the fast one took 40 ms.
+function hookActivity(id, event, name, phase, observedAtMs, extra = {}) {
+  send({ event: 'session_update', session_id: SESSION, update: {
+    type: 'hook_activity', hook_id: id, hook_name: name, hook_event: event, phase, observed_at_ms: observedAtMs, ...extra,
+  } });
+}
+function startupHooks() {
+  const end = Date.now() - 5;
+  hookActivity('ss-slow', 'SessionStart', 'SessionStart:startup', 'started', end - 1200);
+  hookActivity('ss-fast', 'SessionStart', 'SessionStart:compact', 'started', end - 1000);
+  hookActivity('ss-fast', 'SessionStart', 'SessionStart:compact', 'finished', end - 960, { outcome: 'success', exit_code: 0, output: 'ok' });
+  hookActivity('ss-slow', 'SessionStart', 'SessionStart:startup', 'finished', end, { outcome: 'success', exit_code: 0, output: 'warmed' });
+}
+function hookActivityReply(message) {
+  const update = update => send({ event: 'session_update', session_id: SESSION, update });
+  send({ event: 'user_message_started', session_id: SESSION, message_uuid: message.message_uuid, source: 'command_lifecycle' });
+  const at = Date.now();
+  hookActivity('pre-deny', 'PreToolUse', 'PreToolUse:Bash', 'started', at);
+  hookActivity('pre-deny', 'PreToolUse', 'PreToolUse:Bash', 'finished', at + 30, { outcome: 'error', exit_code: 2, output: 'blocked by fixture policy' });
+  update({ type: 'agent_message_chunk', content: { type: 'text', text: 'Hook turn done' } });
+  send({ event: 'turn_complete', session_id: SESSION });
+}
+
 readline
   .createInterface({ input: process.stdin })
   .on('line', raw => {
@@ -404,6 +430,7 @@ readline
             raw_input: { file_path: 'session-only.txt' }, locations: [], meta: { claudeCode: { toolName: 'Edit' } },
           } } });
         }
+        if (SCENARIO === 'hook-activity') startupHooks();
         if (SCENARIO === 'disconnect-during-auth' && message.command === 'create_session') {
           const timer = setInterval(() => {
             if (fs.existsSync(RELEASE_FILE)) {
@@ -415,6 +442,10 @@ readline
         }
         break;
       case 'prompt':
+        if (SCENARIO === 'hook-activity') {
+          hookActivityReply(message);
+          break;
+        }
         if (SCENARIO === 'session-name') {
           sessionNameReply(message);
           break;
@@ -428,6 +459,33 @@ readline
         send({ event: 'working_diff', session_id: SESSION, request_id: message.request_id, files: SCENARIO === 'native-diff'
           ? [{ path: 'tracked file.txt', status: 'MM', diff: 'diff --git a/tracked file.txt b/tracked file.txt\n--- a/tracked file.txt\n+++ b/tracked file.txt\n@@ -1 +1 @@\n-before\n+Working line\n' }]
           : [], });
+        break;
+      case 'export_session_history': {
+        // The bridge's resume translation of a saved session, split into two chunks.
+        const tool = { tool_call_id: 'bash-1', title: 'ls', kind: 'execute', status: 'in_progress', content: [], raw_input: { command: 'ls -la' }, locations: [], meta: { claudeCode: { toolName: 'Bash' } } };
+        const edit = { tool_call_id: 'edit-1', title: 'Edit', kind: 'edit', status: 'in_progress', content: [{ type: 'diff', old_path: 'notes.txt', new_path: 'notes.txt', old: 'keep\nold\n', new: 'keep\nnew\n' }], raw_input: { file_path: 'notes.txt' }, locations: [], meta: { claudeCode: { toolName: 'Edit' } } };
+        const chunks = [
+          [
+            { type: 'user_message_chunk', content: { type: 'text', text: 'List the files' }, source_message_uuid: 'u1' },
+            { type: 'agent_message_chunk', content: { type: 'text', text: 'Listing now.' }, source_message_uuid: 'a1' },
+            { type: 'tool_call', tool_call: tool },
+            { type: 'tool_call_update', tool_call_update: { tool_call_id: 'bash-1', fields: { status: 'completed', raw_output: '\u001b[32mREADME.md\u001b[0m\nsrc', content: [{ type: 'content', content: { type: 'text', text: '\u001b[32mREADME.md\u001b[0m\nsrc' } }] } } },
+          ],
+          [
+            { type: 'agent_message_chunk', content: { type: 'text', text: 'Fixing the note.' }, source_message_uuid: 'a2' },
+            { type: 'tool_call', tool_call: edit },
+            { type: 'tool_call_update', tool_call_update: { tool_call_id: 'edit-1', fields: { status: 'completed' } } },
+          ],
+        ];
+        chunks.forEach((updates, index) => send({ event: 'session_history_export', session_id: SESSION, request_id: message.request_id, updates, last: index === chunks.length - 1, omitted_updates: 0 }));
+        break;
+      }
+      case 'reload_skills_and_styles':
+        // First reload succeeds; the second fails the way the bridge reports an SDK error.
+        reloads++;
+        send(reloads === 1
+          ? { event: 'skills_and_styles_reloaded', session_id: SESSION, skills: ['deploy', 'lint'], output_styles: ['default', 'Explanatory', 'mine'] }
+          : { event: 'slash_error', session_id: SESSION, message: 'failed to reload skills and output styles: style directory unreadable' });
         break;
       case 'inspect_settings':
         if (notificationScenario) {

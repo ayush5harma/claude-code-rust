@@ -1,4 +1,4 @@
-import { getSessionInfo } from "@anthropic-ai/claude-agent-sdk";
+import { getSessionInfo, renameSession } from "@anthropic-ai/claude-agent-sdk";
 import { emitSessionUpdate } from "./events.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import type { SessionState } from "./session_lifecycle.js";
@@ -42,4 +42,30 @@ export async function emitSessionTitle(session: SessionState): Promise<void> {
     return;
   }
   emitSessionUpdate(sessionId, { type: "session_title_update", title });
+}
+
+/** Restore a saved name only when resume lost it; never overwrite a newer name. */
+export async function restoreSessionTitleAfterResume(
+  session: SessionState,
+  savedTitle: string | undefined,
+): Promise<void> {
+  const title = savedTitle?.trim();
+  if (!title || session.closing) return;
+  try {
+    const current = (await getSessionInfo(session.sessionId, { dir: session.cwd }))?.customTitle?.trim();
+    if (current) return;
+    // The 2026-10-12 parity run found that an SDK resume can drop a known
+    // custom title from the session registry used by other clients.
+    await renameSession(session.sessionId, title, { dir: session.cwd });
+    await emitSessionTitle(session);
+  } catch (error) {
+    bridgeLogger.warn({
+      target: LOG_TARGETS.APP_SESSION,
+      eventName: "session_title_restore_failed",
+      message: "failed to restore the saved session title after resume",
+      outcome: "failure",
+      sessionId: session.sessionId,
+      fields: { error_message: error instanceof Error ? error.message : String(error) },
+    });
+  }
 }

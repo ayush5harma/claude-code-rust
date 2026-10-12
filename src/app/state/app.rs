@@ -13,6 +13,8 @@ pub struct App {
     pub surface_mode: SurfaceMode,
     pub(crate) copy_picker: Option<crate::app::copy::CopyPicker>,
     pub(crate) diff_view: Option<crate::app::diff_view::DiffViewState>,
+    /// The `/export` waiting for its history from the bridge.
+    pub(crate) history_export: Option<crate::app::export::PendingExport>,
     pub(crate) terminal_lifecycle: TerminalLifecycleState,
     pub(crate) terminal_child_cancel: Option<tokio::sync::oneshot::Sender<()>>,
     pub(crate) surface_dirty: SurfaceDirtyState,
@@ -261,6 +263,7 @@ impl App {
             chat_render: ChatRenderState::default(),
             copy_picker: None,
             diff_view: None,
+            history_export: None,
             mention: None,
             committed_mentions: Vec::new(),
             file_index: file_index::FileIndexState::default(),

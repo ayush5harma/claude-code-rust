@@ -53,6 +53,7 @@ pub(super) fn handle_connected_client_event(app: &mut App, event: ConnectedEvent
         ultracode,
         history_updates,
     } = event;
+    app.startup.timeline.mark_connected(std::time::Instant::now());
     let session_id_for_log = session_id.to_string();
     let history_update_count = history_updates.len();
     let available_model_count = available_models.len();
@@ -314,6 +315,7 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
     }
     super::notices::emit_system_notice(app, SystemSeverity::Error, msg);
     clear_pending_command(app);
+    app.history_export = None;
     app.clear_pending_session_resume();
 }
 

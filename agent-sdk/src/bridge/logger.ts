@@ -122,8 +122,10 @@ function commandSessionId(command: BridgeCommand): string | undefined {
     case "get_usage":
     case "get_working_diff":
     case "get_rewind_targets":
+    case "export_session_history":
     case "rewind":
     case "reload_plugins":
+    case "reload_skills_and_styles":
     case "mcp_status":
     case "mcp_reconnect":
     case "mcp_toggle":
@@ -172,8 +174,10 @@ function commandToolCallId(command: BridgeCommand): string | undefined {
     case "get_usage":
     case "get_working_diff":
     case "get_rewind_targets":
+    case "export_session_history":
     case "rewind":
     case "reload_plugins":
+    case "reload_skills_and_styles":
     case "mcp_status":
     case "mcp_reconnect":
     case "mcp_toggle":
@@ -214,6 +218,7 @@ function eventToolCallId(event: BridgeEvent): string | undefined {
     case "runtime_reload_completed":
     case "runtime_reload_held":
     case "runtime_reload_failed":
+    case "skills_and_styles_reloaded":
     case "session_replaced":
     case "initialized":
     case "sessions_listed":
@@ -224,6 +229,7 @@ function eventToolCallId(event: BridgeEvent): string | undefined {
     case "usage_snapshot":
     case "working_diff":
     case "rewind_targets":
+    case "session_history_export":
     case "rewind_result":
     case "mcp_snapshot":
       return undefined;
@@ -278,8 +284,10 @@ function protocolEventLevel(event: BridgeEvent): LogLevel {
     case "usage_snapshot":
     case "working_diff":
     case "rewind_targets":
+    case "session_history_export":
     case "rewind_result":
     case "runtime_reload_completed":
+    case "skills_and_styles_reloaded":
     case "mcp_set_servers_result":
     case "user_message_queued":
     case "user_message_rejected":
