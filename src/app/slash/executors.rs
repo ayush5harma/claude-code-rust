@@ -42,6 +42,10 @@ pub(crate) fn try_handle_submission(app: &mut App, submission: &ResolvedSubmissi
     match command {
         AppSlashCommand::Btw => handle_btw_submit(app, text),
         AppSlashCommand::Cancel => handle_cancel_submit(app),
+        AppSlashCommand::Exit => {
+            app.request_shutdown();
+            true
+        }
         AppSlashCommand::Compact => handle_compact_submit(app),
         AppSlashCommand::Config => handle_config_submit(app),
         AppSlashCommand::Memory => handle_settings_category_submit(app, "memory"),

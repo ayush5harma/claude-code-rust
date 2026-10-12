@@ -73,7 +73,7 @@ fn chat_blocked_default_bindings() -> [KeyBinding; 1] {
     )]
 }
 
-fn chat_control_default_bindings() -> [KeyBinding; 7] {
+fn chat_control_default_bindings() -> [KeyBinding; 11] {
     [
         KeyBinding::default(
             KeyContext::ChatInput,
@@ -84,6 +84,26 @@ fn chat_control_default_bindings() -> [KeyBinding; 7] {
             KeyContext::ChatInput,
             KeySpec::new(KeyCodeSpec::Esc, KeyModifiers::NONE),
             KeyAction::App(AppAction::CancelTurn),
+        ),
+        KeyBinding::default(
+            KeyContext::ChatInput,
+            KeySpec::char('g', KeyModifiers::CONTROL),
+            KeyAction::App(AppAction::OpenExternalEditor),
+        ),
+        KeyBinding::default(
+            KeyContext::ChatInput,
+            KeySpec::char('r', KeyModifiers::ALT),
+            KeyAction::App(AppAction::OpenRewindPicker),
+        ),
+        KeyBinding::default(
+            KeyContext::ChatInput,
+            KeySpec::char('t', KeyModifiers::CONTROL),
+            KeyAction::App(AppAction::ToggleTasks),
+        ),
+        KeyBinding::default(
+            KeyContext::ChatInput,
+            KeySpec::char('o', KeyModifiers::CONTROL),
+            KeyAction::App(AppAction::ToggleVerbose),
         ),
         KeyBinding::default(
             KeyContext::ChatInput,
@@ -140,7 +160,11 @@ fn chat_readline_default_bindings() -> [KeyBinding; 13] {
         chat_input('e', KeyModifiers::CONTROL, InputAction::MoveLineEndOrDown),
         chat_input('b', KeyModifiers::CONTROL, InputAction::MoveCharLeft),
         chat_input('f', KeyModifiers::CONTROL, InputAction::MoveCharRight),
-        chat_input('d', KeyModifiers::CONTROL, InputAction::DeleteCharAfter),
+        KeyBinding::default(
+            KeyContext::ChatInput,
+            KeySpec::char('d', KeyModifiers::CONTROL),
+            KeyAction::App(AppAction::DeleteOrQuit),
+        ),
         chat_input('k', KeyModifiers::CONTROL, InputAction::KillLineEnd),
         chat_input('u', KeyModifiers::CONTROL, InputAction::KillLineStart),
         chat_input('y', KeyModifiers::CONTROL, InputAction::Yank),

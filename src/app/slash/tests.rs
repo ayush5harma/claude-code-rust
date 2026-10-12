@@ -31,6 +31,18 @@ fn parse_non_slash_returns_none() {
 }
 
 #[test]
+fn exit_is_local_and_requests_shutdown_without_sending_a_prompt() {
+    let mut app = App::test_default();
+    assert_eq!(
+        ResolvedSubmission::resolve("/exit".to_owned()).class(),
+        SubmissionClass::Informational
+    );
+    assert!(try_handle_submit(&mut app, "/exit"));
+    assert!(app.shutdown_requested());
+    assert!(app.pending_submit.is_none());
+}
+
+#[test]
 fn ultracode_usage_policy_and_completion() {
     for input in
         ["/ultracode", "/ultracode toggle", "/ultracode on extra", "/ultracode status extra"]
