@@ -185,6 +185,22 @@ test("resume handles many unclosed notification and field tags without blocking 
   assert.deepEqual(updates.filter(update => update.type === "task_state_update").flatMap(update => update.tasks).map(task => [task.task_id, task.status, task.source_tool_call_id, task.description]), [["valid", "completed", undefined, undefined]]);
 });
 
+test("resume preserves user text that resembles SDK local command markup", () => {
+  const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
+  const command = "<command-name>/rename</command-name>\n            <command-message>rename</command-message>\n            <command-args>Project check</command-args>";
+  const updates = mapSessionMessagesToUpdates([
+    { ...base, type: "user", uuid: "rename", message: { role: "user", content: command } },
+    { ...base, type: "user", uuid: "ordinary", message: { role: "user", content: "Explain <example>literal XML</example>" } },
+  ]);
+  assert.deepEqual(
+    updates.filter(update => update.type === "user_message_chunk").map(update => [update.source_message_uuid, update.content]),
+    [
+      ["rename", { type: "text", text: command }],
+      ["ordinary", { type: "text", text: "Explain <example>literal XML</example>" }],
+    ],
+  );
+});
+
 test("resume display maps plain string messages and hides internal compact summaries", () => {
   const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
   const updates = mapSessionMessagesToUpdates([

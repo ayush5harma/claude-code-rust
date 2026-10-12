@@ -90,6 +90,8 @@ Set `CLAUDE_CONFIG_DIR` before startup to use an isolated Claude profile. User s
 
 The Settings tab shows saved values. A running session can differ, because workspace trust, managed policy, model capabilities, startup arguments and session commands also apply. The Status tab and the chat footer show what the session is running with.
 
+Settings files that are symlinks to regular files can be read in the Permissions and Hooks panes. Editing a symlinked settings file is refused; change its source file through its owner instead.
+
 ## Reading the list
 
 Each row shows a setting and its value, and a counter such as `1/27` shows the position in the pane. Below the list, `Description:` explains the selected setting and a context line states where its value comes from at the selected scope:
