@@ -73,9 +73,6 @@ pub struct Cli {
     #[arg(long = "continue", short = 'c')]
     pub continue_session: bool,
 
-    #[command(flatten)]
-    pub session_options: SessionOptions,
-
     /// Disable startup update checks.
     #[arg(long)]
     pub no_update_check: bool,
@@ -113,10 +110,18 @@ pub struct Cli {
     /// Without `--log-file`, appends to the legacy shared default log for compatibility.
     #[arg(long)]
     pub log_append: bool,
+
+    // Last, because a flattened help heading also applies to the arguments that follow it.
+    #[command(flatten)]
+    pub session_options: SessionOptions,
+
+    #[command(flatten)]
+    pub session_config: SessionConfigArgs,
 }
 
 /// Per-launch options, separate from persisted application preferences.
 #[derive(Args, Debug, Clone, Default)]
+#[command(next_help_heading = "Session Options")]
 pub struct SessionOptions {
     /// Starting model alias or full model ID; does not change saved preferences.
     #[arg(long, global = true, value_name = "MODEL", value_parser = clap::builder::NonEmptyStringValueParser::new())]
@@ -133,6 +138,158 @@ pub struct SessionOptions {
     /// Main-thread agent to use for this session.
     #[arg(long, global = true, value_name = "NAME", value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub agent: Option<String>,
+
+    /// Name the new or resumed session.
+    #[arg(long, short = 'n', global = true, value_name = "NAME", value_parser = parse_session_name)]
+    pub name: Option<String>,
+
+    /// Resume into a new session ID, leaving the original session unchanged.
+    #[arg(long, global = true)]
+    pub fork_session: bool,
+}
+
+/// Session names are shown in the terminal, so control characters are dropped,
+/// as the title converter does for titles the SDK reports.
+fn parse_session_name(value: &str) -> Result<String, String> {
+    let name: String = value.chars().filter(|ch| !ch.is_control()).collect();
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("the session name must contain visible characters".to_owned());
+    }
+    Ok(name.to_owned())
+}
+
+// Session configuration for every session this process starts, including `/new` and
+// `/resume`, as Claude Code keeps these flags for its whole process. Relative paths
+// resolve against `--dir`, or the current directory without it. (A doc comment here
+// would replace the command's about text in `--help`.)
+#[derive(Args, Debug, Clone, Default)]
+#[command(next_help_heading = "Session Options")]
+pub struct SessionConfigArgs {
+    /// Additional directory Claude may access (repeatable).
+    #[arg(long = "add-dir", global = true, value_name = "DIR")]
+    pub add_dirs: Vec<std::path::PathBuf>,
+
+    /// Settings JSON file, or inline JSON, applied as Claude Code's --settings layer.
+    #[arg(long, global = true, value_name = "FILE-OR-JSON")]
+    pub settings: Option<String>,
+
+    /// MCP server config file, or inline JSON, with an `mcpServers` object (repeatable).
+    #[arg(long = "mcp-config", global = true, value_name = "FILE-OR-JSON")]
+    pub mcp_configs: Vec<String>,
+
+    /// Use only the MCP servers from --mcp-config, ignoring all other MCP configuration.
+    #[arg(long, global = true)]
+    pub strict_mcp_config: bool,
+
+    /// Replace Claude Code's system prompt for new sessions.
+    #[arg(long, global = true, value_name = "TEXT", conflicts_with = "system_prompt_file", value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    pub system_prompt: Option<String>,
+
+    /// Replace Claude Code's system prompt for new sessions with a file's text.
+    #[arg(long, global = true, value_name = "FILE")]
+    pub system_prompt_file: Option<std::path::PathBuf>,
+
+    /// Append text to the system prompt of new sessions.
+    #[arg(long, global = true, value_name = "TEXT", conflicts_with = "append_system_prompt_file", value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    pub append_system_prompt: Option<String>,
+
+    /// Append a file's text to the system prompt of new sessions.
+    #[arg(long, global = true, value_name = "FILE")]
+    pub append_system_prompt_file: Option<std::path::PathBuf>,
+}
+
+impl SessionConfigArgs {
+    /// Resolve paths against `base` and check that they exist, so a typo stops the launch
+    /// with a CLI error instead of surfacing inside a running session.
+    pub fn resolve(&self, base: &std::path::Path) -> Result<agent::wire::SessionConfig, String> {
+        let additional_directories = self
+            .add_dirs
+            .iter()
+            .map(|dir| {
+                let path = absolute_path(base, dir, "--add-dir")?;
+                if !std::path::Path::new(&path).is_dir() {
+                    return Err(format!("--add-dir: {path} is not an existing directory"));
+                }
+                Ok(path)
+            })
+            .collect::<Result<_, String>>()?;
+        let settings = self
+            .settings
+            .as_deref()
+            .map(|value| json_or_file_text(base, value, "--settings"))
+            .transpose()?;
+        let mcp_configs = self
+            .mcp_configs
+            .iter()
+            .map(|value| json_or_file_text(base, value, "--mcp-config"))
+            .collect::<Result<_, String>>()?;
+        let system_prompt = text_or_file(
+            base,
+            self.system_prompt.as_deref(),
+            self.system_prompt_file.as_deref(),
+            "--system-prompt-file",
+        )?;
+        let append_system_prompt = text_or_file(
+            base,
+            self.append_system_prompt.as_deref(),
+            self.append_system_prompt_file.as_deref(),
+            "--append-system-prompt-file",
+        )?;
+        Ok(agent::wire::SessionConfig {
+            additional_directories,
+            settings,
+            mcp_configs,
+            strict_mcp_config: self.strict_mcp_config,
+            system_prompt,
+            append_system_prompt,
+        })
+    }
+}
+
+/// The text of a flag pair whose two spellings clap keeps mutually exclusive.
+fn text_or_file(
+    base: &std::path::Path,
+    text: Option<&str>,
+    file: Option<&std::path::Path>,
+    file_flag: &str,
+) -> Result<Option<String>, String> {
+    match (text, file) {
+        (Some(text), _) => Ok(Some(text.to_owned())),
+        (None, Some(file)) => read_text_file(base, file, file_flag).map(Some),
+        (None, None) => Ok(None),
+    }
+}
+
+fn read_text_file(
+    base: &std::path::Path,
+    file: &std::path::Path,
+    flag: &str,
+) -> Result<String, String> {
+    let path = absolute_path(base, file, flag)?;
+    std::fs::read_to_string(&path).map_err(|error| format!("{flag}: cannot read {path}: {error}"))
+}
+
+/// Inline JSON is passed through; anything else is a file whose text is read once here.
+/// The bridge owns parsing, so only the leading brace is inspected.
+fn json_or_file_text(base: &std::path::Path, value: &str, flag: &str) -> Result<String, String> {
+    if value.trim_start().starts_with('{') {
+        return Ok(value.to_owned());
+    }
+    read_text_file(base, std::path::Path::new(value), flag)
+}
+
+fn absolute_path(
+    base: &std::path::Path,
+    path: &std::path::Path,
+    flag: &str,
+) -> Result<String, String> {
+    let absolute = std::path::absolute(base.join(path))
+        .map_err(|error| format!("{flag}: cannot resolve {}: {error}", path.display()))?;
+    absolute
+        .into_os_string()
+        .into_string()
+        .map_err(|path| format!("{flag}: {} is not valid UTF-8", path.to_string_lossy()))
 }
 
 impl Cli {
@@ -141,7 +298,17 @@ impl Cli {
         let has_session_options = self.session_options.model.is_some()
             || self.session_options.effort.is_some()
             || self.session_options.permission_mode.is_some()
-            || self.session_options.agent.is_some();
+            || self.session_options.agent.is_some()
+            || self.session_options.name.is_some()
+            || self.session_options.fork_session
+            || !self.session_config.add_dirs.is_empty()
+            || self.session_config.settings.is_some()
+            || !self.session_config.mcp_configs.is_empty()
+            || self.session_config.strict_mcp_config
+            || self.session_config.system_prompt.is_some()
+            || self.session_config.system_prompt_file.is_some()
+            || self.session_config.append_system_prompt.is_some()
+            || self.session_config.append_system_prompt_file.is_some();
         let conflict = match &self.command {
             Some(Command::Resume { .. }) => {
                 self.resume.is_some() || self.continue_session || self.prompt.is_some()
@@ -160,8 +327,30 @@ impl Cli {
                 "interactive startup arguments cannot be combined with this subcommand",
             ));
         }
+        if self.session_options.fork_session && !self.startup_launch().resume_or_pick() {
+            return Err(Self::command().error(
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "--fork-session requires --resume, --continue or the resume subcommand",
+            ));
+        }
         Ok(())
     }
+    /// The session working directory: `--dir`, or the current directory without it.
+    #[must_use]
+    pub fn startup_cwd(&self) -> std::path::PathBuf {
+        self.dir.clone().unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        })
+    }
+
+    /// Resolve the session configuration flags against the session working directory.
+    pub fn session_config(&self) -> Result<agent::wire::SessionConfig, clap::Error> {
+        use clap::CommandFactory;
+        self.session_config.resolve(&self.startup_cwd()).map_err(|message| {
+            Self::command().error(clap::error::ErrorKind::ValueValidation, message)
+        })
+    }
+
     /// Normalize both resume spellings into one startup intent.
     #[must_use]
     pub fn startup_launch(&self) -> StartupLaunch {
@@ -209,6 +398,12 @@ impl StartupLaunch {
     #[must_use]
     pub fn resume_requested(&self) -> bool {
         matches!(self, Self::ResumeSession { .. } | Self::ContinueSession)
+    }
+
+    /// Whether the launch resumes an existing session, directly or through the picker.
+    #[must_use]
+    pub fn resume_or_pick(&self) -> bool {
+        self.resume_requested() || matches!(self, Self::SessionPicker)
     }
 }
 
@@ -530,6 +725,49 @@ mod tests {
                 })),
             }))
         );
+    }
+
+    #[test]
+    fn added_directory_must_be_an_existing_directory() {
+        let project = tempfile::tempdir().expect("project");
+        std::fs::write(project.path().join("notes.txt"), "").expect("file");
+        for dir in ["missing", "notes.txt"] {
+            let cli = Cli::try_parse_from(["claude-rs", "--add-dir", dir]).expect("parse");
+            let error = cli.session_config.resolve(project.path()).expect_err(dir);
+            let path = project.path().join(dir);
+            assert_eq!(
+                error,
+                format!("--add-dir: {} is not an existing directory", path.display())
+            );
+        }
+    }
+
+    #[test]
+    fn unreadable_settings_file_is_a_cli_error() {
+        let project = tempfile::tempdir().expect("project");
+        let cli = Cli::try_parse_from(["claude-rs", "--settings", "missing.json"]).expect("parse");
+        let error = cli.session_config.resolve(project.path()).expect_err("missing file");
+        let path = project.path().join("missing.json");
+        assert!(
+            error.starts_with(&format!("--settings: cannot read {}: ", path.display())),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn fork_session_is_accepted_with_every_resume_spelling() {
+        let cases: &[&[&str]] = &[
+            &["claude-rs", "--resume", "--fork-session"],
+            &["claude-rs", "-r", "session-1", "--fork-session"],
+            &["claude-rs", "--continue", "--fork-session"],
+            &["claude-rs", "resume", "--fork-session"],
+            &["claude-rs", "resume", "session-1", "--fork-session"],
+        ];
+        for args in cases {
+            let cli = Cli::try_parse_from(args.iter().copied()).expect("parse");
+            cli.validate().expect("fork with a resume");
+            assert!(cli.session_options.fork_session, "{args:?}");
+        }
     }
 
     #[test]

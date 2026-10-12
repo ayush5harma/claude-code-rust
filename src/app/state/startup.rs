@@ -17,6 +17,9 @@ pub struct StartupState {
     launch: StartupLaunch,
     phase: StartupPhase,
     session_options: Option<crate::SessionOptions>,
+    /// Unlike `session_options`, kept for every session the process starts. Boxed as in
+    /// the launch settings it is copied into, which keeps `App` small as well.
+    session_config: Box<crate::agent::wire::SessionConfig>,
     initial_prompt: Option<String>,
     /// Measured launch milestones, shown in the Status tab.
     pub timeline: super::StartupTimeline,
@@ -56,8 +59,17 @@ impl StartupState {
         }
     }
 
+    #[must_use]
+    pub fn with_session_config(self, session_config: crate::agent::wire::SessionConfig) -> Self {
+        Self { session_config: Box::new(session_config), ..self }
+    }
+
     pub fn session_options(&self) -> Option<&crate::SessionOptions> {
         self.session_options.as_ref()
+    }
+
+    pub fn session_config(&self) -> &crate::agent::wire::SessionConfig {
+        &self.session_config
     }
 
     /// Release launch overrides once the initially selected session is ready.

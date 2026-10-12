@@ -8,7 +8,7 @@ The Rust binary owns the terminal UI and process lifecycle. It parses CLI option
 
 The app then starts or resumes a bridge session and renders the chat view directly in the terminal.
 
-Interactive startup arguments resolve into one launch intent: a new session, a specified resume ID, the session picker, or the latest session in the working directory. Session overrides are applied through the existing launch-settings boundary and released after the initial session is selected. Initial prompts use normal prompt queue admission once startup dialogs are complete.
+Interactive startup arguments resolve into one launch intent: a new session, a specified resume ID, the session picker, or the latest session in the working directory. Session overrides are applied through the existing launch-settings boundary and released after the initial session is selected. Session configuration flags such as `--add-dir` travel through the same boundary but are kept for every session the process starts, as Claude Code keeps them for its process; Rust resolves their paths against the working directory and checks that they exist before the bridge starts, and the bridge maps each to its Agent SDK option. The bridge's runtime guard prompt is an invariant of every session: system prompt flags add to it or replace the preset around it, never remove it. Initial prompts use normal prompt queue admission once startup dialogs are complete.
 
 Support commands run before bridge resolution. Shell completions and manual pages are generated from the same Clap command definitions as CLI help, so neither requires the bridge or authentication.
 
@@ -54,6 +54,8 @@ Each subsection names the owner of a concern and the invariants that keep the Ru
 | App preferences file and updater state | Rust | `src/app/settings.rs` |
 
 Rust receives catalog descriptors and sanitized snapshots over NDJSON and renders them. It does not merge settings files, mirror scope rules, or supply defaults for unset values. Saved defaults stay separate from active session choices: a settings save never becomes a session flag override. Snapshots and pending drafts are invalidated when the session scope changes. Offline `claude-rs config` inspection is a separate read-only view of the physical files and does not resolve the cascade.
+
+A `--settings` value is the session's flag-settings layer. The SDK accepts one such layer, as a path or an object, so the bridge parses the user's JSON and lays its own host restrictions over it (`feedbackDrafts: "off"`, and `crossSessionInbound: "refuse"` unless the flag value or the saved cascade says `accept` or `refuse`); Rust only reads the file text. The Config snapshot does not include this layer.
 
 The snapshot is the SDK's raw file cascade. The running session additionally applies trust, managed policy, capability restrictions and explicit session choices, so an observed session value can differ from the saved one. SDK provenance is reported per top-level key, which does not prove that a particular leaf is enforced policy. `resolveSettings()` does not execute `policyHelper`.
 
@@ -124,6 +126,8 @@ The bridge announces each live top-level SDK response through the typed `agent_r
 | Listing snapshot of all sessions, including each `custom_title` | Bridge, held by Rust | `agent-sdk/src/bridge/events.ts`, `recent_sessions` |
 
 The bridge reads `getSessionInfo().customTitle` after a connect, a replacement, a conversation reset, each top-level turn and each rename or title generation it performs, and sends every title it reads; a read that a later one overtakes is dropped. Rust keeps the active title as one value, strips control characters once in the converter, stores a repeated title idempotently, and clears it when the session id changes or the conversation resets. Neither side derives a title of its own. The session listing is a separate snapshot of all sessions, refreshed by `listSessions()` on connect, replacement and the Status-tab rename and generate actions; the Status tab falls back to it only while the active session has no title. `customTitle` falls back to a generated title, so an unnamed session shows that title after its first turn.
+
+A launch name (`-n, --name`) travels in the launch settings and the bridge applies it, because only the bridge knows which SDK path fits: the SDK's `title` option for a new or forked session, whose transcript file does not exist until its first turn and so cannot be renamed yet, and `renameSession()` for a resumed session, before it connects, because the SDK keeps a resumed session's persisted title over `title`. Either way the title reaches Rust through the same `getSessionInfo()` reads.
 
 ### Hook activity
 
