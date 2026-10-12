@@ -56,9 +56,10 @@ function writeSdkFixture(fixturePath: string, cwd: string): void {
       return [];
     }
     export async function listSessions() {
-      return [{ sessionId: ${JSON.stringify(SESSION_ID)}, cwd, lastModified: 1 }];
+      return [{ sessionId: ${JSON.stringify(SESSION_ID)}, cwd, lastModified: 1, customTitle: titles.get(${JSON.stringify(SESSION_ID)}) }];
     }
     export function query({ prompt, options }) {
+      if (process.env.DROP_TITLE_ON_RESUME === "1" && options.resume) titles.delete(options.resume);
       appendFileSync(process.env.QUERY_JOURNAL, JSON.stringify({ resume: options.resume }) + "\\n");
       const input = prompt[Symbol.asyncIterator]();
       const pending = [];
@@ -149,6 +150,7 @@ test("the bridge sends the session API's title through resume, turns, renames, r
         CLAUDE_CODE_PROJECT_DIR_NAME: undefined,
         CLAUDE_RS_BRIDGE_DIAGNOSTICS: "1",
         QUERY_JOURNAL: journal,
+        DROP_TITLE_ON_RESUME: command === "resume_session" ? "1" : undefined,
         CLAUDE_CODE_EXECUTABLE: "",
       },
       stdio: "pipe",

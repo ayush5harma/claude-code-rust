@@ -3,6 +3,8 @@ import {
   getSessionMessages,
   listSessions,
   renameSession,
+  tagSession,
+  deleteSession,
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
   Query,
@@ -11,6 +13,7 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
   BridgeCommand,
+  BridgeEvent,
   RewindTarget,
   StructuredActivityWindow,
   StructuredExtraUsage,
@@ -31,7 +34,9 @@ import {
   writeEvent,
 } from "./events.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
+import { exportSessionHistory } from "./history_export.js";
 import { emitSessionTitle } from "./session_title.js";
+import { mapSdkSessions } from "./history.js";
 import {
   refreshCurrentModel,
   sessionById,
@@ -44,10 +49,13 @@ type SessionDataCommand = Extract<
     command:
       | "generate_session_title"
       | "rename_session"
+      | "tag_session"
+      | "delete_session"
       | "get_status_snapshot"
       | "get_context_usage"
       | "get_usage"
       | "get_rewind_targets"
+      | "export_session_history"
       | "rewind";
   }
 >;
@@ -81,6 +89,10 @@ export async function handleSessionDataCommand(
     case "rename_session":
       await rename(command, requestId, deps);
       return;
+    case "tag_session":
+    case "delete_session":
+      writeEvent(await mutateListedSession(command), requestId);
+      return;
     case "get_status_snapshot":
       await getStatusSnapshot(command, requestId);
       return;
@@ -93,8 +105,59 @@ export async function handleSessionDataCommand(
     case "get_rewind_targets":
       await getRewindTargets(command, requestId, deps);
       return;
+    case "export_session_history": {
+      const session = requireSession(command.session_id, requestId);
+      if (session) {
+        await exportSessionHistory(session.sessionId, session.cwd, requestId);
+      }
+      return;
+    }
     case "rewind":
       await deps.handleRewind(command, requestId);
+  }
+}
+
+type SessionMutationDeps = {
+  listSessions: typeof listSessions;
+  sessionById: typeof sessionById;
+  tagSession: typeof tagSession;
+  deleteSession: typeof deleteSession;
+};
+
+const sessionMutationDeps: SessionMutationDeps = { listSessions, sessionById, tagSession, deleteSession };
+
+export async function mutateListedSession(
+  command: Extract<SessionDataCommand, { command: "tag_session" | "delete_session" }>,
+  deps: SessionMutationDeps = sessionMutationDeps,
+): Promise<Extract<BridgeEvent, { event: "session_mutation_result" }>> {
+  const operation = command.command === "tag_session" ? "tag" : "delete";
+  try {
+    if (command.command === "delete_session" && deps.sessionById(command.session_id)) {
+      throw new Error("Switch sessions before changing the active session");
+    }
+    const options = currentSessionListOptions();
+    const listed = (await deps.listSessions(options)).find((entry) => entry.sessionId === command.session_id);
+    if (!listed) throw new Error("Selected session is no longer in this project");
+    const dir = listed.cwd ?? options.dir;
+    if (!dir) throw new Error("Selected session has no project directory");
+    if (command.command === "tag_session") {
+      await deps.tagSession(command.session_id, command.tag, { dir });
+    } else {
+      if (deps.sessionById(command.session_id)) {
+        throw new Error("Switch sessions before deleting the active session");
+      }
+      await deps.deleteSession(command.session_id, { dir });
+    }
+    try {
+      const sessions = mapSdkSessions(await deps.listSessions(options), 50);
+      return { event: "session_mutation_result", session_id: command.session_id, operation, sessions };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { event: "session_mutation_result", session_id: command.session_id, operation, refresh_error: message };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { event: "session_mutation_result", session_id: command.session_id, operation, error: message };
   }
 }
 

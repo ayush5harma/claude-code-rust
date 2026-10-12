@@ -852,6 +852,7 @@ fn listed_session(id: &str, title: &str) -> crate::agent::types::SessionListEntr
         git_branch: Some("main".to_owned()),
         custom_title: Some(title.to_owned()),
         first_prompt: Some(format!("prompt {title}")),
+        tag: None,
     }
 }
 
@@ -3833,6 +3834,7 @@ fn conversation_reset_mounts_a_fresh_transcript_without_dropping_session_invento
             git_branch: Some("main".to_owned()),
             custom_title: Some("Old conversation title".to_owned()),
             first_prompt: Some("prompt Old conversation title".to_owned()),
+            tag: None,
         },
         crate::app::RecentSessionInfo {
             session_id: "other-session".to_owned(),
@@ -3843,6 +3845,7 @@ fn conversation_reset_mounts_a_fresh_transcript_without_dropping_session_invento
             git_branch: Some("main".to_owned()),
             custom_title: Some("Other conversation title".to_owned()),
             first_prompt: Some("prompt Other conversation title".to_owned()),
+            tag: None,
         },
     ];
     app.sdk_inventory.available_commands = vec![model::AvailableCommand::new("/remote", "Remote")];

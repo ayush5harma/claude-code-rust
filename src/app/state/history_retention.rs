@@ -245,6 +245,7 @@ impl super::App {
     }
 
     pub(crate) fn rebuild_history_retention_accounting(&mut self) {
+        self.transcript.revision = self.transcript.revision.wrapping_add(1);
         self.transcript.message_retained_bytes.clear();
         self.transcript.message_retained_bytes.reserve(self.transcript.messages.len());
         self.transcript.retained_history_bytes = 0;
@@ -264,6 +265,7 @@ impl super::App {
     }
 
     pub(crate) fn push_message_tracked(&mut self, msg: ChatMessage) {
+        self.transcript.revision = self.transcript.revision.wrapping_add(1);
         let previous_tail = self.transcript.messages.len().checked_sub(1);
         let bytes = Self::measure_message_bytes(&msg);
         self.transcript.messages.push(msg);
@@ -279,6 +281,7 @@ impl super::App {
     }
 
     pub(crate) fn insert_message_tracked(&mut self, idx: usize, msg: ChatMessage) {
+        self.transcript.revision = self.transcript.revision.wrapping_add(1);
         self.ensure_history_retention_accounting();
         let insert_idx = idx.min(self.transcript.messages.len());
         let appended_at_tail = insert_idx == self.transcript.messages.len();
@@ -314,6 +317,7 @@ impl super::App {
         self.shift_active_turn_assistant_for_remove(idx);
         self.shift_turn_notice_refs_for_remove(idx);
         let removed = self.transcript.messages.remove(idx);
+        self.transcript.revision = self.transcript.revision.wrapping_add(1);
         let removed_bytes = self.transcript.message_retained_bytes.remove(idx);
         self.transcript.retained_history_bytes =
             self.transcript.retained_history_bytes.saturating_sub(removed_bytes);
@@ -329,6 +333,7 @@ impl super::App {
     }
 
     pub(crate) fn clear_messages_tracked(&mut self) {
+        self.transcript.revision = self.transcript.revision.wrapping_add(1);
         self.transcript.messages.clear();
         self.transcript.message_retained_bytes.clear();
         self.transcript.retained_history_bytes = 0;
@@ -340,6 +345,7 @@ impl super::App {
     }
 
     pub(crate) fn recompute_message_retained_bytes(&mut self, idx: usize) {
+        self.transcript.revision = self.transcript.revision.wrapping_add(1);
         self.ensure_history_retention_accounting();
         let Some(msg) = self.transcript.messages.get(idx) else {
             return;
@@ -616,6 +622,7 @@ impl super::App {
             }
         }
         self.transcript.messages = retained;
+        self.transcript.revision = self.transcript.revision.wrapping_add(1);
         self.transcript.message_retained_bytes = retained_bytes;
         self.turn.assistant_message_idx = remapped_active_turn_owner;
         self.remap_turn_notice_refs_after_message_drop(&old_to_new);

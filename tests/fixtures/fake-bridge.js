@@ -13,11 +13,20 @@ const INTERVAL_MS = Number(process.env.FAKE_BRIDGE_INTERVAL_MS ?? 15);
 // Held turns are released after tests exercise input or rendering, rather than
 // racing a fixed reply duration. The resize-code scenario holds the second turn.
 const SCENARIO = process.env.FAKE_BRIDGE_SCENARIO ?? 'stream';
+let managedTag = null;
+let managedDeleted = false;
+function managedSessions() {
+  return [
+    ...(!managedDeleted ? [{ session_id: 'saved-session', summary: 'Saved project work', last_modified_ms: 2, file_size_bytes: 1, cwd, git_branch: null, custom_title: 'Saved project work', first_prompt: null, tag: managedTag }] : []),
+    { session_id: SESSION, summary: 'Current conversation', last_modified_ms: 1, file_size_bytes: 1, cwd, git_branch: null, custom_title: 'Current conversation', first_prompt: null, tag: null },
+  ];
+}
 const resizeCodeScenario = SCENARIO === 'resize-code';
 const activityScenario = SCENARIO.startsWith('hold-activity');
 const RELEASE_FILE = process.env.FAKE_BRIDGE_RELEASE_FILE;
 const JOURNAL = process.env.FAKE_BRIDGE_JOURNAL;
 let replyNumber = 0;
+let reloads = 0;
 let active = null;
 const pending = [];
 
@@ -339,6 +348,31 @@ function sessionNameReply(message) {
   if (command === '/rename') update({ type: 'session_title_update', title: args.join(' ') });
 }
 
+// Hook activity as the real bridge sends it: SessionStart hooks right after the
+// connect event, stamped by when the bridge saw each message. The slow hook
+// started 1.2 s before the stamp that ends it; the fast one took 40 ms.
+function hookActivity(id, event, name, phase, observedAtMs, extra = {}) {
+  send({ event: 'session_update', session_id: SESSION, update: {
+    type: 'hook_activity', hook_id: id, hook_name: name, hook_event: event, phase, observed_at_ms: observedAtMs, ...extra,
+  } });
+}
+function startupHooks() {
+  const end = Date.now() - 5;
+  hookActivity('ss-slow', 'SessionStart', 'SessionStart:startup', 'started', end - 1200);
+  hookActivity('ss-fast', 'SessionStart', 'SessionStart:compact', 'started', end - 1000);
+  hookActivity('ss-fast', 'SessionStart', 'SessionStart:compact', 'finished', end - 960, { outcome: 'success', exit_code: 0, output: 'ok' });
+  hookActivity('ss-slow', 'SessionStart', 'SessionStart:startup', 'finished', end, { outcome: 'success', exit_code: 0, output: 'warmed' });
+}
+function hookActivityReply(message) {
+  const update = update => send({ event: 'session_update', session_id: SESSION, update });
+  send({ event: 'user_message_started', session_id: SESSION, message_uuid: message.message_uuid, source: 'command_lifecycle' });
+  const at = Date.now();
+  hookActivity('pre-deny', 'PreToolUse', 'PreToolUse:Bash', 'started', at);
+  hookActivity('pre-deny', 'PreToolUse', 'PreToolUse:Bash', 'finished', at + 30, { outcome: 'error', exit_code: 2, output: 'blocked by fixture policy' });
+  update({ type: 'agent_message_chunk', content: { type: 'text', text: 'Hook turn done' } });
+  send({ event: 'turn_complete', session_id: SESSION });
+}
+
 readline
   .createInterface({ input: process.stdin })
   .on('line', raw => {
@@ -383,17 +417,34 @@ readline
           mode: null,
           fast_mode_state: 'off',
           fast_mode_disabled_reason: null,
-          history_updates: renderCorpusScenario ? renderCorpus.history : SCENARIO === 'background-resume' ? [
+          history_updates: SCENARIO === 'search-retained' ? [
+            { type: 'user_message_chunk', content: { type: 'text', text: 'Find delta in the first prompt' }, source_message_uuid: 'search-user' },
+            { type: 'agent_message_chunk', content: { type: 'text', text: 'A later delta appears here' }, source_message_uuid: 'search-assistant' },
+          ] : renderCorpusScenario ? renderCorpus.history : SCENARIO === 'background-resume' ? [
             { type: 'user_message_chunk', content: { type: 'text', text: 'Resumed background launch' }, source_message_uuid: 'saved-user' },
             { type: 'tool_call', tool_call: { tool_call_id: 'background-primary', title: 'PRIMARY_TASK', kind: 'execute', status: 'in_progress', content: [], raw_input: { command: 'PRIMARY_TASK' }, locations: [], meta: { claudeCode: { toolName: 'Bash' } } } },
             { type: 'tool_call_update', tool_call_update: { tool_call_id: 'background-primary', fields: { status: 'detached' } } },
           ] : null,
           restored_input: null,
         });
+        if (SCENARIO.startsWith('resume-large') && message.command === 'create_session') {
+          send({ event: 'sessions_listed', sessions: [{
+            session_id: 'saved-large', summary: 'Large saved conversation',
+            last_modified_ms: Date.now(), file_size_bytes: 2 * 1024 * 1024,
+            cwd, git_branch: 'main', custom_title: 'Large saved conversation',
+          }] });
+        }
+        if (SCENARIO === 'session-management') send({ event: 'sessions_listed', sessions: managedSessions() });
         if (SCENARIO.startsWith('resize-') || SCENARIO.startsWith('background-')) send({ event: 'status_snapshot', session_id: SESSION, account: { subscription_type: 'Fixture subscription' } });
         if (SCENARIO === 'session-accent') {
           send({ event: 'session_update', session_id: SESSION, update: { type: 'available_commands_update', commands: [
             { name: 'color', description: 'Set the session color', input_hint: '<color>' },
+          ] } });
+        }
+        if (SCENARIO === 'session-agents') {
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'task_state_update', source: 'task_lifecycle', is_complete_snapshot: false, removed_task_ids: [], tasks: [
+            { task_id: 'agent-running', subject: 'Review parser', status: 'in_progress', owner: null, blocks: [], blocked_by: [], metadata: { subagent_type: 'general-purpose' } },
+            { task_id: 'agent-completed', subject: 'Inspect docs', status: 'completed', owner: null, blocks: [], blocked_by: [], metadata: { subagent_type: 'general-purpose', terminal_status: 'completed' } },
           ] } });
         }
         if (SCENARIO === 'session-name') {
@@ -402,6 +453,14 @@ readline
             { name: 'rename', description: 'Rename the current conversation', input_hint: '[name]' },
           ] } });
         }
+        if (SCENARIO === 'native-diff') {
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call', tool_call: {
+            tool_call_id: 'session-edit', title: 'Edited session-only.txt', kind: 'edit', status: 'completed',
+            content: [{ type: 'diff', old_path: 'session-only.txt', new_path: 'session-only.txt', old: 'before\n', new: 'Session line\n' }],
+            raw_input: { file_path: 'session-only.txt' }, locations: [], meta: { claudeCode: { toolName: 'Edit' } },
+          } } });
+        }
+        if (SCENARIO === 'hook-activity') startupHooks();
         if (SCENARIO === 'disconnect-during-auth' && message.command === 'create_session') {
           const timer = setInterval(() => {
             if (fs.existsSync(RELEASE_FILE)) {
@@ -412,7 +471,38 @@ readline
           }, INTERVAL_MS);
         }
         break;
+      case 'list_session_agents':
+        send({ event: 'session_agents_result', session_id: SESSION, request_id: message.request_id, action: message.command,
+          agent_ids: ['agent-running', 'agent-completed'], messages: [] });
+        break;
+      case 'get_subagent_messages':
+        send({ event: 'session_agents_result', session_id: SESSION, request_id: message.request_id, action: message.command,
+          agent_id: message.agent_id, agent_ids: [], messages: [
+            { role: 'user', text: 'Inspect ' + message.agent_id },
+            { role: 'assistant', text: message.agent_id === 'agent-running' ? 'Parser path checked' : 'Docs path checked' },
+          ] });
+        break;
+      case 'stop_subagent_task':
+        send({ event: 'session_agents_result', session_id: SESSION, request_id: message.request_id, action: message.command,
+          agent_id: message.agent_id, agent_ids: [], messages: [] });
+        send({ event: 'session_update', session_id: SESSION, update: { type: 'task_state_update', source: 'task_lifecycle', is_complete_snapshot: false, removed_task_ids: [], tasks: [
+          { task_id: message.agent_id, subject: 'Review parser', status: 'completed', owner: null, blocks: [], blocked_by: [], metadata: { subagent_type: 'general-purpose', terminal_status: 'stopped' } },
+        ] } });
+        break;
       case 'prompt':
+        if (SCENARIO.startsWith('resume-large') && message.chunks?.some(chunk => chunk.value === '/compact')) {
+          send({ event: 'user_message_started', session_id: SESSION, message_uuid: message.message_uuid, source: 'command_lifecycle' });
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'compaction_update', phase: 'started' } });
+          send({ event: 'session_update', session_id: SESSION, update: SCENARIO === 'resume-large-fail'
+            ? { type: 'compaction_update', phase: 'finished', result: 'failed', error_code: 'unknown', error: 'fixture compaction failed' }
+            : { type: 'compaction_update', phase: 'finished', result: 'success' } });
+          send({ event: 'turn_complete', session_id: SESSION });
+          break;
+        }
+        if (SCENARIO === 'hook-activity') {
+          hookActivityReply(message);
+          break;
+        }
         if (SCENARIO === 'session-name') {
           sessionNameReply(message);
           break;
@@ -432,6 +522,51 @@ readline
           pending.push(message.message_uuid);
           send({ event: 'user_message_queued', session_id: SESSION, message_uuid: message.message_uuid });
         } else streamReply(message.message_uuid);
+        break;
+      case 'tag_session':
+      case 'delete_session': {
+        if (SCENARIO !== 'session-management') throw new Error('Unexpected session mutation');
+        const operation = message.command === 'tag_session' ? 'tag' : 'delete';
+        if (message.session_id !== 'saved-session' || managedDeleted || message.tag === 'fail') {
+          send({ event: 'session_mutation_result', request_id: message.request_id, session_id: message.session_id, operation, error: 'Fixture refused mutation' });
+          break;
+        }
+        if (operation === 'tag') managedTag = message.tag;
+        else managedDeleted = true;
+        send({ event: 'session_mutation_result', request_id: message.request_id, session_id: message.session_id, operation, sessions: managedSessions() });
+        break;
+      }
+      case 'get_working_diff':
+        send({ event: 'working_diff', session_id: SESSION, request_id: message.request_id, files: SCENARIO === 'native-diff'
+          ? [{ path: 'tracked file.txt', status: 'MM', diff: 'diff --git a/tracked file.txt b/tracked file.txt\n--- a/tracked file.txt\n+++ b/tracked file.txt\n@@ -1 +1 @@\n-before\n+Working line\n' }]
+          : [], });
+        break;
+      case 'export_session_history': {
+        // The bridge's resume translation of a saved session, split into two chunks.
+        const tool = { tool_call_id: 'bash-1', title: 'ls', kind: 'execute', status: 'in_progress', content: [], raw_input: { command: 'ls -la' }, locations: [], meta: { claudeCode: { toolName: 'Bash' } } };
+        const edit = { tool_call_id: 'edit-1', title: 'Edit', kind: 'edit', status: 'in_progress', content: [{ type: 'diff', old_path: 'notes.txt', new_path: 'notes.txt', old: 'keep\nold\n', new: 'keep\nnew\n' }], raw_input: { file_path: 'notes.txt' }, locations: [], meta: { claudeCode: { toolName: 'Edit' } } };
+        const chunks = [
+          [
+            { type: 'user_message_chunk', content: { type: 'text', text: 'List the files' }, source_message_uuid: 'u1' },
+            { type: 'agent_message_chunk', content: { type: 'text', text: 'Listing now.' }, source_message_uuid: 'a1' },
+            { type: 'tool_call', tool_call: tool },
+            { type: 'tool_call_update', tool_call_update: { tool_call_id: 'bash-1', fields: { status: 'completed', raw_output: '\u001b[32mREADME.md\u001b[0m\nsrc', content: [{ type: 'content', content: { type: 'text', text: '\u001b[32mREADME.md\u001b[0m\nsrc' } }] } } },
+          ],
+          [
+            { type: 'agent_message_chunk', content: { type: 'text', text: 'Fixing the note.' }, source_message_uuid: 'a2' },
+            { type: 'tool_call', tool_call: edit },
+            { type: 'tool_call_update', tool_call_update: { tool_call_id: 'edit-1', fields: { status: 'completed' } } },
+          ],
+        ];
+        chunks.forEach((updates, index) => send({ event: 'session_history_export', session_id: SESSION, request_id: message.request_id, updates, last: index === chunks.length - 1, omitted_updates: 0 }));
+        break;
+      }
+      case 'reload_skills_and_styles':
+        // First reload succeeds; the second fails the way the bridge reports an SDK error.
+        reloads++;
+        send(reloads === 1
+          ? { event: 'skills_and_styles_reloaded', session_id: SESSION, skills: ['deploy', 'lint'], output_styles: ['default', 'Explanatory', 'mine'] }
+          : { event: 'slash_error', session_id: SESSION, message: 'failed to reload skills and output styles: style directory unreadable' });
         break;
       case 'inspect_settings':
         if (notificationScenario) {

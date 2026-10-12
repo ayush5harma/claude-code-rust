@@ -1,5 +1,6 @@
 import {
   getSessionMessages,
+  getSessionInfo,
   listSessions,
   renameSession,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -13,7 +14,8 @@ import {
   slashError,
   writeEvent,
 } from "./events.js";
-import { getSessionTranscriptMessages, mapSessionMessagesToUpdates } from "./history.js";
+import { getSessionTranscriptMessages, mapSdkSessionInfo, mapSessionMessagesToUpdates } from "./history.js";
+import { restoreSessionTitleAfterResume } from "./session_title.js";
 import { parseLaunchConfig } from "./launch_config.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import {
@@ -100,9 +102,7 @@ async function resumeAt(
   let candidate: import("./session_lifecycle.js").SessionState | undefined;
   try {
     const sdkSessions = await listSessions(currentSessionListOptions());
-    const matched = sdkSessions.find(
-      (entry) => entry.sessionId === command.session_id,
-    );
+    const matched = sdkSessions.find((entry) => entry.sessionId === command.session_id);
     if (!matched) {
       emitSessionResumeFailed(
         command.session_id,
@@ -267,10 +267,21 @@ async function resume(
     sessionId: command.session_id,
   });
   try {
-    const sdkSessions = await listSessions(currentSessionListOptions());
-    const matched = sdkSessions.find(
-      (entry) => entry.sessionId === command.session_id,
+    const { limit: _limit, ...listOptions } = currentSessionListOptions();
+    const sdkSessions = await listSessions(listOptions);
+    const listedId = sdkSessions.find((entry) => entry.sessionId === command.session_id);
+    const exactId = listedId ?? (/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(command.session_id)
+      ? await getSessionInfo(command.session_id, listOptions.dir ? { dir: listOptions.dir } : undefined)
+      : undefined);
+    const titleMatches = exactId ? [] : sdkSessions.filter(
+      (entry) => mapSdkSessionInfo(entry).summary === command.session_id,
     );
+    if (titleMatches.length > 1) {
+      const choices = titleMatches.slice(0, 5).map((entry) => entry.sessionId).join(", ");
+      slashError(command.session_id, `ambiguous session title: ${command.session_id}; use a session ID (${choices}${titleMatches.length > 5 ? ", ..." : ""})`, requestId);
+      return;
+    }
+    const matched = exactId ?? titleMatches[0];
     if (!matched) {
       bridgeLogger.warn({
         target: LOG_TARGETS.APP_SESSION,
@@ -289,10 +300,11 @@ async function resume(
       return;
     }
     setSessionListingDir(matched.cwd ?? process.cwd());
+    const resolvedCommand = { ...command, session_id: matched.sessionId };
     const launchConfig = parseLaunchConfig(command.launch_settings);
-    const renameError = await renameResumedSession(command, matched.cwd, requestId);
+    const renameError = await renameResumedSession(resolvedCommand, matched.cwd, requestId);
     const historyMessages = await getSessionTranscriptMessages(
-      command.session_id,
+      matched.sessionId,
       matched.cwd
         ? { dir: matched.cwd }
         : {},
@@ -306,7 +318,7 @@ async function resume(
       message: "session resume history loaded",
       outcome: "success",
       ...(requestId ? { requestId } : {}),
-      sessionId: command.session_id,
+      sessionId: matched.sessionId,
       fields: {
         history_message_count: historyMessages.length,
         history_update_count: resumeUpdates.length,
@@ -315,7 +327,7 @@ async function resume(
     });
     const session = await createSession({
       cwd: matched.cwd ?? process.cwd(),
-      resume: command.session_id,
+      resume: matched.sessionId,
       ...(command.launch_settings.fork_session ? { forkSession: true } : {}),
       launchSettings: command.launch_settings,
       launchConfig,
@@ -339,6 +351,10 @@ async function resume(
           ...(requestId ? { requestId } : {}),
         },
       ];
+    }
+    await awaitSessionInitialization(session);
+    if (!command.launch_settings.fork_session) {
+      await restoreSessionTitleAfterResume(session, command.launch_settings.name ?? matched.customTitle);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

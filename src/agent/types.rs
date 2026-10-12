@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub use super::model::UltracodeState;
+use super::model::{HookOutcome, HookPhase};
 
 /// Startup reasons are an open SDK vocabulary; unknown tokens must survive the wire.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -577,6 +578,20 @@ pub enum ToolCallContent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum SessionAgentsAction {
+    ListSessionAgents,
+    GetSubagentMessages,
+    StopSubagentTask,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentMessage {
+    pub role: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
     Pending,
     InProgress,
@@ -727,6 +742,16 @@ pub enum SessionUpdate {
     },
     SessionColorUpdate {
         color: String,
+    },
+    HookActivity {
+        hook_id: String,
+        hook_name: String,
+        hook_event: String,
+        phase: HookPhase,
+        outcome: Option<HookOutcome>,
+        exit_code: Option<i64>,
+        output: Option<String>,
+        observed_at_ms: u64,
     },
     RuntimeSessionStateUpdate {
         state: RuntimeSessionState,
@@ -1022,6 +1047,7 @@ pub struct SessionListEntry {
     pub git_branch: Option<String>,
     pub custom_title: Option<String>,
     pub first_prompt: Option<String>,
+    pub tag: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

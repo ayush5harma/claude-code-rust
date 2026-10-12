@@ -28,6 +28,8 @@ pub struct LoginHint {
 pub enum PendingCommandAck {
     CurrentMode,
     CurrentModel,
+    SkillsAndStylesReload,
+    HistoryExport,
     FastMode,
     Ultracode,
     ConfigOption { option_id: String },
@@ -69,6 +71,7 @@ pub struct RecentSessionInfo {
     pub git_branch: Option<String>,
     pub custom_title: Option<String>,
     pub first_prompt: Option<String>,
+    pub tag: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -83,6 +86,15 @@ pub struct SessionPickerState {
     pub turn_selected: usize,
     /// Scroll offset for the turn list.
     pub turn_scroll_offset: usize,
+    pub list_revision: u64,
+    pub mutation: Option<Box<SessionPickerMutation>>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionPickerMutation {
+    Tag { session_id: String, revision: u64, draft: String, request_id: Option<String> },
+    Delete { session_id: String, revision: u64, request_id: Option<String> },
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

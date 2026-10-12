@@ -1,7 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use super::super::App;
+use super::super::{App, notices, session};
 use crate::agent::events::ClientEvent;
+use crate::app::{PendingCommandAck, SystemSeverity};
+
+/// The SDK's own `commands_changed` message refreshes the command inventory;
+/// this only acknowledges /reload and says what was re-read.
+fn apply_skills_and_styles_reloaded(app: &mut App, skills: usize, output_styles: usize) {
+    if matches!(app.turn.pending_command_ack, Some(PendingCommandAck::SkillsAndStylesReload)) {
+        session::clear_pending_command(app);
+    }
+    notices::emit_system_notice(
+        app,
+        SystemSeverity::Info,
+        &format!("Reloaded skills ({skills}) and output styles ({output_styles})"),
+    );
+}
 
 pub(super) fn handle(app: &mut App, event: ClientEvent) {
     match event {
@@ -43,6 +57,9 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
                 app.mcp.last_error =
                     Some(format!("Failed to reload MCP server snapshot: {message}"));
             }
+        }
+        ClientEvent::SkillsAndStylesReloaded { session_id: _, skill_names, output_style_names } => {
+            apply_skills_and_styles_reloaded(app, skill_names.len(), output_style_names.len());
         }
         ClientEvent::UsageRefreshStarted { epoch } => {
             if app.session_runtime.session_scope_epoch == epoch {

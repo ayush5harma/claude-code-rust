@@ -69,6 +69,10 @@ fn handle_finished(
             super::push_system_message_with_severity(app, Some(SystemSeverity::Error), &message);
         }
     }
+    app.startup.compact_first_finished(
+        app.session_runtime.session_id.as_ref().map(model::SessionId::as_str),
+        matches!(result, model::CompactionResult::Success),
+    );
     if !matches!(app.status, super::super::AppStatus::Running | super::super::AppStatus::Thinking) {
         app.turn.activity = None;
     }
@@ -106,6 +110,10 @@ pub(super) fn finish_inferred(app: &mut App, emit_manual_success: bool) {
     if emit_manual_success {
         emit_manual_success_if_needed(app, &active);
     }
+    app.startup.compact_first_finished(
+        app.session_runtime.session_id.as_ref().map(model::SessionId::as_str),
+        emit_manual_success,
+    );
     tracing::debug!(
         target: crate::logging::targets::APP_SESSION,
         event_name = "compaction_finished",

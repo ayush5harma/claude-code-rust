@@ -114,15 +114,23 @@ function commandSessionId(command: BridgeCommand): string | undefined {
     case "set_fast_mode":
     case "generate_session_title":
     case "rename_session":
+    case "tag_session":
+    case "delete_session":
     case "permission_response":
     case "question_response":
     case "elicitation_response":
     case "get_status_snapshot":
     case "get_context_usage":
     case "get_usage":
+    case "list_session_agents":
+    case "get_subagent_messages":
+    case "stop_subagent_task":
+    case "get_working_diff":
     case "get_rewind_targets":
+    case "export_session_history":
     case "rewind":
     case "reload_plugins":
+    case "reload_skills_and_styles":
     case "mcp_status":
     case "mcp_reconnect":
     case "mcp_toggle":
@@ -164,14 +172,22 @@ function commandToolCallId(command: BridgeCommand): string | undefined {
     case "set_fast_mode":
     case "generate_session_title":
     case "rename_session":
+    case "tag_session":
+    case "delete_session":
     case "new_session":
     case "elicitation_response":
     case "get_status_snapshot":
     case "get_context_usage":
     case "get_usage":
+    case "list_session_agents":
+    case "get_subagent_messages":
+    case "stop_subagent_task":
+    case "get_working_diff":
     case "get_rewind_targets":
+    case "export_session_history":
     case "rewind":
     case "reload_plugins":
+    case "reload_skills_and_styles":
     case "mcp_status":
     case "mcp_reconnect":
     case "mcp_toggle":
@@ -212,15 +228,19 @@ function eventToolCallId(event: BridgeEvent): string | undefined {
     case "runtime_reload_completed":
     case "runtime_reload_held":
     case "runtime_reload_failed":
+    case "skills_and_styles_reloaded":
     case "session_replaced":
     case "initialized":
     case "sessions_listed":
+    case "session_mutation_result":
     case "status_snapshot":
     case "settings_result":
     case "interaction_cancelled":
     case "context_usage":
     case "usage_snapshot":
+    case "working_diff":
     case "rewind_targets":
+    case "session_history_export":
     case "rewind_result":
     case "mcp_snapshot":
       return undefined;
@@ -269,13 +289,18 @@ function protocolEventLevel(event: BridgeEvent): LogLevel {
     case "turn_complete":
       return "trace";
     case "sessions_listed":
+    case "session_mutation_result":
     case "status_snapshot":
     case "settings_result":
     case "context_usage":
     case "usage_snapshot":
+    case "session_agents_result":
+    case "working_diff":
     case "rewind_targets":
+    case "session_history_export":
     case "rewind_result":
     case "runtime_reload_completed":
+    case "skills_and_styles_reloaded":
     case "mcp_set_servers_result":
     case "user_message_queued":
     case "user_message_rejected":

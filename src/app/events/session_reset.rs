@@ -66,6 +66,7 @@ pub(super) fn reset_for_conversation(
     app.sdk_inventory.tasks.clear();
     app.focus = super::super::FocusManager::default();
     clear_cached_active_session_title(app);
+    app.session_runtime.hook_runs.clear();
     reset_messages_for_new_session(app, false);
     app.chat_render.reset();
     app.mention = None;
@@ -109,6 +110,7 @@ fn reset_session_identity_state(
     app.pending_user_messages.clear();
     app.bump_session_scope_epoch();
     app.session_runtime.activate_session(session_id);
+    app.session_agents.clear();
     app.session_runtime.current_model = Some(current_model.clone());
     app.session_runtime.mode = mode;
     app.session_runtime.config_options.clear();
