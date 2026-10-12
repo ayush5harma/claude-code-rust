@@ -170,6 +170,17 @@ pub enum BridgeCommand {
     GetRewindTargets {
         session_id: String,
     },
+    ListSessionAgents {
+        session_id: String,
+    },
+    GetSubagentMessages {
+        session_id: String,
+        agent_id: String,
+    },
+    StopSubagentTask {
+        session_id: String,
+        agent_id: String,
+    },
     Rewind {
         session_id: String,
         target_user_message_id: String,
@@ -247,6 +258,9 @@ impl BridgeCommand {
             Self::GetContextUsage { .. } => "get_context_usage",
             Self::GetUsage { .. } => "get_usage",
             Self::GetRewindTargets { .. } => "get_rewind_targets",
+            Self::ListSessionAgents { .. } => "list_session_agents",
+            Self::GetSubagentMessages { .. } => "get_subagent_messages",
+            Self::StopSubagentTask { .. } => "stop_subagent_task",
             Self::Rewind { .. } => "rewind",
             Self::ReloadPlugins { .. } => "reload_plugins",
             Self::GetMcpSnapshot { .. } => "get_mcp_snapshot",
@@ -288,6 +302,9 @@ impl BridgeCommand {
             | Self::GetContextUsage { session_id }
             | Self::GetUsage { session_id }
             | Self::GetRewindTargets { session_id }
+            | Self::ListSessionAgents { session_id }
+            | Self::GetSubagentMessages { session_id, .. }
+            | Self::StopSubagentTask { session_id, .. }
             | Self::Rewind { session_id, .. }
             | Self::ReloadPlugins { session_id, .. }
             | Self::GetMcpSnapshot { session_id }
@@ -333,6 +350,9 @@ impl BridgeCommand {
             | Self::GetContextUsage { .. }
             | Self::GetUsage { .. }
             | Self::GetRewindTargets { .. }
+            | Self::ListSessionAgents { .. }
+            | Self::GetSubagentMessages { .. }
+            | Self::StopSubagentTask { .. }
             | Self::Rewind { .. }
             | Self::ReloadPlugins { .. }
             | Self::GetMcpSnapshot { .. }
@@ -541,6 +561,14 @@ pub enum BridgeEvent {
         targets: Vec<types::RewindTarget>,
         error: Option<String>,
     },
+    SessionAgentsResult {
+        session_id: String,
+        action: types::SessionAgentsAction,
+        agent_id: Option<String>,
+        agent_ids: Vec<String>,
+        messages: Vec<types::SubagentMessage>,
+        error: Option<String>,
+    },
     RewindResult {
         session_id: String,
         restore_mode: types::RewindRestoreMode,
@@ -599,6 +627,7 @@ impl BridgeEvent {
             Self::ContextUsage { .. } => "context_usage",
             Self::UsageSnapshot { .. } => "usage_snapshot",
             Self::RewindTargets { .. } => "rewind_targets",
+            Self::SessionAgentsResult { .. } => "session_agents_result",
             Self::RewindResult { .. } => "rewind_result",
             Self::McpSnapshot { .. } => "mcp_snapshot",
         }
@@ -637,6 +666,7 @@ impl BridgeEvent {
             | Self::ContextUsage { session_id, .. }
             | Self::UsageSnapshot { session_id, .. }
             | Self::RewindTargets { session_id, .. }
+            | Self::SessionAgentsResult { session_id, .. }
             | Self::RewindResult { session_id, .. }
             | Self::McpSnapshot { session_id, .. } => Some(session_id.as_str()),
             Self::AuthRequired { .. }
@@ -685,6 +715,7 @@ impl BridgeEvent {
             | Self::ContextUsage { .. }
             | Self::UsageSnapshot { .. }
             | Self::RewindTargets { .. }
+            | Self::SessionAgentsResult { .. }
             | Self::RewindResult { .. }
             | Self::McpSnapshot { .. } => None,
         }
