@@ -15,6 +15,7 @@ pub(crate) enum AppSlashCommand {
     Hooks,
 
     Copy,
+    Search,
     Diff,
     Docs,
     Agent,
@@ -157,6 +158,14 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         usage: "Usage: /copy",
         short_description: "Copy last response",
         long_description: "Copy the last finished assistant response or choose a code block. Configure Skip the /copy picker to copy the full response directly.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Search,
+        name: "/search",
+        usage: "Usage: /search [query]",
+        short_description: "Search retained transcript",
+        long_description: "Search retained user, assistant, and visible tool text. Archived history is excluded.",
         args: NO_ARGS,
     },
     AppSlashCommandSpec {
@@ -365,6 +374,7 @@ impl AppSlashCommand {
             Self::Hooks => "/hooks",
 
             Self::Copy => "/copy",
+            Self::Search => "/search",
             Self::Diff => "/diff",
             Self::Docs => "/docs",
             Self::Agent => "/agent",
@@ -436,6 +446,7 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
+            Self::Search => SubmissionClass::Fullscreen,
             Self::Docs => match args {
                 ["mode" | "models" | "shortcuts" | "commands" | "agents"] => {
                     SubmissionClass::Informational
@@ -483,13 +494,10 @@ impl AppSlashCommand {
                 }
             }
             Self::Export => SubmissionClass::TurnExclusive,
-            Self::Resume => {
-                if args.len() <= 1 {
-                    SubmissionClass::TurnExclusive
-                } else {
-                    SubmissionClass::Invalid
-                }
-            }
+            Self::Resume => match args {
+                [] | [_] => SubmissionClass::TurnExclusive,
+                _ => SubmissionClass::Invalid,
+            },
             Self::Rewind => {
                 if matches!(args, [_, "both" | "conversation" | "code"]) {
                     SubmissionClass::TurnExclusive

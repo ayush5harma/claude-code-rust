@@ -803,6 +803,30 @@ fn shutdown_force_interrupt_can_stop_pending_transcript_recovery() {
 }
 
 #[test]
+fn transcript_search_navigates_retained_matches_from_key_and_slash_command() {
+    let mut test = TerminalTest::start_with_options(
+        "search-retained",
+        3,
+        None,
+        &["--resume", "f96f66ae-b5d4-4bc2-b5a3-08336cf4e850"],
+        false,
+    );
+    test.send(b"\x06");
+    test.wait_screen("Transcript search");
+    test.paste("delta");
+    test.wait_screen_with("Match 1 of 2", &["User: Find delta"]);
+    test.send(b"\r");
+    test.wait_screen_with("Match 2 of 2", &["Claude: A later delta"]);
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+    test.submit_command("/search delta");
+    test.wait_screen_with("Match 1 of 2", &["User: Find delta"]);
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+    test.shutdown();
+}
+
+#[test]
 fn interactive_cli_startup_sends_overrides_and_initial_prompt_without_saving_them() {
     let common =
         ["--model", "opus", "--effort", "max", "--permission-mode", "plan", "--agent", "reviewer"];

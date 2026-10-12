@@ -32,6 +32,7 @@ mod permissions;
 pub(crate) mod plugins;
 pub(crate) mod presentation;
 mod questions;
+pub(crate) mod search;
 mod service_status_check;
 pub(crate) mod session_agents;
 pub(crate) mod session_picker;

@@ -9,6 +9,7 @@ use super::render_budget;
 #[derive(Default)]
 pub struct Transcript {
     pub messages: Vec<ChatMessage>,
+    pub(crate) revision: u64,
     /// Cached approximate retained bytes for each message, parallel to `messages`.
     pub(super) message_retained_bytes: Vec<usize>,
     /// Rolling total of `message_retained_bytes`.

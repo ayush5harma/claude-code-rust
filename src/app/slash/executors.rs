@@ -53,6 +53,10 @@ pub(crate) fn try_handle_submission(app: &mut App, submission: &ResolvedSubmissi
             crate::app::copy::open(app);
             true
         }
+        AppSlashCommand::Search => {
+            crate::app::search::open(app, &args.join(" "));
+            true
+        }
         AppSlashCommand::Diff => {
             crate::app::diff_view::open(app);
             true
