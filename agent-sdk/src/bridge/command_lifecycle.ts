@@ -287,7 +287,7 @@ async function resume(
       return;
     }
     setSessionListingDir(matched.cwd ?? process.cwd());
-    await renameResumedSession(command, matched.cwd, requestId);
+    const renameError = await renameResumedSession(command, matched.cwd, requestId);
     const historyMessages = await getSessionTranscriptMessages(
       command.session_id,
       matched.cwd
@@ -310,9 +310,10 @@ async function resume(
         stale_session_count: staleSessions.length,
       },
     });
-    await createSession({
+    const session = await createSession({
       cwd: matched.cwd ?? process.cwd(),
       resume: command.session_id,
+      ...(command.launch_settings.fork_session ? { forkSession: true } : {}),
       launchSettings: command.launch_settings,
       ...(resumeUpdates.length > 0 ? { resumeUpdates } : {}),
       connectEvent: hadActiveSession ? "session_replaced" : "connected",
@@ -321,6 +322,20 @@ async function resume(
         ? { sessionsToCloseAfterConnect: staleSessions }
         : {}),
     });
+    if (renameError !== undefined) {
+      // A slash error ends the app's pending resume, so it is sent once the session connects.
+      session.deferredBridgeEvents = [
+        ...(session.deferredBridgeEvents ?? []),
+        {
+          event: {
+            event: "slash_error",
+            session_id: session.sessionId,
+            message: `failed to rename session: ${renameError}`,
+          },
+          ...(requestId ? { requestId } : {}),
+        },
+      ];
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     bridgeLogger.error({
@@ -342,20 +357,23 @@ async function resume(
 
 /**
  * Apply a launch-time name to the session being resumed, before it connects, so the
- * connect-time title read already reports it. A rename failure is reported without
- * blocking the resume: the conversation matters more than its label.
+ * connect-time title read already reports it. A fork is new and takes the SDK title option
+ * instead (buildQueryOptions), leaving the original's title alone. A rename failure does
+ * not block the resume, because the conversation matters more than its label; its message
+ * is returned for reporting after connect.
  */
 async function renameResumedSession(
   command: Extract<LifecycleCommand, { command: "resume_session" }>,
   cwd: string | undefined,
   requestId: string | undefined,
-): Promise<void> {
+): Promise<string | undefined> {
   const name = command.launch_settings.name;
-  if (name === undefined) {
-    return;
+  if (name === undefined || command.launch_settings.fork_session) {
+    return undefined;
   }
   try {
     await renameSession(command.session_id, name, cwd ? { dir: cwd } : undefined);
+    return undefined;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     bridgeLogger.warn({
@@ -367,7 +385,7 @@ async function renameResumedSession(
       sessionId: command.session_id,
       fields: { error_message: message },
     });
-    slashError(command.session_id, `failed to rename session: ${message}`, requestId);
+    return message;
   }
 }
 

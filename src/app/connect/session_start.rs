@@ -58,6 +58,7 @@ pub(crate) fn session_launch_settings_for_reason(
                 effort: options.and_then(|options| options.effort),
                 agent: options.and_then(|options| options.agent.clone()),
                 name: options.and_then(|options| options.name.clone()),
+                fork_session: options.is_some_and(|options| options.fork_session),
                 config,
             }
         }

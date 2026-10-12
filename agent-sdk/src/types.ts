@@ -732,6 +732,8 @@ export interface SessionLaunchSettings {
   effort?: EffortLevel;
   agent?: string;
   name?: string;
+  /** Resume under a new session ID; ignored by a launch that resumes nothing. */
+  fork_session?: boolean;
   /** Absolute paths, resolved by the app. */
   additional_directories?: string[];
   /** Unparsed JSON text of a settings object; parsed by launch_config.ts. */

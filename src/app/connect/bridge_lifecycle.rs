@@ -1099,6 +1099,20 @@ mod launch_command_tests {
     }
 
     #[test]
+    fn fork_session_reaches_resumed_and_continued_sessions() {
+        let resumed = startup_command(&["claude-rs", "-r", "session-1", "--fork-session"]);
+        assert_eq!(resumed["command"], "resume_session");
+        assert_eq!(resumed["launch_settings"], serde_json::json!({ "fork_session": true }));
+
+        let continued = startup_command(&["claude-rs", "-c", "--fork-session", "-n", "Branch"]);
+        assert_eq!(continued["continue_session"], true);
+        assert_eq!(
+            continued["launch_settings"],
+            serde_json::json!({ "fork_session": true, "name": "Branch" })
+        );
+    }
+
+    #[test]
     fn settings_file_text_and_inline_json_reach_the_bridge_unparsed() {
         let project = tempfile::tempdir().expect("project");
         let file_text = "{ \"spinnerTipsEnabled\": false }\n";

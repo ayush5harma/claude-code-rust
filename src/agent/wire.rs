@@ -17,6 +17,8 @@ pub struct SessionLaunchSettings {
     pub agent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fork_session: bool,
     /// Boxed so the session commands that carry launch settings stay small enough for
     /// clippy's `large_futures` limit in futures that hold a command across an await.
     #[serde(flatten)]
@@ -31,6 +33,7 @@ impl SessionLaunchSettings {
             && self.effort.is_none()
             && self.agent.is_none()
             && self.name.is_none()
+            && !self.fork_session
             && self.config.is_empty()
     }
 }
@@ -1699,6 +1702,7 @@ mod tests {
             effort: Some(super::super::model::EffortLevel::Max),
             agent: Some("reviewer".to_owned()),
             name: Some("Release prep".to_owned()),
+            fork_session: true,
             config: Box::new(super::SessionConfig {
                 additional_directories: vec!["/work/shared".to_owned()],
                 settings: Some(r#"{"model":"haiku"}"#.to_owned()),
@@ -1713,7 +1717,8 @@ mod tests {
             json,
             serde_json::json!({
                 "model": "haiku", "permission_mode": "plan", "effort": "max", "agent": "reviewer",
-                "name": "Release prep", "additional_directories": ["/work/shared"],
+                "name": "Release prep", "fork_session": true,
+                "additional_directories": ["/work/shared"],
                 "settings": "{\"model\":\"haiku\"}", "mcp_configs": ["{\"mcpServers\":{}}"],
                 "strict_mcp_config": true, "system_prompt": "You are a release bot.",
                 "append_system_prompt": "End with DONE."

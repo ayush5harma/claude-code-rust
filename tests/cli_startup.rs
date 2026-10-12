@@ -90,6 +90,8 @@ fn contradictory_or_invalid_startup_arguments_are_rejected() {
         vec!["claude-rs", "--append-system-prompt", "a", "--append-system-prompt-file", "a.md"],
         vec!["claude-rs", "--system-prompt", ""],
         vec!["claude-rs", "doctor", "--append-system-prompt", "a"],
+        vec!["claude-rs", "--fork-session"],
+        vec!["claude-rs", "--fork-session", "explain this project"],
     ] {
         assert!(
             Cli::try_parse_from(&args).and_then(|cli| cli.validate()).is_err(),

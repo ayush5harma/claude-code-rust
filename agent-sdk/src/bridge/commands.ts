@@ -256,6 +256,7 @@ function optionalLaunchSettings(
   const agent = optionalString(parsed, "agent", `${context}.${key}`);
   const effort = parsed.effort == null ? undefined : expectEffortLevel(parsed, "effort", `${context}.${key}`);
   const name = optionalString(parsed, "name", `${context}.${key}`)?.trim();
+  const forkSession = optionalBoolean(parsed, "fork_session", `${context}.${key}`);
   const settings = optionalString(parsed, "settings", `${context}.${key}`);
   const mcpConfigs = parsed.mcp_configs == null
     ? []
@@ -272,6 +273,7 @@ function optionalLaunchSettings(
     ...(agent ? { agent } : {}),
     ...(effort !== undefined ? { effort } : {}),
     ...(name ? { name } : {}),
+    ...(forkSession ? { fork_session: true } : {}),
     ...(additionalDirectories.length > 0 ? { additional_directories: additionalDirectories } : {}),
     ...(settings !== undefined ? { settings } : {}),
     ...(mcpConfigs.length > 0 ? { mcp_configs: mcpConfigs } : {}),

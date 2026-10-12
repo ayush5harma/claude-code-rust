@@ -142,6 +142,10 @@ pub struct SessionOptions {
     /// Name the new or resumed session.
     #[arg(long, short = 'n', global = true, value_name = "NAME", value_parser = parse_session_name)]
     pub name: Option<String>,
+
+    /// Resume into a new session ID, leaving the original session unchanged.
+    #[arg(long, global = true)]
+    pub fork_session: bool,
 }
 
 /// Session names are shown in the terminal, so control characters are dropped,
@@ -296,6 +300,7 @@ impl Cli {
             || self.session_options.permission_mode.is_some()
             || self.session_options.agent.is_some()
             || self.session_options.name.is_some()
+            || self.session_options.fork_session
             || !self.session_config.add_dirs.is_empty()
             || self.session_config.settings.is_some()
             || !self.session_config.mcp_configs.is_empty()
@@ -320,6 +325,12 @@ impl Cli {
             return Err(Self::command().error(
                 clap::error::ErrorKind::ArgumentConflict,
                 "interactive startup arguments cannot be combined with this subcommand",
+            ));
+        }
+        if self.session_options.fork_session && !self.startup_launch().resume_or_pick() {
+            return Err(Self::command().error(
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "--fork-session requires --resume, --continue or the resume subcommand",
             ));
         }
         Ok(())
@@ -387,6 +398,12 @@ impl StartupLaunch {
     #[must_use]
     pub fn resume_requested(&self) -> bool {
         matches!(self, Self::ResumeSession { .. } | Self::ContinueSession)
+    }
+
+    /// Whether the launch resumes an existing session, directly or through the picker.
+    #[must_use]
+    pub fn resume_or_pick(&self) -> bool {
+        self.resume_requested() || matches!(self, Self::SessionPicker)
     }
 }
 
@@ -735,6 +752,22 @@ mod tests {
             error.starts_with(&format!("--settings: cannot read {}: ", path.display())),
             "{error}"
         );
+    }
+
+    #[test]
+    fn fork_session_is_accepted_with_every_resume_spelling() {
+        let cases: &[&[&str]] = &[
+            &["claude-rs", "--resume", "--fork-session"],
+            &["claude-rs", "-r", "session-1", "--fork-session"],
+            &["claude-rs", "--continue", "--fork-session"],
+            &["claude-rs", "resume", "--fork-session"],
+            &["claude-rs", "resume", "session-1", "--fork-session"],
+        ];
+        for args in cases {
+            let cli = Cli::try_parse_from(args.iter().copied()).expect("parse");
+            cli.validate().expect("fork with a resume");
+            assert!(cli.session_options.fork_session, "{args:?}");
+        }
     }
 
     #[test]

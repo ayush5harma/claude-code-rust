@@ -614,7 +614,10 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
     }
     export async function getSessionMessages(...args) { return process.env.RESUME_TRANSCRIPT_FIXTURE === "1" ? sdkGetSessionMessages(...args) : []; }
     export async function importSessionToStore(...args) { if (process.env.RESUME_TRANSCRIPT_FIXTURE === "1") await sdkImportSessionToStore(...args); }
-    export async function renameSession(sessionId, title, options) { record({ type: "rename", sessionId, title, options }); }
+    export async function renameSession(sessionId, title, options) {
+      record({ type: "rename", sessionId, title, options });
+      if (process.env.RENAME_FAILURE_FIXTURE === "1") throw new Error("fixture rename failed");
+    }
     const saved = new Map();
     export function query({ prompt, options }) {
       record({ type: "query", cwd: options.cwd, resume: options.resume, model: options.model, effort: options.effort, permissionMode: options.permissionMode, agent: options.agent });
@@ -925,6 +928,51 @@ test("launch name titles a new session and renames a resumed one before it conne
     await cleanup();
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("fork-session resumes under a new id that takes the launch name", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-fork-"));
+  const journal = join(directory, "query-options.jsonl");
+  const cwd = process.cwd();
+  const { bridge, cleanup } = ultracodeFixtureBridge({
+    STARTUP_JOURNAL: journal,
+    STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId: "saved-session", cwd, lastModified: 1 }]),
+  });
+  try {
+    bridge.writeCommand({
+      command: "create_session", cwd, continue_session: true,
+      launch_settings: { fork_session: true, name: "Forked name" },
+    });
+    const connected = await nextMatching(bridge, event => event.event === "connected");
+    const entries = readJournal(journal);
+    const launch = entries.find(entry => entry.type === "launch");
+    assert.equal(launch?.resume, "saved-session");
+    assert.equal(launch?.forkSession, true);
+    assert.equal(launch?.title, "Forked name");
+    assert.equal(typeof launch?.sessionId, "string");
+    assert.notEqual(launch?.sessionId, "saved-session");
+    assert.equal(connected.session_id, launch?.sessionId);
+    assert.equal(entries.some(entry => entry.type === "rename"), false, "the original keeps its title");
+  } finally {
+    await cleanup();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a failed launch rename is reported after the resumed session connects", async () => {
+  const cwd = process.cwd();
+  const { bridge, cleanup } = ultracodeFixtureBridge({
+    RENAME_FAILURE_FIXTURE: "1",
+    STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId: "saved-session", cwd, lastModified: 1 }]),
+  });
+  try {
+    bridge.writeCommand({ command: "resume_session", session_id: "saved-session", launch_settings: { name: "Renamed" } });
+    const outcome = await nextMatching(bridge, event => event.event === "connected" || event.event === "slash_error");
+    assert.equal(outcome.event, "connected");
+    const error = await nextMatching(bridge, event => event.event === "slash_error");
+    assert.equal(error.session_id, "saved-session");
+    assert.equal(error.message, "failed to rename session: fixture rename failed");
+  } finally { await cleanup(); }
 });
 
 test("session configuration reaches the query options of created, replaced and resumed sessions", async () => {

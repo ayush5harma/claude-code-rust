@@ -60,7 +60,16 @@ claude-rs -n "Release prep"
 claude-rs --continue --name "Release prep, day two"
 ```
 
-`-n, --name` names the initial session. A new session takes the name as its title; a resumed or continued session is renamed before it connects, through the same SDK rename the Status tab uses. Control characters are removed, and a name with no visible characters is rejected. The SDK reports a new session's title after its first turn, so the Status tab shows the name from then on. Sessions started later inside the TUI are not renamed.
+`-n, --name` names the initial session. A new or forked session takes the name as its title; a resumed or continued session is renamed before it connects, through the same SDK rename the Status tab uses. Control characters are removed, and a name with no visible characters is rejected. The SDK reports a new session's title after its first turn, so the Status tab shows the name from then on. Sessions started later inside the TUI are not renamed.
+
+Branch from an existing conversation:
+
+```bash
+claude-rs --continue --fork-session
+claude-rs -r <session_id> --fork-session -n "Try the other approach"
+```
+
+`--fork-session` requires `--resume`, `--continue` or the `resume` subcommand. The resumed history continues under a new session ID, which the app shows and uses from then on, including the resume hint after exit; the original session is left as it was. Like `--name`, it applies only to the initial session.
 
 Configure every session the process starts:
 
@@ -124,6 +133,7 @@ The installed `claude-rs --help` command exposes these options; the session opti
 | `--permission-mode <MODE>` | Set the initial session permission mode without changing saved preferences. |
 | `--agent <NAME>` | Select the main-thread agent for the initial session. |
 | `-n, --name <NAME>` | Name the initial new or resumed session. |
+| `--fork-session` | Resume into a new session ID, leaving the original session unchanged. |
 | `--add-dir <DIR>` | Let Claude access another directory in every session; repeatable. |
 | `--settings <FILE-OR-JSON>` | Apply a settings file or inline JSON object as the flag-settings layer of every session. |
 | `--mcp-config <FILE-OR-JSON>` | Add the MCP servers of a config file or inline JSON object to every session; repeatable. |
