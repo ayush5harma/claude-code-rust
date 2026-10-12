@@ -218,7 +218,6 @@ impl ChatTerminalSession {
         )
     }
 
-    #[allow(clippy::too_many_lines)]
     fn draw_incremental(
         &mut self,
         app: &mut App,
@@ -232,29 +231,11 @@ impl ChatTerminalSession {
         let composer = Self::build_composer_surface(app, width);
         let mut history_plan =
             self.prepare_history_flush(serialized_rows, width, base_excluded_ids);
-        // Reading chooses the visible source window independently of restoring
-        // terminal history. Confirmed and queued IDs still prevent duplicate inserts.
-        if app.chat_render.viewport.is_reading() {
-            history_plan.live_rows = serialized_rows.rows().to_vec();
-            history_plan.excluded_rows = 0;
-        }
+        let frame_plan =
+            plan_chat_frame(app, serialized_rows, &mut history_plan, &composer, terminal_height);
         let live_rows = history_plan.live_rows.as_slice();
-        let (requested_layout_plan, layout_plan) =
-            viewport_layout(app, serialized_rows, live_rows, &composer, terminal_height);
-        let visible_activity_rows =
-            layout_plan.activity_window.slice(&composer.activity_rows).to_vec();
-        let visible_hint_rows = layout_plan.hint_visible_rows(&composer.hint_rows).to_vec();
-        let visible_btw_rows = layout_plan.btw_visible_rows(&composer.btw_rows).to_vec();
-        let visible_editor_rows = composer.editor_visible_rows(layout_plan.editor_height).to_vec();
-        let visible_footer_rows = layout_plan.footer_visible_rows(&composer.footer_rows).to_vec();
-        let composer_preview_rows = composer.preview_rows(
-            &visible_activity_rows,
-            &visible_hint_rows,
-            &visible_btw_rows,
-            &visible_editor_rows,
-            &visible_footer_rows,
-        );
-        let visible_composer_row_count = layout_plan.visible_composer_len();
+        let requested_layout_plan = frame_plan.requested_layout;
+        let layout_plan = frame_plan.layout;
 
         log_prepared_draw(&PreparedDrawLog {
             app,
@@ -262,14 +243,13 @@ impl ChatTerminalSession {
             live_rows,
             layout_plan,
             composer: &composer,
-            visible_composer_row_count,
-            composer_preview_rows: &composer_preview_rows,
+            visible_composer_row_count: frame_plan.visible_composer_row_count,
+            composer_preview_rows: &frame_plan.composer_preview_rows,
             history_plan: &history_plan,
         });
 
-        let visible_live_rows = layout_plan.live_visible_rows(live_rows).to_vec();
         let live_rows_mutable_count = live_rows.len();
-        let visible_live_row_count = visible_live_rows.len();
+        let visible_live_row_count = frame_plan.visible_live_rows.len();
         let chat_frame = ChatDrawRequest {
             requested_inline_height: requested_layout_plan.viewport_height,
             terminal: TerminalSnapshot::new(width, terminal_height),
@@ -277,26 +257,7 @@ impl ChatTerminalSession {
         let history_action = history_plan.take_action();
         self.queue_history_plan(history_action);
         let outcome_result = self.terminal.draw_chat_frame(chat_frame, |frame, viewport_area| {
-            let (live_area, activity_area, hint_area, btw_area, editor_area, footer_area) =
-                layout_plan.areas(viewport_area);
-            if !live_area.is_empty() {
-                frame.render_widget(Paragraph::new(visible_live_rows.clone()), live_area);
-            }
-            if !activity_area.is_empty() {
-                frame.render_widget(Paragraph::new(visible_activity_rows.clone()), activity_area);
-            }
-            if !hint_area.is_empty() {
-                frame.render_widget(Paragraph::new(visible_hint_rows.clone()), hint_area);
-            }
-            if !btw_area.is_empty() {
-                frame.render_widget(Paragraph::new(visible_btw_rows.clone()), btw_area);
-            }
-            if !editor_area.is_empty() {
-                render_composer_editor(frame, app, &composer.editor, editor_area);
-            }
-            if !footer_area.is_empty() {
-                frame.render_widget(Paragraph::new(visible_footer_rows.clone()), footer_area);
-            }
+            render_chat_frame(frame, viewport_area, app, &frame_plan, &composer);
         });
         let Some(outcome) = self.resolve_chat_draw_outcome(app, outcome_result)? else {
             return Ok(());
@@ -331,7 +292,7 @@ impl ChatTerminalSession {
                     .excluded_rows
                     .saturating_add(layout_plan.live_window.hidden_rows_above()),
                 composer_rows_total: composer.total_len(),
-                composer_rows_visible: visible_composer_row_count,
+                composer_rows_visible: frame_plan.visible_composer_row_count,
                 scrollback_inserted_rows: outcome.flushed_history.flushed_rows,
             },
         );
@@ -537,6 +498,91 @@ impl ChatTerminalSession {
 fn read_cursor_position_before_input_reader() -> anyhow::Result<(u16, u16)> {
     crossterm::cursor::position()
         .context("cursor position may only be read before the terminal reader owns terminal input")
+}
+
+/// The rows and layout of one chat frame, planned before the terminal is touched.
+/// `ChatTerminalSession::draw` paints it into the inline terminal; the render benchmark
+/// paints the same plan into a `TestBackend`, so a region added here is measured too.
+struct ChatFramePlan {
+    requested_layout: MutableLayoutPlan,
+    layout: MutableLayoutPlan,
+    visible_live_rows: Vec<Line<'static>>,
+    visible_activity_rows: Vec<Line<'static>>,
+    visible_hint_rows: Vec<Line<'static>>,
+    visible_btw_rows: Vec<Line<'static>>,
+    visible_footer_rows: Vec<Line<'static>>,
+    composer_preview_rows: Vec<Line<'static>>,
+    visible_composer_row_count: usize,
+}
+
+fn plan_chat_frame(
+    app: &mut App,
+    serialized_rows: &SerializedLiveRows,
+    history_plan: &mut HistoryFlushPlan,
+    composer: &ComposerSurface,
+    terminal_height: u16,
+) -> ChatFramePlan {
+    // Reading chooses the visible source window independently of restoring
+    // terminal history. Confirmed and queued IDs still prevent duplicate inserts.
+    if app.chat_render.viewport.is_reading() {
+        history_plan.live_rows = serialized_rows.rows().to_vec();
+        history_plan.excluded_rows = 0;
+    }
+    let live_rows = history_plan.live_rows.as_slice();
+    let (requested_layout, layout) =
+        viewport_layout(app, serialized_rows, live_rows, composer, terminal_height);
+    let visible_activity_rows = layout.activity_window.slice(&composer.activity_rows).to_vec();
+    let visible_hint_rows = layout.hint_visible_rows(&composer.hint_rows).to_vec();
+    let visible_btw_rows = layout.btw_visible_rows(&composer.btw_rows).to_vec();
+    let visible_editor_rows = composer.editor_visible_rows(layout.editor_height).to_vec();
+    let visible_footer_rows = layout.footer_visible_rows(&composer.footer_rows).to_vec();
+    let composer_preview_rows = composer.preview_rows(
+        &visible_activity_rows,
+        &visible_hint_rows,
+        &visible_btw_rows,
+        &visible_editor_rows,
+        &visible_footer_rows,
+    );
+    ChatFramePlan {
+        requested_layout,
+        layout,
+        visible_live_rows: layout.live_visible_rows(live_rows).to_vec(),
+        visible_activity_rows,
+        visible_hint_rows,
+        visible_btw_rows,
+        visible_footer_rows,
+        composer_preview_rows,
+        visible_composer_row_count: layout.visible_composer_len(),
+    }
+}
+
+fn render_chat_frame(
+    frame: &mut ratatui::Frame<'_>,
+    viewport_area: Rect,
+    app: &mut App,
+    plan: &ChatFramePlan,
+    composer: &ComposerSurface,
+) {
+    let (live_area, activity_area, hint_area, btw_area, editor_area, footer_area) =
+        plan.layout.areas(viewport_area);
+    if !live_area.is_empty() {
+        frame.render_widget(Paragraph::new(plan.visible_live_rows.clone()), live_area);
+    }
+    if !activity_area.is_empty() {
+        frame.render_widget(Paragraph::new(plan.visible_activity_rows.clone()), activity_area);
+    }
+    if !hint_area.is_empty() {
+        frame.render_widget(Paragraph::new(plan.visible_hint_rows.clone()), hint_area);
+    }
+    if !btw_area.is_empty() {
+        frame.render_widget(Paragraph::new(plan.visible_btw_rows.clone()), btw_area);
+    }
+    if !editor_area.is_empty() {
+        render_composer_editor(frame, app, &composer.editor, editor_area);
+    }
+    if !footer_area.is_empty() {
+        frame.render_widget(Paragraph::new(plan.visible_footer_rows.clone()), footer_area);
+    }
 }
 
 fn viewport_layout(
