@@ -50,7 +50,7 @@ pub(super) fn apply_task_state_update(app: &mut App, update: model::TaskStateUpd
     refresh_task_tool_displays_with_previous(app, &previous_tasks);
 }
 
-fn is_sdk_background_task(task: &model::TaskItem) -> bool {
+pub(crate) fn is_sdk_background_task(task: &model::TaskItem) -> bool {
     task.metadata
         .as_ref()
         .and_then(serde_json::Value::as_object)

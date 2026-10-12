@@ -107,12 +107,14 @@ pub(crate) fn prompt_prefix_text() -> String {
 
 pub(crate) fn configure_input_textarea(app: &mut App) {
     let needs_highlight_update = app.input.highlight_version != app.input.content_version;
+    let background =
+        if app.config.composer_rules_effective() { Color::Reset } else { theme::USER_MSG_BG };
 
     {
         let textarea = app.input.editor_mut();
-        textarea.set_style(Style::default().bg(theme::USER_MSG_BG));
+        textarea.set_style(Style::default().bg(background));
         textarea.set_placeholder_text("Type a message...");
-        textarea.set_placeholder_style(Style::default().fg(theme::DIM).bg(theme::USER_MSG_BG));
+        textarea.set_placeholder_style(Style::default().fg(theme::DIM).bg(background));
         textarea.set_cursor_line_style(Style::default());
         textarea.set_cursor_render_mode(CursorRenderMode::Hidden);
         textarea.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));

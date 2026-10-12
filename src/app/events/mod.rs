@@ -373,6 +373,14 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             );
             apply_task_state_update(app, update);
         }
+        model::SessionUpdate::TodoPlanUpdate(items) => {
+            app.footer.todo_plan = items;
+            app.request_chat_repaint();
+        }
+        model::SessionUpdate::StatusLineUpdate(text) => {
+            app.footer.status_line = text;
+            app.request_chat_repaint();
+        }
         model::SessionUpdate::UserMessageChunk(_) | model::SessionUpdate::AgentResponseStarted => {}
         model::SessionUpdate::MessageMetadata { role, timestamp, source_message_uuid } => {
             crate::app::presentation::apply_message_metadata(

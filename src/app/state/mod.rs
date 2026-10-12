@@ -14,6 +14,7 @@ pub mod types;
 mod app;
 mod autocomplete;
 mod focus_runtime;
+mod footer;
 mod git_runtime;
 mod paste;
 mod pending_messages;
@@ -74,6 +75,7 @@ mod prelude {
     pub(super) use super::app::App;
     pub(super) use super::cache_metrics;
     pub(super) use super::chat_render::ChatRenderState;
+    pub(super) use super::footer::FooterState;
     pub(super) use super::messages::{ChatMessage, MessageBlock, MessageRole, NoticeDedupKey};
     pub(super) use super::paste::PasteState;
     pub(super) use super::pending_messages::PendingUserMessages;

@@ -402,6 +402,13 @@ readline
             { name: 'rename', description: 'Rename the current conversation', input_hint: '[name]' },
           ] } });
         }
+        if (SCENARIO === 'footer-plan' && message.command === 'create_session') {
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'todo_plan_update', items: [
+            { content: 'Finished setup', status: 'completed' },
+            { content: 'Verify footer plan', status: 'in_progress' },
+          ] } });
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'status_line_update', text: 'FIXTURE_STATUS_ROW' } });
+        }
         if (SCENARIO === 'disconnect-during-auth' && message.command === 'create_session') {
           const timer = setInterval(() => {
             if (fs.existsSync(RELEASE_FILE)) {

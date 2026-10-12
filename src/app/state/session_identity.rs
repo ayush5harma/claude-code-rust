@@ -44,6 +44,7 @@ impl App {
 
     pub fn clear_session_runtime_identity(&mut self) {
         self.session_runtime.clear_identity();
+        self.footer.clear();
         self.sdk_inventory.clear_rewind_targets();
     }
 

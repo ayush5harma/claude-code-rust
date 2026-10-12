@@ -17,6 +17,10 @@ Claude Code Rust has a fullscreen settings surface with multiple tabs. These sla
 
 The settings surface is session-aware. Settings load when the app's session starts, and some tabs need an active session before they can show live data.
 
+The user-scoped **Composer style** setting chooses `filled` (the standard shaded input) or `rules` (a transparent input with session-accent top and bottom rules). The footer shows the current session name when the SDK reports one, a context-use meter when context data is available, and a plan row for the SDK task list. Background SDK tasks are excluded from plan progress. A confirmed main-agent `TodoWrite` list supplies the plan only when there is no task plan. SDK rate windows appear only when the session reports them; API-key and other sessions without plan limits do not show invented values.
+
+When the SDK's user-scoped `statusLine` setting specifies a command, the bridge runs it after the session connects and displays its bounded output in a separate footer row. Project and local settings cannot supply this executable command. The command receives one JSON object on stdin containing `session_id`, `cwd`, `workspace.current_dir`, and `workspace.project_dir`; `model.id` and `model.display_name`, `context_window.used_percentage`, `remaining_percentage`, and `context_window_size`, and `rate_limits.five_hour` or `seven_day` appear only when the public SDK supplies them. There is no synthetic token count or rate-limit window. The command is refreshed after session results and rate events, and at the configured `refreshInterval` when set; execution times out after two seconds and output is limited to 4 KiB. Its output is rendered as plain text with terminal control sequences removed.
+
 ## Opening and navigating
 
 Every command in the table above opens the same fullscreen surface on a different starting tab. The tab order is:

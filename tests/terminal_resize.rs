@@ -2239,6 +2239,22 @@ fn session_accent_colors_the_composer_edge_and_glyph_then_resets_on_replacement(
 }
 
 #[test]
+fn footer_plan_and_status_line_render_then_clear_on_session_replacement() {
+    let mut test = TerminalTest::start("footer-plan", 3);
+    test.wait_until("plan and status rows", |test| {
+        let screen = test.screen();
+        screen.contains("1/2 Verify footer plan") && screen.contains("FIXTURE_STATUS_ROW")
+    });
+    test.resize_keeping(55, 120, &["1/2 Verify footer plan", "FIXTURE_STATUS_ROW"]);
+    test.submit_command("/new-session");
+    test.wait_until("old footer rows cleared", |test| {
+        let screen = test.screen();
+        !screen.contains("Verify footer plan") && !screen.contains("FIXTURE_STATUS_ROW")
+    });
+    test.shutdown();
+}
+
+#[test]
 fn status_tab_shows_the_session_name_after_rename() {
     let mut test = TerminalTest::start("session-name", 3);
     test.submit_command("/rename probe-e2e");
