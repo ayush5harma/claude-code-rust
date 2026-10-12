@@ -95,6 +95,12 @@ release steps unless they expose their own command-line interface.
 - `quality/jscpd-warning-summary.mjs` is used by the nightly duplicate-code
   warning scan through `npm run quality:duplicates:summary`.
 
+## Dev
+
+- `dev/check-all.mjs` is a contributor entry point (see CONTRIBUTING.md). It runs
+  the PR-gating checks of `pr.yml` and `_agent-sdk.yml` locally and prints a
+  PASS/FAIL table. It is not used by any workflow.
+
 ## Workflow Usage
 
 - PR package-layout validation runs runtime manifest checks, third-party notice
