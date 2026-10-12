@@ -15,6 +15,7 @@ mod app;
 mod autocomplete;
 mod focus_runtime;
 mod git_runtime;
+mod hook_runs;
 mod paste;
 mod pending_messages;
 mod repaint;
@@ -37,6 +38,7 @@ pub use cache_metrics::CacheMetrics;
 pub use chat_render::{
     ChatRenderState, ComposerRenderState, LiveRegionRenderState, TerminalSize, TerminalSizeChange,
 };
+pub use hook_runs::HookRuns;
 pub use messages::{
     BtwExchangeBlock, ChatMessage, ChatMessageId, HistoryOutputId, ImageAttachmentBlock,
     MessageBlock, MessageBlockId, MessageRole, NoticeBlock, NoticeDedupKey, RateLimitIncidentKey,

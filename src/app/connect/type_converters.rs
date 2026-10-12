@@ -185,6 +185,21 @@ pub(super) const fn map_mcp_auth_capabilities(
     }
 }
 
+/// Hook output as one printable line: line breaks and tabs become spaces,
+/// other control characters are dropped, and runs of spaces collapse.
+fn printable_excerpt(text: &str) -> Option<String> {
+    let line = text
+        .chars()
+        .filter_map(|ch| match ch {
+            '\n' | '\r' | '\t' => Some(' '),
+            _ if ch.is_control() => None,
+            _ => Some(ch),
+        })
+        .collect::<String>();
+    let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!line.is_empty()).then_some(line)
+}
+
 fn map_system_notice_severity(
     severity: types::SystemNoticeSeverity,
 ) -> model::SystemNoticeSeverity {
@@ -531,6 +546,27 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
                 (!title.is_empty()).then(|| title.to_owned()),
             ))
         }
+        types::SessionUpdate::HookActivity {
+            hook_id,
+            hook_name,
+            hook_event,
+            phase,
+            outcome,
+            exit_code,
+            output,
+            observed_at_ms,
+        } => Some(model::SessionUpdate::HookActivity(model::HookActivity {
+            hook_id,
+            hook_name,
+            hook_event,
+            phase,
+            outcome,
+            exit_code,
+            // Hook output is arbitrary program text that the notice writes to
+            // the terminal, so control characters are stripped here, once.
+            output: output.as_deref().and_then(printable_excerpt),
+            observed_at_ms,
+        })),
         types::SessionUpdate::RuntimeSessionStateUpdate { state } => {
             Some(model::SessionUpdate::RuntimeSessionStateUpdate(match state {
                 types::RuntimeSessionState::Idle => model::RuntimeSessionState::Idle,
@@ -1376,6 +1412,43 @@ mod tests {
                 result: model::CompactionResult::Failed,
                 error_code: Some(model::CompactionFailureCode::TooFewGroups),
                 error: Some("Prompt is too long".to_owned()),
+            }))
+        );
+    }
+
+    #[test]
+    fn hook_activity_decodes_from_the_bridge_wire_as_one_printable_line() {
+        let decode = |json: &str| {
+            map_session_update(serde_json::from_str::<types::SessionUpdate>(json).expect("wire"))
+        };
+        assert_eq!(
+            decode(
+                r#"{"type":"hook_activity","hook_id":"h1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","phase":"finished","outcome":"error","exit_code":2,"output":"blocked:\n\u001b[31mno\u001b[0m\tway\u0007","observed_at_ms":1760000000123}"#
+            ),
+            Some(model::SessionUpdate::HookActivity(model::HookActivity {
+                hook_id: "h1".to_owned(),
+                hook_name: "PreToolUse:Bash".to_owned(),
+                hook_event: "PreToolUse".to_owned(),
+                phase: model::HookPhase::Finished,
+                outcome: Some(model::HookOutcome::Error),
+                exit_code: Some(2),
+                output: Some("blocked: [31mno[0m way".to_owned()),
+                observed_at_ms: 1_760_000_000_123,
+            }))
+        );
+        assert_eq!(
+            decode(
+                r#"{"type":"hook_activity","hook_id":"h1","hook_name":"n","hook_event":"SessionStart","phase":"started","output":" \n ","observed_at_ms":5}"#
+            ),
+            Some(model::SessionUpdate::HookActivity(model::HookActivity {
+                hook_id: "h1".to_owned(),
+                hook_name: "n".to_owned(),
+                hook_event: "SessionStart".to_owned(),
+                phase: model::HookPhase::Started,
+                outcome: None,
+                exit_code: None,
+                output: None,
+                observed_at_ms: 5,
             }))
         );
     }

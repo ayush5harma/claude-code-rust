@@ -226,6 +226,8 @@ export type SessionState = {
   pendingRewindResult?: PendingRewindResult;
   /** Counts title reads, so only the latest one is sent. */
   titleReads?: number;
+  /** Hook updates seen before the connect event, sent right after it. */
+  pendingHookActivity?: Array<Extract<SessionUpdate, { type: "hook_activity" }>>;
 };
 
 export const sessions = new Map<string, SessionState>();
@@ -1141,6 +1143,8 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     // otherwise ignores the JSON preference. Claude still applies environment restrictions.
     enableFileCheckpointing: params.resolvedSettings.fileCheckpointingEnabled ?? true,
     agentProgressSummaries: true,
+    // Without this the SDK reports only SessionStart and Setup hooks.
+    includeHookEvents: true,
     // Proposal tools require native review and lifecycle surfaces that the
     // public headless SDK does not currently expose to this host.
     disallowedTools: ["ProposeSkills", "ProposeGoal"],
