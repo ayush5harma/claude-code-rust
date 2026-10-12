@@ -77,7 +77,7 @@ async fn acknowledged_spinner_tip_setting_only_controls_tips() {
 async fn automatic_update_editor_cycles_acknowledged_choices_and_resets_the_personal_value() {
     use ratatui::{Terminal, backend::TestBackend};
     tokio::task::LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             let mut app = App::test_default();
             let (connection, mut commands) = AgentConnection::test_channel();
             app.session_runtime.conn = Some(Rc::new(connection));
@@ -151,7 +151,7 @@ async fn automatic_update_editor_cycles_acknowledged_choices_and_resets_the_pers
                 );
                 assert!(!app.shutdown_requested());
             }
-        })
+        }))
         .await;
 }
 
@@ -674,7 +674,7 @@ async fn language_save_and_editor_reset_show_the_remaining_value_or_default() {
 #[tokio::test(flavor = "current_thread")]
 async fn conflict_refresh_preserves_draft_and_deliberate_retry_uses_the_refreshed_value() {
     tokio::task::LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             let mut app = App::test_default();
             let (connection, mut commands) = AgentConnection::test_channel();
             app.session_runtime.conn = Some(Rc::new(connection));
@@ -721,7 +721,7 @@ async fn conflict_refresh_preserves_draft_and_deliberate_retry_uses_the_refreshe
             };
             assert_eq!(mutation.expected_revision, "revision-2");
             assert_eq!(mutation.value, Some(json!("German")));
-        })
+        }))
         .await;
 }
 
