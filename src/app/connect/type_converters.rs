@@ -185,9 +185,9 @@ pub(super) const fn map_mcp_auth_capabilities(
     }
 }
 
-/// Hook output as one printable line: line breaks and tabs become spaces,
+/// SDK hook text as one printable line: line breaks and tabs become spaces,
 /// other control characters are dropped, and runs of spaces collapse.
-fn printable_excerpt(text: &str) -> Option<String> {
+fn printable_hook_text(text: &str) -> Option<String> {
     let line = text
         .chars()
         .filter_map(|ch| match ch {
@@ -557,14 +557,17 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
             observed_at_ms,
         } => Some(model::SessionUpdate::HookActivity(model::HookActivity {
             hook_id,
-            hook_name,
-            hook_event,
+            hook_name: printable_hook_text(&hook_name).unwrap_or_default(),
+            hook_event: printable_hook_text(&hook_event).unwrap_or_default(),
             phase,
             outcome,
             exit_code,
-            // Hook output is arbitrary program text that the notice writes to
-            // the terminal, so control characters are stripped here, once.
-            output: output.as_deref().and_then(printable_excerpt),
+            // Redact before retention: this output can be shown in notices and
+            // copied from history. Reuse the CLI's credential redaction rules.
+            output: output
+                .as_deref()
+                .and_then(printable_hook_text)
+                .map(|text| crate::cli::redaction::redact_text(&text)),
             observed_at_ms,
         })),
         types::SessionUpdate::RuntimeSessionStateUpdate { state } => {
@@ -1451,6 +1454,70 @@ mod tests {
                 observed_at_ms: 5,
             }))
         );
+    }
+
+    #[test]
+    fn hook_wire_output_is_redacted_and_labels_are_printable_before_notice_retention() {
+        use crate::agent::events::ClientEvent;
+        use crate::agent::settings::SettingsSnapshot;
+        use crate::app::{App, MessageBlock, events::handle_client_event};
+
+        let mut app = App::test_default();
+        app.session_runtime.session_id = Some(model::SessionId::new("test-session"));
+        app.config.snapshot = Some(SettingsSnapshot::default());
+        let mut report = |phase: &str, at: u64, output: Option<&str>| {
+            let wire = serde_json::json!({
+                "type": "hook_activity",
+                "hook_id": "h1",
+                "hook_name": "Run\nHook\u{001b}[31m",
+                "hook_event": "PreToolUse\n",
+                "phase": phase,
+                "outcome": "error",
+                "exit_code": 2,
+                "output": output,
+                "observed_at_ms": at,
+            });
+            let update = map_session_update(
+                serde_json::from_value::<types::SessionUpdate>(wire).expect("hook wire"),
+            )
+            .expect("hook update");
+            handle_client_event(
+                &mut app,
+                ClientEvent::SessionUpdate { session_id: "test-session".to_owned(), update },
+            );
+        };
+        report("started", 1_000, None);
+        report(
+            "finished",
+            1_010,
+            Some(
+                "ANTHROPIC_\u{001b}API_KEY=sk-ant-private Authorization: Bearer oauth-secret \"accessToken\":\"json-secret\"",
+            ),
+        );
+
+        let notice = app
+            .transcript
+            .messages
+            .iter()
+            .flat_map(|message| &message.blocks)
+            .find_map(|block| match block {
+                MessageBlock::Notice(notice) => Some(notice.text.text.as_str()),
+                _ => None,
+            })
+            .expect("failed hook notice");
+        assert!(notice.contains("Hook PreToolUse:Run Hook[31m failed (exit 2)"));
+        assert!(notice.contains("ANTHROPIC_API_KEY=[redacted]"));
+        assert!(notice.contains("Authorization: [redacted]"));
+        assert!(notice.contains("accessToken\":\"[redacted]"));
+        assert!(!notice.contains("sk-ant-private"));
+        assert!(!notice.contains("oauth-secret"));
+        assert!(!notice.contains("json-secret"));
+        assert!(!notice.contains('\n'));
+        assert!(!notice.contains('\u{001b}'));
+        let retained = app.session_runtime.hook_runs.summary().slowest[0].expect("retained hook");
+        assert!(!retained.output.as_deref().unwrap_or_default().contains("sk-ant-private"));
+        assert_eq!(retained.name, "Run Hook[31m");
+        assert_eq!(retained.event, "PreToolUse");
     }
 
     #[test]

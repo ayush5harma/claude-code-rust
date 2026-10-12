@@ -142,7 +142,7 @@ pub struct HookSummary<'a> {
     pub finished: usize,
     pub failed: usize,
     pub total: Duration,
-    pub slowest: Vec<&'a HookRun>,
+    pub slowest: [Option<&'a HookRun>; 3],
     /// Runs seen but no longer retained.
     pub dropped: u64,
 }
@@ -235,15 +235,32 @@ impl HookRuns {
 
     #[must_use]
     pub fn summary(&self) -> HookSummary<'_> {
-        let mut slowest: Vec<&HookRun> =
-            self.runs.iter().filter(|run| run.duration().is_some()).collect();
-        slowest.sort_by_key(|run| std::cmp::Reverse(run.duration()));
-        slowest.truncate(3);
+        let mut slowest: [Option<&HookRun>; 3] = [None; 3];
+        let mut finished = 0;
+        let mut failed = 0;
+        let mut total = Duration::ZERO;
+        for run in &self.runs {
+            if run.is_finished() {
+                finished += 1;
+                failed += usize::from(run.failed());
+            }
+            let Some(duration) = run.duration() else { continue };
+            total += duration;
+            for index in 0..slowest.len() {
+                if slowest[index]
+                    .is_none_or(|previous| duration > previous.duration().unwrap_or_default())
+                {
+                    slowest[index..].rotate_right(1);
+                    slowest[index] = Some(run);
+                    break;
+                }
+            }
+        }
         HookSummary {
             runs: self.runs.len(),
-            finished: self.runs.iter().filter(|run| run.is_finished()).count(),
-            failed: self.runs.iter().filter(|run| run.is_finished() && run.failed()).count(),
-            total: self.runs.iter().filter_map(HookRun::duration).sum(),
+            finished,
+            failed,
+            total,
             slowest,
             dropped: self.dropped,
         }
@@ -376,7 +393,8 @@ mod tests {
         assert_eq!(summary.finished, 4);
         assert_eq!(summary.failed, 1);
         assert_eq!(summary.total, Duration::from_millis(4_300));
-        let slowest: Vec<&str> = summary.slowest.iter().map(|run| run.id.as_str()).collect();
+        let slowest: Vec<&str> =
+            summary.slowest.iter().flatten().map(|run| run.id.as_str()).collect();
         assert_eq!(slowest, ["b", "d", "c"]);
     }
 
@@ -458,7 +476,7 @@ mod tests {
     fn an_unfinished_run_earns_no_notice_and_a_bare_name_gets_its_event() {
         let mut runs = HookRuns::default();
         runs.record(&activity("open", HookPhase::Started, 0));
-        assert_eq!(runs.summary().slowest.len(), 0);
+        assert!(runs.summary().slowest.iter().all(Option::is_none));
         let mut run = run_of(0, 5_000, HookOutcome::Success, None);
         run.name = "my-script".to_owned();
         assert_eq!(run.label(), "SessionStart:my-script");
