@@ -131,6 +131,13 @@ pub enum BridgeCommand {
         session_id: String,
         title: String,
     },
+    TagSession {
+        session_id: String,
+        tag: Option<String>,
+    },
+    DeleteSession {
+        session_id: String,
+    },
     NewSession {
         cwd: String,
         #[serde(default, skip_serializing_if = "SessionLaunchSettings::is_empty")]
@@ -236,6 +243,8 @@ impl BridgeCommand {
             Self::SetFastMode { .. } => "set_fast_mode",
             Self::GenerateSessionTitle { .. } => "generate_session_title",
             Self::RenameSession { .. } => "rename_session",
+            Self::TagSession { .. } => "tag_session",
+            Self::DeleteSession { .. } => "delete_session",
             Self::NewSession { .. } => "new_session",
             Self::PermissionResponse { .. } => "permission_response",
             Self::QuestionResponse { .. } => "question_response",
@@ -278,6 +287,8 @@ impl BridgeCommand {
             | Self::SetFastMode { session_id, .. }
             | Self::GenerateSessionTitle { session_id, .. }
             | Self::RenameSession { session_id, .. }
+            | Self::TagSession { session_id, .. }
+            | Self::DeleteSession { session_id }
             | Self::PermissionResponse { session_id, .. }
             | Self::QuestionResponse { session_id, .. }
             | Self::UserDialogResponse { session_id, .. }
@@ -324,6 +335,8 @@ impl BridgeCommand {
             | Self::SetFastMode { .. }
             | Self::GenerateSessionTitle { .. }
             | Self::RenameSession { .. }
+            | Self::TagSession { .. }
+            | Self::DeleteSession { .. }
             | Self::NewSession { .. }
             | Self::UserDialogResponse { .. }
             | Self::ElicitationResponse { .. }
@@ -523,6 +536,13 @@ pub enum BridgeEvent {
     SessionsListed {
         sessions: Vec<types::SessionListEntry>,
     },
+    SessionMutationResult {
+        session_id: String,
+        operation: String,
+        error: Option<String>,
+        refresh_error: Option<String>,
+        sessions: Option<Vec<types::SessionListEntry>>,
+    },
     StatusSnapshot {
         session_id: String,
         account: types::AccountInfo,
@@ -594,6 +614,7 @@ impl BridgeEvent {
             Self::SessionReplaced { .. } => "session_replaced",
             Self::Initialized { .. } => "initialized",
             Self::SessionsListed { .. } => "sessions_listed",
+            Self::SessionMutationResult { .. } => "session_mutation_result",
             Self::SettingsResult { .. } => "settings_result",
             Self::StatusSnapshot { .. } => "status_snapshot",
             Self::ContextUsage { .. } => "context_usage",
@@ -638,7 +659,8 @@ impl BridgeEvent {
             | Self::UsageSnapshot { session_id, .. }
             | Self::RewindTargets { session_id, .. }
             | Self::RewindResult { session_id, .. }
-            | Self::McpSnapshot { session_id, .. } => Some(session_id.as_str()),
+            | Self::McpSnapshot { session_id, .. }
+            | Self::SessionMutationResult { session_id, .. } => Some(session_id.as_str()),
             Self::AuthRequired { .. }
             | Self::ConnectionFailed { .. }
             | Self::Initialized { .. }
@@ -680,6 +702,7 @@ impl BridgeEvent {
             | Self::SessionReplaced { .. }
             | Self::Initialized { .. }
             | Self::SessionsListed { .. }
+            | Self::SessionMutationResult { .. }
             | Self::SettingsResult { .. }
             | Self::StatusSnapshot { .. }
             | Self::ContextUsage { .. }

@@ -97,7 +97,7 @@ pub(super) fn handle_connected_client_event(app: &mut App, event: ConnectedEvent
     );
 }
 
-pub(super) fn handle_sessions_listed_event(
+pub(crate) fn handle_sessions_listed_event(
     app: &mut App,
     sessions: Vec<crate::agent::types::SessionListEntry>,
 ) {
@@ -119,8 +119,10 @@ pub(super) fn handle_sessions_listed_event(
             git_branch: entry.git_branch,
             custom_title: entry.custom_title,
             first_prompt: entry.first_prompt,
+            tag: entry.tag,
         })
         .collect();
+    app.session_picker.list_revision = app.session_picker.list_revision.wrapping_add(1);
     let mut pending_title_change_resolved = false;
     if let Some(pending_title_change) = pending_title_change {
         let renamed_session_present = app

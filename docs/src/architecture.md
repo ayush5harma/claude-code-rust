@@ -8,6 +8,8 @@ The Rust binary owns the terminal UI and process lifecycle. It parses CLI option
 
 The app then starts or resumes a bridge session and renders the chat view directly in the terminal.
 
+The session picker lists metadata returned by the public Agent SDK, including a saved tag. Tag edits and confirmed deletion use `tagSession()` and `deleteSession()` against the exact selected session ID and SDK-reported project directory. The bridge rejects deletion of a live session; mutation results carry a request ID and a fresh SDK list, so the picker updates after acknowledgment rather than changing local metadata optimistically.
+
 Interactive startup arguments resolve into one launch intent: a new session, a specified resume ID, the session picker, or the latest session in the working directory. Session overrides are applied through the existing launch-settings boundary and released after the initial session is selected. Initial prompts use normal prompt queue admission once startup dialogs are complete.
 
 Support commands run before bridge resolution. Shell completions and manual pages are generated from the same Clap command definitions as CLI help, so neither requires the bridge or authentication.

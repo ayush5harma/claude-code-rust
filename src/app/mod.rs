@@ -77,12 +77,12 @@ pub use state::{
     LayoutInvalidation, LiveRegionRenderState, LoginHint, McpState, MessageBlock, MessageBlockId,
     MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock, NoticeDedupKey, NoticeStage,
     PasteSessionState, PendingCommandAck, PostExitAction, RateLimitIncidentKey, RecentSessionInfo,
-    SelectionPoint, SessionPickerState, SessionUsageState, SessionUsageSummary, ShutdownState,
-    SubagentPermissionContext, SystemSeverity, TerminalSize, TerminalSizeChange, TextBlock,
-    TextBlockSpacing, ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef,
-    UpdatePromptAction, UpdatePromptState, UsageActivitySummary, UsageActivityWindow,
-    UsageBehaviorAttribution, UsageNamedAttribution, UsageSnapshot, UsageSourceKind,
-    UsageSourceMode, UsageState, UsageWindow, UserDialogBlock, WelcomeBlock,
+    SelectionPoint, SessionPickerMutation, SessionPickerState, SessionUsageState,
+    SessionUsageSummary, ShutdownState, SubagentPermissionContext, SystemSeverity, TerminalSize,
+    TerminalSizeChange, TextBlock, TextBlockSpacing, ToolCallInfo, ToolCallScope,
+    TurnNoticeLocation, TurnNoticeRef, UpdatePromptAction, UpdatePromptState, UsageActivitySummary,
+    UsageActivityWindow, UsageBehaviorAttribution, UsageNamedAttribution, UsageSnapshot,
+    UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, UserDialogBlock, WelcomeBlock,
     hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
 };
 pub(crate) use state::{

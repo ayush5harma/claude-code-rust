@@ -530,6 +530,14 @@ export function parseCommandEnvelope(line: string): {
           session_id: expectString(raw, "session_id", "rename_session"),
           title: expectString(raw, "title", "rename_session"),
         };
+      case "tag_session":
+        return {
+          command: "tag_session",
+          session_id: expectString(raw, "session_id", "tag_session"),
+          tag: expectNonEmptyStringOrNull(raw, "tag", "tag_session"),
+        };
+      case "delete_session":
+        return { command: "delete_session", session_id: expectString(raw, "session_id", "delete_session") };
       case "get_status_snapshot":
         return {
           command: "get_status_snapshot",

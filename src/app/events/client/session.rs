@@ -3,6 +3,7 @@
 use super::super::{App, SystemSeverity, session};
 use crate::agent::events::ClientEvent;
 
+#[allow(clippy::too_many_lines)]
 pub(super) fn handle(app: &mut App, event: ClientEvent) {
     match event {
         ClientEvent::SettingsResultReceived { request_id, result, .. } => {
@@ -66,6 +67,24 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
         }
         ClientEvent::SessionsListed { sessions } => {
             session::handle_sessions_listed_event(app, sessions);
+        }
+        ClientEvent::SessionMutationResult {
+            session_id,
+            request_id,
+            operation,
+            error,
+            refresh_error,
+            sessions,
+        } => {
+            crate::app::session_picker::apply_mutation_result(
+                app,
+                &session_id,
+                request_id.as_deref(),
+                &operation,
+                error,
+                refresh_error,
+                sessions,
+            );
         }
         ClientEvent::AuthRequired { method_name, method_description } => {
             session::handle_auth_required_event(app, method_name, method_description);

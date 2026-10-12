@@ -1262,6 +1262,7 @@ fn resume_picker_preselects_current_session_when_listed() {
             git_branch: None,
             custom_title: None,
             first_prompt: Some("other".into()),
+            tag: None,
         },
         crate::app::RecentSessionInfo {
             session_id: "current-session".into(),
@@ -1272,6 +1273,7 @@ fn resume_picker_preselects_current_session_when_listed() {
             git_branch: None,
             custom_title: None,
             first_prompt: Some("current".into()),
+            tag: None,
         },
     ];
 
