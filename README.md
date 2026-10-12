@@ -36,6 +36,7 @@ The two SDK behavior fixes incorporate upstream pull requests [#444](https://git
 | Hook visibility ([#12](https://github.com/ayush5harma/claude-code-rust/pull/12)) | Progress and completion notices, per-hook duration, slow-hook summaries, and measured startup milestones in Status. Hook output is sanitized and redacted before retention. |
 | Native `/diff` viewer ([#15](https://github.com/ayush5harma/claude-code-rust/pull/15)) | Working-tree changes, including untracked files and repositories without a first commit, alongside retained current-session tool diffs. |
 | Session `/agents` panel ([#18](https://github.com/ayush5harma/claude-code-rust/pull/18)) | Public SDK subagent history and current-session task state, with stopping restricted to a matching currently running task. |
+| Retained transcript search ([#19](https://github.com/ayush5harma/claude-code-rust/pull/19)) | `/search [query]` and remappable Ctrl+F search retained user, assistant, and visible tool text, with Unicode-aware matching. Archived history and hidden tool inputs are excluded. |
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development commands and verification requirements.
 
@@ -45,10 +46,9 @@ These are **not included in v0.15.2-fork.2**. Pull-request status is authoritati
 
 | Work | Status |
 | --- | --- |
-| Retained transcript search | [PR #19](https://github.com/ayush5harma/claude-code-rust/pull/19): `/search [query]` and remappable Ctrl+F search retained user, assistant, and visible tool text, with Unicode-aware matching. Archived history and hidden tool inputs are excluded. |
-| Resume ergonomics | In development: exact-title resolution with ambiguity reporting, session sizes in bytes, and an explicit compact-first option for large sessions. |
+| Resume ergonomics | [PR #22](https://github.com/ayush5harma/claude-code-rust/pull/22): exact-title resolution with ambiguity reporting, session sizes in bytes, and an explicit compact-first option for large sessions. |
 | Session tags and deletion | [PR #21](https://github.com/ayush5harma/claude-code-rust/pull/21): SDK-backed picker actions, confirmation before deletion, and protection for the active session. |
-| Session accents | In development: stable session-ID colors, with `/color` changes applied only after a correlated successful SDK confirmation. |
+| Session accents | [PR #23](https://github.com/ayush5harma/claude-code-rust/pull/23): stable session-ID colors, with `/color` changes applied only after a correlated successful SDK confirmation. |
 
 Further planned work includes measured output-presentation parity, composer and footer improvements, and keyboard parity. These remain backlog items until implemented and verified. Generic MCP resource attachments are blocked by the pinned public SDK: its resource-reading API supports MCP Apps `ui://` resources, not general resource discovery and reading. Features requiring SDK support remain conditional on that support.
 
