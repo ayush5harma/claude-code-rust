@@ -95,6 +95,13 @@ release steps unless they expose their own command-line interface.
 - `quality/jscpd-warning-summary.mjs` is used by the nightly duplicate-code
   warning scan through `npm run quality:duplicates:summary`.
 
+## Development
+
+- `dev/bench-render.mjs` is a contributor tool, not part of any workflow. It builds
+  two refs in temporary worktrees, runs the render benchmark on each, and fails
+  when a median frame time regresses by more than its gate. See `CONTRIBUTING.md`.
+- `dev/bench-render.test.mjs` covers its statistics and scenario matching.
+
 ## Workflow Usage
 
 - PR package-layout validation runs runtime manifest checks, third-party notice
