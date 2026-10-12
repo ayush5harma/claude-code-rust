@@ -73,9 +73,6 @@ pub struct Cli {
     #[arg(long = "continue", short = 'c')]
     pub continue_session: bool,
 
-    #[command(flatten)]
-    pub session_options: SessionOptions,
-
     /// Disable startup update checks.
     #[arg(long)]
     pub no_update_check: bool,
@@ -113,10 +110,18 @@ pub struct Cli {
     /// Without `--log-file`, appends to the legacy shared default log for compatibility.
     #[arg(long)]
     pub log_append: bool,
+
+    // Last, because a flattened help heading also applies to the arguments that follow it.
+    #[command(flatten)]
+    pub session_options: SessionOptions,
+
+    #[command(flatten)]
+    pub session_config: SessionConfigArgs,
 }
 
 /// Per-launch options, separate from persisted application preferences.
 #[derive(Args, Debug, Clone, Default)]
+#[command(next_help_heading = "Session Options")]
 pub struct SessionOptions {
     /// Starting model alias or full model ID; does not change saved preferences.
     #[arg(long, global = true, value_name = "MODEL", value_parser = clap::builder::NonEmptyStringValueParser::new())]
@@ -134,7 +139,7 @@ pub struct SessionOptions {
     #[arg(long, global = true, value_name = "NAME", value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub agent: Option<String>,
 
-    /// Name the new or resumed session, as the Status tab's rename does.
+    /// Name the new or resumed session.
     #[arg(long, short = 'n', global = true, value_name = "NAME", value_parser = parse_session_name)]
     pub name: Option<String>,
 }
@@ -150,6 +155,50 @@ fn parse_session_name(value: &str) -> Result<String, String> {
     Ok(name.to_owned())
 }
 
+// Session configuration for every session this process starts, including `/new` and
+// `/resume`, as Claude Code keeps these flags for its whole process. Relative paths
+// resolve against `--dir`, or the current directory without it. (A doc comment here
+// would replace the command's about text in `--help`.)
+#[derive(Args, Debug, Clone, Default)]
+#[command(next_help_heading = "Session Options")]
+pub struct SessionConfigArgs {
+    /// Additional directory Claude may access (repeatable).
+    #[arg(long = "add-dir", global = true, value_name = "DIR")]
+    pub add_dirs: Vec<std::path::PathBuf>,
+}
+
+impl SessionConfigArgs {
+    /// Resolve paths against `base` and check that they exist, so a typo stops the launch
+    /// with a CLI error instead of surfacing inside a running session.
+    pub fn resolve(&self, base: &std::path::Path) -> Result<agent::wire::SessionConfig, String> {
+        let additional_directories = self
+            .add_dirs
+            .iter()
+            .map(|dir| {
+                let path = absolute_path(base, dir, "--add-dir")?;
+                if !std::path::Path::new(&path).is_dir() {
+                    return Err(format!("--add-dir: {path} is not an existing directory"));
+                }
+                Ok(path)
+            })
+            .collect::<Result<_, String>>()?;
+        Ok(agent::wire::SessionConfig { additional_directories })
+    }
+}
+
+fn absolute_path(
+    base: &std::path::Path,
+    path: &std::path::Path,
+    flag: &str,
+) -> Result<String, String> {
+    let absolute = std::path::absolute(base.join(path))
+        .map_err(|error| format!("{flag}: cannot resolve {}: {error}", path.display()))?;
+    absolute
+        .into_os_string()
+        .into_string()
+        .map_err(|path| format!("{flag}: {} is not valid UTF-8", path.to_string_lossy()))
+}
+
 impl Cli {
     pub fn validate(&self) -> Result<(), clap::Error> {
         use clap::CommandFactory;
@@ -157,7 +206,8 @@ impl Cli {
             || self.session_options.effort.is_some()
             || self.session_options.permission_mode.is_some()
             || self.session_options.agent.is_some()
-            || self.session_options.name.is_some();
+            || self.session_options.name.is_some()
+            || !self.session_config.add_dirs.is_empty();
         let conflict = match &self.command {
             Some(Command::Resume { .. }) => {
                 self.resume.is_some() || self.continue_session || self.prompt.is_some()
@@ -178,6 +228,22 @@ impl Cli {
         }
         Ok(())
     }
+    /// The session working directory: `--dir`, or the current directory without it.
+    #[must_use]
+    pub fn startup_cwd(&self) -> std::path::PathBuf {
+        self.dir.clone().unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        })
+    }
+
+    /// Resolve the session configuration flags against the session working directory.
+    pub fn session_config(&self) -> Result<agent::wire::SessionConfig, clap::Error> {
+        use clap::CommandFactory;
+        self.session_config.resolve(&self.startup_cwd()).map_err(|message| {
+            Self::command().error(clap::error::ErrorKind::ValueValidation, message)
+        })
+    }
+
     /// Normalize both resume spellings into one startup intent.
     #[must_use]
     pub fn startup_launch(&self) -> StartupLaunch {
@@ -546,6 +612,21 @@ mod tests {
                 })),
             }))
         );
+    }
+
+    #[test]
+    fn added_directory_must_be_an_existing_directory() {
+        let project = tempfile::tempdir().expect("project");
+        std::fs::write(project.path().join("notes.txt"), "").expect("file");
+        for dir in ["missing", "notes.txt"] {
+            let cli = Cli::try_parse_from(["claude-rs", "--add-dir", dir]).expect("parse");
+            let error = cli.session_config.resolve(project.path()).expect_err(dir);
+            let path = project.path().join(dir);
+            assert_eq!(
+                error,
+                format!("--add-dir: {} is not an existing directory", path.display())
+            );
+        }
     }
 
     #[test]

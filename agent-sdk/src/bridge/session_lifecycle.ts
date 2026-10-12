@@ -1158,6 +1158,9 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     ...(params.launchSettings.name !== undefined && (!params.resume || params.forkSession)
       ? { title: params.launchSettings.name }
       : {}),
+    ...(params.launchSettings.additional_directories
+      ? { additionalDirectories: params.launchSettings.additional_directories }
+      : {}),
     toolConfig: { askUserQuestion: { previewFormat: "markdown" as const } },
     systemPrompt,
     ...(params.claudeCodeExecutable

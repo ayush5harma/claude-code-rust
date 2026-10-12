@@ -130,6 +130,24 @@ fn executable_rejects_startup_conflicts_before_resolving_the_bridge() {
 }
 
 #[test]
+fn executable_rejects_a_missing_added_directory_before_resolving_the_bridge() {
+    let project = tempfile::tempdir().expect("project");
+    let output = Command::new(env!("CARGO_BIN_EXE_claude-rs"))
+        .args(["--bridge-script", "missing-bridge.js", "--add-dir", "not-there", "-C"])
+        .arg(project.path())
+        .output()
+        .expect("run with a missing directory");
+    assert_eq!(output.status.code(), Some(2));
+    let error = String::from_utf8_lossy(&output.stderr);
+    let missing = project.path().join("not-there");
+    assert!(
+        error.contains(&format!("--add-dir: {} is not an existing directory", missing.display())),
+        "{error}"
+    );
+    assert!(!error.contains("missing-bridge.js"), "runtime resolved the bridge: {error}");
+}
+
+#[test]
 fn executable_generates_manuals_without_a_bridge() {
     let dir = tempfile::tempdir().expect("manual directory");
     let output_dir = dir.path().join("nested/man1");

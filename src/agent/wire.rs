@@ -17,6 +17,8 @@ pub struct SessionLaunchSettings {
     pub agent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(flatten)]
+    pub config: SessionConfig,
 }
 
 impl SessionLaunchSettings {
@@ -27,6 +29,22 @@ impl SessionLaunchSettings {
             && self.effort.is_none()
             && self.agent.is_none()
             && self.name.is_none()
+            && self.config.is_empty()
+    }
+}
+
+/// Launch configuration that applies to every session the process starts. Paths are
+/// absolute; the bridge maps each field to its Agent SDK option.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_directories: Vec<String>,
+}
+
+impl SessionConfig {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.additional_directories.is_empty()
     }
 }
 
@@ -1660,13 +1678,16 @@ mod tests {
             effort: Some(super::super::model::EffortLevel::Max),
             agent: Some("reviewer".to_owned()),
             name: Some("Release prep".to_owned()),
+            config: super::SessionConfig {
+                additional_directories: vec!["/work/shared".to_owned()],
+            },
         };
         let json = serde_json::to_value(&settings).expect("serialize");
         assert_eq!(
             json,
             serde_json::json!({
                 "model": "haiku", "permission_mode": "plan", "effort": "max", "agent": "reviewer",
-                "name": "Release prep"
+                "name": "Release prep", "additional_directories": ["/work/shared"]
             })
         );
         assert_eq!(

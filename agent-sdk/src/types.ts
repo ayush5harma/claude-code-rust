@@ -732,6 +732,8 @@ export interface SessionLaunchSettings {
   effort?: EffortLevel;
   agent?: string;
   name?: string;
+  /** Absolute paths, resolved by the app. */
+  additional_directories?: string[];
 }
 
 export interface RewindTarget {

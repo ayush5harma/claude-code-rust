@@ -1066,7 +1066,8 @@ mod launch_command_tests {
         let cli = crate::Cli::try_parse_from(args).expect("parse CLI");
         cli.validate().expect("valid launch");
         let mut app = App::test_default();
-        app.startup = crate::app::state::StartupState::from_cli(&cli);
+        app.startup = crate::app::state::StartupState::from_cli(&cli)
+            .with_session_config(cli.session_config().expect("session config"));
         let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
         let params = StartConnectionParams {
             event_tx,
@@ -1095,5 +1096,32 @@ mod launch_command_tests {
         assert_eq!(resumed["command"], "resume_session");
         assert_eq!(resumed["session_id"], "session-1");
         assert_eq!(resumed["launch_settings"], serde_json::json!({ "name": "Renamed" }));
+    }
+
+    #[test]
+    fn added_directories_resolve_against_the_working_directory() {
+        let project = tempfile::tempdir().expect("project");
+        let shared = tempfile::tempdir().expect("shared directory");
+        std::fs::create_dir(project.path().join("docs")).expect("docs directory");
+        let project_dir = project.path().to_str().expect("UTF-8 path");
+        let shared_dir = shared.path().to_str().expect("UTF-8 path");
+        let created = startup_command(&[
+            "claude-rs",
+            "-C",
+            project_dir,
+            "--add-dir",
+            "docs",
+            "--add-dir",
+            shared_dir,
+        ]);
+        assert_eq!(
+            created["launch_settings"],
+            serde_json::json!({
+                "additional_directories": [
+                    project.path().join("docs").to_str().expect("UTF-8 path"),
+                    shared_dir,
+                ]
+            })
+        );
     }
 }

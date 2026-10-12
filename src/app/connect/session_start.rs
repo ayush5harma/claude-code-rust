@@ -41,8 +41,9 @@ pub(crate) fn session_launch_settings_for_reason(
     app: &App,
     reason: SessionStartReason,
 ) -> SessionLaunchSettings {
+    let config = app.startup.session_config().clone();
     match reason {
-        SessionStartReason::Logout => SessionLaunchSettings::default(),
+        SessionStartReason::Logout => SessionLaunchSettings { config, ..Default::default() },
         SessionStartReason::Startup
         | SessionStartReason::NewSession
         | SessionStartReason::Resume
@@ -57,6 +58,7 @@ pub(crate) fn session_launch_settings_for_reason(
                 effort: options.and_then(|options| options.effort),
                 agent: options.and_then(|options| options.agent.clone()),
                 name: options.and_then(|options| options.name.clone()),
+                config,
             }
         }
     }
@@ -158,11 +160,12 @@ pub(crate) fn begin_rewind(
 mod tests {
     use super::{SessionStartReason, session_launch_settings_for_reason};
     use crate::agent::model::EffortLevel;
+    use crate::agent::wire::{SessionConfig, SessionLaunchSettings};
     use crate::app::App;
+    use clap::Parser;
 
     #[test]
     fn explicit_cli_choices_apply_until_startup_completes() {
-        use clap::Parser;
         let cli = crate::Cli::try_parse_from([
             "claude-rs",
             "--resume",
@@ -197,5 +200,37 @@ mod tests {
         app.startup.complete_launch();
         let next = session_launch_settings_for_reason(&app, SessionStartReason::NewSession);
         assert_eq!(next, crate::agent::wire::SessionLaunchSettings::default());
+    }
+
+    #[test]
+    fn session_configuration_outlives_the_initial_session() {
+        let config = SessionConfig { additional_directories: vec!["/work/shared".to_owned()] };
+        let cli = crate::Cli::try_parse_from(["claude-rs", "--model", "opus", "-n", "First"])
+            .expect("CLI");
+        let mut app = App::test_default();
+        app.startup =
+            crate::app::state::StartupState::from_cli(&cli).with_session_config(config.clone());
+        assert_eq!(
+            session_launch_settings_for_reason(&app, SessionStartReason::Startup).config,
+            config
+        );
+        app.startup.complete_launch();
+        for reason in [
+            SessionStartReason::NewSession,
+            SessionStartReason::Resume,
+            SessionStartReason::Rewind,
+            SessionStartReason::Login,
+            SessionStartReason::Logout,
+        ] {
+            let launch = session_launch_settings_for_reason(&app, reason);
+            assert_eq!(
+                launch,
+                SessionLaunchSettings {
+                    config: config.clone(),
+                    ..SessionLaunchSettings::default()
+                },
+                "{reason:?}"
+            );
+        }
     }
 }

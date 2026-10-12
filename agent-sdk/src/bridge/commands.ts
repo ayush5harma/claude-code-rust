@@ -256,12 +256,16 @@ function optionalLaunchSettings(
   const agent = optionalString(parsed, "agent", `${context}.${key}`);
   const effort = parsed.effort == null ? undefined : expectEffortLevel(parsed, "effort", `${context}.${key}`);
   const name = optionalString(parsed, "name", `${context}.${key}`)?.trim();
+  const additionalDirectories = parsed.additional_directories == null
+    ? []
+    : expectStringArray(parsed, "additional_directories", `${context}.${key}`);
   return {
     ...(model ? { model } : {}),
     ...(permissionMode ? { permission_mode: permissionMode as SessionLaunchSettings["permission_mode"] } : {}),
     ...(agent ? { agent } : {}),
     ...(effort !== undefined ? { effort } : {}),
     ...(name ? { name } : {}),
+    ...(additionalDirectories.length > 0 ? { additional_directories: additionalDirectories } : {}),
   };
 }
 

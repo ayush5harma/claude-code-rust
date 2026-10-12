@@ -62,6 +62,14 @@ claude-rs --continue --name "Release prep, day two"
 
 `-n, --name` names the initial session. A new session takes the name as its title; a resumed or continued session is renamed before it connects, through the same SDK rename the Status tab uses. Control characters are removed, and a name with no visible characters is rejected. The SDK reports a new session's title after its first turn, so the Status tab shows the name from then on. Sessions started later inside the TUI are not renamed.
 
+Configure every session the process starts:
+
+```bash
+claude-rs --add-dir ../shared-lib --add-dir ~/notes
+```
+
+`--add-dir` gives Claude access to directories beyond the working directory. Unlike the options above, it applies to every session the process starts, including `/new` and sessions opened with `/resume`, as Claude Code keeps it for its whole process. Relative paths resolve against `--dir`, or the current directory without it, and each must be an existing directory; otherwise `claude-rs` exits with an error before starting.
+
 An initial prompt whose text matches a subcommand name can be passed after `--`, for example `claude-rs -- "doctor"`. Startup arguments cannot be combined with support commands such as `doctor`, `logs`, `config`, or `completions`.
 
 After the TUI exits, the app prints a resume hint whenever a session was established, using the active or most recently established session id.
@@ -85,17 +93,12 @@ See [Diagnostics](diagnostics.md) for full options, logging presets, bundle cont
 
 ## CLI Options
 
-The installed `claude-rs --help` command exposes these options:
+The installed `claude-rs --help` command exposes these options; the session options are listed under their own heading:
 
 | Option | Purpose |
 | --- | --- |
 | `-r, --resume [ID]` | Resume by session ID, or open the picker without an ID. |
 | `-c, --continue` | Continue the latest session for the working directory and its git worktrees; start new if none exists. |
-| `--model <MODEL>` | Set the initial session model without changing saved preferences. |
-| `--effort <LEVEL>` | Set the initial session effort; availability depends on the model. |
-| `--permission-mode <MODE>` | Set the initial session permission mode without changing saved preferences. |
-| `--agent <NAME>` | Select the main-thread agent for the initial session. |
-| `-n, --name <NAME>` | Name the initial new or resumed session. |
 | `--no-update-check` | Disable startup update checks. |
 | `-C, --dir <DIR>` | Run in a specific working directory. |
 | `--bridge-script <PATH>` | Use a specific Agent SDK bridge script. |
@@ -104,6 +107,12 @@ The installed `claude-rs --help` command exposes these options:
 | `--log-file <PATH>` | Write tracing diagnostics to a specific file. |
 | `--log-filter <FILTER>` | Use explicit tracing filter directives. |
 | `--log-append` | Append to the active log file instead of resetting it on startup. |
+| `--model <MODEL>` | Set the initial session model without changing saved preferences. |
+| `--effort <LEVEL>` | Set the initial session effort; availability depends on the model. |
+| `--permission-mode <MODE>` | Set the initial session permission mode without changing saved preferences. |
+| `--agent <NAME>` | Select the main-thread agent for the initial session. |
+| `-n, --name <NAME>` | Name the initial new or resumed session. |
+| `--add-dir <DIR>` | Let Claude access another directory in every session; repeatable. |
 
 See [Diagnostics](diagnostics.md) before enabling verbose logs.
 

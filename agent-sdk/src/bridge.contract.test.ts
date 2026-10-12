@@ -618,7 +618,7 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
     const saved = new Map();
     export function query({ prompt, options }) {
       record({ type: "query", cwd: options.cwd, resume: options.resume, model: options.model, effort: options.effort, permissionMode: options.permissionMode, agent: options.agent });
-      record({ type: "launch", resume: options.resume, sessionId: options.sessionId, forkSession: options.forkSession, title: options.title });
+      record({ type: "launch", resume: options.resume, sessionId: options.sessionId, forkSession: options.forkSession, title: options.title, additionalDirectories: options.additionalDirectories });
       const state = saved.get(options.resume) ?? { requested: false, effort: "high", cwd: options.cwd };
       saved.set(options.sessionId ?? options.resume, state);
       let model = options.model ?? "opus";
@@ -921,6 +921,34 @@ test("launch name titles a new session and renames a resumed one before it conne
       { type: "rename", sessionId: "saved-session", title: "Resumed name", options: { dir: cwd } },
       { type: "launch", resume: "saved-session" },
     ]);
+  } finally {
+    await cleanup();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("session configuration reaches the query options of created, replaced and resumed sessions", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-launch-config-"));
+  const journal = join(directory, "query-options.jsonl");
+  const cwd = process.cwd();
+  const shared = join(directory, "shared");
+  const launchSettings = { additional_directories: [shared, cwd] };
+  const { bridge, cleanup } = ultracodeFixtureBridge({
+    STARTUP_JOURNAL: journal,
+    STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId: "saved-session", cwd, lastModified: 1 }]),
+  });
+  try {
+    bridge.writeCommand({ command: "create_session", cwd, launch_settings: launchSettings });
+    await nextMatching(bridge, event => event.event === "connected");
+    bridge.writeCommand({ command: "new_session", cwd, launch_settings: launchSettings });
+    await nextMatching(bridge, event => event.event === "session_replaced");
+    bridge.writeCommand({ command: "resume_session", session_id: "saved-session", launch_settings: launchSettings });
+    await nextMatching(bridge, event => event.event === "session_replaced");
+    const launches = readJournal(journal).filter(entry => entry.type === "launch");
+    assert.equal(launches.length, 3);
+    for (const launch of launches) {
+      assert.deepEqual(launch.additionalDirectories, [shared, cwd]);
+    }
   } finally {
     await cleanup();
     rmSync(directory, { recursive: true, force: true });
