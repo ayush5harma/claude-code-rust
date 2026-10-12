@@ -423,6 +423,13 @@ readline
             { name: 'rename', description: 'Rename the current conversation', input_hint: '[name]' },
           ] } });
         }
+        if (SCENARIO === 'native-diff') {
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call', tool_call: {
+            tool_call_id: 'session-edit', title: 'Edited session-only.txt', kind: 'edit', status: 'completed',
+            content: [{ type: 'diff', old_path: 'session-only.txt', new_path: 'session-only.txt', old: 'before\n', new: 'Session line\n' }],
+            raw_input: { file_path: 'session-only.txt' }, locations: [], meta: { claudeCode: { toolName: 'Edit' } },
+          } } });
+        }
         if (SCENARIO === 'hook-activity') startupHooks();
         if (SCENARIO === 'disconnect-during-auth' && message.command === 'create_session') {
           const timer = setInterval(() => {
@@ -447,6 +454,11 @@ readline
           pending.push(message.message_uuid);
           send({ event: 'user_message_queued', session_id: SESSION, message_uuid: message.message_uuid });
         } else streamReply(message.message_uuid);
+        break;
+      case 'get_working_diff':
+        send({ event: 'working_diff', session_id: SESSION, request_id: message.request_id, files: SCENARIO === 'native-diff'
+          ? [{ path: 'tracked file.txt', status: 'MM', diff: 'diff --git a/tracked file.txt b/tracked file.txt\n--- a/tracked file.txt\n+++ b/tracked file.txt\n@@ -1 +1 @@\n-before\n+Working line\n' }]
+          : [], });
         break;
       case 'export_session_history': {
         // The bridge's resume translation of a saved session, split into two chunks.

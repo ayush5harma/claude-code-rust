@@ -12,6 +12,7 @@ pub(crate) mod config;
 mod connect;
 pub(crate) mod copy;
 mod dialog;
+pub(crate) mod diff_view;
 mod events;
 pub(crate) mod export;
 pub(crate) mod file_index;
