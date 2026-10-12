@@ -280,10 +280,17 @@ mod tests {
             config
         );
         app.startup.complete_launch();
+        assert_eq!(
+            session_launch_settings_for_reason(&app, SessionStartReason::Rewind),
+            SessionLaunchSettings {
+                model: Some("test-model".to_owned()),
+                config: Box::new(config.clone()),
+                ..Default::default()
+            }
+        );
         for reason in [
             SessionStartReason::NewSession,
             SessionStartReason::Resume,
-            SessionStartReason::Rewind,
             SessionStartReason::Login,
             SessionStartReason::Logout,
         ] {
