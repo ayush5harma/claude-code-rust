@@ -750,6 +750,24 @@ fn ctrl_g_editor_restores_terminal_and_submits_edited_draft() {
 }
 
 #[test]
+#[cfg(unix)]
+fn ctrl_g_editor_accepts_multiple_keys_after_terminal_restore() {
+    let mut test = TerminalTest::start_without_env("stream", 3, None, &[], false, &[], true);
+    test.send(b"draft");
+    test.wait_screen("draft");
+    test.send(b"\x07");
+    test.wait_screen("from editor");
+    test.send(b"\x7f");
+    test.wait_until("edited draft accepts Backspace", |test| {
+        test.screen().lines().any(|line| line.trim_end().ends_with("from edito"))
+    });
+    test.send(b"\r");
+    test.wait_until("edited draft reaches fake bridge", |test| !test.prompts().is_empty());
+    test.assert_prompts(&["draft\nfrom edito"]);
+    test.shutdown();
+}
+
+#[test]
 fn double_escape_opens_rewind_picker_and_single_escape_closes_it() {
     let mut test = TerminalTest::start("stream", 3);
     test.send(b"\x1b");

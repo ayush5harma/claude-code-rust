@@ -397,6 +397,7 @@ fn edit_draft_externally(
     if app.paste.has_pending_text() {
         finalize_pending_paste_event(app);
     }
+    app.paste.burst.reset();
 
     let editor = std::env::var("VISUAL")
         .ok()
