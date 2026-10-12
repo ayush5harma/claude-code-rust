@@ -33,6 +33,8 @@ pub(crate) enum AppSlashCommand {
     NewSession,
     Resume,
     Rewind,
+    Reload,
+    Export,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -310,6 +312,22 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         long_description: "Restore conversation, code, or both to a previous user message.",
         args: NO_ARGS,
     },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Reload,
+        name: "/reload",
+        usage: "Usage: /reload",
+        short_description: "Reload skills and output styles",
+        long_description: "Re-read skills and output styles from disk for the active session, so edits apply without restarting.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Export,
+        name: "/export",
+        usage: "Usage: /export [path]",
+        short_description: "Save the conversation as Markdown",
+        long_description: "Write the session's complete saved history to a Markdown file. Without a path it is created in the session directory; an existing file is never overwritten.",
+        args: NO_ARGS,
+    },
 ];
 
 impl AppSlashCommand {
@@ -347,6 +365,8 @@ impl AppSlashCommand {
             Self::NewSession => "/new-session",
             Self::Resume => "/resume",
             Self::Rewind => "/rewind",
+            Self::Reload => "/reload",
+            Self::Export => "/export",
         }
     }
 
@@ -354,6 +374,7 @@ impl AppSlashCommand {
         command_spec(self.name()).map_or(self.name(), |spec| spec.usage)
     }
 
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn submission_class(self, args: &[&str]) -> SubmissionClass {
         match self {
             Self::Btw => {
@@ -400,7 +421,7 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
-            Self::Compact | Self::Login | Self::Logout | Self::NewSession => {
+            Self::Compact | Self::Login | Self::Logout | Self::NewSession | Self::Reload => {
                 if args.is_empty() {
                     SubmissionClass::TurnExclusive
                 } else {
@@ -440,6 +461,7 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
+            Self::Export => SubmissionClass::TurnExclusive,
             Self::Resume => {
                 if args.len() <= 1 {
                     SubmissionClass::TurnExclusive

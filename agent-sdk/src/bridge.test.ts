@@ -1696,6 +1696,99 @@ test("parseCommandEnvelope validates reload_plugins command", () => {
   );
 });
 
+test("parseCommandEnvelope validates reload_skills_and_styles command", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      request_id: "req-reload",
+      command: "reload_skills_and_styles",
+      session_id: "session-123",
+    }),
+  );
+
+  assert.equal(parsed.requestId, "req-reload");
+  assert.deepEqual(parsed.command, {
+    command: "reload_skills_and_styles",
+    session_id: "session-123",
+  });
+  assert.throws(
+    () => parseCommandEnvelope(JSON.stringify({ command: "reload_skills_and_styles" })),
+    /session_id/,
+  );
+});
+
+test("reload_skills_and_styles reports the names both SDK reloads returned", async () => {
+  sessions.clear();
+  const session = makeSessionState();
+  const calls: string[] = [];
+  session.query = {
+    reloadSkills: async () => {
+      calls.push("skills");
+      return { skills: [{ name: "deploy", description: "d", argumentHint: "" }, { name: "lint", description: "l", argumentHint: "" }] };
+    },
+    reloadOutputStyles: async () => {
+      calls.push("styles");
+      return { available_output_styles: ["default", "Explanatory", "mine"] };
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+  sessions.set(session.sessionId, session);
+
+  try {
+    const events = await captureBridgeEventsAsync(async () => {
+      await handleSessionControlCommand(
+        { command: "reload_skills_and_styles", session_id: session.sessionId },
+        "req-reload",
+        promptControlDeps(),
+      );
+    });
+
+    assert.deepEqual(calls, ["skills", "styles"]);
+    assert.deepEqual(events, [
+      {
+        request_id: "req-reload",
+        event: "skills_and_styles_reloaded",
+        session_id: session.sessionId,
+        skills: ["deploy", "lint"],
+        output_styles: ["default", "Explanatory", "mine"],
+      },
+    ]);
+  } finally {
+    sessions.clear();
+  }
+});
+
+test("reload_skills_and_styles answers an SDK failure with a slash error and no reload event", async () => {
+  sessions.clear();
+  const session = makeSessionState();
+  session.query = {
+    reloadSkills: async () => ({ skills: [] }),
+    reloadOutputStyles: async () => {
+      throw new Error("style directory unreadable");
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+  sessions.set(session.sessionId, session);
+
+  try {
+    const events = await captureBridgeEventsAsync(async () => {
+      await handleSessionControlCommand(
+        { command: "reload_skills_and_styles", session_id: session.sessionId },
+        "req-fail",
+        promptControlDeps(),
+      );
+    });
+
+    assert.deepEqual(events, [
+      {
+        request_id: "req-fail",
+        event: "slash_error",
+        session_id: session.sessionId,
+        message: "failed to reload skills and output styles: style directory unreadable",
+      },
+    ]);
+  } finally {
+    sessions.clear();
+  }
+});
+
 test("handleReloadPluginsCommand holds cache-impacting reloads and sanitizes plugin names", async () => {
   const session = makeSessionState();
   const optionsSeen: unknown[] = [];

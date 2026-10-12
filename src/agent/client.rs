@@ -717,6 +717,13 @@ impl AgentConnection {
         })
     }
 
+    pub fn reload_skills_and_styles(&self, session_id: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::ReloadSkillsAndStyles { session_id },
+        })
+    }
+
     pub fn rename_session(&self, session_id: String, title: String) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: None,
@@ -773,6 +780,18 @@ impl AgentConnection {
         self.send(CommandEnvelope {
             request_id: None,
             command: BridgeCommand::GetUsage { session_id },
+        })
+    }
+
+    /// Request the complete saved history for /export; chunks come back under `request_id`.
+    pub fn export_session_history(
+        &self,
+        session_id: String,
+        request_id: String,
+    ) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: Some(request_id),
+            command: BridgeCommand::ExportSessionHistory { session_id },
         })
     }
 
@@ -1199,6 +1218,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reload_skills_and_styles_sends_bridge_command() {
+        let (conn, mut rx) = AgentConnection::test_channel();
+
+        conn.reload_skills_and_styles("session-1".to_owned()).expect("reload");
+
+        let envelope = rx.try_recv().expect("command");
+        assert_eq!(
+            envelope.command,
+            BridgeCommand::ReloadSkillsAndStyles { session_id: "session-1".to_owned() }
+        );
+    }
+
     #[tokio::test]
     async fn write_command_line_appends_exactly_one_newline() {
         let (mut writer, mut reader) = tokio::io::duplex(128);
@@ -1340,6 +1372,20 @@ mod tests {
         assert_eq!(
             envelope.command,
             BridgeCommand::ReloadPlugins { session_id: "session-1".to_owned(), force: false }
+        );
+    }
+
+    #[test]
+    fn export_session_history_sends_the_request_id_with_the_command() {
+        let (conn, mut rx) = AgentConnection::test_channel();
+
+        conn.export_session_history("session-1".to_owned(), "export-1".to_owned()).expect("export");
+
+        let envelope = rx.try_recv().expect("command");
+        assert_eq!(envelope.request_id.as_deref(), Some("export-1"));
+        assert_eq!(
+            envelope.command,
+            BridgeCommand::ExportSessionHistory { session_id: "session-1".to_owned() }
         );
     }
 
