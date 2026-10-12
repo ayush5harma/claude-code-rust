@@ -18,6 +18,8 @@ pub struct StartupState {
     phase: StartupPhase,
     session_options: Option<crate::SessionOptions>,
     initial_prompt: Option<String>,
+    /// Measured launch milestones, shown in the Status tab.
+    pub timeline: super::StartupTimeline,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

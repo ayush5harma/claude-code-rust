@@ -8,7 +8,11 @@ use crate::app::state::{HOOK_NOTICE_SLOW_THRESHOLD, HookRun};
 /// Record one hook report and, once the saved `presentation.hookNotices`
 /// preference is known, say what a finished hook earned.
 pub(super) fn handle_hook_activity(app: &mut App, activity: &HookActivity) {
-    app.session_runtime.hook_runs.record(activity);
+    if let Some(run) = app.session_runtime.hook_runs.record(activity)
+        && let Some(finished_at_ms) = run.finished_at_ms
+    {
+        app.startup.timeline.note_hook_finished(&run.event, finished_at_ms);
+    }
     flush_pending_hook_notices(app);
 }
 

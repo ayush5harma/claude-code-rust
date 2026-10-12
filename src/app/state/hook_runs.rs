@@ -114,7 +114,7 @@ impl HookRun {
         }
         let text = duration.map_or_else(
             || format!("Hook {label} finished"),
-            |duration| format!("Hook {label} took {}", format_hook_duration(duration)),
+            |duration| format!("Hook {label} took {}", format_elapsed(duration)),
         );
         Some(HookNotice { failed: false, text })
     }
@@ -122,7 +122,7 @@ impl HookRun {
 
 /// `620 ms`, `2.5 s`, `1 min 5 s`.
 #[must_use]
-pub fn format_hook_duration(duration: Duration) -> String {
+pub fn format_elapsed(duration: Duration) -> String {
     let millis = duration.as_millis();
     if millis < 1_000 {
         return format!("{millis} ms");
@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn durations_read_as_milliseconds_seconds_and_minutes() {
-        let format = |ms: u64| format_hook_duration(Duration::from_millis(ms));
+        let format = |ms: u64| format_elapsed(Duration::from_millis(ms));
         assert_eq!(format(620), "620 ms");
         assert_eq!(format(999), "999 ms");
         assert_eq!(format(1_000), "1.0 s");
