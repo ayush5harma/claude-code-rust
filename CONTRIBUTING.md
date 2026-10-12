@@ -96,9 +96,11 @@ runtime layout, and manual bridge overrides.
 
 ### Running CI Checks Locally
 
-These match the core checks in `.github/workflows/pr.yml`:
+`node scripts/dev/check-all.mjs` runs the PR-gating checks from `.github/workflows/pr.yml` and `_agent-sdk.yml` and prints a PASS/FAIL table (`--rust`, `--bridge`, `--quick`, `--audit`; `--quick` skips the serial terminal-tests re-run, the fake-bridge syntax check and the audits; see its header). `nix develop` provides CI's Rust channel (from `rust-toolchain.toml`), Node 24, Bun, `cargo-deny`, `jq`, `tmux` and `shellcheck`; it leaves the one-job build limit below alone.
 
 The repository's `.cargo/config.toml` limits compilation to one job to reduce peak compiler and linker memory. Test execution remains parallel by default. Run checks sequentially; override compilation concurrency explicitly with `-j N` when needed.
+
+The individual commands, which match the core checks in `.github/workflows/pr.yml`:
 
 ```bash
 # Formatting
