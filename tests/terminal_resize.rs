@@ -2198,6 +2198,54 @@ fn status_tab_shows_measured_startup_milestones_and_the_hook_summary() {
     test.shutdown();
 }
 
+/// The generator is the authority for `render-corpus.json`; this fails when the committed
+/// file no longer matches what the generator prints.
+#[test]
+#[allow(clippy::expect_used)]
+fn render_corpus_fixture_matches_its_generator() {
+    let runtime = which::which("bun")
+        .or_else(|_| which::which("node"))
+        .expect("terminal tests need bun or node on PATH");
+    let generator =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generate-render-corpus.js");
+    let output = std::process::Command::new(runtime)
+        .arg(generator)
+        .arg("--check")
+        .output()
+        .expect("run the corpus generator");
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+}
+
+/// The shared render corpus through the real binary: a resumed conversation (Markdown, fenced
+/// code, tool output, diffs, a failed tool, notices, user messages) followed by one long
+/// reply streamed in chunks. The rows are one distinctive line per kind, in conversation order.
+#[test]
+fn render_corpus_resumes_then_streams_into_scrollback_in_order() {
+    let mut test = TerminalTest::start("render-corpus", 0);
+    test.submit("continue", "continue");
+    test.wait_turn_finished("That is the full picture.");
+    let expected = [
+        "Transcript renderer overview",
+        "1992 lines hidden",
+        "(+500)",
+        "unresolved import `crate::ui::render_cache`",
+        "Good catch. Keep the generated file",
+        "Finding 11: layout",
+        "That is the full picture.",
+    ];
+    test.wait_until("every corpus kind in scrollback, in order", |test| {
+        let rows = test.transcript_rows();
+        let mut from = 0;
+        expected.iter().all(|needle| {
+            rows[from..].iter().position(|row| row.contains(needle)).is_some_and(|at| {
+                from += at + 1;
+                true
+            })
+        })
+    });
+    test.shutdown();
+}
+
 /// A terminal outside Windows sends Ctrl+V as one press byte and no release.
 /// Without a display server the clipboard cannot be opened, and the app has to
 /// say so: silence means the key never reached the clipboard path.

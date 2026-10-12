@@ -52,7 +52,7 @@ jobs:
           cargo_deps=false
           while IFS= read -r path; do
             case "$path" in
-              Cargo.toml|Cargo.lock|deny.toml|package.json|package-lock.json|bin/*|agent-sdk/*|scripts/npm/*|scripts/runtime/*|scripts/shared/*|scripts/install/*|scripts/release/*|scripts/README.md|.github/workflows/pr.yml|.github/workflows/_agent-sdk.yml|.github/workflows/_release-build.yml|.github/workflows/release.yml|.github/workflows/nightly.yml)
+              Cargo.toml|Cargo.lock|deny.toml|package.json|package-lock.json|bin/*|agent-sdk/*|scripts/npm/*|scripts/runtime/*|scripts/shared/*|scripts/install/*|scripts/release/*|scripts/dev/*|scripts/README.md|.github/workflows/pr.yml|.github/workflows/_agent-sdk.yml|.github/workflows/_release-build.yml|.github/workflows/release.yml|.github/workflows/nightly.yml)
                 package=true
                 ;;
             esac
@@ -213,7 +213,7 @@ jobs:
         run: |
           node scripts/runtime/stage-bun-runtime.mjs --check
           node scripts/shared/verify-third-party-notices.mjs
-          node --test scripts/npm/npm-resolver.test.cjs scripts/npm/smoke-npm-package-install.test.mjs scripts/runtime/verify-staged-bun-runtimes.test.mjs scripts/npm/dry-run-npm-publish.test.mjs scripts/npm/publish-npm-platform-packages.test.mjs scripts/shared/deny-targets.test.mjs scripts/install/release-advisories.test.mjs
+          node --test scripts/npm/npm-resolver.test.cjs scripts/npm/smoke-npm-package-install.test.mjs scripts/runtime/verify-staged-bun-runtimes.test.mjs scripts/npm/dry-run-npm-publish.test.mjs scripts/npm/publish-npm-platform-packages.test.mjs scripts/shared/deny-targets.test.mjs scripts/install/release-advisories.test.mjs scripts/dev/bench-render.test.mjs
 
       - name: Check public installer syntax
         shell: bash
