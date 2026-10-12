@@ -710,8 +710,12 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
   const loaderPath = join(directory, "loader.mjs");
   writeFileSync(loaderPath, `
     import { registerHooks } from "node:module";
+    // Only ESM imports are redirected. The bridge's version check calls
+    // require.resolve on the SDK to read its package.json; redirecting that
+    // into the temp fixture directory made the check fail with "unable to
+    // resolve installed ... package.json" before any session started.
     registerHooks({ resolve(specifier, context, nextResolve) {
-      return specifier === "@anthropic-ai/claude-agent-sdk"
+      return specifier === "@anthropic-ai/claude-agent-sdk" && !context.conditions.includes("require")
         ? { url: ${JSON.stringify(pathToFileURL(fixturePath).href)}, shortCircuit: true }
         : nextResolve(specifier, context);
     } });

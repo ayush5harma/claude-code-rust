@@ -102,6 +102,9 @@ release steps unless they expose their own command-line interface.
   when a median frame time regresses by more than its gate. See `CONTRIBUTING.md`.
 - `dev/bench-render.test.mjs` covers its statistics, scenario matching, and input
   validation, and runs in the PR npm packaging script tests.
+- `dev/check-all.mjs` is a contributor entry point (see CONTRIBUTING.md). It runs
+  the PR-gating checks of `pr.yml` and `_agent-sdk.yml` locally and prints a
+  PASS/FAIL table. It is not used by any workflow.
 
 ## Workflow Usage
 
