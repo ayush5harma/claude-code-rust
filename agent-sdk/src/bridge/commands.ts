@@ -545,6 +545,11 @@ export function parseCommandEnvelope(line: string): {
           command: "get_usage",
           session_id: expectString(raw, "session_id", "get_usage"),
         };
+      case "get_working_diff":
+        return {
+          command: "get_working_diff",
+          session_id: expectString(raw, "session_id", "get_working_diff"),
+        };
       case "get_rewind_targets":
         return {
           command: "get_rewind_targets",

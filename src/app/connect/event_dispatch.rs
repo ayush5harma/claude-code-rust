@@ -43,6 +43,11 @@ pub(super) async fn handle_bridge_event(
 ) {
     let EventEnvelope { request_id, event } = envelope;
     match event {
+        crate::agent::wire::BridgeEvent::WorkingDiff { session_id, files, error } => {
+            let _ = event_tx
+                .send(ClientEvent::WorkingDiffReceived { session_id, request_id, files, error })
+                .await;
+        }
         crate::agent::wire::BridgeEvent::Connected {
             session_id,
             cwd,

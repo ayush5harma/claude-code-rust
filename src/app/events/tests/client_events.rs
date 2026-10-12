@@ -2,6 +2,48 @@ use super::*;
 use pretty_assertions::assert_eq;
 
 #[test]
+fn diff_result_from_another_session_is_ignored_and_replacement_closes_pending_view() {
+    let (mut app, mut commands) = app_with_bridge_connection();
+    crate::app::diff_view::open(&mut app);
+    let request = commands.try_recv().expect("working diff request");
+    let request_id = request.request_id.expect("correlated request");
+    assert!(app.diff_view.as_ref().is_some_and(|view| view.loading));
+
+    let response = |session_id: &str| ClientEvent::WorkingDiffReceived {
+        session_id: session_id.to_owned(),
+        request_id: Some(request_id.clone()),
+        files: vec![crate::agent::wire::WorkingDiffFile {
+            path: "stale.txt".to_owned(),
+            status: " M".to_owned(),
+            diff: "+stale".to_owned(),
+        }],
+        error: None,
+    };
+    handle_client_event(&mut app, response("other-session"));
+    assert!(app.diff_view.as_ref().is_some_and(|view| view.loading && view.entries.is_empty()));
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionReplaced {
+            session_id: model::SessionId::new("replacement"),
+            cwd: "/replacement".into(),
+            current_model: test_current_model("new-model"),
+            available_models: Vec::new(),
+            mode: None,
+            fast_mode_state: model::FastModeState::Off,
+            fast_mode_disabled_reason: None,
+            ultracode: None,
+            history_updates: Vec::new(),
+            restored_input: None,
+        },
+    );
+    assert!(app.diff_view.is_none());
+    assert_eq!(app.surface_mode, SurfaceMode::Chat);
+    handle_client_event(&mut app, response("test-session"));
+    assert!(app.diff_view.is_none());
+}
+
+#[test]
 fn connected_updates_welcome_session_id_while_pristine() {
     let mut app = make_test_app();
     app.transcript.messages.push(ChatMessage::welcome(

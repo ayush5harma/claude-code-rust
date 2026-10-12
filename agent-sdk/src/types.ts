@@ -859,6 +859,7 @@ export interface SettingsResult {
 }
 
 export type BridgeCommand =
+  | { command: "get_working_diff"; session_id: string }
   | { command: "inspect_settings"; session_id: string; app_settings_path?: string }
   | { command: "mutate_setting"; session_id: string; app_settings_path?: string; mutation: SettingsMutation }
   | {
@@ -1094,6 +1095,7 @@ export interface SideQuestionMetadata {
 }
 
 export type BridgeEvent =
+  | { event: "working_diff"; session_id: string; files: Array<{ path: string; status: string; diff: string }>; error?: string }
   | { event: "settings_result"; session_id: string; result: SettingsResult }
   | {
       event: "connected";

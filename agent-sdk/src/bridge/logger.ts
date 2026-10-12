@@ -120,6 +120,7 @@ function commandSessionId(command: BridgeCommand): string | undefined {
     case "get_status_snapshot":
     case "get_context_usage":
     case "get_usage":
+    case "get_working_diff":
     case "get_rewind_targets":
     case "rewind":
     case "reload_plugins":
@@ -169,6 +170,7 @@ function commandToolCallId(command: BridgeCommand): string | undefined {
     case "get_status_snapshot":
     case "get_context_usage":
     case "get_usage":
+    case "get_working_diff":
     case "get_rewind_targets":
     case "rewind":
     case "reload_plugins":
@@ -220,6 +222,7 @@ function eventToolCallId(event: BridgeEvent): string | undefined {
     case "interaction_cancelled":
     case "context_usage":
     case "usage_snapshot":
+    case "working_diff":
     case "rewind_targets":
     case "rewind_result":
     case "mcp_snapshot":
@@ -273,6 +276,7 @@ function protocolEventLevel(event: BridgeEvent): LogLevel {
     case "settings_result":
     case "context_usage":
     case "usage_snapshot":
+    case "working_diff":
     case "rewind_targets":
     case "rewind_result":
     case "runtime_reload_completed":

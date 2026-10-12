@@ -29,6 +29,12 @@ impl From<&str> for ConnectionFailure {
 
 /// Messages sent from the backend bridge path to the App/UI layer.
 pub enum ClientEvent {
+    WorkingDiffReceived {
+        session_id: String,
+        request_id: Option<String>,
+        files: Vec<crate::agent::wire::WorkingDiffFile>,
+        error: Option<String>,
+    },
     SettingsResultReceived {
         session_id: String,
         request_id: Option<String>,
@@ -269,6 +275,7 @@ impl ClientEvent {
             | Self::StatusSnapshotReceived { session_id, .. }
             | Self::ContextUsageReceived { session_id, .. }
             | Self::StructuredUsageReceived { session_id, .. }
+            | Self::WorkingDiffReceived { session_id, .. }
             | Self::McpSnapshotReceived { session_id, .. } => Some(session_id),
             Self::SlashCommandError { session_id, .. } => session_id.as_deref(),
             Self::RewindResultReceived { result } => Some(result.session_id.as_str()),

@@ -15,6 +15,7 @@ pub(crate) enum AppSlashCommand {
     Hooks,
 
     Copy,
+    Diff,
     Docs,
     Agent,
     Effort,
@@ -153,6 +154,14 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         usage: "Usage: /copy",
         short_description: "Copy last response",
         long_description: "Copy the last finished assistant response or choose a code block. Configure Skip the /copy picker to copy the full response directly.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Diff,
+        name: "/diff",
+        usage: "Usage: /diff",
+        short_description: "Inspect file changes",
+        long_description: "Browse retained session tool diffs and current Git working-tree changes.",
         args: NO_ARGS,
     },
     AppSlashCommandSpec {
@@ -329,6 +338,7 @@ impl AppSlashCommand {
             Self::Hooks => "/hooks",
 
             Self::Copy => "/copy",
+            Self::Diff => "/diff",
             Self::Docs => "/docs",
             Self::Agent => "/agent",
             Self::Effort => "/effort",
@@ -379,20 +389,18 @@ impl AppSlashCommand {
             | Self::Mcp
             | Self::Plugins
             | Self::Status
-            | Self::Usage => {
+            | Self::Usage
+            | Self::Diff => {
                 if args.is_empty() {
                     SubmissionClass::Fullscreen
                 } else {
                     SubmissionClass::Invalid
                 }
             }
-            Self::Copy => {
-                if args.is_empty() {
-                    SubmissionClass::Informational
-                } else {
-                    SubmissionClass::Invalid
-                }
-            }
+            Self::Copy => match args {
+                [] => SubmissionClass::Informational,
+                _ => SubmissionClass::Invalid,
+            },
             Self::Docs => {
                 if matches!(args, ["mode" | "models" | "shortcuts" | "commands" | "agents"]) {
                     SubmissionClass::Informational

@@ -5,6 +5,9 @@ use crate::agent::events::ClientEvent;
 
 pub(super) fn handle(app: &mut App, event: ClientEvent) {
     match event {
+        ClientEvent::WorkingDiffReceived { session_id, request_id, files, error } => {
+            crate::app::diff_view::apply(app, &session_id, request_id.as_deref(), files, error);
+        }
         ClientEvent::SettingsResultReceived { request_id, result, .. } => {
             crate::app::config::apply_settings_result(app, request_id.as_deref(), result);
         }

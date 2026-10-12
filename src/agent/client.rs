@@ -776,6 +776,13 @@ impl AgentConnection {
         })
     }
 
+    pub fn get_working_diff(&self, session_id: String, request_id: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: Some(request_id),
+            command: BridgeCommand::GetWorkingDiff { session_id },
+        })
+    }
+
     pub fn get_rewind_targets(&self, session_id: String) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: None,
