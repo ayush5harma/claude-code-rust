@@ -40,7 +40,7 @@ The two SDK behavior fixes incorporate upstream pull requests [#444](https://git
 | Session tags and deletion ([#21](https://github.com/ayush5harma/claude-code-rust/pull/21)) | SDK-backed picker actions, confirmation before deletion, and protection for the active session. |
 | Resume ergonomics ([#22](https://github.com/ayush5harma/claude-code-rust/pull/22)) | Exact-title resolution with ambiguity reporting, session sizes in bytes, and an explicit compact-first option for large sessions. |
 | Session accents ([#23](https://github.com/ayush5harma/claude-code-rust/pull/23)) | Stable session-ID colors, with `/color` changes applied only after a correlated successful SDK confirmation. |
-| Input ergonomics ([#24](https://github.com/ayush5harma/claude-code-rust/pull/24)) | Keyboard, paste, and external-editor refinements. |
+| Input ergonomics ([#24](https://github.com/ayush5harma/claude-code-rust/pull/24)) | Backslash-Enter newline, Ctrl+G with VISUAL or EDITOR, Esc Esc rewind, empty Ctrl+D and `/exit`, Ctrl+O retained-transcript detail view, Ctrl+T tasks, remappable shortcuts, and paste-safe input handling. |
 | Composer and footer | Configurable `filled` or `rules` composer style; session-accent rules and prompt glyph; dynamic footer with context, session name, available SDK rate information, current-session agent counts, and permissions; the latest confirmed Task or TodoWrite plan; and a user-level configured `statusLine` command. Project and local settings cannot select an executable command; the user command receives documented JSON on stdin after the SDK session connects. Unavailable SDK rate and token fields are omitted rather than estimated. |
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development commands and verification requirements.
