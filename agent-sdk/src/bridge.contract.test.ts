@@ -710,8 +710,10 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
   const loaderPath = join(directory, "loader.mjs");
   writeFileSync(loaderPath, `
     import { registerHooks } from "node:module";
+    // Node 24.21 also routes createRequire().resolve through these hooks; the bridge's SDK
+    // version check resolves the real package.json that way, so only imports are redirected.
     registerHooks({ resolve(specifier, context, nextResolve) {
-      return specifier === "@anthropic-ai/claude-agent-sdk"
+      return specifier === "@anthropic-ai/claude-agent-sdk" && !context.conditions?.includes("require")
         ? { url: ${JSON.stringify(pathToFileURL(fixturePath).href)}, shortCircuit: true }
         : nextResolve(specifier, context);
     } });
