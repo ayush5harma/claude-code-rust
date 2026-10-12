@@ -18,6 +18,7 @@ pub(crate) mod live_rows;
 mod markdown;
 mod message;
 mod message_rows;
+mod search;
 mod session_picker;
 pub(crate) mod spinner_verbs;
 pub mod theme;
@@ -44,6 +45,7 @@ pub fn render_fullscreen_surface(frame: &mut Frame, app: &mut App) {
         }
         SurfaceMode::Fullscreen(FullscreenView::Update) => update::render(frame, app),
         SurfaceMode::Fullscreen(FullscreenView::Copy) => copy::render(frame, app),
+        SurfaceMode::Fullscreen(FullscreenView::Search) => search::render(frame, app),
         SurfaceMode::Chat => {
             debug_assert!(false, "chat is rendered by the inline terminal session");
         }

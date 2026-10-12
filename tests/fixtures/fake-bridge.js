@@ -383,7 +383,10 @@ readline
           mode: null,
           fast_mode_state: 'off',
           fast_mode_disabled_reason: null,
-          history_updates: renderCorpusScenario ? renderCorpus.history : SCENARIO === 'background-resume' ? [
+          history_updates: SCENARIO === 'search-retained' ? [
+            { type: 'user_message_chunk', content: { type: 'text', text: 'Find delta in the first prompt' }, source_message_uuid: 'search-user' },
+            { type: 'agent_message_chunk', content: { type: 'text', text: 'A later delta appears here' }, source_message_uuid: 'search-assistant' },
+          ] : renderCorpusScenario ? renderCorpus.history : SCENARIO === 'background-resume' ? [
             { type: 'user_message_chunk', content: { type: 'text', text: 'Resumed background launch' }, source_message_uuid: 'saved-user' },
             { type: 'tool_call', tool_call: { tool_call_id: 'background-primary', title: 'PRIMARY_TASK', kind: 'execute', status: 'in_progress', content: [], raw_input: { command: 'PRIMARY_TASK' }, locations: [], meta: { claudeCode: { toolName: 'Bash' } } } },
             { type: 'tool_call_update', tool_call_update: { tool_call_id: 'background-primary', fields: { status: 'detached' } } },

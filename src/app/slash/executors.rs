@@ -53,6 +53,10 @@ pub(crate) fn try_handle_submission(app: &mut App, submission: &ResolvedSubmissi
             crate::app::copy::open(app);
             true
         }
+        AppSlashCommand::Search => {
+            crate::app::search::open(app, &args.join(" "));
+            true
+        }
         AppSlashCommand::Docs => handle_docs_submit(app, &args),
         AppSlashCommand::Agent => handle_agent_submit(app, &args),
         AppSlashCommand::Effort => handle_effort_submit(app, &args),

@@ -28,6 +28,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEventFamily::Session => session::handle(app, event),
         ClientEventFamily::Host => host::handle(app, event),
     }
+    crate::app::search::refresh(app);
 }
 
 fn is_stale_session_event(app: &App, event: &ClientEvent) -> bool {
