@@ -500,6 +500,7 @@ export async function createSession(params: {
   sessionId?: string;
   deferConnect?: boolean;
   launchSettings: SessionLaunchSettings;
+  launchConfig?: LaunchConfig;
   connectEvent: ConnectEventKind;
   requestId?: string;
   sessionsToCloseBeforeRegister?: SessionState[];
@@ -650,7 +651,7 @@ export async function createSession(params: {
     },
   });
   // Outside the try below: a malformed flag is the user's error, not a query() failure.
-  const launchConfig = parseLaunchConfig(params.launchSettings);
+  const launchConfig = params.launchConfig ?? parseLaunchConfig(params.launchSettings);
   try {
     const { effective: resolvedSettings } = await resolveSettings({
       cwd: params.cwd,

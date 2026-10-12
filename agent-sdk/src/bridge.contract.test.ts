@@ -961,6 +961,58 @@ test("fork-session resumes under a new id that takes the launch name", async () 
   }
 });
 
+test("create_session with an explicit resume and fork_session forks the saved session", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-explicit-fork-"));
+  const journal = join(directory, "query-options.jsonl");
+  const cwd = process.cwd();
+  const { bridge, cleanup } = ultracodeFixtureBridge({ STARTUP_JOURNAL: journal });
+  try {
+    bridge.writeCommand({
+      command: "create_session", cwd, resume: "saved-session",
+      launch_settings: { fork_session: true, name: "Forked name" },
+    });
+    const connected = await nextMatching(bridge, event => event.event === "connected");
+    const entries = readJournal(journal);
+    const launch = entries.find(entry => entry.type === "launch");
+    assert.equal(launch?.resume, "saved-session");
+    assert.equal(launch?.forkSession, true);
+    assert.equal(launch?.title, "Forked name");
+    assert.equal(typeof launch?.sessionId, "string");
+    assert.notEqual(launch?.sessionId, "saved-session");
+    assert.equal(connected.session_id, launch?.sessionId);
+    assert.equal(entries.some(entry => entry.type === "rename"), false);
+  } finally {
+    await cleanup();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+for (const [flag, launchSettings] of [
+  ["--settings", { name: "Must not rename", settings: '{"model":' }],
+  ["--mcp-config", { name: "Must not rename", mcp_configs: ["{bad"] }],
+] as const) {
+  test(`resume with malformed ${flag} leaves the saved title unchanged and does not query`, async () => {
+    const directory = mkdtempSync(join(tmpdir(), "claude-rs-invalid-resume-config-"));
+    const journal = join(directory, "query-options.jsonl");
+    const cwd = process.cwd();
+    const { bridge, cleanup } = ultracodeFixtureBridge({
+      STARTUP_JOURNAL: journal,
+      STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId: "saved-session", cwd, lastModified: 1 }]),
+    });
+    try {
+      bridge.writeCommand({ command: "resume_session", session_id: "saved-session", launch_settings: launchSettings });
+      const failed = await nextMatching(bridge, event => event.event === "slash_error");
+      assert.match(String(failed.message), new RegExp(flag));
+      const entries = readJournal(journal);
+      assert.equal(entries.some(entry => entry.type === "rename"), false);
+      assert.equal(entries.some(entry => entry.type === "query"), false);
+    } finally {
+      await cleanup();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}
+
 test("a failed launch rename is reported after the resumed session connects", async () => {
   const cwd = process.cwd();
   const { bridge, cleanup } = ultracodeFixtureBridge({
