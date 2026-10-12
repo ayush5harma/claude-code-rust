@@ -37,20 +37,17 @@ The two SDK behavior fixes incorporate upstream pull requests [#444](https://git
 | Native `/diff` viewer ([#15](https://github.com/ayush5harma/claude-code-rust/pull/15)) | Working-tree changes, including untracked files and repositories without a first commit, alongside retained current-session tool diffs. |
 | Session `/agents` panel ([#18](https://github.com/ayush5harma/claude-code-rust/pull/18)) | Public SDK subagent history and current-session task state, with stopping restricted to a matching currently running task. |
 | Retained transcript search ([#19](https://github.com/ayush5harma/claude-code-rust/pull/19)) | `/search [query]` and remappable Ctrl+F search retained user, assistant, and visible tool text, with Unicode-aware matching. Archived history and hidden tool inputs are excluded. |
+| Session tags and deletion ([#21](https://github.com/ayush5harma/claude-code-rust/pull/21)) | SDK-backed picker actions, confirmation before deletion, and protection for the active session. |
+| Resume ergonomics ([#22](https://github.com/ayush5harma/claude-code-rust/pull/22)) | Exact-title resolution with ambiguity reporting, session sizes in bytes, and an explicit compact-first option for large sessions. |
+| Session accents ([#23](https://github.com/ayush5harma/claude-code-rust/pull/23)) | Stable session-ID colors, with `/color` changes applied only after a correlated successful SDK confirmation. |
+| Input ergonomics ([#24](https://github.com/ayush5harma/claude-code-rust/pull/24)) | Keyboard, paste, and external-editor refinements. |
+| Composer and footer | Configurable `filled` or `rules` composer style; session-accent rules and prompt glyph; dynamic footer with context, session name, available SDK rate information, current-session agent counts, and permissions; the latest confirmed Task or TodoWrite plan; and a user-level configured `statusLine` command. Project and local settings cannot select an executable command; the user command receives documented JSON on stdin after the SDK session connects. Unavailable SDK rate and token fields are omitted rather than estimated. |
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development commands and verification requirements.
 
-### Under review and in development
+### Remaining verification
 
-These are **not included in v0.15.2-fork.2**. Pull-request status is authoritative; this list is a development snapshot, not a promise that unfinished features are available.
-
-| Work | Status |
-| --- | --- |
-| Resume ergonomics | [PR #22](https://github.com/ayush5harma/claude-code-rust/pull/22): exact-title resolution with ambiguity reporting, session sizes in bytes, and an explicit compact-first option for large sessions. |
-| Session tags and deletion | [PR #21](https://github.com/ayush5harma/claude-code-rust/pull/21): SDK-backed picker actions, confirmation before deletion, and protection for the active session. |
-| Session accents | [PR #23](https://github.com/ayush5harma/claude-code-rust/pull/23): stable session-ID colors, with `/color` changes applied only after a correlated successful SDK confirmation. |
-
-Further planned work includes measured output-presentation parity, composer and footer improvements, and keyboard parity. These remain backlog items until implemented and verified. Generic MCP resource attachments are blocked by the pinned public SDK: its resource-reading API supports MCP Apps `ui://` resources, not general resource discovery and reading. Features requiring SDK support remain conditional on that support.
+Fresh live verification remains. The native `/memory` flow opens Memory settings; a stock-style memory-file picker/editor is unavailable because the pinned public host SDK has no picker or editor operation. Remote control startup can be configured, but a native start/stop/share-link flow is unavailable through the pinned public host API. Shell input and Vim keymap parity remain unimplemented. Generic MCP resource attachments are conditional on public SDK support: the pinned resource-reading API supports MCP Apps `ui://` resources, not general resource discovery and reading.
 
 ## About
 
