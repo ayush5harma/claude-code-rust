@@ -377,7 +377,7 @@ async fn structured_editor_reports_parse_error_and_saves_corrected_json_without_
 
 #[tokio::test(flavor = "current_thread")]
 async fn config_edits_and_resets_use_correlated_snapshot_mutations() {
-    tokio::task::LocalSet::new().run_until(async {
+    tokio::task::LocalSet::new().run_until(Box::pin(async {
         let mut app = App::test_default();
         let (connection, mut commands) = AgentConnection::test_channel();
         app.session_runtime.conn = Some(Rc::new(connection));
@@ -409,7 +409,7 @@ async fn config_edits_and_resets_use_correlated_snapshot_mutations() {
         crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
         let reset = commands.recv_envelope().await.expect("reset");
         assert!(matches!(reset.command, BridgeCommand::MutateSetting { mutation, .. } if mutation.operation == SettingsOperation::Remove && mutation.id == "language"));
-    }).await;
+    })).await;
 }
 
 #[test]

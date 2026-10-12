@@ -819,7 +819,7 @@ fn transcript_search_navigates_retained_matches_from_key_and_slash_command() {
     test.wait_screen_with("Match 2 of 2", &["Claude: A later delta"]);
     test.send(b"\x1b");
     test.wait_screen("Type a message");
-    test.submit("/search delta", "/search delta");
+    test.submit_command("/search delta");
     test.wait_screen_with("Match 1 of 2", &["User: Find delta"]);
     test.send(b"\x1b");
     test.wait_screen("Type a message");
