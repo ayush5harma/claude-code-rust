@@ -246,7 +246,9 @@ impl TerminalTest {
         };
         test.wait_screen("Trust this project");
         test.send(b"y");
-        if has_initial_prompt {
+        if scenario.starts_with("resume-large") {
+            test.wait_screen("Large saved conversation");
+        } else if has_initial_prompt {
             test.wait_until("initial prompt", |test| !test.prompts().is_empty());
         } else {
             test.wait_screen("Type a message");
@@ -865,6 +867,56 @@ fn interactive_cli_startup_sends_overrides_and_initial_prompt_without_saving_the
         );
         test.shutdown();
     }
+}
+
+#[test]
+fn large_session_picker_compacts_only_after_explicit_choice_before_initial_prompt() {
+    let mut test = TerminalTest::start_with_options(
+        "resume-large",
+        3,
+        None,
+        &["--resume", "--", "Review next"],
+        true,
+    );
+    test.wait_for("saved size in picker", |test| {
+        test.screen()
+            .lines()
+            .any(|line| line.contains("Large saved conversation") && line.contains("saved 2.0 MiB"))
+            .then_some(())
+    });
+    test.wait_journal("settings_result");
+    assert!(test.prompts().is_empty());
+    test.send(b"c");
+    test.wait_for("compaction then initial prompt", |test| {
+        (test.prompts().len() == 2).then_some(())
+    });
+    assert_eq!(test.commands("resume_session")[0]["session_id"], "saved-large");
+    test.assert_prompts(&["/compact", "Review next"]);
+    test.shutdown();
+}
+
+#[test]
+fn failed_compact_first_keeps_launch_prompt_unsent() {
+    let mut test = TerminalTest::start_with_options(
+        "resume-large-fail",
+        3,
+        None,
+        &["--resume", "--", "Review next"],
+        true,
+    );
+    test.wait_for("saved session picker", |test| {
+        test.screen().contains("Large saved conversation").then_some(())
+    });
+    test.wait_journal("settings_result");
+    test.send(b"c");
+    test.wait_for("compaction failure", |test| {
+        test.screen().contains("fixture compaction failed").then_some(())
+    });
+    test.assert_prompts(&["/compact"]);
+    test.wait_for("unsent launch prompt draft", |test| {
+        test.screen().contains("Review next").then_some(())
+    });
+    test.shutdown();
 }
 
 #[test]

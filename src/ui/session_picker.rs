@@ -276,12 +276,21 @@ fn footer_text(app: &App) -> &'static str {
     } else if app.session_picker.turn_session_id.is_some() {
         "Enter to fork before message | Left/Esc back | Ctrl+Q to quit"
     } else {
-        "Enter resume | Right choose message | t tag | d delete | Esc close"
+        "Enter resume | c compact-first (1 MiB+) | Right messages | t tag | d delete | Esc"
     }
 }
 
 fn display_primary(session: &RecentSessionInfo) -> String {
-    format!("{} - {}", format_relative_age(session.last_modified_ms), display_title(session))
+    let size = match session.file_size_bytes {
+        0 => String::new(),
+        bytes if bytes >= 1024 * 1024 => {
+            let whole = bytes / (1024 * 1024);
+            let tenth = (bytes % (1024 * 1024)) * 10 / (1024 * 1024);
+            format!(" [saved {whole}.{tenth} MiB]")
+        }
+        bytes => format!(" [saved {} KiB]", bytes.div_ceil(1024)),
+    };
+    format!("{} - {}{size}", format_relative_age(session.last_modified_ms), display_title(session))
 }
 
 fn display_title(session: &RecentSessionInfo) -> String {
@@ -289,11 +298,11 @@ fn display_title(session: &RecentSessionInfo) -> String {
         .custom_title
         .as_deref()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| session.first_prompt.as_deref().filter(|value| !value.trim().is_empty()))
         .or_else(|| {
             let summary = session.summary.trim();
             (!summary.is_empty()).then_some(summary)
         })
+        .or_else(|| session.first_prompt.as_deref().filter(|value| !value.trim().is_empty()))
         .unwrap_or(&session.session_id);
     truncate(title, 60)
 }
@@ -412,10 +421,9 @@ mod tests {
         tagged.tag = Some("review\nready\u{1b}".to_owned());
         app.recent_sessions = vec![tagged, session("s2", "Second Session")];
         let text = draw_text(&mut app);
-        assert!(
-            text.lines()
-                .any(|line| line.contains("> just now - First Session [tag: review ready ]"))
-        );
+        assert!(text.lines().any(|line| {
+            line.contains("> just now - First Session [saved 1 KiB] [tag: review ready ]")
+        }));
         assert!(
             text.lines().any(|line| line.contains("Second Session") && !line.contains("[tag:"))
         );
@@ -516,7 +524,7 @@ mod tests {
             .expect("current session row");
         let action_column = session_row.find("messages ›").expect("message action");
         assert!(action_column > 50, "message action should be aligned to the right: {session_row}");
-        assert!(text.contains("Right choose message"));
+        assert!(text.contains("Right messages"));
     }
 
     #[test]
