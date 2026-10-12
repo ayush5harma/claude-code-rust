@@ -124,31 +124,35 @@ Additional GitHub-only checks include the separate PR title lint workflow,
 CodeQL analysis, path-aware package layout validation, scheduled cross-platform
 smoke tests, and release packaging validation.
 
-#### Render benchmark
+### Render Benchmark
 
-UI work on the chat transcript, composer, or footer must not slow frame
-rendering. `node scripts/dev/bench-render.mjs <base-ref> [<head-ref>]` (head
-defaults to `HEAD`; both refs must contain the benchmark) builds both refs in
-temporary worktrees, runs the ignored `render_bench` test in release mode, and
-prints median and p95 microseconds per frame for four scenarios at 120x40 and
-200x60: a cache-warm redraw, a cold first frame, streaming a 200-chunk reply, and
-scrolling the whole history. The transcript is the shared corpus in
+To check what a change does to frame rendering, run
+`node scripts/dev/bench-render.mjs <base-ref> [<head-ref>]` (head defaults to
+`HEAD`; both refs must contain the benchmark). It builds both refs in temporary
+worktrees, runs the ignored `render_bench` test in release mode, and prints median
+and p95 microseconds per frame for four scenarios at 120x40 and 200x60: a
+cache-warm redraw, a cold first frame, streaming a 200-chunk reply, and scrolling
+the whole history. The transcript is the shared corpus in
 `tests/fixtures/render-corpus.json`, painted through the same planning and
 painting functions as `ChatTerminalSession::draw` on a `TestBackend`. It does not
 measure scrollback insertion or terminal writes.
 
-Timing noise decides the gate. Base runs twice (5 runs per group,
+Timing noise decides the verdict. Base runs twice (5 runs per group,
 `BENCH_RENDER_RUNS`), and the script prints how far those identical builds
-drifted apart. A median regresses when it is more than max(10%,
-2 x that spread) above base (`BENCH_RENDER_THRESHOLD` sets the 10%); the exit
-code is 1 for a regression and 2 for a failure, including a scenario only one
-ref reports. Measured on a loaded machine, the spread of 5-run medians was
-0.2% to 1.9%, while two single runs of the same build differed by 9.9%, which is
-why one run per ref is not enough.
+drifted apart. A median regresses when it is more than max(10%, 2 x that spread)
+above base (`BENCH_RENDER_THRESHOLD` sets the 10%). If the spread needs a gate
+above three thresholds (30%), the run is too noisy to judge and fails. Exit
+codes: 1 for a regression, 2 for a failure (a scenario only one ref reports,
+malformed output, too much noise), 130 or 143 after SIGINT or SIGTERM. Measured
+on a loaded machine, the spread of 5-run medians was 0.2% to 1.9%, while two
+single runs of the same build differed by 9.9%, which is why one run per ref is
+not enough.
 
 The two release target dirs persist in `target/bench-render/` so dependencies
 compile once; they take about 1.7 GB together and grow as dependencies change.
-Set `BENCH_RENDER_TARGET_DIR` to keep them elsewhere. Delete them when done.
+Set `BENCH_RENDER_TARGET_DIR` to keep them elsewhere. Delete them when done. If
+a run is killed hard and leaves a worktree behind, delete its directory and run
+`git worktree prune` yourself; the script never prunes.
 
 ### Release And Packaging Changes
 

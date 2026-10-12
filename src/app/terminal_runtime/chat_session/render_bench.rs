@@ -168,7 +168,7 @@ fn percentile(sorted: &[u128], percent: usize) -> u128 {
 
 fn report(size: (u16, u16), scenario: &str, mut samples: Vec<u128>) {
     samples.sort_unstable();
-    // `scripts/bench-render.sh` parses these lines.
+    // `parseBench` in scripts/dev/bench-render.mjs parses these lines.
     println!(
         "BENCH {}x{} {scenario} median_us={} p95_us={} frames={}",
         size.0,
