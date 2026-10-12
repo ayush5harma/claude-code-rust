@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Reproduce the PR-gating CI checks of .github/workflows/pr.yml (rustfmt,
 // clippy, test, lockfile, terminal-tests, cargo-deny-policy, duplicate-code)
-// and _agent-sdk.yml locally, in CI's order, and print one PASS/FAIL table at
-// the end. A failing step does not stop the run, so the table is always
+// and _agent-sdk.yml locally and print one PASS/FAIL table at the end. CI runs
+// several of these jobs in parallel; here they run one after another. A failing step does not stop the run, so the table is always
 // complete.
 //
 // Not covered: the cargo-deny advisories job (only with --audit), the MSRV
@@ -27,7 +27,7 @@ import { resolveRepoRoot } from "../shared/repo-root.mjs";
 const USAGE = `Usage: node scripts/dev/check-all.mjs [--rust] [--bridge] [--quick] [--audit]
   --rust    only the Rust checks
   --bridge  only the agent-sdk (bridge) checks
-  --quick   skip the slow terminal (pty) tests and the audit steps
+  --quick   skip the serial terminal-tests re-run, the fake-bridge syntax check and the audits
   --audit   also run the npm audit and cargo-deny advisories (need network)
 With neither --rust nor --bridge, both groups run.`;
 
@@ -130,10 +130,12 @@ function tail(file, lines) {
   return fs.readFileSync(file, "utf8").trimEnd().split("\n").slice(-lines).join("\n");
 }
 
-// A step is one or more commands. All of them run, and the step fails if any
-// failed (duplicate-code needs the summary step even after a failed scan).
-// advisory steps report WARN instead of FAIL, like CI's continue-on-error.
-function step(name, commands, { advisory = false } = {}) {
+// A step is one or more commands, built lazily so that an error while building
+// them (npm not found, a missing workflow value) fails this step only. All
+// commands run, and the step fails if any failed (duplicate-code needs the
+// summary step even after a failed scan). Advisory steps report WARN instead
+// of FAIL, like CI's continue-on-error.
+function step(name, buildCommands, { advisory = false } = {}) {
   stepIndex += 1;
   const log = path.join(logDir, `${stepIndex}.log`);
   console.log(`==> ${name}`);
@@ -141,9 +143,12 @@ function step(name, commands, { advisory = false } = {}) {
   const logFd = fs.openSync(log, "w");
   let ok = true;
   try {
-    for (const command of commands) {
+    for (const command of buildCommands()) {
       ok = runCommand(command, logFd) && ok;
     }
+  } catch (error) {
+    fs.writeSync(logFd, `${error.message}\n`);
+    ok = false;
   } finally {
     fs.closeSync(logFd);
   }
@@ -185,58 +190,76 @@ function ensureNpmDeps(dir, label, extraArgs = []) {
   const installed = path.join(repoRoot, dir, "node_modules", ".package-lock.json");
   const stale = !fs.existsSync(installed) || fs.statSync(lock).mtimeMs > fs.statSync(installed).mtimeMs;
   if (stale) {
-    step(`${label}: npm ci`, [npmRun(dir, ["ci", ...extraArgs])]);
+    step(`${label}: npm ci`, () => [npmRun(dir, ["ci", ...extraArgs])]);
   }
 }
 
-warnOnToolchainDrift();
-
 if (options.rust) {
-  step("rustfmt", [cargo(["fmt", "--all", "--", "--check"])]);
-  step("clippy", [cargo(["clippy", "--all-targets", "--all-features", "--", "-D", "warnings"], rustEnv)]);
-  step("cargo test", [cargo(["test", "--all-features"], rustEnv)]);
+  warnOnToolchainDrift();
+  step("rustfmt", () => [cargo(["fmt", "--all", "--", "--check"])]);
+  step("clippy", () => [cargo(["clippy", "--all-targets", "--all-features", "--", "-D", "warnings"], rustEnv)]);
+  step("cargo test", () => [cargo(["test", "--all-features"], rustEnv)]);
   if (options.quick) {
     skip("terminal: fake-bridge.js syntax (--quick)");
-    skip("terminal: pty tests (--quick)");
+    skip("terminal: serial re-run (--quick)");
   } else {
-    step("terminal: fake-bridge.js syntax", [node(["--check", "tests/fixtures/fake-bridge.js"])]);
-    step("terminal: pty tests", [
+    step("terminal: fake-bridge.js syntax", () => [node(["--check", "tests/fixtures/fake-bridge.js"])]);
+    step("terminal: serial re-run (--test-threads=1)", () => [
       cargo(["test", "--locked", "--all-features", "--test", "terminal_resize", "--", "--test-threads=1"], rustEnv),
     ]);
   }
-  step("lockfile (cargo fetch --locked)", [cargo(["fetch", "--locked"])]);
+  step("lockfile (cargo fetch --locked)", () => [cargo(["fetch", "--locked"])]);
   if (probe("cargo", ["deny", "--version"])) {
-    step("cargo-deny policy", [cargo(["deny", "--all-features", "check", "bans", "licenses", "sources"])]);
-    if (options.audit && !options.quick) {
-      step("cargo-deny advisories", [cargo(["deny", "--all-features", "check", "advisories"])]);
+    step("cargo-deny policy", () => [cargo(["deny", "--all-features", "check", "bans", "licenses", "sources"])]);
+    if (options.quick) {
+      skip("cargo-deny advisories (--quick)");
+    } else if (options.audit) {
+      step("cargo-deny advisories", () => [cargo(["deny", "--all-features", "check", "advisories"])]);
+    } else {
+      skip("cargo-deny advisories (pass --audit)");
     }
   } else {
     skip("cargo-deny policy (cargo-deny not on PATH; cargo install cargo-deny, or nix develop)");
   }
 }
 
+// The thresholds live in pr.yml's duplicate-code job env; read them from there
+// so there is one authority. Throws (failing the step) if they are not found.
+function readJscpdEnv() {
+  const workflow = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "pr.yml"), "utf8");
+  const job = /^ {2}duplicate-code:\n([\s\S]*?)(?=^ {2}\S|(?![\s\S]))/m.exec(workflow)?.[1] ?? "";
+  const env = {};
+  for (const key of ["JSCPD_WARNING_THRESHOLD", "JSCPD_FAILURE_THRESHOLD"]) {
+    const value = new RegExp(`^\\s+${key}:\\s*"?([0-9.]+)"?\\s*$`, "m").exec(job)?.[1];
+    if (value === undefined) {
+      throw new Error(`Could not find ${key} in the duplicate-code job of .github/workflows/pr.yml`);
+    }
+    env[key] = value;
+  }
+  return env;
+}
+
 // The duplicate-code gate scans both Rust and TypeScript sources and needs
 // only the root npm dependencies. CI runs the scan, then a summary step that
-// applies the failure threshold; both read these variables from pr.yml's env.
+// applies the failure threshold.
 ensureNpmDeps(".", "duplicate-code", ["--ignore-scripts"]);
-const jscpdEnv = { JSCPD_WARNING_THRESHOLD: "1.0", JSCPD_FAILURE_THRESHOLD: "2.0" };
-step("duplicate-code (npm run quality:duplicates)", [
-  npmRun(".", ["run", "quality:duplicates"], jscpdEnv),
-  npmRun(".", ["run", "quality:duplicates:summary"], jscpdEnv),
-]);
+step("duplicate-code (npm run quality:duplicates)", () => {
+  const env = readJscpdEnv();
+  return [npmRun(".", ["run", "quality:duplicates"], env), npmRun(".", ["run", "quality:duplicates:summary"], env)];
+});
 
 if (options.bridge) {
   ensureNpmDeps("agent-sdk", "agent-sdk");
-  step("agent-sdk: build", [npmRun("agent-sdk", ["run", "build"])]);
+  step("agent-sdk: build", () => [npmRun("agent-sdk", ["run", "build"])]);
   // The same command as _agent-sdk.yml, so the glob lives only in package.json.
-  step("agent-sdk: test", [npmRun("agent-sdk", ["run", "test"])]);
-  step("agent-sdk: lint", [npmRun("agent-sdk", ["run", "lint"])]);
-  step("agent-sdk: knip", [npmRun("agent-sdk", ["run", "knip"])]);
+  step("agent-sdk: test", () => [npmRun("agent-sdk", ["run", "test"])]);
+  step("agent-sdk: lint", () => [npmRun("agent-sdk", ["run", "lint"])]);
+  step("agent-sdk: knip", () => [npmRun("agent-sdk", ["run", "knip"])]);
   if (options.quick) {
     skip("agent-sdk: audit (--quick)");
   } else if (options.audit) {
-    step("agent-sdk: audit:raw (advisory)", [npmRun("agent-sdk", ["run", "audit:raw"])], { advisory: true });
-    step("agent-sdk: audit (direct deps)", [npmRun("agent-sdk", ["run", "audit"])]);
+    step("agent-sdk: audit:raw (advisory)", () => [npmRun("agent-sdk", ["run", "audit:raw"])], { advisory: true });
+    step("agent-sdk: audit (direct deps)", () => [npmRun("agent-sdk", ["run", "audit"])]);
   } else {
     skip("agent-sdk: audit (pass --audit)");
   }
@@ -249,11 +272,15 @@ for (const { status, seconds, name } of results) {
   console.log(`${status.padEnd(statusWidth)} ${time.padStart(8)}  ${name}`);
 }
 
+// The logs are the only place the first error of a failed step survives, and
+// a WARN prints a log path too, so keep them unless every step passed.
 const failed = results.some(({ status }) => status === "FAIL");
+const needsLogs = results.some(({ status }) => status === "FAIL" || status === "WARN");
 if (failed) {
-  // The logs are the only place the first error of a failed step survives.
   console.log(`\nOne or more checks FAILED. Full step logs: ${logDir}`);
   process.exitCode = 1;
+} else if (needsLogs) {
+  console.log(`\nNo failures, but some steps warned. Full step logs: ${logDir}`);
 } else {
   fs.rmSync(logDir, { recursive: true, force: true });
   console.log("\nAll checks passed.");
