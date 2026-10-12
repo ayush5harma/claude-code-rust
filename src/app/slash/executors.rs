@@ -42,6 +42,10 @@ pub(crate) fn try_handle_submission(app: &mut App, submission: &ResolvedSubmissi
     match command {
         AppSlashCommand::Btw => handle_btw_submit(app, text),
         AppSlashCommand::Cancel => handle_cancel_submit(app),
+        AppSlashCommand::Exit => {
+            app.request_shutdown();
+            true
+        }
         AppSlashCommand::Compact => handle_compact_submit(app),
         AppSlashCommand::Config => handle_config_submit(app),
         AppSlashCommand::Memory => handle_settings_category_submit(app, "memory"),
@@ -51,6 +55,10 @@ pub(crate) fn try_handle_submission(app: &mut App, submission: &ResolvedSubmissi
 
         AppSlashCommand::Copy => {
             crate::app::copy::open(app);
+            true
+        }
+        AppSlashCommand::Search => {
+            crate::app::search::open(app, &args.join(" "));
             true
         }
         AppSlashCommand::Diff => {
@@ -864,10 +872,7 @@ fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
         view::set_fullscreen_view(app, FullscreenView::SessionPicker);
         return true;
     }
-    let [session_id_arg] = args else {
-        unreachable!("validated /resume arguments must contain at most one value");
-    };
-    let session_id = *session_id_arg;
+    let session_id = args.join(" ");
 
     push_user_message(app, format!("/resume {session_id}"));
     let Some(conn) = require_connection(app, "Cannot resume session: not connected yet.") else {
@@ -875,7 +880,6 @@ fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
     };
 
     set_command_pending(app, &format!("Resuming session {session_id}..."), None);
-    let session_id = session_id.to_owned();
     if let Err(e) = begin_resume_session(app, &conn, session_id) {
         crate::app::events::handle_local_slash_command_error(
             app,

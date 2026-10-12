@@ -174,7 +174,7 @@ impl TerminalTest {
         args: &[&str],
         has_initial_prompt: bool,
     ) -> Self {
-        Self::start_without_env(scenario, lines, auth_mode, args, has_initial_prompt, &[])
+        Self::start_without_env(scenario, lines, auth_mode, args, has_initial_prompt, &[], false)
     }
 
     /// Starts the app with `removed_env` absent from its environment.
@@ -185,6 +185,7 @@ impl TerminalTest {
         args: &[&str],
         has_initial_prompt: bool,
         removed_env: &[&str],
+        fake_editor: bool,
     ) -> Self {
         let temp = tempfile::tempdir().expect("tempdir");
         let profile = temp.path().join("profile");
@@ -227,6 +228,18 @@ impl TerminalTest {
         }
         command.env("FAKE_BRIDGE_JOURNAL", &journal);
         command.env("FAKE_BRIDGE_RELEASE_FILE", &release_file);
+        if fake_editor {
+            let editor = temp.path().join("fake-editor.sh");
+            std::fs::write(&editor, "#!/bin/sh\nprintf '\\nfrom editor' >> \"$1\"\n")
+                .expect("fake editor");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o700))
+                    .expect("fake editor executable");
+            }
+            command.env("VISUAL", &editor);
+        }
         for name in removed_env {
             command.env_remove(name);
         }
@@ -251,7 +264,9 @@ impl TerminalTest {
         };
         test.wait_screen("Trust this project");
         test.send(b"y");
-        if has_initial_prompt {
+        if scenario.starts_with("resume-large") {
+            test.wait_screen("Large saved conversation");
+        } else if has_initial_prompt {
             test.wait_until("initial prompt", |test| !test.prompts().is_empty());
         } else {
             test.wait_screen("Type a message");
@@ -747,6 +762,54 @@ fn shutdown_preserves_completed_history_without_reinserting_it() {
 }
 
 #[test]
+fn input_shortcuts_toggle_native_views_and_empty_ctrl_d_exits() {
+    let mut test = TerminalTest::start("resize-replay", 1);
+    test.send(b"\x14");
+    test.wait_screen("Tasks");
+    test.wait_screen("No tasks in the current session");
+    test.send(b"\x14");
+    test.wait_screen("Type a message");
+    test.send(b"\x0f");
+    test.wait_screen("Detailed transcript");
+    test.send(b"\x0f");
+    test.wait_screen("Type a message");
+    test.send(b"\x04");
+    let status = test.child.wait_for_exit(Duration::from_secs(15));
+    assert!(
+        status.as_ref().is_some_and(ExitStatus::success),
+        "Ctrl+D exit: {}",
+        test.diagnostics()
+    );
+    test.wait_shutdown_screen();
+}
+
+#[test]
+#[cfg(unix)]
+fn ctrl_g_editor_restores_terminal_and_submits_edited_draft() {
+    let mut test = TerminalTest::start_without_env("stream", 3, None, &[], false, &[], true);
+    test.send(b"draft");
+    test.wait_screen("draft");
+    test.send(b"\x07");
+    test.wait_screen("from editor");
+    test.send(b"\r");
+    test.wait_until("edited draft reaches fake bridge", |test| !test.prompts().is_empty());
+    test.assert_prompts(&["draft\nfrom editor"]);
+    test.shutdown();
+}
+
+#[test]
+fn double_escape_opens_rewind_picker_and_single_escape_closes_it() {
+    let mut test = TerminalTest::start("stream", 3);
+    test.send(b"\x1b");
+    std::thread::sleep(Duration::from_millis(100));
+    test.send(b"\x1b");
+    test.wait_screen("Rewind: select message");
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+    test.shutdown();
+}
+
+#[test]
 fn shutdown_keeps_received_output_and_dismisses_pending_interactions() {
     for scenario in ["hold-success", "permission", "question"] {
         let mut test = TerminalTest::start(scenario, 8);
@@ -808,6 +871,30 @@ fn shutdown_force_interrupt_can_stop_pending_transcript_recovery() {
 }
 
 #[test]
+fn transcript_search_navigates_retained_matches_from_key_and_slash_command() {
+    let mut test = TerminalTest::start_with_options(
+        "search-retained",
+        3,
+        None,
+        &["--resume", "f96f66ae-b5d4-4bc2-b5a3-08336cf4e850"],
+        false,
+    );
+    test.send(b"\x06");
+    test.wait_screen("Transcript search");
+    test.paste("delta");
+    test.wait_screen_with("Match 1 of 2", &["User: Find delta"]);
+    test.send(b"\r");
+    test.wait_screen_with("Match 2 of 2", &["Claude: A later delta"]);
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+    test.submit_command("/search delta");
+    test.wait_screen_with("Match 1 of 2", &["User: Find delta"]);
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+    test.shutdown();
+}
+
+#[test]
 fn interactive_cli_startup_sends_overrides_and_initial_prompt_without_saving_them() {
     let common =
         ["--model", "opus", "--effort", "max", "--permission-mode", "plan", "--agent", "reviewer"];
@@ -846,6 +933,56 @@ fn interactive_cli_startup_sends_overrides_and_initial_prompt_without_saving_the
         );
         test.shutdown();
     }
+}
+
+#[test]
+fn large_session_picker_compacts_only_after_explicit_choice_before_initial_prompt() {
+    let mut test = TerminalTest::start_with_options(
+        "resume-large",
+        3,
+        None,
+        &["--resume", "--", "Review next"],
+        true,
+    );
+    test.wait_for("saved size in picker", |test| {
+        test.screen()
+            .lines()
+            .any(|line| line.contains("Large saved conversation") && line.contains("saved 2.0 MiB"))
+            .then_some(())
+    });
+    test.wait_journal("settings_result");
+    assert!(test.prompts().is_empty());
+    test.send(b"c");
+    test.wait_for("compaction then initial prompt", |test| {
+        (test.prompts().len() == 2).then_some(())
+    });
+    assert_eq!(test.commands("resume_session")[0]["session_id"], "saved-large");
+    test.assert_prompts(&["/compact", "Review next"]);
+    test.shutdown();
+}
+
+#[test]
+fn failed_compact_first_keeps_launch_prompt_unsent() {
+    let mut test = TerminalTest::start_with_options(
+        "resume-large-fail",
+        3,
+        None,
+        &["--resume", "--", "Review next"],
+        true,
+    );
+    test.wait_for("saved session picker", |test| {
+        test.screen().contains("Large saved conversation").then_some(())
+    });
+    test.wait_journal("settings_result");
+    test.send(b"c");
+    test.wait_for("compaction failure", |test| {
+        test.screen().contains("fixture compaction failed").then_some(())
+    });
+    test.assert_prompts(&["/compact"]);
+    test.wait_for("unsent launch prompt draft", |test| {
+        test.screen().contains("Review next").then_some(())
+    });
+    test.shutdown();
 }
 
 #[test]
@@ -2274,6 +2411,57 @@ fn status_tab_shows_the_session_name_after_rename() {
 }
 
 #[test]
+fn session_picker_confirms_exact_id_before_delete_and_shows_acknowledged_tag() {
+    let mut test = TerminalTest::start("session-management", 0);
+    test.submit("/resume", "/resume");
+    test.wait_screen_with("Resume Session", &["Saved project work"]);
+
+    test.send(b"d");
+    test.wait_screen("Switch sessions before deleting the active session.");
+    assert!(test.commands("delete_session").is_empty());
+    test.send(b"\x1b[A");
+    test.wait_until("saved session selected", |test| {
+        test.screen().contains("> just now - Saved project work")
+    });
+
+    test.send(b"d");
+    test.wait_screen_with("Delete session saved-session?", &["Press y to confirm"]);
+    test.send(b"\x1b");
+    test.wait_screen("Resume Session");
+    assert!(test.commands("delete_session").is_empty());
+
+    test.send(b"t");
+    test.wait_screen("Tag:");
+    test.send(b"fail");
+    test.wait_screen("Tag: fail");
+    test.send(b"\r");
+    test.wait_screen_with("Fixture refused mutation", &["Tag: fail"]);
+    assert_eq!(test.commands("tag_session")[0]["session_id"], "saved-session");
+    test.send(b"\x15");
+    test.wait_until("failed tag draft cleared", |test| {
+        test.screen().contains("Tag:") && !test.screen().contains("Tag: fail")
+    });
+    test.send(b"work");
+    test.wait_screen("Tag: work");
+    test.send(b"\r");
+    test.wait_until("tag command and SDK refresh", |test| {
+        test.commands("tag_session").len() == 2 && test.screen().contains("[tag: work]")
+    });
+    assert_eq!(test.commands("tag_session")[1]["session_id"], "saved-session");
+
+    test.send(b"d");
+    test.wait_screen("Delete session saved-session?");
+    test.send(b"y");
+    test.wait_until("confirmed deletion and refreshed picker", |test| {
+        test.commands("delete_session").len() == 1
+            && !test.screen().contains("Saved project work")
+            && test.screen().contains("Current conversation")
+    });
+    assert_eq!(test.commands("delete_session")[0]["session_id"], "saved-session");
+    test.shutdown();
+}
+
+#[test]
 fn native_diff_browses_session_and_working_tree_files() {
     let mut test = TerminalTest::start("native-diff", 3);
     test.submit("/diff", "/diff");
@@ -2508,6 +2696,7 @@ fn ctrl_v_press_reaches_the_clipboard_path_without_a_key_release() {
         &[],
         false,
         &["DISPLAY", "WAYLAND_DISPLAY"],
+        false,
     );
     test.send(b"\x16");
     test.wait_screen("system clipboard");

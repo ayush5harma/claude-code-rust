@@ -32,6 +32,8 @@ mod permissions;
 pub(crate) mod plugins;
 pub(crate) mod presentation;
 mod questions;
+pub(crate) mod rewind_picker;
+pub(crate) mod search;
 mod service_status_check;
 mod session_accent;
 pub(crate) mod session_agents;
@@ -52,6 +54,7 @@ mod update_install;
 mod update_prompt;
 pub(crate) mod usage;
 mod user_dialog;
+pub(crate) mod verbose_view;
 mod view;
 
 pub(crate) const AUTOCOMPLETE_VISIBLE_ROWS: usize = 5;
@@ -84,12 +87,12 @@ pub use state::{
     LayoutInvalidation, LiveRegionRenderState, LoginHint, McpState, MessageBlock, MessageBlockId,
     MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock, NoticeDedupKey, NoticeStage,
     PasteSessionState, PendingCommandAck, PostExitAction, RateLimitIncidentKey, RecentSessionInfo,
-    SelectionPoint, SessionPickerState, SessionUsageState, SessionUsageSummary, ShutdownState,
-    SubagentPermissionContext, SystemSeverity, TerminalSize, TerminalSizeChange, TextBlock,
-    TextBlockSpacing, ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef,
-    UpdatePromptAction, UpdatePromptState, UsageActivitySummary, UsageActivityWindow,
-    UsageBehaviorAttribution, UsageNamedAttribution, UsageSnapshot, UsageSourceKind,
-    UsageSourceMode, UsageState, UsageWindow, UserDialogBlock, WelcomeBlock,
+    SelectionPoint, SessionPickerMutation, SessionPickerState, SessionUsageState,
+    SessionUsageSummary, ShutdownState, SubagentPermissionContext, SystemSeverity, TerminalSize,
+    TerminalSizeChange, TextBlock, TextBlockSpacing, ToolCallInfo, ToolCallScope,
+    TurnNoticeLocation, TurnNoticeRef, UpdatePromptAction, UpdatePromptState, UsageActivitySummary,
+    UsageActivityWindow, UsageBehaviorAttribution, UsageNamedAttribution, UsageSnapshot,
+    UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, UserDialogBlock, WelcomeBlock,
     hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
 };
 pub(crate) use state::{
@@ -163,7 +166,7 @@ async fn run_tui_loop(
         tokio::select! {
             Some(Ok(event)) = next_terminal_event(&mut events) => {
                 let outcome = events::handle_terminal_event(app, event);
-                handle_runtime_command(app, terminal_runtime, outcome.runtime_command())?;
+                handle_runtime_command(app, terminal_runtime, &mut events, outcome.runtime_command())?;
             }
             Some(event) = app.event_rx.recv() => {
                 handle_runtime_client_event(
@@ -197,7 +200,12 @@ async fn run_tui_loop(
                 handled_ready_event = true;
                 if let Ok(event) = terminal_event {
                     let outcome = events::handle_terminal_event(app, event);
-                    handle_runtime_command(app, terminal_runtime, outcome.runtime_command())?;
+                    handle_runtime_command(
+                        app,
+                        terminal_runtime,
+                        &mut events,
+                        outcome.runtime_command(),
+                    )?;
                 }
             }
 
@@ -373,12 +381,96 @@ async fn finish_shutdown_render(
 fn handle_runtime_command(
     app: &mut App,
     terminal_runtime: &mut terminal_runtime::TerminalRuntime,
+    events: &mut Option<TerminalInput>,
     command: Option<keys::RuntimeCommand>,
 ) -> anyhow::Result<()> {
     match command {
         Some(keys::RuntimeCommand::SuspendProcess) => suspend_tui_process(app, terminal_runtime),
+        Some(keys::RuntimeCommand::OpenExternalEditor) => {
+            edit_draft_externally(app, terminal_runtime, events)
+        }
         None => Ok(()),
     }
+}
+
+fn edit_draft_externally(
+    app: &mut App,
+    terminal_runtime: &mut terminal_runtime::TerminalRuntime,
+    events: &mut Option<TerminalInput>,
+) -> anyhow::Result<()> {
+    use std::io::Write as _;
+
+    app.pending_submit = None;
+    if let Some(action) = app.paste.burst.on_non_char_key(Instant::now()) {
+        apply_paste_burst_flush(app, action);
+    }
+    if app.paste.has_pending_text() {
+        finalize_pending_paste_event(app);
+    }
+
+    let editor = std::env::var("VISUAL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| std::env::var("EDITOR").ok().filter(|value| !value.trim().is_empty()));
+    let Some(editor) = editor else {
+        events::push_system_message_with_severity(
+            app,
+            Some(SystemSeverity::Error),
+            "Set VISUAL or EDITOR to edit the draft externally.",
+        );
+        return Ok(());
+    };
+    let parts = match shell_words::split(&editor) {
+        Ok(parts) if !parts.is_empty() => parts,
+        _ => {
+            events::push_system_message_with_severity(
+                app,
+                Some(SystemSeverity::Error),
+                "VISUAL or EDITOR has invalid command syntax.",
+            );
+            return Ok(());
+        }
+    };
+    let mut file = tempfile::Builder::new().prefix("claude-rs-draft-").suffix(".md").tempfile()?;
+    file.write_all(app.input.text().as_bytes())?;
+    file.flush()?;
+    let path = file.into_temp_path();
+
+    drop(events.take());
+    tab_title::restore_tab_title(&app.cwd);
+    terminal_runtime.restore(app);
+    let edit_result = std::process::Command::new(&parts[0])
+        .args(&parts[1..])
+        .arg(path.as_os_str())
+        .current_dir(&app.cwd_raw)
+        .status();
+    let resumed_runtime = terminal_runtime::TerminalRuntime::bootstrap_with_input_reader(app)
+        .context("failed to restore terminal after external editor")?;
+    *terminal_runtime = resumed_runtime;
+    *events = Some(TerminalInput::new());
+    tab_title::update_tab_title(app);
+    app.request_active_surface_repaint();
+    match edit_result {
+        Ok(status) if status.success() => match std::fs::read_to_string(&path) {
+            Ok(text) => app.input.set_text(&text),
+            Err(error) => events::push_system_message_with_severity(
+                app,
+                Some(SystemSeverity::Error),
+                &format!("Could not read edited draft: {error}"),
+            ),
+        },
+        Ok(status) => events::push_system_message_with_severity(
+            app,
+            Some(SystemSeverity::Error),
+            &format!("Editor exited with {status}; draft preserved."),
+        ),
+        Err(error) => events::push_system_message_with_severity(
+            app,
+            Some(SystemSeverity::Error),
+            &format!("Could not open editor: {error}; draft preserved."),
+        ),
+    }
+    Ok(())
 }
 
 async fn next_terminal_event(

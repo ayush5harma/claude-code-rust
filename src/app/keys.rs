@@ -22,6 +22,7 @@ use tui_textarea::AtomicDeleteDirection;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RuntimeCommand {
     SuspendProcess,
+    OpenExternalEditor,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -214,8 +215,15 @@ fn is_editing_like_key(key: KeyEvent, action: Option<KeyAction>) -> bool {
     ) || matches!(
         action,
         Some(
-            KeyAction::App(AppAction::SubmitInput | AppAction::FocusPromptOrAcceptSuggestion)
-                | KeyAction::Autocomplete(AutocompleteAction::Confirm)
+            KeyAction::App(
+                AppAction::SubmitInput
+                    | AppAction::FocusPromptOrAcceptSuggestion
+                    | AppAction::DeleteOrQuit
+                    | AppAction::OpenExternalEditor
+                    | AppAction::OpenRewindPicker
+                    | AppAction::ToggleTasks
+                    | AppAction::ToggleVerbose
+            ) | KeyAction::Autocomplete(AutocompleteAction::Confirm)
                 | KeyAction::Input(
                     InputAction::DeleteCharBefore
                         | InputAction::DeleteCharAfter
@@ -253,10 +261,14 @@ fn handle_chat_input_key(app: &mut App, key: KeyEvent) -> KeyOutcome {
         return KeyOutcome::Handled(true);
     }
     if let Some(action) = resolve_key_action_for_context(app, KeyContext::ChatInput, key) {
+        if action != KeyAction::App(AppAction::CancelTurn) {
+            app.last_cancel_at = None;
+        }
         return first_handled(execute_key_action(app, action, key), || {
             printable_outcome(handle_printable_key(app, key))
         });
     }
+    app.last_cancel_at = None;
     printable_outcome(handle_printable_key(app, key))
 }
 
@@ -271,17 +283,50 @@ fn execute_key_action(app: &mut App, action: KeyAction, key: KeyEvent) -> KeyOut
 }
 
 fn execute_app_action(app: &mut App, action: AppAction) -> KeyOutcome {
+    if action != AppAction::CancelTurn {
+        app.last_cancel_at = None;
+    }
     match action {
         AppAction::Quit => {
             app.request_shutdown();
             KeyOutcome::Handled(true)
         }
         AppAction::ClearInputOrQuit => clear_input_or_quit(app).into(),
+        AppAction::DeleteOrQuit => {
+            if app.input.is_empty()
+                && app.pending_images.is_empty()
+                && !app.paste.has_pending_text()
+            {
+                app.request_shutdown();
+                true.into()
+            } else {
+                delete_input_char_after(app).into()
+            }
+        }
+        AppAction::OpenExternalEditor => KeyOutcome::Runtime(RuntimeCommand::OpenExternalEditor),
+        AppAction::OpenRewindPicker => super::rewind_picker::open(app).into(),
+        AppAction::ToggleTasks => {
+            super::view::set_fullscreen_view(app, super::FullscreenView::Tasks);
+            true.into()
+        }
+        AppAction::ToggleVerbose => super::verbose_view::open(app).into(),
         AppAction::Redraw => {
             app.request_chat_visible_rebuild();
             KeyOutcome::Handled(true)
         }
-        AppAction::CancelTurn => handle_turn_control(app).into(),
+        AppAction::CancelTurn => {
+            let now = Instant::now();
+            let double_cancel = app
+                .last_cancel_at
+                .is_some_and(|previous| now.duration_since(previous).as_millis() < 750);
+            if double_cancel && app.input.is_empty() && app.status == AppStatus::Ready {
+                app.last_cancel_at = None;
+                super::rewind_picker::open(app).into()
+            } else {
+                app.last_cancel_at = Some(now);
+                handle_turn_control(app).into()
+            }
+        }
         AppAction::SubmitInput => handle_submit(app).into(),
         AppAction::FocusPromptOrAcceptSuggestion => (mention::commit_literal_if_active(app)
             || slash::request_completion(app)
@@ -303,6 +348,10 @@ fn execute_app_action(app: &mut App, action: AppAction) -> KeyOutcome {
             app.chat_render.viewport.resume();
             app.request_chat_repaint();
             true.into()
+        }
+        AppAction::SearchTranscript => {
+            crate::app::search::open(app, "");
+            KeyOutcome::Handled(true)
         }
         AppAction::CycleMode => handle_mode_cycle(app).into(),
     }
@@ -534,6 +583,16 @@ fn handle_submit(app: &mut App) -> bool {
             outcome = "success",
         );
         return true;
+    }
+
+    let (row, col) = app.input.cursor();
+    if col > 0
+        && app.input.lines().get(row).and_then(|line| line.chars().nth(col - 1)) == Some('\\')
+        && app.focus_owner() == FocusOwner::Input
+    {
+        let _ = app.input.textarea_delete_char_before();
+        app.pending_submit = None;
+        return app.input.textarea_insert_newline();
     }
 
     if !slash::prepare_submit(app) {
@@ -918,6 +977,138 @@ mod tests {
     use crate::app::{ChatMessage, FocusTarget, MessageBlock, MessageRole, TextBlock};
     use crossterm::event::{KeyCode, KeyModifiers};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn backslash_enter_replaces_backslash_with_newline_at_cursor() {
+        let mut app = App::test_default();
+        app.input.set_text("first\\tail");
+        let _ = app.input.set_cursor(0, 6);
+
+        let outcome =
+            handle_normal_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(outcome, KeyOutcome::Handled(true));
+        assert_eq!(app.input.text(), "first\ntail");
+        assert!(app.pending_submit.is_none());
+    }
+
+    #[test]
+    fn backslash_enter_keeps_draft_during_paste_burst() {
+        let mut app = App::test_default();
+        app.input.set_text("first\\");
+        let now = Instant::now();
+        let _ = app.paste.burst.on_char('a', now);
+        let _ = app.paste.burst.on_char('b', now + Duration::from_millis(1));
+        let _ = app.paste.burst.on_char('c', now + Duration::from_millis(2));
+
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(app.input.text(), "first\\");
+    }
+
+    #[test]
+    fn ctrl_d_deletes_nonempty_draft_and_exits_on_empty_draft() {
+        let mut app = App::test_default();
+        app.input.set_text("ab");
+        let _ = app.input.set_cursor(0, 1);
+        let ctrl_d = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        handle_normal_key(&mut app, ctrl_d);
+        assert_eq!(app.input.text(), "a");
+        assert!(!app.shutdown_requested());
+        app.input.clear();
+        handle_normal_key(&mut app, ctrl_d);
+        assert!(app.shutdown_requested());
+    }
+
+    #[test]
+    fn editor_shortcut_returns_runtime_command_without_changing_draft() {
+        let mut app = App::test_default();
+        app.input.set_text("draft");
+        let result =
+            handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        assert_eq!(result, KeyOutcome::Runtime(RuntimeCommand::OpenExternalEditor));
+        assert_eq!(app.input.text(), "draft");
+    }
+
+    #[test]
+    fn editor_shortcut_waits_for_pending_paste_and_cancels_deferred_submit() {
+        let mut app = App::test_default();
+        app.input.set_text("draft");
+        app.pending_submit = Some(app.input.snapshot());
+        app.paste.pending_text = "clipboard".to_owned();
+
+        let outcome = dispatch_key_by_focus(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+        );
+
+        assert_eq!(outcome, KeyOutcome::Ignored);
+        assert!(app.pending_submit.is_none());
+        assert_eq!(app.input.text(), "draft");
+        assert_eq!(app.paste.pending_text, "clipboard");
+    }
+
+    #[test]
+    fn remapped_editor_action_uses_configured_key() {
+        let mut app = App::test_default();
+        app.keymap = ResolvedKeymap::from_bindings([KeyBinding::new(
+            KeyContext::ChatInput,
+            "ctrl-x".parse().expect("key"),
+            KeyAction::App(AppAction::OpenExternalEditor),
+            KeyBindingSource::Config,
+        )])
+        .expect("keymap");
+        assert_eq!(
+            handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL)),
+            KeyOutcome::Runtime(RuntimeCommand::OpenExternalEditor)
+        );
+        assert_eq!(
+            handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL)),
+            KeyOutcome::Ignored
+        );
+    }
+
+    #[test]
+    fn second_cancel_action_on_empty_prompt_opens_rewind_picker() {
+        let mut app = App::test_default();
+        let (connection, mut commands) = crate::agent::client::AgentConnection::test_channel();
+        app.session_runtime.conn = Some(std::rc::Rc::new(connection));
+        app.session_runtime.session_id = Some("session-1".into());
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        handle_normal_key(&mut app, esc);
+        assert_eq!(app.surface_mode, super::super::SurfaceMode::Chat);
+        handle_normal_key(&mut app, esc);
+        assert_eq!(
+            app.surface_mode,
+            super::super::SurfaceMode::Fullscreen(super::super::FullscreenView::Rewind)
+        );
+        assert!(
+            matches!(commands.try_recv().expect("request").command, crate::agent::wire::BridgeCommand::GetRewindTargets { session_id } if session_id == "session-1")
+        );
+    }
+
+    #[test]
+    fn ctrl_t_and_ctrl_o_open_live_sdk_tasks_and_retained_text() {
+        let mut app = App::test_default();
+        app.sdk_inventory.tasks.push(crate::agent::model::TaskItem::new(
+            "1",
+            "Do work",
+            crate::agent::model::TaskStatus::Pending,
+        ));
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
+        assert_eq!(
+            app.surface_mode,
+            super::super::SurfaceMode::Fullscreen(super::super::FullscreenView::Tasks)
+        );
+        super::super::view::set_chat_surface(&mut app);
+        app.transcript.messages.push(user_message("visible prompt"));
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+        assert!(
+            app.verbose_view
+                .as_ref()
+                .is_some_and(|view| view.rows.iter().any(|row| row == "visible prompt"))
+        );
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn mode_shortcut_preserves_the_confirmed_mode_until_sdk_acknowledgement() {

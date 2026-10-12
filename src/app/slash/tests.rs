@@ -31,6 +31,18 @@ fn parse_non_slash_returns_none() {
 }
 
 #[test]
+fn exit_is_local_and_requests_shutdown_without_sending_a_prompt() {
+    let mut app = App::test_default();
+    assert_eq!(
+        ResolvedSubmission::resolve("/exit".to_owned()).class(),
+        SubmissionClass::Informational
+    );
+    assert!(try_handle_submit(&mut app, "/exit"));
+    assert!(app.shutdown_requested());
+    assert!(app.pending_submit.is_none());
+}
+
+#[test]
 fn ultracode_usage_policy_and_completion() {
     for input in
         ["/ultracode", "/ultracode toggle", "/ultracode on extra", "/ultracode status extra"]
@@ -160,17 +172,12 @@ fn resolved_submission_is_the_active_turn_policy_authority() {
         "/model sonnet",
         "/new-session",
         "/resume",
+        "/resume Planning notes",
         "/rewind user-1 conversation",
     ] {
         assert_eq!(classify(input), SubmissionClass::TurnExclusive, "unexpected class for {input}");
     }
-    for input in [
-        "/cancel extra",
-        "/docs nope",
-        "/plugins extra",
-        "/resume one two",
-        "/rewind user-1 invalid",
-    ] {
+    for input in ["/cancel extra", "/docs nope", "/plugins extra", "/rewind user-1 invalid"] {
         assert_eq!(classify(input), SubmissionClass::Invalid, "unexpected class for {input}");
     }
 }
@@ -1262,6 +1269,7 @@ fn resume_picker_preselects_current_session_when_listed() {
             git_branch: None,
             custom_title: None,
             first_prompt: Some("other".into()),
+            tag: None,
         },
         crate::app::RecentSessionInfo {
             session_id: "current-session".into(),
@@ -1272,6 +1280,7 @@ fn resume_picker_preselects_current_session_when_listed() {
             git_branch: None,
             custom_title: None,
             first_prompt: Some("current".into()),
+            tag: None,
         },
     ];
 
@@ -1281,17 +1290,15 @@ fn resume_picker_preselects_current_session_when_listed() {
 }
 
 #[test]
-fn resume_with_extra_args_returns_usage() {
+fn resume_with_title_words_sends_one_resume_request() {
     let mut app = App::test_default();
+    let mut commands = attach_test_connection(&mut app);
     let consumed = try_handle_submit(&mut app, "/resume abc-123 extra");
     assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected usage message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Usage: /resume [session_id]");
+    let request = commands.try_recv().expect("resume request");
+    assert!(
+        matches!(request.command, crate::agent::wire::BridgeCommand::ResumeSession { session_id, .. } if session_id == "abc-123 extra")
+    );
 }
 
 #[test]

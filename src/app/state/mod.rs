@@ -69,10 +69,11 @@ pub(crate) use types::ComposerBlockReason;
 pub use types::{
     AppStatus, ExtraUsage, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState,
     MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck, PostExitAction,
-    RecentSessionInfo, RenderCacheBudget, SelectionPoint, SessionPickerState, SessionUsageState,
-    SessionUsageSummary, ShutdownState, ToolCallScope, UpdatePromptAction, UpdatePromptState,
-    UsageActivitySummary, UsageActivityWindow, UsageBehaviorAttribution, UsageNamedAttribution,
-    UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
+    RecentSessionInfo, RenderCacheBudget, SelectionPoint, SessionPickerMutation,
+    SessionPickerState, SessionUsageState, SessionUsageSummary, ShutdownState, ToolCallScope,
+    UpdatePromptAction, UpdatePromptState, UsageActivitySummary, UsageActivityWindow,
+    UsageBehaviorAttribution, UsageNamedAttribution, UsageSnapshot, UsageSourceKind,
+    UsageSourceMode, UsageState, UsageWindow,
 };
 
 mod prelude {

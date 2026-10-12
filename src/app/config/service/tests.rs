@@ -77,7 +77,7 @@ async fn acknowledged_spinner_tip_setting_only_controls_tips() {
 async fn automatic_update_editor_cycles_acknowledged_choices_and_resets_the_personal_value() {
     use ratatui::{Terminal, backend::TestBackend};
     tokio::task::LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             let mut app = App::test_default();
             let (connection, mut commands) = AgentConnection::test_channel();
             app.session_runtime.conn = Some(Rc::new(connection));
@@ -151,7 +151,7 @@ async fn automatic_update_editor_cycles_acknowledged_choices_and_resets_the_pers
                 );
                 assert!(!app.shutdown_requested());
             }
-        })
+        }))
         .await;
 }
 
@@ -377,7 +377,7 @@ async fn structured_editor_reports_parse_error_and_saves_corrected_json_without_
 
 #[tokio::test(flavor = "current_thread")]
 async fn config_edits_and_resets_use_correlated_snapshot_mutations() {
-    tokio::task::LocalSet::new().run_until(async {
+    tokio::task::LocalSet::new().run_until(Box::pin(async {
         let mut app = App::test_default();
         let (connection, mut commands) = AgentConnection::test_channel();
         app.session_runtime.conn = Some(Rc::new(connection));
@@ -409,7 +409,7 @@ async fn config_edits_and_resets_use_correlated_snapshot_mutations() {
         crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
         let reset = commands.recv_envelope().await.expect("reset");
         assert!(matches!(reset.command, BridgeCommand::MutateSetting { mutation, .. } if mutation.operation == SettingsOperation::Remove && mutation.id == "language"));
-    }).await;
+    })).await;
 }
 
 #[test]
@@ -442,7 +442,7 @@ fn request_correlation_and_session_epoch_protect_editor_state() {
 async fn inline_arrows_and_space_cycle_choices_and_render_acknowledged_values() {
     use ratatui::{Terminal, backend::TestBackend};
     tokio::task::LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             let mut app = App::test_default();
             app.surface_mode =
                 crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
@@ -520,7 +520,7 @@ async fn inline_arrows_and_space_cycle_choices_and_render_acknowledged_values() 
                 "read-only controls must preserve the saved value"
             );
             assert_eq!(app.config.saved_value("language"), Some(&json!("medium")));
-        })
+        }))
         .await;
 }
 
@@ -674,7 +674,7 @@ async fn language_save_and_editor_reset_show_the_remaining_value_or_default() {
 #[tokio::test(flavor = "current_thread")]
 async fn conflict_refresh_preserves_draft_and_deliberate_retry_uses_the_refreshed_value() {
     tokio::task::LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             let mut app = App::test_default();
             let (connection, mut commands) = AgentConnection::test_channel();
             app.session_runtime.conn = Some(Rc::new(connection));
@@ -721,7 +721,7 @@ async fn conflict_refresh_preserves_draft_and_deliberate_retry_uses_the_refreshe
             };
             assert_eq!(mutation.expected_revision, "revision-2");
             assert_eq!(mutation.value, Some(json!("German")));
-        })
+        }))
         .await;
 }
 

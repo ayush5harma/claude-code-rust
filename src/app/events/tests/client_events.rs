@@ -1469,6 +1469,7 @@ fn sessions_listed_completes_pending_session_rename() {
                 git_branch: None,
                 custom_title: Some("Renamed session".to_owned()),
                 first_prompt: Some("prompt".to_owned()),
+                tag: None,
             }],
         },
     );
@@ -1551,6 +1552,7 @@ fn sessions_listed_completes_pending_session_title_generation() {
                 git_branch: None,
                 custom_title: Some("Generated session".to_owned()),
                 first_prompt: Some("prompt".to_owned()),
+                tag: None,
             }],
         },
     );
@@ -1625,6 +1627,7 @@ fn sessions_listed_refresh_preserves_picker_selection_by_session_id() {
             git_branch: Some("main".to_owned()),
             custom_title: Some("First".to_owned()),
             first_prompt: Some("prompt one".to_owned()),
+            tag: None,
         },
         crate::app::RecentSessionInfo {
             session_id: "session-2".to_owned(),
@@ -1635,6 +1638,7 @@ fn sessions_listed_refresh_preserves_picker_selection_by_session_id() {
             git_branch: Some("main".to_owned()),
             custom_title: Some("Second".to_owned()),
             first_prompt: Some("prompt two".to_owned()),
+            tag: None,
         },
     ];
     app.session_picker.selected = 1;

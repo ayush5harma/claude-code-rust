@@ -10,6 +10,7 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | --- | --- | --- |
 | `/btw` | `/btw <question>` | Ask a contextual side question without adding it to the main conversation. |
 | `/cancel` | `/cancel` | Cancel the active assistant turn. |
+| `/exit` | `/exit` | Exit the application and restore the terminal. |
 | `/compact` | `/compact` | Ask the active session to compact conversation context. |
 | `/config` | `/config` | Open fullscreen settings. |
 | `/memory` | `/memory` | Open the Memory settings pane. |
@@ -17,6 +18,7 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/sandbox` | `/sandbox` | Open sandbox settings without toggling sandboxing. |
 | `/hooks` | `/hooks` | Inspect and edit saved hook configuration without executing hooks. |
 | `/copy` | `/copy` | Copy the last completed response, or choose a code block from it. |
+| `/search` | `/search [query]` | Search retained user, assistant, and visible tool text. |
 | `/diff` | `/diff` | Browse retained session tool diffs and current Git working-tree changes. |
 | `/docs` | `/docs <mode\|models\|shortcuts\|commands\|agents>` | Render command, shortcut, model, mode, or subagent help into chat. |
 | `/agent` | `/agent <name\|reset>` | Change the main-thread agent for the active session. Applies on the next turn. |
@@ -35,16 +37,18 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/mode` | `/mode <id>` | Switch to a mode advertised by the active session. |
 | `/model` | `/model <id>` | Switch to a model advertised by the active session. |
 | `/new-session` | `/new-session` | Start a fresh bridge session in the current folder. |
-| `/resume` | `/resume [session_id]` | Open the session picker, or resume a supplied session id. |
+| `/resume` | `/resume [session_id_or_title]` | Open the session picker, or resume an exact ID or displayed title. |
 | `/rewind` | `/rewind <user_message_uuid> <both\|conversation\|code>` | Restore conversation, code, or both to a previous user message. |
 | `/reload` | `/reload` | Re-read skills and output styles from disk for the active session. |
 | `/export` | `/export [path]` | Save the complete conversation as a Markdown file. |
+
+In the `/resume` picker, `t` edits the selected session's SDK tag; `Ctrl+U` clears the draft and Enter saves it (an empty tag clears the saved tag). `d` opens deletion confirmation for the selected ID, and only `y` confirms it. Esc cancels either action before submission. The active session cannot be deleted; switch to another session first. Tags and deletions persist through the public Agent SDK session APIs, and the picker refreshes after the SDK acknowledges them.
 
 Enter completes the selected slash command or argument and submits it when ready. Tab completes without submitting. Exact command names appear ahead of substring matches; arrow keys can select a different match. App commands that still need required arguments stay in the composer; commands with argument choices show those choices, while `/btw` continues as ordinary question text. An empty suggestion menu allows Enter to submit the typed input for normal validation.
 
 Editing the draft cancels a pending submission. Editing, completion, and submission keys cannot change or send the draft while pasted text is awaiting insertion, including when suggestions are open or keys are remapped. Suggestions refresh after the pasted text is inserted.
 
-Completing the name of a command with no arguments or optional arguments closes the popup and returns focus to the draft. Optional arguments remain supported: `/resume` opens the session picker, and `/resume <session_id>` resumes directly. Pressing Tab again requests argument completion explicitly. When the SDK provides only an argument hint, Tab displays that hint without changing or sending the draft; Enter sends the typed command for SDK validation. SDK hints are descriptive text, so their brackets never determine whether the app allows submission. Empty hints and `none` or `[none]` do not produce argument help.
+Completing the name of a command with no arguments or optional arguments closes the popup and returns focus to the draft. Optional arguments remain supported: `/resume` opens the session picker, and `/resume <session_id_or_title>` resumes directly. A title must match the displayed title exactly; if it names more than one session, the app asks for an ID. Pressing Tab again requests argument completion explicitly. When the SDK provides only an argument hint, Tab displays that hint without changing or sending the draft; Enter sends the typed command for SDK validation. SDK hints are descriptive text, so their brackets never determine whether the app allows submission. Empty hints and `none` or `[none]` do not produce argument help.
 
 Space inserts a literal separator without accepting the highlighted suggestion. It ends command-name completion and continues argument assistance only when the app requires arguments, or when you explicitly requested argument help. There is no special Space dismissal state. Escape dismisses the current menu; argument edits, cursor movement within arguments, and metadata refreshes keep it closed. Tab requests completion again, and editing the command name starts a new completion interaction. A command is recognized only at the start of the draft, allowing leading whitespace; slashes on later lines remain literal prompt or argument text.
 
@@ -85,6 +89,8 @@ Use:
 to inspect the current session's full command list. The output includes app-owned commands and SDK-advertised commands, with descriptions when the SDK provides them.
 
 Commands that Claude Code runs locally, such as `/rename`, `/color` or `/context`, reply in the chat under the command as they do in Claude Code. The composer edge and prompt glyph use a stable color selected from the session ID. An explicit `/color <name>` changes that accent only when the SDK confirms a successful local `/color` result with the submitted prompt ID. If the SDK omits either confirmation field, claude-rs keeps the current accent; it never infers color from chat text. `/color default` restores the session-ID color. The accent resets when the session changes and does not recolor tool status indicators.
+
+`/search` and the remappable `Ctrl+F` shortcut open a local search viewer. Type or paste a query, use Enter or Down for the next match and Shift+Enter or Up for the previous match, and press Esc to return to chat. The highlighted excerpt is from retained session content only; older content evicted by the app's history limit and archived transcripts are not searched.
 
 Rewinding a conversation keeps the model, effort and permission mode currently selected in the session. On resume, the public Agent SDK can return a local command as XML-like user text without identifying its origin. The history preserves that text exactly, so a command such as `/rename` may appear in its raw record form until the SDK exposes a reliable command marker.
 

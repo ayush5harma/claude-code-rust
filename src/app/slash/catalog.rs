@@ -7,6 +7,7 @@
 pub(crate) enum AppSlashCommand {
     Btw,
     Cancel,
+    Exit,
     Compact,
     Config,
     Memory,
@@ -15,6 +16,7 @@ pub(crate) enum AppSlashCommand {
     Hooks,
 
     Copy,
+    Search,
     Diff,
     Docs,
     Agent,
@@ -104,6 +106,14 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         args: NO_ARGS,
     },
     AppSlashCommandSpec {
+        command: AppSlashCommand::Exit,
+        name: "/exit",
+        usage: "Usage: /exit",
+        short_description: "Exit the application",
+        long_description: "Exit after restoring the terminal and closing the session.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
         command: AppSlashCommand::Compact,
         name: "/compact",
         usage: "Usage: /compact",
@@ -157,6 +167,14 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         usage: "Usage: /copy",
         short_description: "Copy last response",
         long_description: "Copy the last finished assistant response or choose a code block. Configure Skip the /copy picker to copy the full response directly.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Search,
+        name: "/search",
+        usage: "Usage: /search [query]",
+        short_description: "Search retained transcript",
+        long_description: "Search retained user, assistant, and visible tool text. Archived history is excluded.",
         args: NO_ARGS,
     },
     AppSlashCommandSpec {
@@ -317,8 +335,8 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
     AppSlashCommandSpec {
         command: AppSlashCommand::Resume,
         name: "/resume",
-        usage: "Usage: /resume [session_id]",
-        short_description: "Resume a session by ID",
+        usage: "Usage: /resume [session_id_or_title]",
+        short_description: "Resume a session by ID or title",
         long_description: "Open the session picker, or resume a manually supplied session ID.",
         args: NO_ARGS,
     },
@@ -357,6 +375,7 @@ impl AppSlashCommand {
         match self {
             Self::Btw => "/btw",
             Self::Cancel => "/cancel",
+            Self::Exit => "/exit",
             Self::Compact => "/compact",
             Self::Config => "/config",
             Self::Memory => "/memory",
@@ -365,6 +384,7 @@ impl AppSlashCommand {
             Self::Hooks => "/hooks",
 
             Self::Copy => "/copy",
+            Self::Search => "/search",
             Self::Diff => "/diff",
             Self::Docs => "/docs",
             Self::Agent => "/agent",
@@ -429,13 +449,14 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
-            Self::Copy => {
+            Self::Copy | Self::Exit => {
                 if args.is_empty() {
                     SubmissionClass::Informational
                 } else {
                     SubmissionClass::Invalid
                 }
             }
+            Self::Search => SubmissionClass::Fullscreen,
             Self::Docs => match args {
                 ["mode" | "models" | "shortcuts" | "commands" | "agents"] => {
                     SubmissionClass::Informational
@@ -482,14 +503,7 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
-            Self::Export => SubmissionClass::TurnExclusive,
-            Self::Resume => {
-                if args.len() <= 1 {
-                    SubmissionClass::TurnExclusive
-                } else {
-                    SubmissionClass::Invalid
-                }
-            }
+            Self::Export | Self::Resume => SubmissionClass::TurnExclusive,
             Self::Rewind => {
                 if matches!(args, [_, "both" | "conversation" | "code"]) {
                     SubmissionClass::TurnExclusive
