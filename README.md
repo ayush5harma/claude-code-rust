@@ -29,6 +29,7 @@ The two SDK behavior fixes incorporate upstream pull requests [#444](https://git
 | Local CI runner and development shell ([#8](https://github.com/ayush5harma/claude-code-rust/pull/8)) | A single local check runner and a Nix development shell for the repository's Rust, bridge, and repository checks. |
 | Live end-to-end harness ([#10](https://github.com/ayush5harma/claude-code-rust/pull/10)) | Repeatable real-SDK terminal scenarios with recorded pass, failure, gap, and skip outcomes. The initial baseline was **59 pass, 5 fail, 13 gap, 9 skip**; adding the harness does not mean all scenarios pass. |
 | Render corpus and benchmark comparison ([#9](https://github.com/ayush5harma/claude-code-rust/pull/9)) | Representative rendering workloads and repeated baseline/candidate measurements, with noise checks, invalid-result rejection, and temporary-worktree cleanup on interruption. These compare revisions of this application; they are not a benchmark against Anthropic's stock interface. |
+| Launch and session flags ([#11](https://github.com/ayush5harma/claude-code-rust/pull/11)) | `--name`, `--fork-session`, repeatable `--add-dir`, file or inline `--settings` and `--mcp-config`, `--strict-mcp-config`, and replacement/appended system prompts from text or files. Session names and forks apply to the initial session; directory and configuration overrides persist for sessions started within the process. |
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development commands and verification requirements.
 
@@ -38,7 +39,6 @@ These are **not included in v0.15.2-fork.2**. Pull-request status is authoritati
 
 | Work | Status |
 | --- | --- |
-| Launch flags: `--name`, `--fork-session`, repeatable `--add-dir`, `--settings`, `--mcp-config`, `--strict-mcp-config`, and replacement/appended system prompts from text or files | [PR #11](https://github.com/ayush5harma/claude-code-rust/pull/11), under review and cross-platform verification. |
 | Hook progress and completion notices, per-hook duration, slow-hook summary, and startup milestones in Status | [PR #12](https://github.com/ayush5harma/claude-code-rust/pull/12), under review and cross-platform verification. Hook output is sanitized and redacted before retention. |
 | `/reload` skills and `/export` session history | [PR #13](https://github.com/ayush5harma/claude-code-rust/pull/13), under review and cross-platform verification. Export refuses to overwrite an existing file. |
 | Native `/diff` viewer | In development: working-tree changes and available current-session tool diffs in a native terminal view. |
