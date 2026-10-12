@@ -133,6 +133,21 @@ pub struct SessionOptions {
     /// Main-thread agent to use for this session.
     #[arg(long, global = true, value_name = "NAME", value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub agent: Option<String>,
+
+    /// Name the new or resumed session, as the Status tab's rename does.
+    #[arg(long, short = 'n', global = true, value_name = "NAME", value_parser = parse_session_name)]
+    pub name: Option<String>,
+}
+
+/// Session names are shown in the terminal, so control characters are dropped,
+/// as the title converter does for titles the SDK reports.
+fn parse_session_name(value: &str) -> Result<String, String> {
+    let name: String = value.chars().filter(|ch| !ch.is_control()).collect();
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("the session name must contain visible characters".to_owned());
+    }
+    Ok(name.to_owned())
 }
 
 impl Cli {
@@ -141,7 +156,8 @@ impl Cli {
         let has_session_options = self.session_options.model.is_some()
             || self.session_options.effort.is_some()
             || self.session_options.permission_mode.is_some()
-            || self.session_options.agent.is_some();
+            || self.session_options.agent.is_some()
+            || self.session_options.name.is_some();
         let conflict = match &self.command {
             Some(Command::Resume { .. }) => {
                 self.resume.is_some() || self.continue_session || self.prompt.is_some()

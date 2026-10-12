@@ -1,6 +1,7 @@
 import {
   getSessionMessages,
   listSessions,
+  renameSession,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { BridgeCommand } from "../types.js";
 import {
@@ -286,6 +287,7 @@ async function resume(
       return;
     }
     setSessionListingDir(matched.cwd ?? process.cwd());
+    await renameResumedSession(command, matched.cwd, requestId);
     const historyMessages = await getSessionTranscriptMessages(
       command.session_id,
       matched.cwd
@@ -335,6 +337,37 @@ async function resume(
       `failed to resume session: ${message}`,
       requestId,
     );
+  }
+}
+
+/**
+ * Apply a launch-time name to the session being resumed, before it connects, so the
+ * connect-time title read already reports it. A rename failure is reported without
+ * blocking the resume: the conversation matters more than its label.
+ */
+async function renameResumedSession(
+  command: Extract<LifecycleCommand, { command: "resume_session" }>,
+  cwd: string | undefined,
+  requestId: string | undefined,
+): Promise<void> {
+  const name = command.launch_settings.name;
+  if (name === undefined) {
+    return;
+  }
+  try {
+    await renameSession(command.session_id, name, cwd ? { dir: cwd } : undefined);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    bridgeLogger.warn({
+      target: LOG_TARGETS.APP_SESSION,
+      eventName: "session_launch_rename_failed",
+      message: "failed to apply the launch name to the resumed session",
+      outcome: "failure",
+      ...(requestId ? { requestId } : {}),
+      sessionId: command.session_id,
+      fields: { error_message: message },
+    });
+    slashError(command.session_id, `failed to rename session: ${message}`, requestId);
   }
 }
 

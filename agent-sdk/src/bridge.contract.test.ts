@@ -614,9 +614,11 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
     }
     export async function getSessionMessages(...args) { return process.env.RESUME_TRANSCRIPT_FIXTURE === "1" ? sdkGetSessionMessages(...args) : []; }
     export async function importSessionToStore(...args) { if (process.env.RESUME_TRANSCRIPT_FIXTURE === "1") await sdkImportSessionToStore(...args); }
+    export async function renameSession(sessionId, title, options) { record({ type: "rename", sessionId, title, options }); }
     const saved = new Map();
     export function query({ prompt, options }) {
       record({ type: "query", cwd: options.cwd, resume: options.resume, model: options.model, effort: options.effort, permissionMode: options.permissionMode, agent: options.agent });
+      record({ type: "launch", resume: options.resume, sessionId: options.sessionId, forkSession: options.forkSession, title: options.title });
       const state = saved.get(options.resume) ?? { requested: false, effort: "high", cwd: options.cwd };
       saved.set(options.sessionId ?? options.resume, state);
       let model = options.model ?? "opus";
@@ -886,6 +888,39 @@ test("startup overrides and continue use the production session lifecycle", asyn
     assert.deepEqual(entries.find(entry => entry.type === "query"), { type: "query", cwd, resume: "newest-here", model: "opus", effort: "max", permissionMode: "plan", agent: "reviewer" });
     const list = entries.find(entry => entry.type === "list");
     assert.deepEqual(list?.options, { dir: cwd, includeProgrammatic: true, includeWorktrees: true, limit: 50 });
+  } finally {
+    await cleanup();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+function readJournal(journal: string): BridgeEnvelope[] {
+  return readFileSync(journal, "utf8").trim().split("\n").map(line => JSON.parse(line) as BridgeEnvelope);
+}
+
+test("launch name titles a new session and renames a resumed one before it connects", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-launch-name-"));
+  const journal = join(directory, "query-options.jsonl");
+  const cwd = process.cwd();
+  const { bridge, cleanup } = ultracodeFixtureBridge({
+    STARTUP_JOURNAL: journal,
+    STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId: "saved-session", cwd, lastModified: 1 }]),
+  });
+  try {
+    bridge.writeCommand({ command: "create_session", cwd, launch_settings: { name: "Launch name" } });
+    await nextMatching(bridge, event => event.event === "connected");
+    const created = readJournal(journal);
+    assert.equal(created.find(entry => entry.type === "launch")?.title, "Launch name");
+    assert.equal(created.some(entry => entry.type === "rename"), false);
+
+    rmSync(journal);
+    bridge.writeCommand({ command: "resume_session", session_id: "saved-session", launch_settings: { name: "Resumed name" } });
+    await nextMatching(bridge, event => event.event === "session_replaced");
+    const resumed = readJournal(journal).filter(entry => entry.type === "rename" || entry.type === "launch");
+    assert.deepEqual(resumed, [
+      { type: "rename", sessionId: "saved-session", title: "Resumed name", options: { dir: cwd } },
+      { type: "launch", resume: "saved-session" },
+    ]);
   } finally {
     await cleanup();
     rmSync(directory, { recursive: true, force: true });

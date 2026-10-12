@@ -1051,3 +1051,49 @@ mod tests {
         Ok((runtime_path, script_path))
     }
 }
+
+#[cfg(test)]
+mod launch_command_tests {
+    use super::{StartConnectionParams, build_session_command};
+    use crate::app::App;
+    use crate::app::connect::session_start::{
+        SessionStartReason, session_launch_settings_for_reason,
+    };
+    use clap::Parser;
+
+    /// The first command the app sends the bridge for a command line, as JSON.
+    fn startup_command(args: &[&str]) -> serde_json::Value {
+        let cli = crate::Cli::try_parse_from(args).expect("parse CLI");
+        cli.validate().expect("valid launch");
+        let mut app = App::test_default();
+        app.startup = crate::app::state::StartupState::from_cli(&cli);
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
+        let params = StartConnectionParams {
+            event_tx,
+            cwd_raw: "/work/project".to_owned(),
+            bridge_script: None,
+            launch: cli.startup_launch(),
+            session_launch_settings: session_launch_settings_for_reason(
+                &app,
+                SessionStartReason::Startup,
+            ),
+        };
+        serde_json::to_value(build_session_command(&params)).expect("serialize command")
+    }
+
+    #[test]
+    fn name_reaches_new_continued_and_resumed_sessions() {
+        let created = startup_command(&["claude-rs", "-n", "Release\u{7} prep "]);
+        assert_eq!(created["command"], "create_session");
+        assert_eq!(created["launch_settings"], serde_json::json!({ "name": "Release prep" }));
+
+        let continued = startup_command(&["claude-rs", "--continue", "--name", "Follow-up"]);
+        assert_eq!(continued["continue_session"], true);
+        assert_eq!(continued["launch_settings"], serde_json::json!({ "name": "Follow-up" }));
+
+        let resumed = startup_command(&["claude-rs", "resume", "session-1", "-n", "Renamed"]);
+        assert_eq!(resumed["command"], "resume_session");
+        assert_eq!(resumed["session_id"], "session-1");
+        assert_eq!(resumed["launch_settings"], serde_json::json!({ "name": "Renamed" }));
+    }
+}

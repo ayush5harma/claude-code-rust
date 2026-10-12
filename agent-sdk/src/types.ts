@@ -731,6 +731,7 @@ export interface SessionLaunchSettings {
   permission_mode?: import("@anthropic-ai/claude-agent-sdk").PermissionMode;
   effort?: EffortLevel;
   agent?: string;
+  name?: string;
 }
 
 export interface RewindTarget {

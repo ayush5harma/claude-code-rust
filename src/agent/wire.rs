@@ -15,6 +15,8 @@ pub struct SessionLaunchSettings {
     pub effort: Option<super::model::EffortLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 impl SessionLaunchSettings {
@@ -24,6 +26,7 @@ impl SessionLaunchSettings {
             && self.permission_mode.is_none()
             && self.effort.is_none()
             && self.agent.is_none()
+            && self.name.is_none()
     }
 }
 
@@ -1656,12 +1659,14 @@ mod tests {
             permission_mode: Some("plan".to_owned()),
             effort: Some(super::super::model::EffortLevel::Max),
             agent: Some("reviewer".to_owned()),
+            name: Some("Release prep".to_owned()),
         };
         let json = serde_json::to_value(&settings).expect("serialize");
         assert_eq!(
             json,
             serde_json::json!({
-                "model": "haiku", "permission_mode": "plan", "effort": "max", "agent": "reviewer"
+                "model": "haiku", "permission_mode": "plan", "effort": "max", "agent": "reviewer",
+                "name": "Release prep"
             })
         );
         assert_eq!(

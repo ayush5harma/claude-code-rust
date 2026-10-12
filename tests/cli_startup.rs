@@ -83,6 +83,9 @@ fn contradictory_or_invalid_startup_arguments_are_rejected() {
         vec!["claude-rs", "--permission-mode", "invalid"],
         vec!["claude-rs", "--model", ""],
         vec!["claude-rs", "--agent", ""],
+        vec!["claude-rs", "--name", ""],
+        vec!["claude-rs", "-n", "\u{1b}\t "],
+        vec!["claude-rs", "doctor", "--name", "Release prep"],
     ] {
         assert!(
             Cli::try_parse_from(&args).and_then(|cli| cli.validate()).is_err(),

@@ -56,6 +56,7 @@ pub(crate) fn session_launch_settings_for_reason(
                     .map(|mode| mode.as_stored().to_owned()),
                 effort: options.and_then(|options| options.effort),
                 agent: options.and_then(|options| options.agent.clone()),
+                name: options.and_then(|options| options.name.clone()),
             }
         }
     }
@@ -173,6 +174,8 @@ mod tests {
             "plan",
             "--agent",
             "reviewer",
+            "--name",
+            "Release prep",
         ])
         .expect("CLI");
         let mut app = App::test_default();
@@ -188,6 +191,7 @@ mod tests {
             assert_eq!(launch.permission_mode.as_deref(), Some("plan"));
             assert_eq!(launch.effort, Some(EffortLevel::Max));
             assert_eq!(launch.agent.as_deref(), Some("reviewer"));
+            assert_eq!(launch.name.as_deref(), Some("Release prep"));
         }
         assert_eq!(app.config.snapshot, saved);
         app.startup.complete_launch();

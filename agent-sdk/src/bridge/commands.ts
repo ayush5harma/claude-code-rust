@@ -255,11 +255,13 @@ function optionalLaunchSettings(
   }
   const agent = optionalString(parsed, "agent", `${context}.${key}`);
   const effort = parsed.effort == null ? undefined : expectEffortLevel(parsed, "effort", `${context}.${key}`);
+  const name = optionalString(parsed, "name", `${context}.${key}`)?.trim();
   return {
     ...(model ? { model } : {}),
     ...(permissionMode ? { permission_mode: permissionMode as SessionLaunchSettings["permission_mode"] } : {}),
     ...(agent ? { agent } : {}),
     ...(effort !== undefined ? { effort } : {}),
+    ...(name ? { name } : {}),
   };
 }
 

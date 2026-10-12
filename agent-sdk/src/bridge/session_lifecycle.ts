@@ -1151,6 +1151,13 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     ...permissionModeOptions,
     ...(params.launchSettings.effort !== undefined ? { effort: params.launchSettings.effort } : {}),
     ...(params.launchSettings.agent !== undefined ? { agent: params.launchSettings.agent } : {}),
+    // The SDK applies `title` to a new or forked session only; a resumed session keeps its
+    // persisted title, so resume() renames it instead. renameSession cannot name a new
+    // session: its transcript file does not exist before the first turn (measured on the
+    // pinned SDK: "Session ... not found in project directory").
+    ...(params.launchSettings.name !== undefined && (!params.resume || params.forkSession)
+      ? { title: params.launchSettings.name }
+      : {}),
     toolConfig: { askUserQuestion: { previewFormat: "markdown" as const } },
     systemPrompt,
     ...(params.claudeCodeExecutable
