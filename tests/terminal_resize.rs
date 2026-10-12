@@ -618,6 +618,11 @@ impl TerminalTest {
         std::fs::write(&self.release_file, step).expect("signal fixture barrier");
     }
 
+    /// The session's working directory, where /export writes relative paths.
+    fn project_dir(&self) -> PathBuf {
+        self.temp.path().join("project")
+    }
+
     fn shutdown(&mut self) {
         self.send(b"\x11"); // Normal Ctrl+Q shutdown, not a forced kill.
         self.wait_shutdown();
@@ -2093,6 +2098,51 @@ fn reload_reports_the_reloaded_counts_and_then_a_bridge_failure() {
     // /reload is app-owned: it reaches the bridge as its own command, never as a prompt.
     assert_eq!(test.commands("reload_skills_and_styles").len(), 2);
     test.assert_prompts(&[]);
+    test.shutdown();
+}
+
+/// The Markdown the `export` scenario's saved conversation must produce, after the header.
+const EXPORTED_BODY: &str = "## User\n\nList the files\n\n## Assistant\n\nListing now.\n\n### Tool: Bash - ls -la\n\nResult:\n\n```\nREADME.md\nsrc\n```\n\nFixing the note.\n\n### Tool: Edit - notes.txt\n\n```diff\n--- notes.txt\n+++ notes.txt\n@@ -1,2 +1,2 @@\n keep\n-old\n+new\n```\n\n";
+
+#[test]
+fn export_writes_the_saved_conversation_and_never_overwrites_it() {
+    let mut test = TerminalTest::start("export", 3);
+    test.submit_command("/export transcript.md");
+    test.wait_turn_finished("Exported the conversation to");
+
+    let target = test.project_dir().join("transcript.md");
+    let file = std::fs::read_to_string(&target).expect("exported file");
+    // Header fields vary with the machine and the clock; the body is exact.
+    let body = file
+        .split_once("- Exported: ")
+        .and_then(|(_, rest)| rest.split_once("\n\n"))
+        .map(|(_, body)| body)
+        .expect("exported body");
+    assert!(file.starts_with("# Conversation\n\n- Session: fake-session\n- Directory: "), "{file}");
+    assert!(file.contains("\n- Model: Fake model\n- Exported: "), "{file}");
+    assert_eq!(body, EXPORTED_BODY);
+    assert!(!file.contains('\u{1b}'), "terminal escapes must not reach the file");
+    assert_eq!(test.commands("export_session_history").len(), 1);
+    test.assert_prompts(&[]);
+
+    // A second export to the same path is refused before the bridge is asked.
+    test.submit_command("/export transcript.md");
+    test.wait_screen("will not be overwritten");
+    assert_eq!(std::fs::read_to_string(&target).expect("kept file"), file);
+    assert_eq!(test.commands("export_session_history").len(), 1);
+
+    // Without a path the name comes from the session id and the clock.
+    test.submit_command("/export");
+    test.wait_until("the default-named export", |test| {
+        std::fs::read_dir(test.project_dir()).is_ok_and(|entries| {
+            entries.flatten().any(|entry| {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with("claude-rs-fake-ses-")
+                    && Path::new(&*name).extension().is_some_and(|ext| ext == "md")
+            })
+        })
+    });
     test.shutdown();
 }
 

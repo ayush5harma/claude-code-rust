@@ -1901,3 +1901,66 @@ fn skills_and_styles_reload_result_leaves_an_unrelated_pending_command_alone() {
     assert!(matches!(app.status, AppStatus::CommandPending));
     assert!(matches!(app.turn.pending_command_ack, Some(PendingCommandAck::CurrentMode)));
 }
+
+#[test]
+fn history_export_result_is_noticed_with_the_written_path_and_releases_the_command() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut app = make_test_app();
+    app.cwd_raw = dir.path().display().to_string();
+    let request_id = crate::app::export::begin(&mut app, "test-session", "out.md").expect("begin");
+    app.status = AppStatus::CommandPending;
+    app.turn.pending_command_ack = Some(PendingCommandAck::HistoryExport);
+
+    handle_client_event(&mut app, history_chunk(Some("older-request"), true, None));
+    assert!(matches!(app.status, AppStatus::CommandPending), "another request's chunk is dropped");
+
+    handle_client_event(&mut app, history_chunk(Some(&request_id), true, None));
+
+    assert!(matches!(app.status, AppStatus::Ready));
+    assert!(app.turn.pending_command_ack.is_none());
+    let last = app.transcript.messages.last().expect("export notice");
+    let Some(MessageBlock::Notice(notice)) = last.blocks.first() else {
+        panic!("expected a notice block");
+    };
+    assert_eq!(notice.severity, SystemSeverity::Info);
+    let written = std::path::absolute(dir.path().join("out.md")).expect("absolute");
+    assert_eq!(notice.text.text, format!("Exported the conversation to {}", written.display()));
+    assert!(written.is_file());
+}
+
+#[test]
+fn history_export_failure_is_reported_and_releases_the_command() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut app = make_test_app();
+    app.cwd_raw = dir.path().display().to_string();
+    let request_id = crate::app::export::begin(&mut app, "test-session", "out.md").expect("begin");
+    app.status = AppStatus::CommandPending;
+    app.turn.pending_command_ack = Some(PendingCommandAck::HistoryExport);
+
+    handle_client_event(
+        &mut app,
+        history_chunk(Some(&request_id), true, Some("failed to load session history: boom")),
+    );
+
+    assert!(matches!(app.status, AppStatus::Ready));
+    let last = app.transcript.messages.last().expect("failure notice");
+    let Some(MessageBlock::Notice(notice)) = last.blocks.first() else {
+        panic!("expected a notice block");
+    };
+    assert_eq!(notice.severity, SystemSeverity::Error);
+    assert_eq!(notice.text.text, "failed to load session history: boom");
+    assert!(!dir.path().join("out.md").exists());
+}
+
+fn history_chunk(request_id: Option<&str>, last: bool, error: Option<&str>) -> ClientEvent {
+    ClientEvent::SessionHistoryChunk {
+        session_id: "test-session".to_owned(),
+        chunk: crate::agent::events::HistoryChunk {
+            request_id: request_id.map(str::to_owned),
+            updates: Vec::new(),
+            last,
+            omitted_updates: 0,
+            error: error.map(str::to_owned),
+        },
+    }
+}
