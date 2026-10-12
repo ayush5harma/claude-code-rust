@@ -14,6 +14,11 @@ pub enum KeyAction {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum AppAction {
     Quit,
+    DeleteOrQuit,
+    OpenExternalEditor,
+    OpenRewindPicker,
+    ToggleTasks,
+    ToggleVerbose,
     ClearInputOrQuit,
     Redraw,
     CancelTurn,

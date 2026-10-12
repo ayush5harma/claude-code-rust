@@ -10,6 +10,7 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | --- | --- | --- |
 | `/btw` | `/btw <question>` | Ask a contextual side question without adding it to the main conversation. |
 | `/cancel` | `/cancel` | Cancel the active assistant turn. |
+| `/exit` | `/exit` | Exit the application and restore the terminal. |
 | `/compact` | `/compact` | Ask the active session to compact conversation context. |
 | `/config` | `/config` | Open fullscreen settings. |
 | `/memory` | `/memory` | Open the Memory settings pane. |

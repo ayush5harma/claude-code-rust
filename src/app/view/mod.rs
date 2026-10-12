@@ -12,6 +12,9 @@ pub enum FullscreenView {
     SessionPicker,
     Update,
     Copy,
+    Rewind,
+    Tasks,
+    Verbose,
     Search,
     Diff,
 }
@@ -68,10 +71,19 @@ pub(crate) fn dismiss_fullscreen_on_interrupt(app: &mut App) {
         FullscreenView::Copy => {
             app.copy_picker = None;
         }
+        FullscreenView::Rewind => {
+            app.rewind_picker = None;
+        }
+        FullscreenView::Verbose => {
+            app.verbose_view = None;
+        }
         FullscreenView::Search => {
             app.search = None;
         }
-        FullscreenView::Config | FullscreenView::Trusted | FullscreenView::Diff => {}
+        FullscreenView::Config
+        | FullscreenView::Trusted
+        | FullscreenView::Tasks
+        | FullscreenView::Diff => {}
         FullscreenView::SessionPicker => {
             app.startup.resolve_session_picker();
             app.session_picker.turn_session_id = None;

@@ -31,9 +31,14 @@ The fullscreen settings surface has its own keys for tabs, panes, search and edi
 | Shortcut | Action |
 | --- | --- |
 | `Enter` | Submit. |
-| `Shift+Enter`, `Ctrl+Enter` | Insert newline. |
-| `Esc` | Cancel the active assistant turn. |
+| `Shift+Enter`, `Ctrl+Enter`, `\\` then `Enter` | Insert newline. The backslash is removed. |
+| `Esc` | Cancel the active assistant turn. Press twice on an empty prompt to open the rewind picker. |
 | `Ctrl+C` | Clear the local draft, or quit when the draft is empty. |
+| `Ctrl+D` | Delete after the cursor, or quit when the draft is empty. |
+| `Ctrl+G` | Edit the draft in `$VISUAL` or `$EDITOR`. A failed editor preserves the draft. |
+| `Ctrl+O` | Show a snapshot of retained user, assistant and visible tool text; press again or `Esc` to close. Reopen to refresh. |
+| `Ctrl+T` | Show SDK tasks; press again or `Esc` to close. |
+| `Alt+R` | Open the rewind picker directly. |
 | `Ctrl+F` | Search retained transcript text. |
 | `Tab` | Focus prompts or accept suggestions. |
 | `Shift+Tab` | Cycle mode. |
@@ -51,7 +56,6 @@ Readline-style bindings are also supported:
 | --- | --- |
 | `Ctrl+A`, `Ctrl+E` | Move to line start or line end. |
 | `Ctrl+B` | Move one character left. |
-| `Ctrl+D` | Delete after cursor. |
 | `Ctrl+H` | Delete before cursor. |
 | `Ctrl+K` | Kill to line end. |
 | `Ctrl+U` | Kill to line start. |

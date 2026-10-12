@@ -174,7 +174,7 @@ impl TerminalTest {
         args: &[&str],
         has_initial_prompt: bool,
     ) -> Self {
-        Self::start_without_env(scenario, lines, auth_mode, args, has_initial_prompt, &[])
+        Self::start_without_env(scenario, lines, auth_mode, args, has_initial_prompt, &[], false)
     }
 
     /// Starts the app with `removed_env` absent from its environment.
@@ -185,6 +185,7 @@ impl TerminalTest {
         args: &[&str],
         has_initial_prompt: bool,
         removed_env: &[&str],
+        fake_editor: bool,
     ) -> Self {
         let temp = tempfile::tempdir().expect("tempdir");
         let profile = temp.path().join("profile");
@@ -227,6 +228,18 @@ impl TerminalTest {
         }
         command.env("FAKE_BRIDGE_JOURNAL", &journal);
         command.env("FAKE_BRIDGE_RELEASE_FILE", &release_file);
+        if fake_editor {
+            let editor = temp.path().join("fake-editor.sh");
+            std::fs::write(&editor, "#!/bin/sh\nprintf '\\nfrom editor' >> \"$1\"\n")
+                .expect("fake editor");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o700))
+                    .expect("fake editor executable");
+            }
+            command.env("VISUAL", &editor);
+        }
         for name in removed_env {
             command.env_remove(name);
         }
@@ -746,6 +759,72 @@ fn shutdown_preserves_completed_history_without_reinserting_it() {
         assert!(!screen.hide_cursor(), "shutdown must restore the cursor");
         assert!(screen.contents().contains("Shutting down"));
     }
+}
+
+#[test]
+fn input_shortcuts_toggle_native_views_and_empty_ctrl_d_exits() {
+    let mut test = TerminalTest::start("resize-replay", 1);
+    test.send(b"\x14");
+    test.wait_screen("Tasks");
+    test.wait_screen("No tasks in the current session");
+    test.send(b"\x14");
+    test.wait_screen("Type a message");
+    test.send(b"\x0f");
+    test.wait_screen("Detailed transcript");
+    test.send(b"\x0f");
+    test.wait_screen("Type a message");
+    test.send(b"\x04");
+    let status = test.child.wait_for_exit(Duration::from_secs(15));
+    assert!(
+        status.as_ref().is_some_and(ExitStatus::success),
+        "Ctrl+D exit: {}",
+        test.diagnostics()
+    );
+    test.wait_shutdown_screen();
+}
+
+#[test]
+#[cfg(unix)]
+fn ctrl_g_editor_restores_terminal_and_submits_edited_draft() {
+    let mut test = TerminalTest::start_without_env("stream", 3, None, &[], false, &[], true);
+    test.send(b"draft");
+    test.wait_screen("draft");
+    test.send(b"\x07");
+    test.wait_screen("from editor");
+    test.send(b"\r");
+    test.wait_until("edited draft reaches fake bridge", |test| !test.prompts().is_empty());
+    test.assert_prompts(&["draft\nfrom editor"]);
+    test.shutdown();
+}
+
+#[test]
+#[cfg(unix)]
+fn ctrl_g_editor_accepts_multiple_keys_after_terminal_restore() {
+    let mut test = TerminalTest::start_without_env("stream", 3, None, &[], false, &[], true);
+    test.send(b"draft");
+    test.wait_screen("draft");
+    test.send(b"\x07");
+    test.wait_screen("from editor");
+    test.send(b"\x7f");
+    test.wait_until("edited draft accepts Backspace", |test| {
+        test.screen().lines().any(|line| line.trim_end().ends_with("from edito"))
+    });
+    test.send(b"\r");
+    test.wait_until("edited draft reaches fake bridge", |test| !test.prompts().is_empty());
+    test.assert_prompts(&["draft\nfrom edito"]);
+    test.shutdown();
+}
+
+#[test]
+fn double_escape_opens_rewind_picker_and_single_escape_closes_it() {
+    let mut test = TerminalTest::start("stream", 3);
+    test.send(b"\x1b");
+    std::thread::sleep(Duration::from_millis(100));
+    test.send(b"\x1b");
+    test.wait_screen("Rewind: select message");
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+    test.shutdown();
 }
 
 #[test]
@@ -2619,6 +2698,7 @@ fn ctrl_v_press_reaches_the_clipboard_path_without_a_key_release() {
         &[],
         false,
         &["DISPLAY", "WAYLAND_DISPLAY"],
+        false,
     );
     test.send(b"\x16");
     test.wait_screen("system clipboard");

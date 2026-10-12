@@ -129,6 +129,10 @@ impl PasteBurstDetector {
         }
     }
 
+    pub fn reset(&mut self) {
+        *self = Self::new();
+    }
+
     /// Feed a printable character event. Returns whether the caller should
     /// insert it or whether the detector consumed it.
     pub fn on_char(&mut self, ch: char, now: Instant) -> CharAction {
@@ -554,6 +558,23 @@ mod tests {
         );
         assert_eq!(detector.on_non_char_key(fast(started, 4)), None);
         assert_eq!(detector.tick(after_idle(started)), None);
+    }
+
+    #[test]
+    fn external_editor_reset_clears_enter_suppression_after_flushing_burst() {
+        let mut detector = PasteBurstDetector::new();
+        let started = Instant::now();
+        assert_eq!(detector.on_char('a', started), CharAction::Passthrough('a'));
+        assert_eq!(detector.on_char('b', fast(started, 1)), CharAction::Consumed);
+        assert_eq!(detector.on_char('c', fast(started, 2)), CharAction::RetroCapture(1));
+        let returned = fast(started, 3);
+        assert_eq!(
+            detector.on_non_char_key(returned),
+            Some(FlushAction::EmitPaste("abc".to_owned()))
+        );
+        assert!(detector.should_suppress_enter(returned));
+        detector.reset();
+        assert!(!detector.on_enter(returned));
     }
 
     #[test]

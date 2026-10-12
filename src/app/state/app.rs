@@ -64,6 +64,8 @@ pub struct App {
     pub(crate) recent_sessions: Vec<RecentSessionInfo>,
     /// Selection state for the startup session picker screen.
     pub(crate) session_picker: SessionPickerState,
+    pub(crate) rewind_picker: Option<Box<crate::app::rewind_picker::RewindPickerState>>,
+    pub(crate) verbose_view: Option<Box<crate::app::verbose_view::VerboseView>>,
     /// Deterministic measurement state for the future mutable chat region.
     pub(crate) chat_render: ChatRenderState,
     /// Active `@` file mention autocomplete state.
@@ -82,6 +84,7 @@ pub struct App {
     /// If another editing-like event or a paste payload arrives in the same
     /// drain cycle, this is cleared and no submit occurs.
     pub pending_submit: Option<InputSnapshot>,
+    pub(crate) last_cancel_at: Option<Instant>,
     /// Paste ingestion state: burst detection, queued chunks, session tracking.
     pub paste: PasteState,
     /// Pending image attachments accumulated via Ctrl+V clipboard reads and
@@ -262,6 +265,8 @@ impl App {
             plugins: PluginsState::default(),
             recent_sessions: Vec::new(),
             session_picker: SessionPickerState::default(),
+            rewind_picker: None,
+            verbose_view: None,
             chat_render: ChatRenderState::default(),
             copy_picker: None,
             search: None,
@@ -273,6 +278,7 @@ impl App {
             slash: slash::SlashAutocomplete::default(),
             subagent: None,
             pending_submit: None,
+            last_cancel_at: None,
             paste: PasteState::default(),
             pending_images: Vec::new(),
             // Tests never reach the system clipboard unless they install a reader.
