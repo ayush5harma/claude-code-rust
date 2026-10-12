@@ -621,6 +621,7 @@ export interface SessionListEntry {
   git_branch?: string;
   custom_title?: string;
   first_prompt?: string;
+  tag?: string;
 }
 
 export interface AccountInfo {
@@ -979,6 +980,8 @@ export type BridgeCommand =
       session_id: string;
       title: string;
     }
+  | { command: "tag_session"; session_id: string; tag: string | null }
+  | { command: "delete_session"; session_id: string }
   | {
       command: "new_session";
       cwd: string;
@@ -1278,6 +1281,7 @@ export type BridgeEvent =
     }
   | { event: "initialized"; result: InitializeResult }
   | { event: "sessions_listed"; sessions: SessionListEntry[] }
+  | { event: "session_mutation_result"; session_id: string; operation: "tag" | "delete"; error?: string; refresh_error?: string; sessions?: SessionListEntry[] }
   | { event: "status_snapshot"; session_id: string; account: AccountInfo }
   | {
       event: "context_usage";

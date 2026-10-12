@@ -45,6 +45,7 @@ fn app_with_status_connection() -> (App, crate::agent::client::CommandReceiver) 
         git_branch: None,
         custom_title: Some("Stale listed title".to_owned()),
         first_prompt: Some("First prompt".to_owned()),
+        tag: None,
     }];
     (app, rx)
 }

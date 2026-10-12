@@ -731,6 +731,25 @@ impl AgentConnection {
         })
     }
 
+    pub fn tag_session(
+        &self,
+        session_id: String,
+        tag: Option<String>,
+        request_id: String,
+    ) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: Some(request_id),
+            command: BridgeCommand::TagSession { session_id, tag },
+        })
+    }
+
+    pub fn delete_session(&self, session_id: String, request_id: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: Some(request_id),
+            command: BridgeCommand::DeleteSession { session_id },
+        })
+    }
+
     pub fn set_model(&self, session_id: String, model: String) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: None,

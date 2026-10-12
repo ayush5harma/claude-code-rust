@@ -1044,6 +1044,7 @@ pub struct SessionListEntry {
     pub git_branch: Option<String>,
     pub custom_title: Option<String>,
     pub first_prompt: Option<String>,
+    pub tag: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

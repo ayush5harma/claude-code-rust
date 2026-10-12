@@ -3,6 +3,7 @@
 use super::super::{App, SystemSeverity, notices, session};
 use crate::agent::events::ClientEvent;
 
+#[allow(clippy::too_many_lines)]
 pub(super) fn handle(app: &mut App, event: ClientEvent) {
     match event {
         ClientEvent::WorkingDiffReceived { session_id, request_id, files, error } => {
@@ -10,6 +11,24 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
         }
         agents_result @ ClientEvent::SessionAgentsResultReceived { .. } => {
             crate::app::session_agents::apply_result(app, agents_result);
+        }
+        ClientEvent::SessionMutationResult {
+            session_id,
+            request_id,
+            operation,
+            error,
+            refresh_error,
+            sessions,
+        } => {
+            crate::app::session_picker::apply_mutation_result(
+                app,
+                &session_id,
+                request_id.as_deref(),
+                &operation,
+                error,
+                refresh_error,
+                sessions,
+            );
         }
         ClientEvent::SettingsResultReceived { request_id, result, .. } => {
             crate::app::config::apply_settings_result(app, request_id.as_deref(), result);

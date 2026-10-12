@@ -13,6 +13,14 @@ const INTERVAL_MS = Number(process.env.FAKE_BRIDGE_INTERVAL_MS ?? 15);
 // Held turns are released after tests exercise input or rendering, rather than
 // racing a fixed reply duration. The resize-code scenario holds the second turn.
 const SCENARIO = process.env.FAKE_BRIDGE_SCENARIO ?? 'stream';
+let managedTag = null;
+let managedDeleted = false;
+function managedSessions() {
+  return [
+    ...(!managedDeleted ? [{ session_id: 'saved-session', summary: 'Saved project work', last_modified_ms: 2, file_size_bytes: 1, cwd, git_branch: null, custom_title: 'Saved project work', first_prompt: null, tag: managedTag }] : []),
+    { session_id: SESSION, summary: 'Current conversation', last_modified_ms: 1, file_size_bytes: 1, cwd, git_branch: null, custom_title: 'Current conversation', first_prompt: null, tag: null },
+  ];
+}
 const resizeCodeScenario = SCENARIO === 'resize-code';
 const activityScenario = SCENARIO.startsWith('hold-activity');
 const RELEASE_FILE = process.env.FAKE_BRIDGE_RELEASE_FILE;
@@ -419,6 +427,7 @@ readline
           ] : null,
           restored_input: null,
         });
+        if (SCENARIO === 'session-management') send({ event: 'sessions_listed', sessions: managedSessions() });
         if (SCENARIO.startsWith('resize-') || SCENARIO.startsWith('background-')) send({ event: 'status_snapshot', session_id: SESSION, account: { subscription_type: 'Fixture subscription' } });
         if (SCENARIO === 'session-agents') {
           send({ event: 'session_update', session_id: SESSION, update: { type: 'task_state_update', source: 'task_lifecycle', is_complete_snapshot: false, removed_task_ids: [], tasks: [
@@ -482,6 +491,19 @@ readline
           send({ event: 'user_message_queued', session_id: SESSION, message_uuid: message.message_uuid });
         } else streamReply(message.message_uuid);
         break;
+      case 'tag_session':
+      case 'delete_session': {
+        if (SCENARIO !== 'session-management') throw new Error('Unexpected session mutation');
+        const operation = message.command === 'tag_session' ? 'tag' : 'delete';
+        if (message.session_id !== 'saved-session' || managedDeleted || message.tag === 'fail') {
+          send({ event: 'session_mutation_result', request_id: message.request_id, session_id: message.session_id, operation, error: 'Fixture refused mutation' });
+          break;
+        }
+        if (operation === 'tag') managedTag = message.tag;
+        else managedDeleted = true;
+        send({ event: 'session_mutation_result', request_id: message.request_id, session_id: message.session_id, operation, sessions: managedSessions() });
+        break;
+      }
       case 'get_working_diff':
         send({ event: 'working_diff', session_id: SESSION, request_id: message.request_id, files: SCENARIO === 'native-diff'
           ? [{ path: 'tracked file.txt', status: 'MM', diff: 'diff --git a/tracked file.txt b/tracked file.txt\n--- a/tracked file.txt\n+++ b/tracked file.txt\n@@ -1 +1 @@\n-before\n+Working line\n' }]

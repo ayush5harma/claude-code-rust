@@ -9,7 +9,7 @@ mod notices;
 mod notifications;
 mod rate_limit;
 mod retraction;
-mod session;
+pub(crate) mod session;
 mod session_reset;
 mod streaming;
 mod tool_calls;

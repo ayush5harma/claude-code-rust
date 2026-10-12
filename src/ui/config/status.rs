@@ -265,6 +265,7 @@ mod tests {
             git_branch: None,
             custom_title: Some("Stale listed title".to_owned()),
             first_prompt: None,
+            tag: None,
         }];
         let name_row = |app: &App| {
             status_lines(app)

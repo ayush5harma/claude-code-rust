@@ -442,7 +442,7 @@ fn request_correlation_and_session_epoch_protect_editor_state() {
 async fn inline_arrows_and_space_cycle_choices_and_render_acknowledged_values() {
     use ratatui::{Terminal, backend::TestBackend};
     tokio::task::LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             let mut app = App::test_default();
             app.surface_mode =
                 crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
@@ -520,7 +520,7 @@ async fn inline_arrows_and_space_cycle_choices_and_render_acknowledged_values() 
                 "read-only controls must preserve the saved value"
             );
             assert_eq!(app.config.saved_value("language"), Some(&json!("medium")));
-        })
+        }))
         .await;
 }
 
