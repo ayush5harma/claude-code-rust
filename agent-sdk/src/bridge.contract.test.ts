@@ -1046,7 +1046,7 @@ for (const [flag, launchSettings] of [
     });
     try {
       bridge.writeCommand({ command: "resume_session", session_id: "saved-session", launch_settings: launchSettings });
-      const failed = await nextMatching(bridge, event => event.event === "slash_error");
+      const failed = await nextMatching(bridge, event => event.event === "session_resume_failed");
       assert.match(String(failed.message), new RegExp(flag));
       const entries = readJournal(journal);
       assert.equal(entries.some(entry => entry.type === "rename"), false);
@@ -1164,10 +1164,26 @@ test("resume refuses ambiguous SDK titles and lists candidate IDs", async () => 
   const { bridge, cleanup } = ultracodeFixtureBridge({ STARTUP_SESSIONS_FIXTURE: JSON.stringify(sessions) });
   try {
     bridge.writeCommand({ command: "resume_session", session_id: "Shared title", launch_settings: {}, request_id: "ambiguous-title" });
-    const failure = await nextMatching(bridge, event => event.event === "slash_error");
+    // A resume failure is reported under the id that was asked for (a title is not a session id,
+    // so a slash_error would be dropped as belonging to another session).
+    const failure = await nextMatching(bridge, event => event.event === "session_resume_failed");
     assert.equal(failure.request_id, "ambiguous-title");
+    assert.equal(failure.session_id, "Shared title");
     assert.match(String(failure.message), /first-id/);
     assert.match(String(failure.message), /second-id/);
+  } finally { await cleanup(); }
+});
+
+test("resume of an unknown title or id reports the failure under the requested id", async () => {
+  const cwd = process.cwd();
+  const sessions = [{ sessionId: "first-id", summary: "Known title", cwd, lastModified: 1 }];
+  const { bridge, cleanup } = ultracodeFixtureBridge({ STARTUP_SESSIONS_FIXTURE: JSON.stringify(sessions) });
+  try {
+    bridge.writeCommand({ command: "resume_session", session_id: "No such title", launch_settings: {}, request_id: "unknown-title" });
+    const failure = await nextMatching(bridge, event => event.event === "session_resume_failed");
+    assert.equal(failure.request_id, "unknown-title");
+    assert.equal(failure.session_id, "No such title");
+    assert.match(String(failure.message), /No such title/);
   } finally { await cleanup(); }
 });
 

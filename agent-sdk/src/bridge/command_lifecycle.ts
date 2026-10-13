@@ -277,7 +277,7 @@ async function resume(
     );
     if (titleMatches.length > 1) {
       const choices = titleMatches.slice(0, 5).map((entry) => entry.sessionId).join(", ");
-      slashError(command.session_id, `ambiguous session title: ${command.session_id}; use a session ID (${choices}${titleMatches.length > 5 ? ", ..." : ""})`, requestId);
+      emitSessionResumeFailed(command.session_id, requestId, `ambiguous session title: ${command.session_id}; use a session ID (${choices}${titleMatches.length > 5 ? ", ..." : ""})`);
       return;
     }
     const matched = exactId ?? titleMatches[0];
@@ -291,10 +291,10 @@ async function resume(
         sessionId: command.session_id,
         fields: { reason: "unknown_session" },
       });
-      slashError(
+      emitSessionResumeFailed(
         command.session_id,
-        `unknown session: ${command.session_id}`,
         requestId,
+        `unknown session: ${command.session_id}`,
       );
       return;
     }
@@ -364,10 +364,10 @@ async function resume(
       sessionId: command.session_id,
       fields: { error_message: message },
     });
-    slashError(
+    emitSessionResumeFailed(
       command.session_id,
-      `failed to resume session: ${message}`,
       requestId,
+      `failed to resume session: ${message}`,
     );
   }
 }

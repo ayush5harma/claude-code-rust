@@ -134,9 +134,10 @@ export function slashError(
   );
 }
 
+/** `sessionId` is the id or title the resume asked for, which need not name a session. */
 export function emitSessionResumeFailed(
   sessionId: string,
-  operationId: string,
+  operationId: string | undefined,
   message: string,
 ): void {
   writeEventNow(

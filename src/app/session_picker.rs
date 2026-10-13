@@ -601,6 +601,9 @@ mod tests {
         assert!(matches!(app.status, AppStatus::CommandPending));
         assert_eq!(app.pending_session_resume_id(), Some("session-1"));
         let envelope = rx.try_recv().expect("resume command");
+        // A failed lookup comes back under this id, which must be the one the app waits on.
+        assert_eq!(envelope.request_id.as_deref(), app.pending_resume_operation_id());
+        assert!(envelope.request_id.is_some());
         assert!(matches!(
             envelope.command,
             BridgeCommand::ResumeSession {
@@ -671,8 +674,7 @@ mod tests {
 
         assert_eq!(app.surface_mode, SurfaceMode::Chat);
         assert_eq!(app.pending_session_resume_id(), Some("session-1"));
-        let operation_id =
-            app.pending_resume_at_operation_id().expect("pending resume-at operation");
+        let operation_id = app.pending_resume_operation_id().expect("pending resume-at operation");
         let envelope = rx.try_recv().expect("resume-at command");
         assert_eq!(envelope.request_id.as_deref(), Some(operation_id));
         assert!(matches!(

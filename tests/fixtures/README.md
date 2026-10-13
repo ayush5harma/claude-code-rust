@@ -26,6 +26,7 @@ The PR workflow runs this suite on Ubuntu, Windows, and macOS, and requires all 
 | `render-corpus` | Resumes the shared render corpus as history, then streams its long reply in 200 chunks on the first prompt. |
 | `session-accent` | Sends confirmed color updates for `/color purple` and `/color default`; replacement checks the session-ID fallback. |
 | `resume-large` / `resume-large-fail` | Lists a 2 MiB saved session and returns a successful or failed compact-first turn after the picker choice. |
+| `resume-failure` | Answers a resume of `Shared title` (ambiguous, two candidate ids) or `Missing title` (unknown) with `session_resume_failed` under the request id and sends no connect event; any other resume connects. |
 | `session-management` | Lists a saved and active session; acknowledges tag and confirmed delete by exact ID with refreshed SDK-style metadata. |
 
 `FAKE_BRIDGE_JOURNAL` records commands, events, and the `reply-held` coordination point as JSONL. `FAKE_BRIDGE_RELEASE_FILE` lets a test release a held turn after exercising the UI. Reply length and interval remain configurable with `FAKE_BRIDGE_LINES`, `FAKE_BRIDGE_FOLLOW_UP_LINES`, and `FAKE_BRIDGE_INTERVAL_MS`.

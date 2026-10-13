@@ -1032,9 +1032,10 @@ impl AgentConnection {
         &self,
         session_id: String,
         launch_settings: SessionLaunchSettings,
+        operation_id: String,
     ) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
-            request_id: None,
+            request_id: Some(operation_id),
             command: BridgeCommand::ResumeSession {
                 session_id,
                 launch_settings,

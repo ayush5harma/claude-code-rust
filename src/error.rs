@@ -19,8 +19,10 @@ pub enum AppError {
     AdapterCrashed,
     #[error("Agent bridge connection failed")]
     ConnectionFailed,
-    #[error("Session not found")]
-    SessionNotFound,
+    /// The session a launch asked to resume could not be resumed; carries the bridge's reason
+    /// (unknown session, ambiguous title with its candidate ids, invalid launch flag).
+    #[error("Session resume failed: {0}")]
+    SessionResumeFailed(String),
     #[error("Authentication required")]
     AuthRequired,
 }
@@ -42,7 +44,7 @@ impl AppError {
             | Self::BridgeSdkFailure
             | Self::BridgeTimeout
             | Self::ConnectionFailed => Self::CONNECTION_FAILED_EXIT_CODE,
-            Self::SessionNotFound => Self::SESSION_NOT_FOUND_EXIT_CODE,
+            Self::SessionResumeFailed(_) => Self::SESSION_NOT_FOUND_EXIT_CODE,
             Self::AuthRequired => Self::AUTH_REQUIRED_EXIT_CODE,
         }
     }
@@ -72,7 +74,7 @@ impl AppError {
             Self::ConnectionFailed => {
                 "Failed to establish or maintain the Agent SDK bridge connection."
             }
-            Self::SessionNotFound => "The requested session was not found.",
+            Self::SessionResumeFailed(_) => "The requested session could not be resumed.",
             Self::AuthRequired => {
                 "Authentication required. Type /login to authenticate, or run `claude auth login` in a terminal."
             }
@@ -88,7 +90,7 @@ impl AppError {
             Self::BridgeStdoutClosed => "Bridge process exited",
             Self::BridgeSdkFailure | Self::ConnectionFailed => "Bridge communication failure",
             Self::BridgeTimeout => "Bridge initialization timeout",
-            Self::SessionNotFound => "Session not found",
+            Self::SessionResumeFailed(_) => "Session resume failed",
             Self::AuthRequired => "Authentication required",
         }
     }
@@ -102,7 +104,7 @@ impl AppError {
             Self::BridgeStdoutClosed => "bridge_stdout_closed",
             Self::BridgeSdkFailure | Self::ConnectionFailed => "bridge_sdk_failure",
             Self::BridgeTimeout => "bridge_timeout",
-            Self::SessionNotFound => "session",
+            Self::SessionResumeFailed(_) => "session",
             Self::AuthRequired => "auth",
         }
     }
@@ -118,7 +120,7 @@ impl AppError {
             | Self::BridgeStdoutClosed
             | Self::BridgeSdkFailure
             | Self::ConnectionFailed => "claude-rs logs --bundle --yes",
-            Self::SessionNotFound => "claude-rs resume",
+            Self::SessionResumeFailed(_) => "claude-rs resume",
             Self::AuthRequired => "claude auth login",
         }
     }
