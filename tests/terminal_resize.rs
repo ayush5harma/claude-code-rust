@@ -2117,7 +2117,6 @@ fn status_tab_shows_the_session_name_after_rename() {
     test.shutdown();
 }
 
-=======
 #[test]
 fn session_picker_confirms_exact_id_before_delete_and_shows_acknowledged_tag() {
     let mut test = TerminalTest::start("session-management", 0);
