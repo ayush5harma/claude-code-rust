@@ -5,7 +5,8 @@ type CommandTask = () => Promise<void>;
 type CommandLane =
   | { kind: "lifecycle" }
   | { kind: "session"; sessionId: string }
-  | { kind: "unblocking" };
+  | { kind: "unblocking" }
+  | { kind: "read" };
 
 const LIFECYCLE_COMMANDS = new Set<BridgeCommand["command"]>([
   "initialize",
@@ -29,9 +30,18 @@ const UNBLOCKING_COMMANDS = new Set<BridgeCommand["command"]>([
   "mcp_oauth_callback_url",
 ]);
 
+// Commands that only read SDK state and touch no session or lifecycle state. They run at once
+// and neither wait for nor delay anything: a command with no session id would otherwise fall
+// into the lifecycle lane, queue behind every in-flight session command and make the next
+// prompt wait behind it. Unlike unblocking commands they are refused once shutdown is queued.
+const READ_ONLY_COMMANDS = new Set<BridgeCommand["command"]>(["list_sessions"]);
+
 function commandLane(command: BridgeCommand): CommandLane {
   if (UNBLOCKING_COMMANDS.has(command.command)) {
     return { kind: "unblocking" };
+  }
+  if (READ_ONLY_COMMANDS.has(command.command)) {
+    return { kind: "read" };
   }
   if (LIFECYCLE_COMMANDS.has(command.command)) {
     return { kind: "lifecycle" };
@@ -109,6 +119,7 @@ export class BridgeCommandScheduler {
   private scheduleInLane(lane: CommandLane, task: CommandTask): Promise<void> {
     switch (lane.kind) {
       case "unblocking":
+      case "read":
         return this.start(task);
       case "lifecycle":
         return this.scheduleLifecycle(task);
