@@ -49,7 +49,9 @@ impl DiagnosticsPreset {
 #[command(
     name = "claude-rs",
     version = env!("CARGO_PKG_VERSION"),
-    about = "Native Rust terminal for Claude Code"
+    about = "Native Rust terminal for Claude Code",
+    // clap's own `[PROMPT] [COMMAND]` reads as if both could be given; they cannot.
+    override_usage = "claude-rs [OPTIONS] [PROMPT]\n       claude-rs [OPTIONS] <COMMAND>"
 )]
 #[command(
     after_help = "Examples:\n  claude-rs --diagnostics-preset session\n  claude-rs --diagnostics-preset render"
@@ -1156,6 +1158,30 @@ mod tests {
             cli.startup_launch(),
             super::StartupLaunch::ResumeSession { session_id: "doctr".to_owned() }
         );
+    }
+
+    #[test]
+    fn usage_offers_a_prompt_or_a_command_but_not_both() {
+        let usage = Cli::command().render_usage().to_string();
+        let lines: Vec<&str> = usage.lines().map(str::trim).collect();
+        assert_eq!(
+            lines,
+            ["Usage: claude-rs [OPTIONS] [PROMPT]", "claude-rs [OPTIONS] <COMMAND>"],
+            "{usage}"
+        );
+        let cli = Cli::parse_from_args(["claude-rs", "hello", "doctor"]).expect("parse");
+        let error = cli.validate().expect_err("a prompt and a command");
+        assert!(
+            error
+                .to_string()
+                .contains("a prompt applies only to interactive launches, not `doctor`"),
+            "{error}"
+        );
+        // The override is the root's alone; subcommands keep their generated usage.
+        let mut command = Cli::command();
+        command.build();
+        let doctor = command.find_subcommand_mut("doctor").expect("doctor").render_usage();
+        assert_eq!(doctor.to_string(), "Usage: claude-rs doctor [OPTIONS]");
     }
 
     #[test]
