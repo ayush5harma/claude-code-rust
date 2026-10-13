@@ -225,6 +225,30 @@ test("list_sessions runs at once without waiting for or delaying session command
   assert.deepEqual(order, ["title:start", "list", "title:end", "prompt"]);
 });
 
+test("skills reload runs while startup session data is blocked", async () => {
+  const scheduler = new BridgeCommandScheduler();
+  const context = deferred();
+  const order: string[] = [];
+
+  const refresh = scheduler.schedule(command("get_context_usage"), async () => {
+    order.push("context:start");
+    await context.promise;
+    order.push("context:end");
+  });
+  const inspection = scheduler.schedule(command("inspect_settings"), async () => {
+    order.push("settings");
+  });
+  const reload = scheduler.schedule(command("reload_skills_and_styles"), async () => {
+    order.push("reload");
+  });
+
+  await reload;
+  assert.deepEqual(order, ["context:start", "reload"]);
+  context.resolve();
+  await Promise.all([refresh, inspection]);
+  assert.deepEqual(order, ["context:start", "reload", "context:end", "settings"]);
+});
+
 test("list_sessions is refused once shutdown is queued", async () => {
   const scheduler = new BridgeCommandScheduler();
   const first = deferred();

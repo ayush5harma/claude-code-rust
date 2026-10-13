@@ -30,17 +30,20 @@ const UNBLOCKING_COMMANDS = new Set<BridgeCommand["command"]>([
   "mcp_oauth_callback_url",
 ]);
 
-// Commands that only read SDK state and touch no session or lifecycle state. They run at once
-// and neither wait for nor delay anything: a command with no session id would otherwise fall
-// into the lifecycle lane, queue behind every in-flight session command and make the next
-// prompt wait behind it. Unlike unblocking commands they are refused once shutdown is queued.
-const READ_ONLY_COMMANDS = new Set<BridgeCommand["command"]>(["list_sessions"]);
+// Commands that either read SDK state or issue isolated control requests. They run at once and
+// neither wait for nor delay anything: measured 2026-10-13 with the owner's profile, a stalled
+// startup context read queued /reload behind settings inspection indefinitely. Unlike unblocking
+// commands they are refused once shutdown is queued.
+const CONCURRENT_COMMANDS = new Set<BridgeCommand["command"]>([
+  "list_sessions",
+  "reload_skills_and_styles",
+]);
 
 function commandLane(command: BridgeCommand): CommandLane {
   if (UNBLOCKING_COMMANDS.has(command.command)) {
     return { kind: "unblocking" };
   }
-  if (READ_ONLY_COMMANDS.has(command.command)) {
+  if (CONCURRENT_COMMANDS.has(command.command)) {
     return { kind: "read" };
   }
   if (LIFECYCLE_COMMANDS.has(command.command)) {
