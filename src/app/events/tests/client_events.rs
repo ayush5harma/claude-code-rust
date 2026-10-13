@@ -1874,27 +1874,6 @@ fn ultracode_lifecycle_preserves_conversation_state_and_rejects_stale_sessions()
 }
 
 #[test]
-fn session_title_follows_the_child_until_another_session_connects() {
-    let mut app = make_test_app();
-    app.session_runtime.session_id = Some(model::SessionId::new("current-session"));
-    let update =
-        |update| ClientEvent::SessionUpdate { session_id: "current-session".to_owned(), update };
-
-    handle_client_event(
-        &mut app,
-        update(model::SessionUpdate::SessionTitleUpdate(Some("probe-e2e".to_owned()))),
-    );
-    assert_eq!(app.session_runtime.session_title.as_deref(), Some("probe-e2e"));
-
-    // Reconnecting the same session keeps it.
-    app.session_runtime.activate_session(model::SessionId::new("current-session"));
-    assert_eq!(app.session_runtime.session_title.as_deref(), Some("probe-e2e"));
-
-    app.session_runtime.activate_session(model::SessionId::new("other-session"));
-    assert_eq!(app.session_runtime.session_title, None);
-}
-
-#[test]
 fn skills_and_styles_reload_result_is_noticed_and_releases_the_pending_reload() {
     let mut app = make_test_app();
     app.status = AppStatus::CommandPending;

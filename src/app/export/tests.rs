@@ -303,7 +303,16 @@ fn chunk(request_id: Option<&str>, updates: Vec<SessionUpdate>, last: bool) -> H
 fn app_in(dir: &Path) -> App {
     let mut app = App::test_default();
     app.cwd_raw = dir.display().to_string();
-    app.session_runtime.session_title = Some("Fix the bug".to_owned());
+    app.recent_sessions.push(crate::app::state::RecentSessionInfo {
+        session_id: "s-1".to_owned(),
+        summary: String::new(),
+        last_modified_ms: 0,
+        file_size_bytes: 0,
+        cwd: None,
+        git_branch: None,
+        custom_title: Some("Fix the bug".to_owned()),
+        first_prompt: None,
+    });
     app
 }
 

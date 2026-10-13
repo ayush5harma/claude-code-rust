@@ -3,10 +3,11 @@
 use super::super::{App, SystemSeverity, notices, session};
 use crate::agent::events::ClientEvent;
 
+#[allow(clippy::too_many_lines)]
 pub(super) fn handle(app: &mut App, event: ClientEvent) {
     match event {
         ClientEvent::WorkingDiffReceived { session_id, request_id, files, error } => {
-            crate::app::diff_view::apply(app, &session_id, request_id.as_deref(), files, error);
+            apply_working_diff(app, &session_id, request_id.as_deref(), files, error);
         }
         ClientEvent::SettingsResultReceived { request_id, result, .. } => {
             crate::app::config::apply_settings_result(app, request_id.as_deref(), result);
@@ -106,6 +107,16 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
         ClientEvent::FatalError(error) => session::handle_fatal_error_event(app, error),
         _ => unreachable!("client event family routed a non-session event to the session handler"),
     }
+}
+
+fn apply_working_diff(
+    app: &mut App,
+    session_id: &str,
+    request_id: Option<&str>,
+    files: Vec<crate::agent::wire::WorkingDiffFile>,
+    error: Option<String>,
+) {
+    crate::app::diff_view::apply(app, session_id, request_id, files, error);
 }
 
 fn apply_history_export_chunk(app: &mut App, chunk: crate::agent::events::HistoryChunk) {

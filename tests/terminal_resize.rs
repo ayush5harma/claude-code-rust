@@ -2064,35 +2064,13 @@ fn notifications_follow_focus_saved_categories_and_sdk_delivery_provenance_in_a_
     assert_eq!(bell["span"]["tool_call_id"], "push-1");
 }
 
-/// The Status tab's "Session name" row, once it shows `name`.
-fn status_name_row(test: &TerminalTest, name: &str) -> Option<String> {
-    test.screen()
-        .lines()
-        .find(|line| line.contains("Session name") && line.contains(name))
-        .map(str::to_owned)
-}
-
-#[test]
-fn status_tab_shows_the_session_name_after_rename() {
-    let mut test = TerminalTest::start("session-name", 3);
-    test.submit_command("/rename probe-e2e");
-    test.wait_turn_finished("Session renamed to: probe-e2e");
-    test.assert_prompts(&["/rename probe-e2e"]);
-
-    // The fake bridge lists no sessions, so only the title it sent after the
-    // turn can name the session here.
-    test.submit("/status", "/status");
-    test.wait_for("the new name in Status", |test| status_name_row(test, "probe-e2e"));
-    test.shutdown();
-}
-
 #[test]
 fn reload_reports_the_reloaded_counts_and_then_a_bridge_failure() {
     let mut test = TerminalTest::start("reload", 3);
-    test.submit_command("/reload");
+    test.submit("/reload", "/reload");
     test.wait_turn_finished("Reloaded skills (2) and output styles (3)");
 
-    test.submit_command("/reload");
+    test.submit("/reload", "/reload");
     test.wait_turn_finished("style directory unreadable");
 
     // /reload is app-owned: it reaches the bridge as its own command, never as a prompt.
@@ -2107,7 +2085,7 @@ const EXPORTED_BODY: &str = "## User\n\nList the files\n\n## Assistant\n\nListin
 #[test]
 fn export_writes_the_saved_conversation_and_never_overwrites_it() {
     let mut test = TerminalTest::start("export", 3);
-    test.submit_command("/export transcript.md");
+    test.submit("/export transcript.md", "/export transcript.md");
     test.wait_turn_finished("Exported the conversation to");
 
     let target = test.project_dir().join("transcript.md");
@@ -2126,13 +2104,13 @@ fn export_writes_the_saved_conversation_and_never_overwrites_it() {
     test.assert_prompts(&[]);
 
     // A second export to the same path is refused before the bridge is asked.
-    test.submit_command("/export transcript.md");
+    test.submit("/export transcript.md", "/export transcript.md");
     test.wait_screen("will not be overwritten");
     assert_eq!(std::fs::read_to_string(&target).expect("kept file"), file);
     assert_eq!(test.commands("export_session_history").len(), 1);
 
     // Without a path the name comes from the session id and the clock.
-    test.submit_command("/export");
+    test.submit("/export", "/export");
     test.wait_until("the default-named export", |test| {
         std::fs::read_dir(test.project_dir()).is_ok_and(|entries| {
             entries.flatten().any(|entry| {

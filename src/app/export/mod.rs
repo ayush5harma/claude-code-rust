@@ -45,11 +45,9 @@ pub(crate) enum ExportProgress {
 /// Refuses before any bridge work when the file already exists.
 pub(crate) fn begin(app: &mut App, session_id: &str, requested: &str) -> Result<String, String> {
     let now = chrono::Local::now();
-    let default_name = default_file_name(
-        app.session_runtime.session_title.as_deref(),
-        session_id,
-        &now.format("%Y%m%d-%H%M%S").to_string(),
-    );
+    let title = session_title(app, session_id);
+    let default_name =
+        default_file_name(title, session_id, &now.format("%Y%m%d-%H%M%S").to_string());
     let destination = resolve_destination(
         requested,
         Path::new(&app.cwd_raw),
@@ -97,7 +95,7 @@ pub(crate) fn apply_chunk(app: &mut App, chunk: HistoryChunk) -> ExportProgress 
         .map(|current| current.display_name_long.as_str())
         .filter(|name| !name.is_empty());
     let header = markdown::Header {
-        title: app.session_runtime.session_title.as_deref(),
+        title: session_title(app, &pending.session_id),
         session_id: &pending.session_id,
         cwd: &app.cwd_raw,
         model: model_name,
@@ -108,6 +106,16 @@ pub(crate) fn apply_chunk(app: &mut App, chunk: HistoryChunk) -> ExportProgress 
         Ok(path) => ExportProgress::Written(path),
         Err(message) => ExportProgress::Failed(message),
     }
+}
+
+/// A persisted title is available from the existing session inventory; it is not
+/// kept as separate active-session state by this command.
+fn session_title<'a>(app: &'a App, session_id: &str) -> Option<&'a str> {
+    app.recent_sessions
+        .iter()
+        .find(|session| session.session_id == session_id)
+        .and_then(|session| session.custom_title.as_deref())
+        .filter(|title| !title.trim().is_empty())
 }
 
 /// `claude-rs-<title or short id>-<stamp>.md`, safe on every platform's file system.
