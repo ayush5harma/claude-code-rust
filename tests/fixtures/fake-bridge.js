@@ -312,6 +312,18 @@ function streamReply(messageUuid) {
   }
 }
 
+// Subagent rows as the bridge normalizes SDK task lifecycle messages.
+function agentTask(task_id, subject, status, terminal_status) {
+  return { task_id, subject, status, blocks: [], blocked_by: [], metadata: {
+    task_type: 'local_agent', subagent_type: 'general-purpose', ...(terminal_status ? { terminal_status } : {}),
+  } };
+}
+function sendTasks(tasks) {
+  send({ event: 'session_update', session_id: SESSION, update: {
+    type: 'task_state_update', source: 'task_lifecycle', tasks, removed_task_ids: [], is_complete_snapshot: false,
+  } });
+}
+
 // The bridge's translation of a /rename turn: the reply, the result, then
 // the title it reads back once the result is in.
 function sessionNameReply(message) {
@@ -383,6 +395,13 @@ readline
             { name: 'rename', description: 'Rename the current conversation', input_hint: '[name]' },
           ] } });
         }
+        if (SCENARIO === 'agents') {
+          sendTasks([
+            agentTask('agent-running', 'Review parser', 'in_progress', null),
+            agentTask('agent-done', 'Inspect docs', 'completed', 'completed'),
+            { task_id: 'shell-1', subject: 'Watch logs', status: 'in_progress', blocks: [], blocked_by: [], metadata: { task_type: 'local_bash' } },
+          ]);
+        }
         if (SCENARIO === 'disconnect-during-auth' && message.command === 'create_session') {
           const timer = setInterval(() => {
             if (fs.existsSync(RELEASE_FILE)) {
@@ -392,6 +411,21 @@ readline
             }
           }, INTERVAL_MS);
         }
+        break;
+      case 'list_subagents':
+        send({ event: 'subagents_listed', session_id: SESSION, agent_ids: ['agent-done'] });
+        break;
+      case 'get_subagent_messages':
+        send({ event: 'subagent_messages', session_id: SESSION, agent_id: message.agent_id, messages: [
+          { role: 'user', text: 'Inspect the docs' },
+          { role: 'tool', text: 'ls docs' },
+          { role: 'assistant', text: 'Docs path checked' },
+        ] });
+        break;
+      case 'stop_subagent':
+        // The acknowledgement first; the lifecycle reports the outcome after it.
+        send({ event: 'subagent_stop_result', session_id: SESSION, task_id: message.task_id });
+        sendTasks([agentTask(message.task_id, 'Review parser', 'completed', 'killed')]);
         break;
       case 'prompt':
         if (SCENARIO === 'session-name') {
