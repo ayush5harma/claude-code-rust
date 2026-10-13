@@ -213,6 +213,21 @@ fn executable_refuses_a_mistyped_command_but_sends_it_after_a_separator() {
 }
 
 #[test]
+fn help_into_a_closed_pipe_exits_cleanly() {
+    let (reader, writer) = std::io::pipe().expect("pipe");
+    // Closed before the child starts, as `claude-rs --help | head -1` can leave it.
+    drop(reader);
+    let output = Command::new(env!("CARGO_BIN_EXE_claude-rs"))
+        .arg("--help")
+        .stdout(writer)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run help");
+    assert_eq!(output.status.code(), Some(0));
+    assert!(output.stderr.is_empty(), "{}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
 fn interactive_launch_without_a_terminal_exits_before_terminal_setup_and_logging() {
     let home = tempfile::tempdir().expect("home");
     let project = home.path().join("project");

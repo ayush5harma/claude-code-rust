@@ -41,7 +41,9 @@ fn run() -> anyhow::Result<i32> {
         Ok(cli) => cli,
         Err(error) => {
             // Help and version arrive here too, as errors that print to stdout and exit 0.
-            error.print()?;
+            // A print failure is ignored, as clap's own `Error::exit` does: `--help | head`
+            // closes stdout early, and that is no reason to fail.
+            let _ = error.print();
             return Ok(error.exit_code());
         }
     };
