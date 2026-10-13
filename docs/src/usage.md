@@ -6,6 +6,8 @@ Start a new session in the current directory:
 claude-rs
 ```
 
+While the session connects, the crab beside the welcome overview scuttles and looks around; on the first connect of the process it waves once, then stays still. The `prefersReducedMotion` setting keeps it still throughout, once claude-rs has read that setting from the connected session.
+
 Start with an initial prompt:
 
 ```bash
