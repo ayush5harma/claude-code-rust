@@ -22,6 +22,7 @@ use crate::ui::wrap::{wrap_lines_to_physical_rows, wrap_markdown_lines_to_physic
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::collections::BTreeSet;
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TopLevelInlineBlockKind {
@@ -126,13 +127,17 @@ fn render_welcome_live_rows(
     excluded_ids: &BTreeSet<HistoryOutputId>,
 ) -> RenderedMessageRows {
     let ids = welcome_output_ids(&app.transcript.messages[msg_idx]);
-    let commit_ready = message_commit_ready(&app.transcript.messages[msg_idx]);
     if ids_are_excluded(&ids, excluded_ids) {
         return RenderedMessageRows::skipped_transcript_content();
     }
 
+    // One clock reading for the crab's pose and the commit decision, so rows
+    // committed to scrollback are exactly the rows this pass drew.
+    let now = Instant::now();
+    let commit_ready = welcome::welcome_block(&app.transcript.messages[msg_idx])
+        .is_some_and(|welcome| welcome::welcome_commit_ready(app, welcome, now));
     RenderedMessageRows::message(
-        serialize_welcome_message(app, msg_idx, width),
+        serialize_welcome_message(app, msg_idx, width, now),
         LiveRowBoundary {
             ids,
             msg_idx,
@@ -380,7 +385,12 @@ fn welcome_output_ids(message: &ChatMessage) -> Vec<HistoryOutputId> {
         .unwrap_or_else(|| vec![HistoryOutputId::Message(message.id)])
 }
 
-fn serialize_welcome_message(app: &App, msg_idx: usize, width: u16) -> Vec<Line<'static>> {
+fn serialize_welcome_message(
+    app: &App,
+    msg_idx: usize,
+    width: u16,
+    now: Instant,
+) -> Vec<Line<'static>> {
     if !app.show_session_overview {
         return Vec::new();
     }
@@ -393,7 +403,7 @@ fn serialize_welcome_message(app: &App, msg_idx: usize, width: u16) -> Vec<Line<
         return Vec::new();
     };
 
-    serialize_compact_welcome_entry(app, welcome, width)
+    serialize_compact_welcome_entry(app, welcome, width, now)
 }
 
 const fn message_block_kind(role: &MessageRole) -> TopLevelInlineBlockKind {
@@ -405,47 +415,19 @@ const fn message_block_kind(role: &MessageRole) -> TopLevelInlineBlockKind {
     }
 }
 
-fn message_commit_ready(message: &ChatMessage) -> bool {
-    match &message.role {
-        MessageRole::Welcome => welcome_message_commit_ready(message),
-        MessageRole::User | MessageRole::System(_) | MessageRole::Assistant => true,
-    }
-}
-
-fn welcome_message_commit_ready(message: &ChatMessage) -> bool {
-    message
-        .blocks
-        .iter()
-        .find_map(|block| match block {
-            MessageBlock::Welcome(welcome) => Some(welcome),
-            MessageBlock::Text(_)
-            | MessageBlock::BtwExchange(_)
-            | MessageBlock::Notice(_)
-            | MessageBlock::ToolCall(_)
-            | MessageBlock::ToolResult { .. }
-            | MessageBlock::ImageAttachment(_)
-            | MessageBlock::UserDialog(_) => None,
-        })
-        .is_some_and(|welcome| {
-            welcome_value_ready(&welcome.subscription) && welcome_value_ready(&welcome.session_id)
-        })
-}
-
-fn welcome_value_ready(value: &str) -> bool {
-    !value.trim().is_empty() && value != "-"
-}
-
 fn serialize_compact_welcome_entry(
     app: &App,
     entry: &WelcomeBlock,
     width: u16,
+    now: Instant,
 ) -> Vec<Line<'static>> {
     let heading = Line::from(Span::styled(
         "Overview",
         Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
     ));
     let mut lines = wrap_lines_to_physical_rows(&[heading], width);
-    lines.extend(welcome::overview_lines(entry, Some(status_label(app)), width));
+    let ferris = welcome::ferris_frame(welcome::ferris_phase(app, entry, now));
+    lines.extend(welcome::overview_lines(entry, Some(status_label(app)), ferris, width));
     lines
 }
 
@@ -2912,6 +2894,146 @@ mod tests {
 
         assert!(line_texts(serialized.rows()).iter().any(|line| line == "queued while connecting"));
         assert_eq!(serialized.stable_row_count(), 0);
+    }
+
+    // The crab fixtures are written out here rather than taken from
+    // welcome.rs, so a changed frame table fails these tests.
+    const REST_CRAB: [&str; 4] =
+        [r"    _~^~^~_     ", r"\) /  o o  \ (/ ", r"  '_   -   _'   ", r"  / '-----' \   "];
+    const EYES_LEFT_ROW: &str = r"\) / o o   \ (/ ";
+    const LEGS_B_ROW: &str = r"  \ '-----' /   ";
+    const WAVE_TOP_ROW: &str = r"\)  _~^~^~_  (/ ";
+
+    /// The four crab cells of the rendered welcome: the art sits after the
+    /// two-column left padding, 16 columns wide.
+    fn crab_rows(rows: &[Line<'_>]) -> Vec<String> {
+        let text = line_texts(rows);
+        let Some(start) = text.iter().position(|line| line.contains("_~^~^~_")) else {
+            return Vec::new();
+        };
+        text[start..]
+            .iter()
+            .take(4)
+            .map(|line| format!("{line:<18}").chars().skip(2).take(16).collect())
+            .collect()
+    }
+
+    fn ago(elapsed: std::time::Duration) -> std::time::Instant {
+        std::time::Instant::now().checked_sub(elapsed).expect("clock is past the offset")
+    }
+
+    fn connecting_app(elapsed: std::time::Duration) -> App {
+        let mut app = App::test_default();
+        app.status = AppStatus::Connecting;
+        app.startup.timeline = crate::app::StartupTimeline::at(ago(elapsed), 0);
+        app.transcript.messages.push(ChatMessage::welcome("1.2.3", "-", "/workspace/demo", "-"));
+        app
+    }
+
+    /// A ready welcome, its first connect `since` ago, settings acknowledged.
+    fn connected_app(since: std::time::Duration) -> App {
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        let connected = ago(since);
+        app.startup.timeline = crate::app::StartupTimeline::at(connected, 0);
+        app.startup.timeline.mark_connected(connected);
+        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+            "prefersReducedMotion",
+            serde_json::json!(false),
+        ));
+        app.transcript.messages.push(ChatMessage::welcome(
+            "1.2.3",
+            "Pro",
+            "/workspace/demo",
+            "session-123",
+        ));
+        app
+    }
+
+    fn reduce_motion(app: &mut App) {
+        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+            "prefersReducedMotion",
+            serde_json::json!(true),
+        ));
+    }
+
+    #[test]
+    fn connecting_crab_steps_through_frames_by_elapsed_time() {
+        // Frames last 180 ms; each sample sits mid-frame so the test clock's
+        // own progress cannot move it across a boundary.
+        let first = crab_rows(&serialize_live_rows(
+            &mut connecting_app(std::time::Duration::from_millis(90)),
+            120,
+        ));
+        let second = crab_rows(&serialize_live_rows(
+            &mut connecting_app(std::time::Duration::from_millis(270)),
+            120,
+        ));
+        let wrapped = crab_rows(&serialize_live_rows(
+            &mut connecting_app(std::time::Duration::from_millis(810)),
+            120,
+        ));
+
+        assert_eq!(first.len(), 4, "{first:?}");
+        assert_ne!(first, second);
+        assert_eq!(first[1], EYES_LEFT_ROW);
+        assert_eq!(second[3], LEGS_B_ROW);
+        assert_eq!(wrapped, first, "the loop repeats after four frames");
+    }
+
+    #[test]
+    fn hello_waves_while_holding_the_welcome_back_from_scrollback() {
+        let mut app = connected_app(std::time::Duration::from_millis(100));
+
+        let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
+
+        assert_eq!(crab_rows(serialized.rows())[0], WAVE_TOP_ROW);
+        assert_eq!(serialized.stable_row_count(), 0);
+    }
+
+    #[test]
+    fn crab_rests_and_commits_after_the_hello_window() {
+        let mut app = connected_app(std::time::Duration::from_secs(5));
+
+        let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
+
+        assert_eq!(crab_rows(serialized.rows()), REST_CRAB);
+        assert_eq!(serialized.stable_row_count(), serialized.rows().len());
+    }
+
+    #[test]
+    fn a_prompt_during_the_hello_snaps_the_crab_to_rest_and_commits_it() {
+        let mut app = connected_app(std::time::Duration::from_millis(100));
+        app.push_message_tracked(user_text_message("typed first"));
+
+        let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
+
+        assert_eq!(crab_rows(serialized.rows()), REST_CRAB);
+        assert_eq!(serialized.stable_row_count(), serialized.rows().len());
+    }
+
+    #[test]
+    fn hello_waits_at_rest_until_the_motion_preference_is_known() {
+        let mut app = connected_app(std::time::Duration::from_millis(100));
+        app.config.snapshot = None;
+
+        let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
+
+        assert_eq!(crab_rows(serialized.rows()), REST_CRAB);
+        assert_eq!(serialized.stable_row_count(), 0, "held until the hello window closes");
+    }
+
+    #[test]
+    fn reduced_motion_keeps_the_crab_at_rest() {
+        let mut connecting = connecting_app(std::time::Duration::from_millis(90));
+        reduce_motion(&mut connecting);
+        assert_eq!(crab_rows(&serialize_live_rows(&mut connecting, 120)), REST_CRAB);
+
+        let mut hello = connected_app(std::time::Duration::from_millis(100));
+        reduce_motion(&mut hello);
+        let serialized = serialize_all_rows_with_boundaries(&mut hello, 120);
+        assert_eq!(crab_rows(serialized.rows()), REST_CRAB);
+        assert_eq!(serialized.stable_row_count(), serialized.rows().len());
     }
 
     #[test]

@@ -36,6 +36,7 @@ mod welcome;
 mod wrap;
 
 pub use message::SpinnerState;
+pub(crate) use welcome::ferris_hello_live;
 
 use crate::app::App;
 use crate::app::{FullscreenView, SurfaceMode};
