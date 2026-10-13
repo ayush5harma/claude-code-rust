@@ -18,6 +18,50 @@ pub(crate) fn startup_picker_is_loading(app: &App) -> bool {
     app.startup.startup_picker_is_loading(app.session_runtime.conn.is_some())
 }
 
+/// Ask the bridge for the project's sessions as of now. The list held from connect cannot
+/// include the active session once it has a transcript, nor any session another process wrote.
+pub(crate) fn begin_refresh(app: &mut App, conn: &crate::agent::client::AgentConnection) {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    match conn.list_sessions(request_id.clone()) {
+        Ok(()) => app.session_picker.list_request = Some(request_id),
+        Err(error) => {
+            app.session_picker.list_request = None;
+            app.session_picker.error = Some(format!("Could not refresh the session list: {error}"));
+        }
+    }
+}
+
+pub(crate) fn refresh_is_pending(app: &App) -> bool {
+    app.session_picker.list_request.is_some()
+}
+
+/// Called after every session listing is applied: the listing that answers the picker's own
+/// request ends its loading state and puts the selection on the active session.
+pub(crate) fn finish_refresh(app: &mut App, request_id: Option<&str>) {
+    if request_id.is_none() || app.session_picker.list_request.as_deref() != request_id {
+        return;
+    }
+    app.session_picker.list_request = None;
+    let active =
+        app.session_runtime.session_id.as_ref().map(crate::agent::model::SessionId::as_str);
+    app.session_picker.selected = active
+        .and_then(|active| {
+            app.recent_sessions
+                .iter()
+                .take(MAX_PICKER_SESSIONS)
+                .position(|session| session.session_id == active)
+        })
+        .unwrap_or(0);
+    app.session_picker.scroll_offset = 0;
+}
+
+fn close_picker(app: &mut App) {
+    app.session_picker.list_request = None;
+    app.startup.resolve_session_picker();
+    app.startup.complete_launch();
+    view::set_chat_surface(app);
+}
+
 pub(crate) fn picker_turn_count(app: &App) -> usize {
     app.sdk_inventory.rewind_targets.len()
 }
@@ -29,6 +73,13 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     }
 
     if startup_picker_is_loading(app) {
+        return;
+    }
+
+    if refresh_is_pending(app) {
+        if matches!(key.code, KeyCode::Esc) {
+            close_picker(app);
+        }
         return;
     }
 
@@ -45,9 +96,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     let session_count = picker_session_count(app);
     if session_count == 0 {
         if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
-            app.startup.resolve_session_picker();
-            app.startup.complete_launch();
-            view::set_chat_surface(app);
+            close_picker(app);
         }
         return;
     }
@@ -67,11 +116,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         (KeyCode::Right, KeyModifiers::NONE) => open_turn_selection(app),
         (KeyCode::Char('t'), KeyModifiers::NONE) => open_mutation(app, false),
         (KeyCode::Char('d'), KeyModifiers::NONE) => open_mutation(app, true),
-        (KeyCode::Esc, KeyModifiers::NONE) => {
-            app.startup.resolve_session_picker();
-            app.startup.complete_launch();
-            view::set_chat_surface(app);
-        }
+        (KeyCode::Esc, KeyModifiers::NONE) => close_picker(app),
         _ => {}
     }
 }
@@ -661,6 +706,9 @@ mod tests {
         assert!(matches!(app.status, AppStatus::CommandPending));
         assert_eq!(app.pending_session_resume_id(), Some("session-1"));
         let envelope = rx.try_recv().expect("resume command");
+        // A failed lookup comes back under this id, which must be the one the app waits on.
+        assert_eq!(envelope.request_id.as_deref(), app.pending_resume_operation_id());
+        assert!(envelope.request_id.is_some());
         assert!(matches!(
             envelope.command,
             BridgeCommand::ResumeSession {
@@ -731,8 +779,7 @@ mod tests {
 
         assert_eq!(app.surface_mode, SurfaceMode::Chat);
         assert_eq!(app.pending_session_resume_id(), Some("session-1"));
-        let operation_id =
-            app.pending_resume_at_operation_id().expect("pending resume-at operation");
+        let operation_id = app.pending_resume_operation_id().expect("pending resume-at operation");
         let envelope = rx.try_recv().expect("resume-at command");
         assert_eq!(envelope.request_id.as_deref(), Some(operation_id));
         assert!(matches!(

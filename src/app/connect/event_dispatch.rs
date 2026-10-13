@@ -215,18 +215,19 @@ pub(super) async fn handle_bridge_event(
             }
         }
         crate::agent::wire::BridgeEvent::SlashError { session_id, message } => {
-            if resume_requested
-                && !*connected_once
-                && message.to_ascii_lowercase().contains("unknown session")
-            {
-                let _ = event_tx.send(ClientEvent::FatalError(AppError::SessionNotFound)).await;
-                return;
-            }
             let _ = event_tx
                 .send(ClientEvent::SlashCommandError { session_id: Some(session_id), message })
                 .await;
         }
         crate::agent::wire::BridgeEvent::SessionResumeFailed { session_id, message } => {
+            // No session exists yet to show a notice in, so a launch that cannot resume exits
+            // with the bridge's reason (unknown session, candidates of an ambiguous title).
+            if resume_requested && !*connected_once {
+                let _ = event_tx
+                    .send(ClientEvent::FatalError(AppError::SessionResumeFailed(message)))
+                    .await;
+                return;
+            }
             if let Some(operation_id) = request_id {
                 let _ = event_tx
                     .send(ClientEvent::SessionResumeFailed { session_id, operation_id, message })
@@ -297,7 +298,7 @@ pub(super) async fn handle_bridge_event(
                 .await;
         }
         crate::agent::wire::BridgeEvent::SessionsListed { sessions } => {
-            let _ = event_tx.send(ClientEvent::SessionsListed { sessions }).await;
+            let _ = event_tx.send(ClientEvent::SessionsListed { sessions, request_id }).await;
         }
         crate::agent::wire::BridgeEvent::SessionMutationResult {
             session_id,

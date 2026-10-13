@@ -938,7 +938,39 @@ test("launch name titles a new session and renames a resumed one before it conne
     assert.deepEqual(resumed.map(entry => entry.type), ["rename", "launch"]);
     assert.deepEqual(resumed[0], { type: "rename", sessionId: "saved-session", title: "Resumed name", options: { dir: cwd } });
     assert.equal(resumed[1]?.resume, "saved-session");
-    assert.equal(resumed[1]?.title, undefined);
+    // The resumed process names itself from `title` (measured on the pinned SDK: it sets the
+    // process name other clients read from the session registry and leaves the transcript alone).
+    assert.equal(resumed[1]?.title, "Resumed name");
+  } finally {
+    await cleanup();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("resume without a launch name carries the saved custom title into the query options", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-resume-title-"));
+  const journal = join(directory, "query-options.jsonl");
+  const cwd = process.cwd();
+  const { bridge, cleanup } = ultracodeFixtureBridge({
+    STARTUP_JOURNAL: journal,
+    STARTUP_SESSIONS_FIXTURE: JSON.stringify([
+      { sessionId: "saved-session", cwd, lastModified: 1, customTitle: "Saved title" },
+      { sessionId: "untitled-session", cwd, lastModified: 2 },
+    ]),
+  });
+  try {
+    bridge.writeCommand({ command: "resume_session", session_id: "saved-session", launch_settings: {} });
+    await nextMatching(bridge, event => event.event === "connected");
+    const titled = readJournal(journal).find(entry => entry.type === "launch");
+    assert.equal(titled?.resume, "saved-session");
+    assert.equal(titled?.title, "Saved title");
+
+    rmSync(journal);
+    bridge.writeCommand({ command: "resume_session", session_id: "untitled-session", launch_settings: {} });
+    await nextMatching(bridge, event => event.event === "session_replaced");
+    const untitled = readJournal(journal).find(entry => entry.type === "launch");
+    assert.equal(untitled?.resume, "untitled-session");
+    assert.equal(untitled?.title, undefined);
   } finally {
     await cleanup();
     rmSync(directory, { recursive: true, force: true });
@@ -1014,7 +1046,7 @@ for (const [flag, launchSettings] of [
     });
     try {
       bridge.writeCommand({ command: "resume_session", session_id: "saved-session", launch_settings: launchSettings });
-      const failed = await nextMatching(bridge, event => event.event === "slash_error");
+      const failed = await nextMatching(bridge, event => event.event === "session_resume_failed");
       assert.match(String(failed.message), new RegExp(flag));
       const entries = readJournal(journal);
       assert.equal(entries.some(entry => entry.type === "rename"), false);
@@ -1105,6 +1137,24 @@ test("continue with no previous session starts a new session", async () => {
   } finally { await cleanup(); }
 });
 
+test("list_sessions answers with a fresh SDK listing under its request id", async () => {
+  const cwd = process.cwd();
+  const { bridge, cleanup } = ultracodeFixtureBridge({
+    STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId: "older", cwd, lastModified: 1 }]),
+  });
+  try {
+    bridge.writeCommand({ command: "create_session", cwd, launch_settings: {} });
+    const connected = await nextMatching(bridge, event => event.event === "connected");
+    // The listing sent around connect says nothing about a session the SDK learns of later; the
+    // app asks again when its session picker opens.
+    bridge.writeCommand({ command: "list_sessions", request_id: "picker-open" });
+    const listed = await nextMatching(bridge, event => event.event === "sessions_listed" && event.request_id === "picker-open");
+    const ids = (listed.sessions as BridgeEnvelope[]).map(session => session.session_id);
+    assert.ok(ids.includes("older"));
+    assert.ok(ids.includes(connected.session_id as string));
+  } finally { await cleanup(); }
+});
+
 test("resume resolves exact SDK title while an exact ID wins over another title", async () => {
   const cwd = process.cwd();
   const sessions = [
@@ -1132,10 +1182,26 @@ test("resume refuses ambiguous SDK titles and lists candidate IDs", async () => 
   const { bridge, cleanup } = ultracodeFixtureBridge({ STARTUP_SESSIONS_FIXTURE: JSON.stringify(sessions) });
   try {
     bridge.writeCommand({ command: "resume_session", session_id: "Shared title", launch_settings: {}, request_id: "ambiguous-title" });
-    const failure = await nextMatching(bridge, event => event.event === "slash_error");
+    // A resume failure is reported under the id that was asked for (a title is not a session id,
+    // so a slash_error would be dropped as belonging to another session).
+    const failure = await nextMatching(bridge, event => event.event === "session_resume_failed");
     assert.equal(failure.request_id, "ambiguous-title");
+    assert.equal(failure.session_id, "Shared title");
     assert.match(String(failure.message), /first-id/);
     assert.match(String(failure.message), /second-id/);
+  } finally { await cleanup(); }
+});
+
+test("resume of an unknown title or id reports the failure under the requested id", async () => {
+  const cwd = process.cwd();
+  const sessions = [{ sessionId: "first-id", summary: "Known title", cwd, lastModified: 1 }];
+  const { bridge, cleanup } = ultracodeFixtureBridge({ STARTUP_SESSIONS_FIXTURE: JSON.stringify(sessions) });
+  try {
+    bridge.writeCommand({ command: "resume_session", session_id: "No such title", launch_settings: {}, request_id: "unknown-title" });
+    const failure = await nextMatching(bridge, event => event.event === "session_resume_failed");
+    assert.equal(failure.request_id, "unknown-title");
+    assert.equal(failure.session_id, "No such title");
+    assert.match(String(failure.message), /No such title/);
   } finally { await cleanup(); }
 });
 

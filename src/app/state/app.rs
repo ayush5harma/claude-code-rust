@@ -5,7 +5,7 @@ use super::prelude::*;
 
 pub(crate) struct PendingSessionResume {
     session_id: String,
-    operation_id: Option<String>,
+    operation_id: String,
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -168,11 +168,7 @@ impl App {
         self.shutdown.is_forced()
     }
 
-    pub(crate) fn set_pending_session_resume(
-        &mut self,
-        session_id: String,
-        operation_id: Option<String>,
-    ) {
+    pub(crate) fn set_pending_session_resume(&mut self, session_id: String, operation_id: String) {
         self.pending_session_resume = Some(PendingSessionResume { session_id, operation_id });
     }
 
@@ -184,8 +180,8 @@ impl App {
         self.pending_session_resume.as_ref().map(|pending| pending.session_id.as_str())
     }
 
-    pub(crate) fn pending_resume_at_operation_id(&self) -> Option<&str> {
-        self.pending_session_resume.as_ref().and_then(|pending| pending.operation_id.as_deref())
+    pub(crate) fn pending_resume_operation_id(&self) -> Option<&str> {
+        self.pending_session_resume.as_ref().map(|pending| pending.operation_id.as_str())
     }
 
     #[must_use]

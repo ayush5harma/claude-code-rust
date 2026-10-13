@@ -15,7 +15,6 @@ import {
   writeEvent,
 } from "./events.js";
 import { getSessionTranscriptMessages, mapSdkSessionInfo, mapSessionMessagesToUpdates } from "./history.js";
-import { restoreSessionTitleAfterResume } from "./session_title.js";
 import { parseLaunchConfig } from "./launch_config.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import {
@@ -278,7 +277,7 @@ async function resume(
     );
     if (titleMatches.length > 1) {
       const choices = titleMatches.slice(0, 5).map((entry) => entry.sessionId).join(", ");
-      slashError(command.session_id, `ambiguous session title: ${command.session_id}; use a session ID (${choices}${titleMatches.length > 5 ? ", ..." : ""})`, requestId);
+      emitSessionResumeFailed(command.session_id, requestId, `ambiguous session title: ${command.session_id}; use a session ID (${choices}${titleMatches.length > 5 ? ", ..." : ""})`);
       return;
     }
     const matched = exactId ?? titleMatches[0];
@@ -292,10 +291,10 @@ async function resume(
         sessionId: command.session_id,
         fields: { reason: "unknown_session" },
       });
-      slashError(
+      emitSessionResumeFailed(
         command.session_id,
-        `unknown session: ${command.session_id}`,
         requestId,
+        `unknown session: ${command.session_id}`,
       );
       return;
     }
@@ -331,6 +330,7 @@ async function resume(
       ...(command.launch_settings.fork_session ? { forkSession: true } : {}),
       launchSettings: command.launch_settings,
       launchConfig,
+      ...(matched.customTitle ? { resumedTitle: matched.customTitle } : {}),
       ...(resumeUpdates.length > 0 ? { resumeUpdates } : {}),
       connectEvent: hadActiveSession ? "session_replaced" : "connected",
       requestId,
@@ -353,9 +353,6 @@ async function resume(
       ];
     }
     await awaitSessionInitialization(session);
-    if (!command.launch_settings.fork_session) {
-      await restoreSessionTitleAfterResume(session, command.launch_settings.name ?? matched.customTitle);
-    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     bridgeLogger.error({
@@ -367,10 +364,10 @@ async function resume(
       sessionId: command.session_id,
       fields: { error_message: message },
     });
-    slashError(
+    emitSessionResumeFailed(
       command.session_id,
-      `failed to resume session: ${message}`,
       requestId,
+      `failed to resume session: ${message}`,
     );
   }
 }

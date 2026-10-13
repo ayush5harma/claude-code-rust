@@ -26,6 +26,8 @@ The PR workflow runs this suite on Ubuntu, Windows, and macOS, and requires all 
 | `render-corpus` | Resumes the shared render corpus as history, then streams its long reply in 200 chunks on the first prompt. |
 | `session-accent` | Sends confirmed color updates for `/color purple` and `/color default`; replacement checks the session-ID fallback. |
 | `resume-large` / `resume-large-fail` | Lists a 2 MiB saved session and returns a successful or failed compact-first turn after the picker choice. |
+| `resume-failure` | Answers a resume of `Shared title` (ambiguous, two candidate ids) or `Missing title` (unknown) with `session_resume_failed` under the request id and sends no connect event; any other resume connects. |
+| `session-refresh` | Lists only a saved session around connect, then answers `list_sessions` (sent when the picker opens) with the saved and the active session once the release file appears. |
 | `session-management` | Lists a saved and active session; acknowledges tag and confirmed delete by exact ID with refreshed SDK-style metadata. |
 | `verbose-bash` | Answers the first prompt with a completed Bash call whose output arrives both as update content and as raw output, then a short reply. |
 

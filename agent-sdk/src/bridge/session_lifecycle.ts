@@ -508,6 +508,8 @@ export async function createSession(params: {
   deferConnect?: boolean;
   launchSettings: SessionLaunchSettings;
   launchConfig?: LaunchConfig;
+  /** Title the SDK already holds for the session being resumed (not a fork). */
+  resumedTitle?: string;
   connectEvent: ConnectEventKind;
   requestId?: string;
   sessionsToCloseBeforeRegister?: SessionState[];
@@ -674,6 +676,7 @@ export async function createSession(params: {
         forkSession: params.forkSession,
         launchSettings: params.launchSettings,
         launchConfig,
+        resumedTitle: params.resumedTitle,
         resolvedSettings,
         provisionalSessionId,
         input,
@@ -1044,6 +1047,7 @@ type QueryOptionsBuilderParams = {
   launchSettings: SessionLaunchSettings;
   /** Parsed from `launchSettings`; absent means no session configuration flags. */
   launchConfig?: LaunchConfig;
+  resumedTitle?: string;
   provisionalSessionId: string;
   input: AsyncQueue<SDKUserMessage>;
   canUseTool: CanUseTool;
@@ -1145,6 +1149,8 @@ function buildSystemPrompt(launchSettings: SessionLaunchSettings) {
 
 export function buildQueryOptions(params: QueryOptionsBuilderParams) {
   const systemPrompt = buildSystemPrompt(params.launchSettings);
+  const sessionTitle =
+    params.launchSettings.name ?? (params.resume && !params.forkSession ? params.resumedTitle : undefined);
   const permissionModeOptions = startupPermissionModeOptions(
     params.launchSettings,
   );
@@ -1185,13 +1191,14 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     ...permissionModeOptions,
     ...(params.launchSettings.effort !== undefined ? { effort: params.launchSettings.effort } : {}),
     ...(params.launchSettings.agent !== undefined ? { agent: params.launchSettings.agent } : {}),
-    // The SDK applies `title` to a new or forked session only; a resumed session keeps its
-    // persisted title, so resume() renames it instead. renameSession cannot name a new
-    // session: its transcript file does not exist before the first turn (measured on the
+    // For a new or forked session `title` is the session's title. For a resumed one the
+    // persisted title wins and `title` only names the process, which is what other clients read
+    // from the session registry (measured on the pinned SDK: a resume without it registers the
+    // folder-derived default name). So a resume passes the title the SDK already holds, or the
+    // launch name that resume() has just written with renameSession; renameSession cannot name a
+    // new session: its transcript file does not exist before the first turn (measured on the
     // pinned SDK: "Session ... not found in project directory").
-    ...(params.launchSettings.name !== undefined && (!params.resume || params.forkSession)
-      ? { title: params.launchSettings.name }
-      : {}),
+    ...(sessionTitle !== undefined ? { title: sessionTitle } : {}),
     ...(params.launchSettings.additional_directories
       ? { additionalDirectories: params.launchSettings.additional_directories }
       : {}),

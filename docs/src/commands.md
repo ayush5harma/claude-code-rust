@@ -37,7 +37,7 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/mode` | `/mode <id>` | Switch to a mode advertised by the active session. |
 | `/model` | `/model <id>` | Switch to a model advertised by the active session. |
 | `/new-session` | `/new-session` | Start a fresh bridge session in the current folder. |
-| `/resume` | `/resume [session_id_or_title]` | Open the session picker, or resume an exact ID or displayed title. |
+| `/resume` | `/resume [session_id_or_title]` | Open the session picker (refreshed from the SDK each time it opens, with the active session marked `[current]`), or resume an exact ID or displayed title. |
 | `/rewind` | `/rewind <user_message_uuid> <both\|conversation\|code>` | Restore conversation, code, or both to a previous user message. |
 | `/reload` | `/reload` | Re-read skills and output styles from disk for the active session. |
 | `/export` | `/export [path]` | Save the complete conversation as a Markdown file. |
@@ -48,7 +48,7 @@ Enter completes the selected slash command or argument and submits it when ready
 
 Editing the draft cancels a pending submission. Editing, completion, and submission keys cannot change or send the draft while pasted text is awaiting insertion, including when suggestions are open or keys are remapped. Suggestions refresh after the pasted text is inserted.
 
-Completing the name of a command with no arguments or optional arguments closes the popup and returns focus to the draft. Optional arguments remain supported: `/resume` opens the session picker, and `/resume <session_id_or_title>` resumes directly. A title must match the displayed title exactly; if it names more than one session, the app asks for an ID. Pressing Tab again requests argument completion explicitly. When the SDK provides only an argument hint, Tab displays that hint without changing or sending the draft; Enter sends the typed command for SDK validation. SDK hints are descriptive text, so their brackets never determine whether the app allows submission. Empty hints and `none` or `[none]` do not produce argument help.
+Completing the name of a command with no arguments or optional arguments closes the popup and returns focus to the draft. Optional arguments remain supported: `/resume` opens the session picker, and `/resume <session_id_or_title>` resumes directly. A title must match the displayed title exactly; if it names more than one session, or none, the app shows a notice that lists the candidate IDs or says the session is unknown, and the composer stays usable. Pressing Tab again requests argument completion explicitly. When the SDK provides only an argument hint, Tab displays that hint without changing or sending the draft; Enter sends the typed command for SDK validation. SDK hints are descriptive text, so their brackets never determine whether the app allows submission. Empty hints and `none` or `[none]` do not produce argument help.
 
 Space inserts a literal separator without accepting the highlighted suggestion. It ends command-name completion and continues argument assistance only when the app requires arguments, or when you explicitly requested argument help. There is no special Space dismissal state. Escape dismisses the current menu; argument edits, cursor movement within arguments, and metadata refreshes keep it closed. Tab requests completion again, and editing the command name starts a new completion interaction. A command is recognized only at the start of the draft, allowing leading whitespace; slashes on later lines remain literal prompt or argument text.
 
@@ -108,7 +108,7 @@ The Status tab shows the session name. Its rename draft (`r`) starts from that n
 
 The name is whatever the Agent SDK's session API reports as the session's title; claude-rs keeps no title of its own. It is read when a session connects or resumes, when the session is replaced, when the conversation resets, after each turn, and after a Status-tab rename or title generation. A `/rename` typed in the composer therefore shows once its turn completes. For a session nobody named, the API reports a generated title instead, so such a session shows that title after its first turn.
 
-If the SDK omits a saved custom title while resuming, claude-rs restores that title through the SDK session API so other clients see it too.
+When claude-rs resumes a session it passes the session's saved title to the SDK as the process title, so the name other clients list for the running session (for example in `claude agents`) is the saved title and not a folder-derived default. The saved title in the transcript is not changed by this.
 
 ## Session Commands
 

@@ -143,6 +143,7 @@ function commandSessionId(command: BridgeCommand): string | undefined {
       return command.resume;
     case "initialize":
     case "new_session":
+    case "list_sessions":
     case "shutdown":
       return undefined;
   }
@@ -195,6 +196,7 @@ function commandToolCallId(command: BridgeCommand): string | undefined {
     case "mcp_authenticate":
     case "mcp_clear_auth":
     case "mcp_oauth_callback_url":
+    case "list_sessions":
     case "shutdown":
       return undefined;
   }

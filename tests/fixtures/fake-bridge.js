@@ -21,6 +21,10 @@ function managedSessions() {
     { session_id: SESSION, summary: 'Current conversation', last_modified_ms: 1, file_size_bytes: 1, cwd, git_branch: null, custom_title: 'Current conversation', first_prompt: null, tag: null },
   ];
 }
+const RESUME_FAILURES = {
+  'Shared title': 'ambiguous session title: Shared title; use a session ID (first-id, second-id)',
+  'Missing title': 'unknown session: Missing title',
+};
 const resizeCodeScenario = SCENARIO === 'resize-code';
 const activityScenario = SCENARIO.startsWith('hold-activity');
 const RELEASE_FILE = process.env.FAKE_BRIDGE_RELEASE_FILE;
@@ -414,6 +418,12 @@ readline
       case 'create_session':
       case 'new_session':
       case 'resume_session':
+        if (SCENARIO === 'resume-failure' && message.command === 'resume_session' && RESUME_FAILURES[message.session_id]) {
+          // The real bridge answers a title it cannot resolve under the requested id and the
+          // command's request id; no session is created, so no connect event follows.
+          send({ event: 'session_resume_failed', session_id: message.session_id, request_id: message.request_id, message: RESUME_FAILURES[message.session_id] });
+          break;
+        }
         if (message.command === 'new_session') SESSION = 'fake-session-after-login';
         // Like the SDK's forkSession, a forked resume continues under a new session ID.
         if (message.command === 'resume_session') SESSION = message.launch_settings?.fork_session ? `${message.session_id}-fork` : message.session_id;
@@ -444,6 +454,8 @@ readline
             cwd, git_branch: 'main', custom_title: 'Large saved conversation',
           }] });
         }
+        // The listing sent around connect predates the active session's transcript.
+        if (SCENARIO === 'session-refresh') send({ event: 'sessions_listed', sessions: managedSessions().filter(session => session.session_id !== SESSION) });
         if (SCENARIO === 'session-management') send({ event: 'sessions_listed', sessions: managedSessions() });
         if (SCENARIO.startsWith('resize-') || SCENARIO.startsWith('background-')) send({ event: 'status_snapshot', session_id: SESSION, account: { subscription_type: 'Fixture subscription' } });
         if (SCENARIO === 'session-accent') {
@@ -488,6 +500,23 @@ readline
           }, INTERVAL_MS);
         }
         break;
+      case 'list_sessions': {
+        // The listing as the SDK knows it now, which includes the active session. The
+        // `session-refresh` scenario holds the answer until the release file appears, so the
+        // picker's loading state can be observed.
+        const answer = () => send({ event: 'sessions_listed', request_id: message.request_id, sessions: managedSessions() });
+        if (SCENARIO !== 'session-refresh') {
+          answer();
+          break;
+        }
+        record({ type: 'barrier', name: 'list-held' });
+        const timer = setInterval(() => {
+          if (!fs.existsSync(RELEASE_FILE)) return;
+          clearInterval(timer);
+          answer();
+        }, INTERVAL_MS);
+        break;
+      }
       case 'list_session_agents':
         send({ event: 'session_agents_result', session_id: SESSION, request_id: message.request_id, action: message.command,
           agent_ids: ['agent-running', 'agent-completed'], messages: [] });

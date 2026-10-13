@@ -153,7 +153,7 @@ fn connected_updates_cwd_and_clears_resuming_marker() {
         "/test",
         "-",
     ));
-    app.set_pending_session_resume("resume-123".into(), Some("resume-at-1".into()));
+    app.set_pending_session_resume("resume-123".into(), "resume-at-1".into());
 
     handle_client_event(
         &mut app,
@@ -1115,7 +1115,7 @@ fn stale_plugin_inventory_result_for_old_cwd_is_ignored() {
 fn slash_command_error_while_resuming_returns_ready_and_clears_marker() {
     let mut app = make_test_app();
     app.status = AppStatus::CommandPending;
-    app.set_pending_session_resume("resume-123".into(), None);
+    app.set_pending_session_resume("resume-123".into(), "resume-op".into());
 
     handle_client_event(&mut app, slash_command_error("resume failed".into()));
 
@@ -1128,7 +1128,7 @@ fn matching_resume_at_failure_is_visible_and_clears_pending_state() {
     let mut app = make_test_app();
     app.status = AppStatus::CommandPending;
     app.turn.pending_command_label = Some("Forking before selected message...".into());
-    app.set_pending_session_resume("source-session".into(), Some("resume-at-1".into()));
+    app.set_pending_session_resume("source-session".into(), "resume-at-1".into());
 
     handle_client_event(
         &mut app,
@@ -1154,7 +1154,7 @@ fn stale_resume_at_failure_does_not_cancel_current_operation() {
     let mut app = make_test_app();
     app.status = AppStatus::CommandPending;
     app.turn.pending_command_label = Some("Forking before selected message...".into());
-    app.set_pending_session_resume("source-session".into(), Some("resume-at-current".into()));
+    app.set_pending_session_resume("source-session".into(), "resume-at-current".into());
     let message_count = app.transcript.messages.len();
 
     handle_client_event(
@@ -1168,7 +1168,7 @@ fn stale_resume_at_failure_does_not_cancel_current_operation() {
 
     assert!(matches!(app.status, AppStatus::CommandPending));
     assert_eq!(app.pending_session_resume_id(), Some("source-session"));
-    assert_eq!(app.pending_resume_at_operation_id(), Some("resume-at-current"));
+    assert_eq!(app.pending_resume_operation_id(), Some("resume-at-current"));
     assert_eq!(app.transcript.messages.len(), message_count);
 }
 
@@ -1471,6 +1471,7 @@ fn sessions_listed_completes_pending_session_rename() {
                 first_prompt: Some("prompt".to_owned()),
                 tag: None,
             }],
+            request_id: None,
         },
     );
 
@@ -1554,6 +1555,7 @@ fn sessions_listed_completes_pending_session_title_generation() {
                 first_prompt: Some("prompt".to_owned()),
                 tag: None,
             }],
+            request_id: None,
         },
     );
 
@@ -1573,6 +1575,7 @@ fn startup_picker_waits_for_connected_after_sessions_listed() {
         &mut app,
         ClientEvent::SessionsListed {
             sessions: vec![listed_session("session-1", "First Session")],
+            request_id: None,
         },
     );
 
@@ -1601,7 +1604,10 @@ fn startup_picker_empty_list_stays_in_chat_with_info_message() {
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
     assert!(!app.startup.session_picker_resolved());
 
-    handle_client_event(&mut app, ClientEvent::SessionsListed { sessions: Vec::new() });
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionsListed { sessions: Vec::new(), request_id: None },
+    );
 
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
     assert!(app.startup.session_picker_resolved());
@@ -1651,12 +1657,45 @@ fn sessions_listed_refresh_preserves_picker_selection_by_session_id() {
                 listed_session("session-2", "Second"),
                 listed_session("session-3", "Third"),
             ],
+            request_id: None,
         },
     );
 
     assert_eq!(app.session_picker.selected, 0);
     assert_eq!(app.recent_sessions[app.session_picker.selected].session_id, "session-2");
     assert_eq!(app.session_picker.scroll_offset, 0);
+}
+
+#[test]
+fn the_listing_that_answers_the_picker_ends_loading_and_selects_the_active_session() {
+    let mut app = make_test_app();
+    app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-2"));
+    app.session_picker.list_request = Some("picker-1".to_owned());
+
+    // A listing nobody asked the picker for (sent after a tag or at connect) does not end it.
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionsListed {
+            sessions: vec![listed_session("session-1", "First")],
+            request_id: None,
+        },
+    );
+    assert!(crate::app::session_picker::refresh_is_pending(&app));
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionsListed {
+            sessions: vec![
+                listed_session("session-1", "First"),
+                listed_session("session-2", "Second"),
+            ],
+            request_id: Some("picker-1".to_owned()),
+        },
+    );
+
+    assert!(!crate::app::session_picker::refresh_is_pending(&app));
+    assert_eq!(app.session_picker.selected, 1);
+    assert_eq!(app.recent_sessions.len(), 2);
 }
 
 #[test]
@@ -1714,7 +1753,7 @@ fn non_matching_config_option_update_keeps_pending() {
 #[test]
 fn resume_does_not_add_confirmation_system_message() {
     let mut app = make_test_app();
-    app.set_pending_session_resume("requested-123".into(), None);
+    app.set_pending_session_resume("requested-123".into(), "resume-op".into());
 
     handle_client_event(
         &mut app,

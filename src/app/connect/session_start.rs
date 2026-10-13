@@ -128,14 +128,15 @@ pub(crate) fn start_new_session(
     conn.new_session(app.cwd_raw.clone(), launch_settings)
 }
 
-pub(crate) fn resume_session(
+fn resume_session(
     app: &App,
     conn: &AgentConnection,
     session_id: String,
+    operation_id: String,
 ) -> anyhow::Result<()> {
     let launch_settings = session_launch_settings_for_reason(app, SessionStartReason::Resume);
     log_session_request(app, SessionStartReason::Resume, &launch_settings, Some(&session_id));
-    conn.resume_session(session_id, launch_settings)
+    conn.resume_session(session_id, launch_settings, operation_id)
 }
 
 /// Begin a session resume by marking the target session and sending the command.
@@ -147,9 +148,12 @@ pub(crate) fn begin_resume_session(
     conn: &AgentConnection,
     session_id: String,
 ) -> anyhow::Result<()> {
-    app.set_pending_session_resume(session_id.clone(), None);
+    // The bridge answers a failed lookup (unknown or ambiguous title) under this id, which is
+    // how the app tells that failure from one of a different, older resume.
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    app.set_pending_session_resume(session_id.clone(), operation_id.clone());
     app.show_session_overview = false;
-    resume_session(app, conn, session_id)
+    resume_session(app, conn, session_id, operation_id)
 }
 
 pub(crate) fn begin_resume_session_at(
@@ -159,7 +163,7 @@ pub(crate) fn begin_resume_session_at(
     target_user_message_id: String,
 ) -> anyhow::Result<()> {
     let operation_id = uuid::Uuid::new_v4().to_string();
-    app.set_pending_session_resume(session_id.clone(), Some(operation_id.clone()));
+    app.set_pending_session_resume(session_id.clone(), operation_id.clone());
     app.show_session_overview = false;
     let launch_settings = session_launch_settings_for_reason(app, SessionStartReason::Resume);
     log_session_request(app, SessionStartReason::Resume, &launch_settings, Some(&session_id));

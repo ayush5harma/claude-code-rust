@@ -266,6 +266,8 @@ impl TerminalTest {
         test.send(b"y");
         if scenario.starts_with("resume-large") {
             test.wait_screen("Large saved conversation");
+        } else if scenario == "resume-failure" && args.contains(&"-r") {
+            // The launch cannot resume, so the app exits instead of reaching the composer.
         } else if has_initial_prompt {
             test.wait_until("initial prompt", |test| !test.prompts().is_empty());
         } else {
@@ -2426,6 +2428,54 @@ fn status_tab_shows_the_session_name_after_rename() {
     test.submit("/status", "/status");
     test.wait_for("the new name in Status", |test| status_name_row(test, "probe-e2e"));
     test.shutdown();
+}
+
+#[test]
+fn resume_picker_loads_a_fresh_list_and_marks_the_active_session() {
+    let mut test = TerminalTest::start("session-refresh", 3);
+    test.submit("/resume", "/resume");
+    test.wait_journal("list-held");
+    // The list from connect names only the saved session; it is not shown as the answer.
+    let loading = test.wait_screen_with("Loading recent sessions", &["Resume Session"]);
+    assert!(!loading.contains("Saved project work"), "{loading}");
+
+    test.release();
+    let screen = test.wait_screen_with("[current]", &["Saved project work"]);
+    assert!(screen.contains("Current conversation"), "{screen}");
+    assert!(
+        screen.lines().any(|line| line.contains("> ") && line.contains("[current]")),
+        "the active session is selected:\n{screen}"
+    );
+    assert_eq!(test.commands("list_sessions").len(), 1);
+    test.shutdown();
+}
+
+#[test]
+fn resume_by_an_ambiguous_or_unknown_title_reports_why_and_returns_the_composer() {
+    let mut test = TerminalTest::start("resume-failure", 3);
+    test.submit_command("/resume Shared title");
+    let screen =
+        test.wait_screen_with("ambiguous session title", &["first-id", "second-id", "[READY]"]);
+    assert!(!screen.contains("Resuming session"), "{screen}");
+
+    test.submit_command("/resume Missing title");
+    test.wait_screen_with("unknown session: Missing title", &["[READY]"]);
+
+    // The composer works again: the next prompt reaches the bridge.
+    test.submit("after the failed resumes", "after the failed resumes");
+    test.wait_journal("turn_complete");
+    test.assert_prompts(&["after the failed resumes"]);
+    test.shutdown();
+}
+
+#[test]
+fn launch_resume_by_an_ambiguous_title_exits_with_the_candidates() {
+    let mut test =
+        TerminalTest::start_with_options("resume-failure", 3, None, &["-r", "Shared title"], false);
+    let status = test.child.wait_for_exit(Duration::from_secs(15)).expect("bounded failure exit");
+    assert!(!status.success(), "a launch that cannot resume must fail");
+    let raw = test.wait_final_output("ambiguous session title: Shared title");
+    assert!(raw.contains("first-id") && raw.contains("second-id"), "{}", tail(&raw, 600));
 }
 
 #[test]

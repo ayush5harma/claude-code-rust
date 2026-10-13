@@ -199,6 +199,45 @@ test("unblocking commands remain admitted while shutdown is queued", async () =>
   );
 });
 
+test("list_sessions runs at once without waiting for or delaying session commands", async () => {
+  const scheduler = new BridgeCommandScheduler();
+  const slow = deferred();
+  const order: string[] = [];
+
+  const title = scheduler.schedule(command("generate_session_title"), async () => {
+    order.push("title:start");
+    await slow.promise;
+    order.push("title:end");
+  });
+  const listing = scheduler.schedule({ command: "list_sessions" }, async () => {
+    order.push("list");
+  });
+  const prompt = scheduler.schedule(command("prompt"), async () => {
+    order.push("prompt");
+  });
+
+  await listing;
+  // The listing was answered while the title task was in flight.
+  assert.deepEqual(order, ["title:start", "list"]);
+  slow.resolve();
+  await Promise.all([title, prompt]);
+  // And it left no tail behind for the prompt to wait on beyond the session's own task.
+  assert.deepEqual(order, ["title:start", "list", "title:end", "prompt"]);
+});
+
+test("list_sessions is refused once shutdown is queued", async () => {
+  const scheduler = new BridgeCommandScheduler();
+  const first = deferred();
+  const running = scheduler.schedule(command("set_model"), async () => first.promise);
+  const shutdown = scheduler.schedule(command("shutdown"), async () => undefined);
+  assert.equal(
+    scheduler.schedule({ command: "list_sessions" }, async () => undefined),
+    undefined,
+  );
+  first.resolve();
+  await Promise.all([running, shutdown]);
+});
+
 test("a failed operation does not poison its scheduling lane", async () => {
   const scheduler = new BridgeCommandScheduler();
   const order: string[] = [];
