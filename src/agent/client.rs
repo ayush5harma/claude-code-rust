@@ -982,6 +982,13 @@ impl AgentConnection {
         })
     }
 
+    pub fn list_sessions(&self, request_id: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: Some(request_id),
+            command: BridgeCommand::ListSessions,
+        })
+    }
+
     pub fn resume_session_at(
         &self,
         session_id: String,
@@ -1397,6 +1404,17 @@ mod tests {
                 launch_settings: crate::agent::wire::SessionLaunchSettings::default(),
             }
         );
+    }
+
+    #[test]
+    fn list_sessions_sends_request_correlated_bridge_command() {
+        let (conn, mut rx) = AgentConnection::test_channel();
+
+        conn.list_sessions("picker-open".to_owned()).expect("list sessions");
+
+        let envelope = rx.try_recv().expect("command");
+        assert_eq!(envelope.request_id.as_deref(), Some("picker-open"));
+        assert_eq!(envelope.command, BridgeCommand::ListSessions);
     }
 
     #[test]
