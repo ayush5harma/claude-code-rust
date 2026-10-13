@@ -1,4 +1,5 @@
 import {
+  getSessionInfo,
   getSessionMessages,
   listSessions,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -12,7 +13,11 @@ import {
   slashError,
   writeEvent,
 } from "./events.js";
-import { getSessionTranscriptMessages, mapSessionMessagesToUpdates } from "./history.js";
+import {
+  getSessionTranscriptMessages,
+  mapSdkSessionInfo,
+  mapSessionMessagesToUpdates,
+} from "./history.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import {
   awaitSessionInitialization,
@@ -235,10 +240,18 @@ async function create(
     if (command.resume) {
       throw new Error("continue_session cannot be combined with resume");
     }
-    const recent = (await listSessions(currentSessionListOptions()))
-      .sort((a, b) => b.lastModified - a.lastModified)[0];
+    const recent = (await listSessions(currentSessionListOptions())).sort(
+      (a, b) => b.lastModified - a.lastModified,
+    )[0];
     if (recent) {
-      await resume({ command: "resume_session", session_id: recent.sessionId, launch_settings: command.launch_settings }, requestId);
+      await resume(
+        {
+          command: "resume_session",
+          session_id: recent.sessionId,
+          launch_settings: command.launch_settings,
+        },
+        requestId,
+      );
       return;
     }
   }
@@ -264,10 +277,37 @@ async function resume(
     sessionId: command.session_id,
   });
   try {
-    const sdkSessions = await listSessions(currentSessionListOptions());
-    const matched = sdkSessions.find(
+    const { limit: _limit, ...listOptions } = currentSessionListOptions();
+    const sdkSessions = await listSessions(listOptions);
+    const listedId = sdkSessions.find(
       (entry) => entry.sessionId === command.session_id,
     );
+    const exactId =
+      listedId ??
+      (/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(command.session_id)
+        ? await getSessionInfo(
+            command.session_id,
+            listOptions.dir ? { dir: listOptions.dir } : undefined,
+          )
+        : undefined);
+    const titleMatches = exactId
+      ? []
+      : sdkSessions.filter(
+          (entry) => mapSdkSessionInfo(entry).summary === command.session_id,
+        );
+    if (titleMatches.length > 1) {
+      const choices = titleMatches
+        .slice(0, 5)
+        .map((entry) => entry.sessionId)
+        .join(", ");
+      slashError(
+        command.session_id,
+        `ambiguous session title: ${command.session_id}; use a session ID (${choices}${titleMatches.length > 5 ? ", ..." : ""})`,
+        requestId,
+      );
+      return;
+    }
+    const matched = exactId ?? titleMatches[0];
     if (!matched) {
       bridgeLogger.warn({
         target: LOG_TARGETS.APP_SESSION,
@@ -287,10 +327,8 @@ async function resume(
     }
     setSessionListingDir(matched.cwd ?? process.cwd());
     const historyMessages = await getSessionTranscriptMessages(
-      command.session_id,
-      matched.cwd
-        ? { dir: matched.cwd }
-        : {},
+      matched.sessionId,
+      matched.cwd ? { dir: matched.cwd } : {},
     );
     const resumeUpdates = mapSessionMessagesToUpdates(historyMessages);
     const staleSessions = Array.from(sessions.values());
@@ -301,7 +339,7 @@ async function resume(
       message: "session resume history loaded",
       outcome: "success",
       ...(requestId ? { requestId } : {}),
-      sessionId: command.session_id,
+      sessionId: matched.sessionId,
       fields: {
         history_message_count: historyMessages.length,
         history_update_count: resumeUpdates.length,
@@ -310,7 +348,7 @@ async function resume(
     });
     await createSession({
       cwd: matched.cwd ?? process.cwd(),
-      resume: command.session_id,
+      resume: matched.sessionId,
       launchSettings: command.launch_settings,
       ...(resumeUpdates.length > 0 ? { resumeUpdates } : {}),
       connectEvent: hadActiveSession ? "session_replaced" : "connected",
