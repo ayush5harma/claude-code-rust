@@ -1193,15 +1193,30 @@ export function applyBackgroundTasksChanged(
     .filter((task): task is TaskPatch => Boolean(task));
 
   const nextIds = new Set(nextTasks.map((task) => task.task_id));
-  const removedTaskIds = session.taskOrder.filter((taskId) => {
+  const leaving = session.taskOrder.filter((taskId) => {
     if (nextIds.has(taskId)) {
       return false;
     }
     const metadata = asRecordOrNull(session.tasksById.get(taskId)?.metadata);
     return metadata?.[BACKGROUND_TASK_METADATA_KEY] === true;
   });
-  const tasks = nextTasks.map((task) => upsertTask(session, task));
-  const removed = removeTasks(session, removedTaskIds);
+  // The snapshot only says what is still in the background. A task whose
+  // lifecycle already reported an outcome keeps that row and loses only the
+  // background marker, sent first so the snapshot does not drop it.
+  const settled = leaving.filter(
+    (taskId) => asRecordOrNull(session.tasksById.get(taskId)?.metadata)?.terminal_status !== undefined,
+  );
+  if (settled.length > 0) {
+    emitTaskStateUpdate(session, "task_lifecycle", settled.map((taskId) => upsertTask(session, {
+      task_id: taskId,
+      metadata: mergeMetadata(session.tasksById.get(taskId)?.metadata, { [BACKGROUND_TASK_METADATA_KEY]: null }),
+    })));
+  }
+  const tasks = nextTasks.map((task) => upsertTask(session, {
+    ...task,
+    metadata: mergeMetadata(session.tasksById.get(task.task_id)?.metadata, asRecordOrNull(task.metadata) as Record<string, Json> | undefined),
+  }));
+  const removed = removeTasks(session, leaving.filter((taskId) => !settled.includes(taskId)));
   emitTaskStateUpdate(session, "background_tasks", tasks, removed, true);
 }
 

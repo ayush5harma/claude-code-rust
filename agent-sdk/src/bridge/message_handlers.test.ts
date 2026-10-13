@@ -209,6 +209,52 @@ test("a subagent task row settles when its notification follows the finished too
   }
 });
 
+// Measured on Claude Code 2.1.288: a backgrounded subagent is listed by
+// background_tasks_changed, and the snapshot that drops it arrives right after
+// its task_notification (or after its killed patch when stopped).
+test("a backgrounded subagent keeps its lifecycle row after it leaves the background snapshot", () => {
+  const session = makeSession();
+  const emit = (message: Record<string, unknown>) =>
+    handleSdkMessage(session, { session_id: "session-1", uuid: crypto.randomUUID(), ...message } as unknown as SDKMessage);
+  const background = (tasks: Array<Record<string, unknown>>) => emit({ type: "system", subtype: "background_tasks_changed", tasks });
+  const listed = [
+    { task_id: "agent-1", task_type: "local_agent", description: "Background sleep" },
+    { task_id: "shell-1", task_type: "local_bash", description: "Watch logs" },
+  ];
+  const writes: string[] = [];
+  const restore = replaceProtocolEventWriter((line) => {
+    writes.push(line);
+  });
+  try {
+    background(listed);
+    emit({ type: "system", subtype: "task_started", task_id: "agent-1", task_type: "local_agent", subagent_type: "general-purpose", description: "Background sleep" });
+    background(listed);
+    emit({ type: "system", subtype: "task_notification", task_id: "agent-1", status: "completed", summary: "ok", output_file: "" });
+    background([]);
+  } finally {
+    restore();
+  }
+
+  type Update = { source?: string; removed_task_ids?: string[]; tasks?: Array<Record<string, unknown>> };
+  const updates = writes
+    .map((line) => (JSON.parse(line) as { update?: Update & { type?: string } }).update)
+    .filter((update): update is Update & { type: string } => update?.type === "task_state_update");
+  const final = updates.at(-1);
+  assert.equal(final?.source, "background_tasks");
+  assert.deepEqual(final?.removed_task_ids, ["shell-1"], "a task with no reported outcome still leaves with the snapshot");
+  const row = updates.flatMap((update) => update.tasks ?? []).filter((task) => task.task_id === "agent-1").at(-1);
+  assert.equal(row?.status, "completed");
+  assert.deepEqual(row?.metadata, {
+    task_type: "local_agent",
+    subagent_type: "general-purpose",
+    output_file: "",
+    summary: "ok",
+    terminal_status: "completed",
+  }, "the settled row keeps its lifecycle metadata and drops only the background marker");
+  assert.equal(session.tasksById.get("agent-1")?.status, "completed");
+  assert.equal(session.tasksById.has("shell-1"), false);
+});
+
 test("SDK context usage Markdown is shown even without a response ID", () => {
   const session = makeSession();
   const texts = replyChunks(() => {
