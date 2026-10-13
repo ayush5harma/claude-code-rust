@@ -1862,10 +1862,7 @@ fn title_update_clears_the_matching_listed_title() {
     app.session_runtime.session_id = Some(model::SessionId::new("active"));
     let mut listed = listed_session("active", "Independent summary");
     listed.custom_title = Some("Old name".to_owned());
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionsListed { sessions: vec![listed], request_id: None },
-    );
+    handle_client_event(&mut app, ClientEvent::SessionsListed { sessions: vec![listed] });
     handle_client_event(
         &mut app,
         ClientEvent::SessionUpdate {
