@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.15.2-fork.4] - 2026-10-14
+
+### Features
+
+- The welcome crab scuttles while the session connects and waves once when it connects, then rests; nothing animates at idle and `prefersReducedMotion` keeps it still.
+
+### Fixes
+
+- Slash-command suggestions rank an exact name first, then name prefixes, then prefixes of a name's segments, then other matches, so `/res` shows `/resume` first.
+- The trust prompt shows the directory being trusted (the stored project key), keeping the end of a long path visible on short screens.
+- `/export` names default files `export-<session-id>-<YYYYMMDDTHHMMSSZ>.md` and suffixes collisions `-2`, `-3`; it never overwrites a file.
+- Starting without a terminal exits 25 with one line instead of writing escape sequences and a runtime log; piped stdin still works when `/dev/tty` is available.
+- `--dir` and `--bridge-script` are checked before startup.
+- Session flags apply to interactive launches only (the root command and `resume`); errors name the flag and the subcommand.
+- A one-word prompt that is a one-slip typo of a command (`claude-rs doctr`) is refused with a suggestion; `claude-rs -- doctr` sends it.
+- Shell completions no longer offer hidden subcommands; help shows two usage lines, a Diagnostics Options heading, and documents exit status and environment variables.
+
+### Breaking
+
+- `--log-append` now requires `--log-file` (it used to append to a legacy log with no retention).
+
+### Upstream
+
+- Merges upstream main at a187e1c: zip 9, the CONTRIBUTING scope-agreement section, the merged #444, and dependency updates.
+
 ## [0.15.2-fork.3] - 2026-10-13
 
 ### Features
