@@ -2510,6 +2510,24 @@ fn session_picker_tag_field_takes_a_bracketed_paste_appended_on_one_line() {
 }
 
 #[test]
+fn detailed_transcript_shows_a_bash_result_once() {
+    let mut test = TerminalTest::start("verbose-bash", 3);
+    test.submit("run it", "run it");
+    test.wait_screen("bash finished");
+    test.send(b"\x0f");
+    test.wait_screen_with("Detailed transcript", &["Tool: echo fixture"]);
+    let screen = test.screen();
+    assert_eq!(
+        rows_with(&screen, "FIXTURE_BASH_OUTPUT").len(),
+        1,
+        "the Bash result must appear once in the detailed view:\n{screen}"
+    );
+    test.send(b"\x0f");
+    test.wait_screen("Type a message");
+    test.shutdown();
+}
+
+#[test]
 fn native_diff_browses_session_and_working_tree_files() {
     let mut test = TerminalTest::start("native-diff", 3);
     test.submit("/diff", "/diff");

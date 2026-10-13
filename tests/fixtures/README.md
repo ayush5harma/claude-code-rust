@@ -27,6 +27,7 @@ The PR workflow runs this suite on Ubuntu, Windows, and macOS, and requires all 
 | `session-accent` | Sends confirmed color updates for `/color purple` and `/color default`; replacement checks the session-ID fallback. |
 | `resume-large` / `resume-large-fail` | Lists a 2 MiB saved session and returns a successful or failed compact-first turn after the picker choice. |
 | `session-management` | Lists a saved and active session; acknowledges tag and confirmed delete by exact ID with refreshed SDK-style metadata. |
+| `verbose-bash` | Answers the first prompt with a completed Bash call whose output arrives both as update content and as raw output, then a short reply. |
 
 `FAKE_BRIDGE_JOURNAL` records commands, events, and the `reply-held` coordination point as JSONL. `FAKE_BRIDGE_RELEASE_FILE` lets a test release a held turn after exercising the UI. Reply length and interval remain configurable with `FAKE_BRIDGE_LINES`, `FAKE_BRIDGE_FOLLOW_UP_LINES`, and `FAKE_BRIDGE_INTERVAL_MS`.
 

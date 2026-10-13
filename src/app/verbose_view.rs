@@ -30,15 +30,20 @@ pub(crate) fn open(app: &mut App) -> bool {
                 {
                     let tool = tool.display();
                     push_row(&mut rows, &mut truncated, &format!("  Tool: {}", tool.title));
-                    for content in &tool.content {
-                        if let ToolCallContent::Content(content) = content
-                            && let ContentBlock::Text(text) = &content.content
-                        {
-                            push_text(&mut rows, &mut truncated, &text.text);
-                        }
-                    }
+                    // A Bash result arrives as update content and again as raw
+                    // output; terminal_output (execute tools only) is what the
+                    // transcript renders, so it replaces the content text rather
+                    // than following it (measured: the line printed twice).
                     if let Some(output) = &tool.terminal_output {
                         push_text(&mut rows, &mut truncated, output);
+                    } else {
+                        for content in &tool.content {
+                            if let ToolCallContent::Content(content) = content
+                                && let ContentBlock::Text(text) = &content.content
+                            {
+                                push_text(&mut rows, &mut truncated, &text.text);
+                            }
+                        }
                     }
                 }
                 _ => {}
@@ -134,5 +139,27 @@ mod tests {
         let text = app.verbose_view.as_ref().expect("view").rows.join("\n");
         assert!(text.contains("answer") && text.contains("visible-result"));
         assert!(!text.contains("raw-private-value") && !text.contains("hidden-private-value"));
+    }
+
+    #[test]
+    fn terminal_output_replaces_the_same_text_in_content_and_content_stands_alone() {
+        let mut app = App::test_default();
+        let mut bash =
+            crate::app::test_support::tool_call_info("bash", model::ToolCallStatus::Completed);
+        bash.sdk_tool_name = "Bash".to_owned();
+        bash.content.push("shared-output".into());
+        bash.terminal_output = Some("shared-output".to_owned());
+        let mut read =
+            crate::app::test_support::tool_call_info("read", model::ToolCallStatus::Completed);
+        read.content.push("file-body".into());
+        app.transcript.messages.push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(bash)), MessageBlock::ToolCall(Box::new(read))],
+            None,
+        ));
+        assert!(open(&mut app));
+        let rows = &app.verbose_view.as_ref().expect("view").rows;
+        assert_eq!(rows.iter().filter(|row| *row == "shared-output").count(), 1);
+        assert_eq!(rows.iter().filter(|row| *row == "file-body").count(), 1);
     }
 }
