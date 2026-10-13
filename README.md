@@ -43,6 +43,16 @@ The two SDK behavior fixes incorporate upstream pull requests [#444](https://git
 | Input ergonomics ([#24](https://github.com/ayush5harma/claude-code-rust/pull/24)) | Backslash-Enter newline, Ctrl+G with VISUAL or EDITOR, Esc Esc rewind, empty Ctrl+D and `/exit`, Ctrl+O retained-transcript detail view, Ctrl+T tasks, remappable shortcuts, and paste-safe input handling. |
 | Composer and footer ([#25](https://github.com/ayush5harma/claude-code-rust/pull/25)) | Configurable `filled` or `rules` composer style; session-accent rules and prompt glyph; dynamic footer with context, session name, available SDK rate information, current-session agent counts, and permissions; the latest confirmed Task or TodoWrite plan; and a user-level configured `statusLine` command. Project and local settings cannot select an executable command; the user command receives documented JSON on stdin after the SDK session connects. Unavailable SDK rate and token fields are omitted rather than estimated. |
 
+### Added in v0.15.2-fork.4
+
+| Change | What it adds |
+| --- | --- |
+| Upstream sync ([#28](https://github.com/ayush5harma/claude-code-rust/pull/28)) | Upstream main at a187e1c, including the merged [#444](https://github.com/srothgan/claude-code-rust/pull/444). |
+| Slash ranking and trust prompt ([#29](https://github.com/ayush5harma/claude-code-rust/pull/29)) | Prefix matches rank before substring matches; the trust prompt names the directory. |
+| Welcome animation ([#30](https://github.com/ayush5harma/claude-code-rust/pull/30)) | Fork-only: the crab scuttles while connecting and waves once, then rests. |
+| `/export` naming ([#31](https://github.com/ayush5harma/claude-code-rust/pull/31)) | `export-<session-id>-<UTC>.md` default names with `-2`, `-3` collision suffixes, matching upstream issue [#465](https://github.com/srothgan/claude-code-rust/issues/465). |
+| Command-line surface ([#32](https://github.com/ayush5harma/claude-code-rust/pull/32)) | No-terminal refusal (exit 25), early `--dir`/`--bridge-script` checks, session flags scoped to interactive launches, consistent logging flags, a typo guard for subcommands, clean completions, documented exit status. |
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development commands and verification requirements.
 
 ### Remaining verification

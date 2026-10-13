@@ -17,3 +17,9 @@ absolute-paths-max-segments = 3
 
 # Short identifiers common in CLI arg parsing and loops
 allowed-idents-below-min-chars = ["i", "j", "k", "x", "y", "z", "n", "s", "c", "op", "tx", "rx", "id", "ip", "os", "ex"]
+
+# The test harness's generated list of every unit test (8 bytes each) trips
+# large_stack_arrays at clippy's default 16 KiB once the library passes 2,048
+# unit tests, which the fork did on 2026-10-14 (2,056). The threshold is for
+# that generated array; production code has no arrays near this size.
+array-size-threshold = 262144
