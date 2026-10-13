@@ -443,7 +443,7 @@ pub(super) fn open_session_rename_overlay(app: &mut App) {
     if app.session_runtime.session_id.is_none() {
         return;
     }
-    let draft = app.session_runtime.session_title.clone().unwrap_or_default();
+    let draft = app.active_session_custom_title().unwrap_or_default().to_owned();
     app.config.replace_overlay(ConfigOverlayState::SessionRename(text_input_overlay_state(
         draft,
         SessionRenameOverlayState::from_text_input,
@@ -571,7 +571,7 @@ fn char_to_byte_index(text: &str, char_index: usize) -> usize {
 fn session_title_generation_description(app: &App, session_id: &str) -> Option<String> {
     let listed = app.recent_sessions.iter().find(|session| session.session_id == session_id);
     [
-        app.session_runtime.session_title.as_deref(),
+        app.active_session_custom_title(),
         listed.map(|session| session.summary.as_str()),
         listed.and_then(|session| session.first_prompt.as_deref()),
     ]
