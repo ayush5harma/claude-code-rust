@@ -29,6 +29,7 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/plugins` | `/plugins` | Open plugin management. |
 | `/status` | `/status` | Open session and account status. |
 | `/usage` | `/usage` | Open quota and usage information. |
+| `/agents` | `/agents` | Open this session's subagents with their live status and saved transcripts. |
 | `/login` | `/login` | Run Claude CLI authentication and reconnect the session. |
 | `/logout` | `/logout` | Run Claude CLI logout and clear the active authenticated session. |
 | `/mode` | `/mode <id>` | Switch to a mode advertised by the active session. |

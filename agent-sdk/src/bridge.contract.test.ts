@@ -626,6 +626,23 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
       if (!entry || (options?.dir && entry.cwd !== options.dir)) return undefined;
       return entry;
     }
+    let subagentListings = 0;
+    export async function listSubagents(sessionId, options) {
+      record({ type: "listSubagents", sessionId, dir: options?.dir });
+      // The transcript directory becomes unreadable after the first listing.
+      if (++subagentListings > 1) throw new Error("subagent directory unreadable");
+      return ["agent-running", "agent-done"];
+    }
+    export async function getSubagentMessages(sessionId, agentId, options) {
+      record({ type: "getSubagentMessages", sessionId, agentId, dir: options?.dir });
+      if (agentId === "agent-unreadable") throw new Error("transcript unreadable");
+      const entry = (type, uuid, parentUuid, content) => ({ type, uuid, parentUuid, session_id: sessionId, parent_tool_use_id: null, message: { role: type, content } });
+      return [
+        entry("user", "agent-prompt", null, [{ type: "text", text: "Inspect the parser" }]),
+        entry("assistant", "agent-tool", "agent-prompt", [{ type: "tool_use", id: "agent-bash", name: "Bash", input: { command: "ls parser" } }]),
+        entry("assistant", "agent-reply", "agent-tool", [{ type: "text", text: "Parser checked" }]),
+      ];
+    }
     export async function getSessionMessages(...args) { return process.env.RESUME_TRANSCRIPT_FIXTURE === "1" ? sdkGetSessionMessages(...args) : []; }
     export async function importSessionToStore(...args) { if (process.env.RESUME_TRANSCRIPT_FIXTURE === "1") await sdkImportSessionToStore(...args); }
     export async function renameSession(sessionId, title, options) {
@@ -701,6 +718,10 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
             record({ type: "settings", effective: resolved.effective, checkpointing: options.enableFileCheckpointing });
           }
           return { current_permission_mode: process.env.PERMISSION_MODE_FIXTURE ?? effective.permissions?.defaultMode ?? "default", models: ["default", "opus", "sonnet", "haiku", "fixture-unavailable", "fixture-read-failure"].map(value => ({ value, resolvedModel: value === "default" || value === "opus" ? "claude-opus-5-5" : value === "sonnet" ? "claude-sonnet-5-5" : value, displayName: value, supportsEffort: value !== "haiku", supportsFastMode: value !== "haiku", supportsAutoMode: value !== "haiku", supportedEffortLevels: value === "haiku" ? [] : ["low", "medium", "high", "xhigh", "max"] })), commands: commandFixture ? bootstrapCommands : [], agents: sessionFixture ? [{ name: "reviewer", description: "Review code", model: "sonnet" }] : [], account: { apiKeySource: "fixture" }, fast_mode_state: "off" }; },
+        async stopTask(taskId) {
+          record({ type: "stopTask", taskId });
+          if (taskId === "agent-closing") throw new Error("Query closed before response received");
+        },
         async supportedCommands() { return bootstrapCommands; },
         async setModel(value) { model = process.env.MODEL_STEP_DOWN_FIXTURE === "1" && value === "opus" ? "sonnet" : value; },
         async setPermissionMode(value) { if (sessionFixture && value === "auto") throw new Error("Cannot set permission mode to auto: account restriction"); record({ type: "mode", value }); },
@@ -1362,4 +1383,84 @@ test("spawned bridge publishes the native starting mode independently of saved m
     const replacement = await nextMatching(bridge, event => event.event === "session_replaced");
     assert.equal((replacement.mode as BridgeEnvelope).current_mode_id, "auto");
   } finally { await cleanup(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("subagent commands read SDK transcripts and stop only a running subagent, leaving its status to the lifecycle", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-subagents-"));
+  const journal = join(directory, "sdk.jsonl");
+  const started = (taskId: string, taskType: string) => ({
+    type: "system", subtype: "task_started", uuid: crypto.randomUUID(), task_id: taskId,
+    task_type: taskType, description: `Run ${taskId}`, ...(taskType === "local_agent" ? { subagent_type: "general-purpose" } : {}),
+  });
+  const { bridge, cleanup } = ultracodeFixtureBridge({
+    STARTUP_JOURNAL: journal,
+    BACKGROUND_TASK_FIXTURE: JSON.stringify({
+      start: [started("agent-running", "local_agent"), started("agent-closing", "local_agent"), started("shell-1", "local_bash")],
+    }),
+  });
+  const sdkCalls = (type: string) =>
+    readFileSync(journal, "utf8").trim().split("\n").map(line => JSON.parse(line) as BridgeEnvelope).filter(call => call.type === type);
+  try {
+    bridge.writeCommand({ command: "create_session", cwd: process.cwd(), launch_settings: {} });
+    const connected = await nextMatching(bridge, event => event.event === "connected");
+    const sessionId = String(connected.session_id);
+    const result = async (name: string, command: BridgeEnvelope) => {
+      const requestId = crypto.randomUUID();
+      bridge.writeCommand({ ...command, session_id: sessionId, request_id: requestId });
+      const event = await nextMatching(bridge, event => event.event === name);
+      assert.equal(event.request_id, requestId);
+      assert.equal(event.session_id, sessionId);
+      return event;
+    };
+
+    const listed = await result("subagents_listed", { command: "list_subagents" });
+    assert.deepEqual(listed.agent_ids, ["agent-running", "agent-done"]);
+    assert.equal(listed.error, undefined);
+    assert.deepEqual(sdkCalls("listSubagents").map(call => [call.sessionId, call.dir]), [[sessionId, process.cwd()]]);
+
+    const read = await result("subagent_messages", { command: "get_subagent_messages", agent_id: "agent-done" });
+    assert.equal(read.agent_id, "agent-done");
+    const messages = read.messages as Array<{ role: string; text: string }>;
+    assert.deepEqual(messages.filter(message => message.role !== "tool"), [
+      { role: "user", text: "Inspect the parser" },
+      { role: "assistant", text: "Parser checked" },
+    ]);
+    assert.ok(messages.some(message => message.role === "tool" && message.text.includes("ls parser")), JSON.stringify(messages));
+    const unreadable = await result("subagent_messages", { command: "get_subagent_messages", agent_id: "agent-unreadable" });
+    assert.deepEqual([unreadable.agent_id, unreadable.messages, unreadable.error], ["agent-unreadable", [], "transcript unreadable"]);
+
+    // Nothing has started yet, so there is nothing to stop.
+    const early = await result("subagent_stop_result", { command: "stop_subagent", task_id: "agent-running" });
+    assert.match(String(early.error), /not running/);
+
+    bridge.writeCommand({ command: "prompt", session_id: sessionId, message_uuid: crypto.randomUUID(), chunks: [{ kind: "text", value: "fixture task start" }] });
+    await nextMatching(bridge, event => ((event.update as BridgeEnvelope)?.tasks as BridgeEnvelope[] | undefined)?.some(task => task.task_id === "shell-1") === true);
+
+    const shell = await result("subagent_stop_result", { command: "stop_subagent", task_id: "shell-1" });
+    assert.equal(shell.task_id, "shell-1");
+    assert.match(String(shell.error), /not running/, "a background shell is not a subagent");
+
+    const stopRequestId = crypto.randomUUID();
+    bridge.writeCommand({ command: "stop_subagent", session_id: sessionId, task_id: "agent-running", request_id: stopRequestId });
+    const beforeAcknowledgement: BridgeEnvelope[] = [];
+    const acknowledged = await nextMatching(bridge, event => {
+      beforeAcknowledgement.push(event);
+      return event.event === "subagent_stop_result";
+    });
+    assert.deepEqual([acknowledged.request_id, acknowledged.task_id, acknowledged.error], [stopRequestId, "agent-running", undefined]);
+    assert.ok(
+      !beforeAcknowledgement.some(event => (event.update as BridgeEnvelope)?.type === "task_state_update"),
+      "acknowledging a stop request must not report the task as stopped",
+    );
+
+    const rejected = await result("subagent_stop_result", { command: "stop_subagent", task_id: "agent-closing" });
+    assert.equal(rejected.error, "Query closed before response received");
+    assert.deepEqual(sdkCalls("stopTask").map(call => call.taskId), ["agent-running", "agent-closing"]);
+
+    const failedList = await result("subagents_listed", { command: "list_subagents" });
+    assert.deepEqual([failedList.agent_ids, failedList.error], [[], "subagent directory unreadable"]);
+  } finally {
+    await cleanup();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

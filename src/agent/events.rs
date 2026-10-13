@@ -196,6 +196,17 @@ pub enum ClientEvent {
         snapshot: Option<crate::agent::types::StructuredUsageSnapshot>,
         error: Option<String>,
     },
+    /// Subagent ids with a saved transcript in the active session.
+    SubagentsListed { session_id: String, agent_ids: Vec<String>, error: Option<String> },
+    /// Saved transcript of one subagent in the active session.
+    SubagentMessagesReceived {
+        session_id: String,
+        agent_id: String,
+        messages: Vec<crate::agent::types::SubagentMessage>,
+        error: Option<String>,
+    },
+    /// Acknowledgement or rejection of a subagent stop request; not its outcome.
+    SubagentStopResult { session_id: String, task_id: String, error: Option<String> },
     /// Rewind target candidates loaded from persisted SDK session history.
     RewindTargetsReceived {
         session_id: String,
@@ -269,6 +280,9 @@ impl ClientEvent {
             | Self::StatusSnapshotReceived { session_id, .. }
             | Self::ContextUsageReceived { session_id, .. }
             | Self::StructuredUsageReceived { session_id, .. }
+            | Self::SubagentsListed { session_id, .. }
+            | Self::SubagentMessagesReceived { session_id, .. }
+            | Self::SubagentStopResult { session_id, .. }
             | Self::McpSnapshotReceived { session_id, .. } => Some(session_id),
             Self::SlashCommandError { session_id, .. } => session_id.as_deref(),
             Self::RewindResultReceived { result } => Some(result.session_id.as_str()),

@@ -2,7 +2,8 @@
 // Copyright 2025 Simon Peter Rothgang
 
 mod action_overlay;
-mod common;
+/// List, selection, badge and hint helpers shared by the fullscreen views.
+pub(super) mod common;
 mod footer;
 mod help;
 mod input;

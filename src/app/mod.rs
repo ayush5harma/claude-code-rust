@@ -2,6 +2,7 @@
 // Copyright 2025 Simon Peter Rothgang
 
 pub(crate) mod activity;
+pub(crate) mod agents;
 pub(crate) mod auth;
 mod btw;
 mod cache_policy;

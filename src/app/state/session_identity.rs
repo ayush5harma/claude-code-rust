@@ -82,6 +82,7 @@ impl App {
         self.config.invalidate_session();
         // Side-question work belongs to this conversation scope, not the next one.
         self.btw.clear();
+        self.agents.clear_session();
     }
 
     pub fn clear_session_runtime_identity(&mut self) {

@@ -64,6 +64,10 @@ pub(crate) fn try_handle_submission(app: &mut App, submission: &ResolvedSubmissi
         AppSlashCommand::Plugins => handle_plugins_submit(app),
         AppSlashCommand::Status => handle_status_submit(app),
         AppSlashCommand::Usage => handle_usage_submit(app),
+        AppSlashCommand::Agents => {
+            crate::app::agents::open(app);
+            true
+        }
         AppSlashCommand::Login => handle_login_submit(app),
         AppSlashCommand::Logout => handle_logout_submit(app),
         AppSlashCommand::Mode => handle_mode_submit(app, &args),

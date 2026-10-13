@@ -304,6 +304,29 @@ pub(super) async fn handle_bridge_event(
                 .send(ClientEvent::StructuredUsageReceived { session_id, snapshot, error })
                 .await;
         }
+        crate::agent::wire::BridgeEvent::SubagentsListed { session_id, agent_ids, error } => {
+            let _ =
+                event_tx.send(ClientEvent::SubagentsListed { session_id, agent_ids, error }).await;
+        }
+        crate::agent::wire::BridgeEvent::SubagentMessages {
+            session_id,
+            agent_id,
+            messages,
+            error,
+        } => {
+            let _ = event_tx
+                .send(ClientEvent::SubagentMessagesReceived {
+                    session_id,
+                    agent_id,
+                    messages,
+                    error,
+                })
+                .await;
+        }
+        crate::agent::wire::BridgeEvent::SubagentStopResult { session_id, task_id, error } => {
+            let _ =
+                event_tx.send(ClientEvent::SubagentStopResult { session_id, task_id, error }).await;
+        }
         crate::agent::wire::BridgeEvent::RewindTargets { session_id, targets, error } => {
             let _ = event_tx
                 .send(ClientEvent::RewindTargetsReceived {

@@ -13,6 +13,9 @@ pub struct App {
     pub surface_mode: SurfaceMode,
     pub(crate) copy_picker: Option<crate::app::copy::CopyPicker>,
     pub(crate) diff_view: Option<Box<crate::app::diff_view::DiffView>>,
+    /// `/agents` view state; subagent status itself stays in `sdk_inventory.tasks`.
+    /// Boxed so `App` stays within the future-size bound of the async tests that own it.
+    pub(crate) agents: Box<crate::app::agents::AgentsView>,
     pub(crate) terminal_lifecycle: TerminalLifecycleState,
     pub(crate) terminal_child_cancel: Option<tokio::sync::oneshot::Sender<()>>,
     pub(crate) surface_dirty: SurfaceDirtyState,
@@ -261,6 +264,7 @@ impl App {
             chat_render: ChatRenderState::default(),
             copy_picker: None,
             diff_view: None,
+            agents: Box::default(),
             mention: None,
             committed_mentions: Vec::new(),
             file_index: file_index::FileIndexState::default(),

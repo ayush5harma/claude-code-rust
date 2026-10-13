@@ -776,6 +776,31 @@ impl AgentConnection {
         })
     }
 
+    pub fn list_subagents(&self, session_id: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::ListSubagents { session_id },
+        })
+    }
+
+    pub fn get_subagent_messages(
+        &self,
+        session_id: String,
+        agent_id: String,
+    ) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::GetSubagentMessages { session_id, agent_id },
+        })
+    }
+
+    pub fn stop_subagent(&self, session_id: String, task_id: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::StopSubagent { session_id, task_id },
+        })
+    }
+
     pub fn get_rewind_targets(&self, session_id: String) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: None,

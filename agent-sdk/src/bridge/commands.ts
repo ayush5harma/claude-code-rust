@@ -545,6 +545,23 @@ export function parseCommandEnvelope(line: string): {
           command: "get_usage",
           session_id: expectString(raw, "session_id", "get_usage"),
         };
+      case "list_subagents":
+        return {
+          command: "list_subagents",
+          session_id: expectString(raw, "session_id", "list_subagents"),
+        };
+      case "get_subagent_messages":
+        return {
+          command: "get_subagent_messages",
+          session_id: expectString(raw, "session_id", "get_subagent_messages"),
+          agent_id: expectString(raw, "agent_id", "get_subagent_messages"),
+        };
+      case "stop_subagent":
+        return {
+          command: "stop_subagent",
+          session_id: expectString(raw, "session_id", "stop_subagent"),
+          task_id: expectString(raw, "task_id", "stop_subagent"),
+        };
       case "get_rewind_targets":
         return {
           command: "get_rewind_targets",
