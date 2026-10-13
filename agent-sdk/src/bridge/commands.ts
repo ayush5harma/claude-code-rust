@@ -255,11 +255,31 @@ function optionalLaunchSettings(
   }
   const agent = optionalString(parsed, "agent", `${context}.${key}`);
   const effort = parsed.effort == null ? undefined : expectEffortLevel(parsed, "effort", `${context}.${key}`);
+  const name = optionalString(parsed, "name", `${context}.${key}`)?.trim();
+  const forkSession = optionalBoolean(parsed, "fork_session", `${context}.${key}`);
+  const settings = optionalString(parsed, "settings", `${context}.${key}`);
+  const mcpConfigs = parsed.mcp_configs == null
+    ? []
+    : expectStringArray(parsed, "mcp_configs", `${context}.${key}`);
+  const strictMcpConfig = optionalBoolean(parsed, "strict_mcp_config", `${context}.${key}`);
+  const systemPrompt = optionalString(parsed, "system_prompt", `${context}.${key}`);
+  const appendSystemPrompt = optionalString(parsed, "append_system_prompt", `${context}.${key}`);
+  const additionalDirectories = parsed.additional_directories == null
+    ? []
+    : expectStringArray(parsed, "additional_directories", `${context}.${key}`);
   return {
     ...(model ? { model } : {}),
     ...(permissionMode ? { permission_mode: permissionMode as SessionLaunchSettings["permission_mode"] } : {}),
     ...(agent ? { agent } : {}),
     ...(effort !== undefined ? { effort } : {}),
+    ...(name ? { name } : {}),
+    ...(forkSession ? { fork_session: true } : {}),
+    ...(additionalDirectories.length > 0 ? { additional_directories: additionalDirectories } : {}),
+    ...(settings !== undefined ? { settings } : {}),
+    ...(mcpConfigs.length > 0 ? { mcp_configs: mcpConfigs } : {}),
+    ...(strictMcpConfig ? { strict_mcp_config: true } : {}),
+    ...(systemPrompt !== undefined ? { system_prompt: systemPrompt } : {}),
+    ...(appendSystemPrompt !== undefined ? { append_system_prompt: appendSystemPrompt } : {}),
   };
 }
 

@@ -88,6 +88,7 @@ import {
 import { shouldEmitStartupAuthRequiredForAccount } from "./account_metadata.js";
 import type { McpAuthMonitorHandle } from "./mcp_monitor.js";
 import { closeSideQuestions } from "./side_questions.js";
+import { type LaunchConfig, parseLaunchConfig } from "./launch_config.js";
 
 export { mapAvailableModels, resolveCurrentModel } from "./model_metadata.js";
 export { shouldEmitStartupAuthRequiredForAccount } from "./account_metadata.js";
@@ -646,6 +647,8 @@ export async function createSession(params: {
       sdk_spawn_debug_enabled: enableSpawnDebug,
     },
   });
+  // Outside the try below: a malformed flag is the user's error, not a query() failure.
+  const launchConfig = parseLaunchConfig(params.launchSettings);
   try {
     const { effective: resolvedSettings } = await resolveSettings({
       cwd: params.cwd,
@@ -660,6 +663,7 @@ export async function createSession(params: {
         resumeDropsTurn: params.resumeDropsTurn,
         forkSession: params.forkSession,
         launchSettings: params.launchSettings,
+        launchConfig,
         resolvedSettings,
         provisionalSessionId,
         input,
@@ -1028,6 +1032,8 @@ type QueryOptionsBuilderParams = {
   resumeDropsTurn?: string;
   forkSession?: boolean;
   launchSettings: SessionLaunchSettings;
+  /** Parsed from `launchSettings`; absent means no session configuration flags. */
+  launchConfig?: LaunchConfig;
   provisionalSessionId: string;
   input: AsyncQueue<SDKUserMessage>;
   canUseTool: CanUseTool;
@@ -1113,21 +1119,36 @@ function startupPermissionModeOptions(launchSettings: SessionLaunchSettings): {
     : { permissionMode };
 }
 
+/**
+ * The runtime guard is a bridge invariant, so it stays in every system prompt: appended to
+ * the claude_code preset, or after a --system-prompt that replaces the preset. Text from
+ * --append-system-prompt follows the guard.
+ */
+function buildSystemPrompt(launchSettings: SessionLaunchSettings) {
+  const append = [BRIDGE_RUNTIME_GUARD_PROMPT, launchSettings.append_system_prompt]
+    .filter((text): text is string => text !== undefined)
+    .join("\n\n");
+  return launchSettings.system_prompt !== undefined
+    ? { type: "custom" as const, prompt: [launchSettings.system_prompt, append], snapshot: true }
+    : { type: "preset" as const, preset: "claude_code" as const, append, snapshot: true };
+}
+
 export function buildQueryOptions(params: QueryOptionsBuilderParams) {
-  const systemPrompt = {
-    type: "preset" as const,
-    preset: "claude_code" as const,
-    append: BRIDGE_RUNTIME_GUARD_PROMPT,
-    snapshot: true,
-  };
+  const systemPrompt = buildSystemPrompt(params.launchSettings);
   const permissionModeOptions = startupPermissionModeOptions(
     params.launchSettings,
   );
-  // These are host capability restrictions, not copied user preferences.
-  // Draft review and held peer-message review require native UI surfaces.
+  // The SDK takes one flag-settings layer, so the user's --settings is that layer and the
+  // host capability restrictions are laid over it: draft review and held peer-message review
+  // require native UI surfaces. A --settings value counts before the saved cascade, as the
+  // flag layer outranks the user, project and local files.
+  const flagSettings = params.launchConfig?.settings ?? {};
+  const crossSessionInbound =
+    flagSettings.crossSessionInbound ?? params.resolvedSettings.crossSessionInbound;
   const settings = {
+    ...flagSettings,
     feedbackDrafts: "off" as const,
-    ...(!["accept", "refuse"].includes(params.resolvedSettings.crossSessionInbound ?? "")
+    ...(!["accept", "refuse"].includes(crossSessionInbound ?? "")
       ? { crossSessionInbound: "refuse" as const }
       : {}),
   };
@@ -1137,7 +1158,10 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     promptSuggestions: true,
     // SDK sessions need an explicit recording opt-in; their recording gate
     // otherwise ignores the JSON preference. Claude still applies environment restrictions.
-    enableFileCheckpointing: params.resolvedSettings.fileCheckpointingEnabled ?? true,
+    enableFileCheckpointing:
+      flagSettings.fileCheckpointingEnabled ??
+      params.resolvedSettings.fileCheckpointingEnabled ??
+      true,
     agentProgressSummaries: true,
     // Proposal tools require native review and lifecycle surfaces that the
     // public headless SDK does not currently expose to this host.
@@ -1149,6 +1173,18 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     ...permissionModeOptions,
     ...(params.launchSettings.effort !== undefined ? { effort: params.launchSettings.effort } : {}),
     ...(params.launchSettings.agent !== undefined ? { agent: params.launchSettings.agent } : {}),
+    // The SDK applies `title` to a new or forked session only; a resumed session keeps its
+    // persisted title, so resume() renames it instead. renameSession cannot name a new
+    // session: its transcript file does not exist before the first turn (measured on the
+    // pinned SDK: "Session ... not found in project directory").
+    ...(params.launchSettings.name !== undefined && (!params.resume || params.forkSession)
+      ? { title: params.launchSettings.name }
+      : {}),
+    ...(params.launchSettings.additional_directories
+      ? { additionalDirectories: params.launchSettings.additional_directories }
+      : {}),
+    ...(params.launchConfig?.mcpServers ? { mcpServers: params.launchConfig.mcpServers } : {}),
+    ...(params.launchSettings.strict_mcp_config ? { strictMcpConfig: true } : {}),
     toolConfig: { askUserQuestion: { previewFormat: "markdown" as const } },
     systemPrompt,
     ...(params.claudeCodeExecutable

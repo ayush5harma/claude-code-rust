@@ -8,7 +8,7 @@ The Rust binary owns the terminal UI and process lifecycle. It parses CLI option
 
 The app then starts or resumes a bridge session and renders the chat view directly in the terminal.
 
-Interactive startup arguments resolve into one launch intent: a new session, a specified resume ID, the session picker, or the latest session in the working directory. Session overrides are applied through the existing launch-settings boundary and released after the initial session is selected. Initial prompts use normal prompt queue admission once startup dialogs are complete.
+Interactive startup arguments resolve into one launch intent: a new session, a specified resume ID, the session picker, or the latest session in the working directory. Session overrides are applied through the existing launch-settings boundary and released after the initial session is selected. Session configuration flags such as `--add-dir` travel through the same boundary but are kept for every session the process starts, as Claude Code keeps them for its process; Rust resolves their paths against the working directory and checks that they exist before the bridge starts, and the bridge maps each to its Agent SDK option. The bridge's runtime guard prompt is an invariant of every session: system prompt flags add to it or replace the preset around it, never remove it. Initial prompts use normal prompt queue admission once startup dialogs are complete.
 
 Support commands run before bridge resolution. Shell completions and manual pages are generated from the same Clap command definitions as CLI help, so neither requires the bridge or authentication.
 
@@ -54,6 +54,8 @@ Each subsection names the owner of a concern and the invariants that keep the Ru
 | App preferences file and updater state | Rust | `src/app/settings.rs` |
 
 Rust receives catalog descriptors and sanitized snapshots over NDJSON and renders them. It does not merge settings files, mirror scope rules, or supply defaults for unset values. Saved defaults stay separate from active session choices: a settings save never becomes a session flag override. Snapshots and pending drafts are invalidated when the session scope changes. Offline `claude-rs config` inspection is a separate read-only view of the physical files and does not resolve the cascade.
+
+A `--settings` value is the session's flag-settings layer. The SDK accepts one such layer, as a path or an object, so the bridge parses the user's JSON and lays its own host restrictions over it (`feedbackDrafts: "off"`, and `crossSessionInbound: "refuse"` unless the flag value or the saved cascade says `accept` or `refuse`); Rust only reads the file text. The Config snapshot does not include this layer.
 
 The snapshot is the SDK's raw file cascade. The running session additionally applies trust, managed policy, capability restrictions and explicit session choices, so an observed session value can differ from the saved one. SDK provenance is reported per top-level key, which does not prove that a particular leaf is enforced policy. `resolveSettings()` does not execute `policyHelper`.
 
@@ -113,6 +115,8 @@ The bridge normalizes confirmed launch results and SDK task lifecycle events int
 Rust keeps execution state on the original `ToolCallInfo`. Its history projection freezes the launch at its creation position with the fixed `↗` icon, allowing the transcript prefix to enter terminal history while the task runs independently. Actual completion, failure or stopping appends one separately identified result linked to that tool. The session owns pending interactions; foreground turn reset preserves background controls, which remain mutable at the end of the live region during transcript replay after resize. Cache and retention accounting include the frozen projections without adding them to the execution index or foreground activity set.
 
 The bridge announces each live top-level SDK response through the typed `agent_response_started` update before sending its text. A response triggered by a background completion receives a fresh mutable assistant owner even when no user prompt is pending; history replay does not activate live responses. The renderer groups consecutive visible assistant messages under one speaker label, carrying speaker context across content already inserted into terminal history. Streaming ownership, message identities and tool insertion order remain separate from that visual grouping.
+
+A launch name is applied by the bridge using the SDK title option for new sessions or renameSession() for resumed sessions.
 
 ### Notifications
 
