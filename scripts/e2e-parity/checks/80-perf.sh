@@ -66,6 +66,18 @@ perf_ready_re() {
   if [[ $1 == stock ]]; then echo '^❯'; else echo "$EMPTY_COMPOSER"; fi
 }
 
+# Measured 2026-10-13: repeating Down against a stale trust frame selected
+# "No, exit". Confirm the selected row before accepting our scratch project.
+perf_accept_stock_trust() {
+  local s=$1
+  if ! grep -q '❯ Yes, I trust this folder' <<<"$(screen "$s")"; then
+    keys "$s" Down
+    wait_for "$s" '❯ Yes, I trust this folder' 5 || return 1
+  fi
+  keys "$s" Enter
+  wait_gone "$s" 'Yes, I trust this folder' 10
+}
+
 # perf_launch <target>: start it and print "ready_ms registered_ms".
 # The first launch in a fresh cwd answers the trust prompt (not timed).
 perf_launch() {
@@ -81,6 +93,7 @@ perf_launch() {
   tm new-session -d -s "$s" -x "$COLS" -y "$ROWS" -c "$cwd" "${PERF_CMD[@]}"
   end=$(($(now) + 90))
   while (($(now) < end)) && [[ -z $ready || -z $reg ]]; do
+    [[ $(tm display-message -p -t "$s" '#{pane_dead}') == 1 ]] && { echo "NA NA"; return 1; }
     SCREEN=$(screen "$s")
     if grep -q 'Trust this project directory' <<<"$SCREEN"; then
       keys "$s" Enter
@@ -88,10 +101,7 @@ perf_launch() {
       continue
     fi
     if grep -q 'Yes, I trust this folder' <<<"$SCREEN"; then
-      keys "$s" Down
-      sleep 0.2
-      keys "$s" Enter
-      sleep 0.5
+      perf_accept_stock_trust "$s" || { echo "NA NA"; return 1; }
       continue
     fi
     [[ -z $ready ]] && grep -Eq -- "$re" <<<"$SCREEN" && ready=$(($(ms_now) - t0))
@@ -120,9 +130,11 @@ perf_kill() {
 # perf_measure <target>: launches, idle CPU and RSS, input latency.
 perf_measure() {
   local t=$1 s=perf-$1 i r ready=() regd=() pid before after cpu0 cpu1 lat=() t0 rss
-  perf_launch "$t" >/dev/null # warm-up: trust prompt, disk cache
+  r=$(perf_launch "$t")
+  [[ $r =~ ^[0-9]+[[:space:]][0-9]+$ ]] || { perf_kill "$s"; return 1; }
   for ((i = 0; i < PERF_LAUNCHES; i++)); do
     r=$(perf_launch "$t")
+    [[ $r =~ ^[0-9]+[[:space:]][0-9]+$ ]] || { perf_kill "$s"; return 1; }
     ready+=("${r% *}")
     regd+=("${r#* }")
     ((i < PERF_LAUNCHES - 1)) && perf_kill "$s"
@@ -186,9 +198,7 @@ perf_resume_once() {
       wait_gone "$s" 'Trust this project directory' 5 || return 1
     elif grep -q 'Yes, I trust this folder' <<<"$SCREEN"; then
       trusted=1
-      keys "$s" Down
-      keys "$s" Enter
-      wait_gone "$s" 'Yes, I trust this folder' 5 || return 1
+      perf_accept_stock_trust "$s" || return 1
     elif grep -Fq "$marker" <<<"$SCREEN" && grep -Eq -- "$re" <<<"$SCREEN"; then
       [[ -n $warmup || -z $trusted ]] || return 2
       [[ -n $warmup ]] || echo $(($(ms_now) - t0))
@@ -223,18 +233,23 @@ perf_collect() {
   [[ -n $PERF_DONE ]] && return 0
   PERF_DONE=1
   PERF[load]=$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}')
-  local t same=""
+  local t k same=""
   [[ $(readlink -f "$BIN") == "$(readlink -f "$BASE_BIN")" && -z $BRIDGE ]] && same=1
   for t in "${PERF_TARGETS[@]}"; do
     if [[ $t == base && -n $same ]]; then
-      local k
       for k in launch_ready launch_registered idle_cpu rss procs input_latency; do
-        PERF[$k.base]=${PERF[$k.test]}
+        PERF[$k.base]=${PERF[$k.test]:-}
       done
       PERF[same]=1
+      [[ -n ${PERF[unavailable.test]:-} ]] && PERF[unavailable.base]=1
       continue
     fi
-    perf_measure "$t"
+    if ! perf_measure "$t"; then
+      PERF[unavailable.$t]=1
+    fi
+    for k in launch_ready launch_registered idle_cpu rss procs input_latency; do
+      printf '%s\t%s\t%s\n' "$t" "$k" "${PERF[$k.$t]:-n/a}" >>"$WORK/perf-collected.tsv"
+    done
   done
   PERF[load_after]=$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}')
   local long id cwd marker lines
@@ -247,6 +262,7 @@ perf_collect() {
     PERF[resume_lines]=$lines
     PERF[resume_fixture]=synthetic
     for t in "${PERF_TARGETS[@]}"; do
+      [[ -n ${PERF[unavailable.$t]:-} ]] && continue
       if [[ $t == base && -n $same ]]; then PERF[resume_render.base]=${PERF[resume_render.test]}; continue; fi
       PERF[resume_render.$t]=$(perf_resume "$t" "$id" "$cwd" "$marker")
     done
