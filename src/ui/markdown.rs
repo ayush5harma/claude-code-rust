@@ -5,8 +5,8 @@ use crate::failure;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-/// Markdown presentation shared by every renderer. The parser determines
-/// headings, so hashes in fenced code remain literal text.
+/// The parser owns heading detection so fenced hashes remain literal.
+/// Measured 2026-10-13: preprocessing erased shell shebangs and comments.
 #[derive(Clone, Copy)]
 struct ClaudeRsStyleSheet;
 
