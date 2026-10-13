@@ -145,6 +145,24 @@ fn handle_mutation_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// A bracketed paste into the tag field lands where typed characters land (the
+/// draft has no cursor, so the end). A tag is one line: line breaks become
+/// spaces and other control characters are dropped, because a pasted newline
+/// cannot be typed here (Enter submits). The field has no length bound for
+/// typed input, so a paste has none either. Pastes are swallowed while a
+/// delete confirmation or a pending save owns the keys.
+pub(crate) fn handle_paste(app: &mut App, text: &str) -> bool {
+    let Some(mutation) = app.session_picker.mutation.as_deref_mut() else { return false };
+    if let SessionPickerMutation::Tag { draft, request_id: None, .. } = mutation {
+        draft.extend(text.replace("\r\n", "\n").chars().filter_map(|pasted| match pasted {
+            '\n' | '\r' => Some(' '),
+            control if control.is_control() => None,
+            printable => Some(printable),
+        }));
+    }
+    true
+}
+
 fn submit_mutation(app: &mut App) {
     let Some(mutation) = app.session_picker.mutation.as_deref() else { return };
     let (session_id, revision) = match mutation {
@@ -408,7 +426,7 @@ fn is_ctrl(key: KeyEvent, ch: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_mutation_result, handle_key};
+    use super::{apply_mutation_result, handle_key, handle_paste};
     use crate::agent::client::AgentConnection;
     use crate::agent::wire::BridgeCommand;
     use crate::app::{
@@ -455,6 +473,48 @@ mod tests {
 
     fn key(app: &mut App, code: KeyCode) {
         handle_key(app, KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    fn tag_draft(app: &App) -> Option<&str> {
+        match app.session_picker.mutation.as_deref() {
+            Some(SessionPickerMutation::Tag { draft, .. }) => Some(draft),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn paste_extends_the_tag_draft_on_one_line_and_is_ignored_elsewhere() {
+        let mut app = picker_app();
+        assert!(!handle_paste(&mut app, "ignored"), "no mutation open: not consumed");
+
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('a'));
+        assert!(handle_paste(&mut app, "b\r\nc\nd\x1b[31me\u{7}\u{e9}"));
+        assert_eq!(tag_draft(&app), Some("ab c d[31me\u{e9}"));
+
+        // Enter after a paste submits the pasted tag, not a second line.
+        let (connection, mut rx) = AgentConnection::test_channel();
+        app.session_runtime.conn = Some(Rc::new(connection));
+        key(&mut app, KeyCode::Enter);
+        let sent = rx.try_recv().expect("tag command");
+        assert!(matches!(
+            sent.command,
+            BridgeCommand::TagSession { tag: Some(ref tag), .. } if tag == "ab c d[31me\u{e9}"
+        ));
+        // While the save is pending the field is read-only, as for typed keys.
+        assert!(handle_paste(&mut app, "late"));
+        assert_eq!(tag_draft(&app), Some("ab c d[31me\u{e9}"));
+    }
+
+    #[test]
+    fn paste_does_not_touch_a_delete_confirmation() {
+        let mut app = picker_app();
+        key(&mut app, KeyCode::Char('d'));
+        assert!(handle_paste(&mut app, "y"));
+        assert!(matches!(
+            app.session_picker.mutation.as_deref(),
+            Some(SessionPickerMutation::Delete { request_id: None, .. })
+        ));
     }
 
     #[test]

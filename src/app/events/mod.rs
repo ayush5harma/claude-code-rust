@@ -339,9 +339,11 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
         }
         SurfaceMode::Fullscreen(FullscreenView::Config) => super::config::handle_paste(app, text),
         SurfaceMode::Fullscreen(FullscreenView::Search) => super::search::handle_paste(app, text),
+        SurfaceMode::Fullscreen(FullscreenView::SessionPicker) => {
+            super::session_picker::handle_paste(app, text)
+        }
         SurfaceMode::Fullscreen(
             FullscreenView::Trusted
-            | FullscreenView::SessionPicker
             | FullscreenView::Update
             | FullscreenView::Copy
             | FullscreenView::Rewind
