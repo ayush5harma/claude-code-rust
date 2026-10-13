@@ -8,8 +8,12 @@ permissions:
 
 jobs:
   check:
-    name: Check agent-sdk
-    runs-on: ubuntu-latest
+    name: Check agent-sdk (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     defaults:
       run:
         working-directory: agent-sdk
@@ -29,7 +33,7 @@ jobs:
         run: npm run build
 
       - name: Run tests
-        run: npm run test
+        run: node --test 'dist/**/*.test.js'
 
       - name: Run lint
         run: npm run lint

@@ -114,6 +114,17 @@ Rust keeps execution state on the original `ToolCallInfo`. Its history projectio
 
 The bridge announces each live top-level SDK response through the typed `agent_response_started` update before sending its text. A response triggered by a background completion receives a fresh mutable assistant owner even when no user prompt is pending; history replay does not activate live responses. The renderer groups consecutive visible assistant messages under one speaker label, carrying speaker context across content already inserted into terminal history. Streaming ownership, message identities and tool insertion order remain separate from that visual grouping.
 
+### Session title
+
+| Concern | Owner | Location |
+| --- | --- | --- |
+| Reporting and changing a session's title | Agent SDK | public `getSessionInfo()`, `renameSession()` |
+| Reading the active session's title and sending `session_title_update` | Bridge | `agent-sdk/src/bridge/session_title.ts` |
+| Holding the active session's title for the Status tab, its rename draft and title generation | Rust | `src/app/state/session_runtime.rs` |
+| Listing snapshot of all sessions, including each `custom_title` | Bridge, held by Rust | `agent-sdk/src/bridge/events.ts`, `recent_sessions` |
+
+The bridge reads `getSessionInfo().customTitle` after a connect, a replacement, a conversation reset, each top-level turn and each rename or title generation it performs, and sends every title it reads; a read that a later one overtakes is dropped. Rust keeps the active title as one value, strips control characters once in the converter, stores a repeated title idempotently, and clears it when the session id changes or the conversation resets. Neither side derives a title of its own. The session listing is a separate snapshot of all sessions, refreshed by `listSessions()` on connect, replacement and the Status-tab rename and generate actions; the Status tab falls back to it only while the active session has no title. `customTitle` falls back to a generated title, so an unnamed session shows that title after its first turn.
+
 ### Notifications
 
 | Concern | Owner | Location |

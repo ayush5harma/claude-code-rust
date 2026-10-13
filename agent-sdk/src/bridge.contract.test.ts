@@ -596,6 +596,11 @@ test("production bridge source stays on the public main SDK export", () => {
 function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedBridge; cleanup: () => Promise<void> } {
   const directory = mkdtempSync(join(tmpdir(), "claude-rs-ultracode-"));
   const sdkPath = import.meta.resolve("@anthropic-ai/claude-agent-sdk");
+  const sdkPackage = join(dirname(fileURLToPath(sdkPath)), "package.json");
+  writeFileSync(
+    join(directory, "package.json"),
+    JSON.stringify({ version: JSON.parse(readFileSync(sdkPackage, "utf8")).version }),
+  );
   const fixturePath = join(directory, "sdk-fixture.mjs");
   writeFileSync(fixturePath, `
     export * from ${JSON.stringify(sdkPath)};
@@ -607,17 +612,35 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
       return sdkResolveSettings({ ...options, ...(managedSettings ? { serverManagedSettings: JSON.parse(managedSettings) } : {}) });
     }
     function record(value) { if (process.env.STARTUP_JOURNAL) appendFileSync(process.env.STARTUP_JOURNAL, JSON.stringify(value) + "\\n"); }
+    const saved = new Map();
+    function sessionEntries() {
+      const seeded = JSON.parse(process.env.STARTUP_SESSIONS_FIXTURE ?? "[]");
+      const entries = new Map(seeded.map(entry => [entry.sessionId, entry]));
+      for (const [sessionId, state] of saved) {
+        const entry = entries.get(sessionId) ?? { sessionId, cwd: state.cwd, lastModified: 1 };
+        entries.set(sessionId, { ...entry, ...(Object.hasOwn(state, "title") ? { customTitle: state.title } : {}) });
+      }
+      return [...entries.values()];
+    }
     export async function listSessions(options) {
       record({ type: "list", options });
-      const seeded = JSON.parse(process.env.STARTUP_SESSIONS_FIXTURE ?? "[]");
-      return [...seeded, ...[...saved.keys()].map((sessionId, index) => ({ sessionId, cwd: saved.get(sessionId).cwd, lastModified: index + 1 }))].filter(entry => !options?.dir || entry.cwd === options.dir);
+      return sessionEntries().filter(entry => !options?.dir || entry.cwd === options.dir);
+    }
+    export async function getSessionInfo(sessionId, options) {
+      const entry = sessionEntries().find(candidate => candidate.sessionId === sessionId);
+      if (!entry || (options?.dir && entry.cwd !== options.dir)) return undefined;
+      return entry;
     }
     export async function getSessionMessages(...args) { return process.env.RESUME_TRANSCRIPT_FIXTURE === "1" ? sdkGetSessionMessages(...args) : []; }
     export async function importSessionToStore(...args) { if (process.env.RESUME_TRANSCRIPT_FIXTURE === "1") await sdkImportSessionToStore(...args); }
-    const saved = new Map();
+    export async function renameSession(sessionId, title, options) {
+      const existing = saved.get(sessionId) ?? {};
+      saved.set(sessionId, { ...existing, cwd: existing.cwd ?? options?.dir, title });
+    }
     export function query({ prompt, options }) {
       record({ type: "query", cwd: options.cwd, resume: options.resume, model: options.model, effort: options.effort, permissionMode: options.permissionMode, agent: options.agent });
       const state = saved.get(options.resume) ?? { requested: false, effort: "high", cwd: options.cwd };
+      if (options.title !== undefined) state.title = options.title;
       saved.set(options.sessionId ?? options.resume, state);
       let model = options.model ?? "opus";
       let effective = {};
@@ -897,6 +920,35 @@ test("continue with no previous session starts a new session", async () => {
     const connected = await nextMatching(bridge, event => event.event === "connected");
     assert.equal(typeof connected.session_id, "string");
     assert.notEqual(connected.session_id, "");
+  } finally { await cleanup(); }
+});
+
+test("fixture session info preserves and clears a seeded title", async () => {
+  const cwd = process.cwd();
+  const sessionId = "seeded-session";
+  const { bridge, cleanup } = ultracodeFixtureBridge({
+    STARTUP_SESSIONS_FIXTURE: JSON.stringify([
+      { sessionId, cwd, lastModified: 1, customTitle: "Saved title" },
+    ]),
+  });
+  try {
+    bridge.writeCommand({ command: "resume_session", session_id: sessionId, launch_settings: {} });
+    await nextMatching(bridge, event => event.event === "connected");
+    const restored = await nextMatching(bridge, event => {
+      const update = event.update as SessionUpdate | undefined;
+      return update?.type === "session_title_update";
+    });
+    assert.equal((restored.update as SessionUpdate & { type: "session_title_update" }).title, "Saved title");
+
+    bridge.writeCommand({ command: "rename_session", session_id: sessionId, title: "", request_id: "clear-title" });
+    const cleared = await nextMatching(bridge, event => {
+      const update = event.update as SessionUpdate | undefined;
+      return update?.type === "session_title_update";
+    });
+    assert.equal((cleared.update as SessionUpdate & { type: "session_title_update" }).title, "");
+    const listed = await nextMatching(bridge, event => event.event === "sessions_listed" && event.request_id === "clear-title");
+    const saved = (listed.sessions as BridgeEnvelope[]).find(session => session.session_id === sessionId);
+    assert.equal(saved?.custom_title, undefined);
   } finally { await cleanup(); }
 });
 
