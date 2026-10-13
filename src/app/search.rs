@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::agent::model::{ContentBlock, ToolCallContent};
 use crate::app::{App, FullscreenView, MessageBlock, MessageRole};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -66,10 +65,8 @@ pub(crate) fn refresh(app: &mut App) {
                 {
                     push_lines(&mut search.rows, "Tool", &tool.display().title);
                     for content in &tool.content {
-                        if let ToolCallContent::Content(content) = content
-                            && let ContentBlock::Text(text) = &content.content
-                        {
-                            push_lines(&mut search.rows, "Tool", &text.text);
+                        if let Some(text) = content.plain_text() {
+                            push_lines(&mut search.rows, "Tool", text);
                         }
                     }
                 }
@@ -170,7 +167,9 @@ fn navigate(app: &mut App, next: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::model::{Content, TextContent, ToolCallStatus};
+    use crate::agent::model::{
+        Content, ContentBlock, TextContent, ToolCallContent, ToolCallStatus,
+    };
     use crate::app::{ChatMessage, TextBlock};
 
     #[test]

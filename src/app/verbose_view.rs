@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::{App, FullscreenView, MessageBlock, MessageRole, SurfaceMode, view};
-use crate::agent::model::{ContentBlock, ToolCallContent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 const MAX_ROWS: usize = 5000;
@@ -31,15 +30,13 @@ pub(crate) fn open(app: &mut App) -> bool {
                     let tool = tool.display();
                     push_row(&mut rows, &mut truncated, &format!("  Tool: {}", tool.title));
                     // Measured 2026-10-13: Bash carries the same result in both
-                    // fields, so terminal output replaces content text.
+                    // fields, so its terminal output replaces content text.
                     if let Some(output) = &tool.terminal_output {
                         push_text(&mut rows, &mut truncated, output);
                     } else {
                         for content in &tool.content {
-                            if let ToolCallContent::Content(content) = content
-                                && let ContentBlock::Text(text) = &content.content
-                            {
-                                push_text(&mut rows, &mut truncated, &text.text);
+                            if let Some(text) = content.plain_text() {
+                                push_text(&mut rows, &mut truncated, text);
                             }
                         }
                     }
@@ -138,6 +135,7 @@ mod tests {
         assert!(text.contains("answer") && text.contains("visible-result"));
         assert!(!text.contains("raw-private-value") && !text.contains("hidden-private-value"));
     }
+
     #[test]
     fn terminal_output_replaces_the_same_text_in_content_and_content_stands_alone() {
         let mut app = App::test_default();

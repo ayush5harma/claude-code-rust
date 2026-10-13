@@ -108,6 +108,22 @@ pub enum ToolCallContent {
     Terminal(TerminalToolCallContent),
 }
 
+impl ToolCallContent {
+    /// The plain text this entry carries, for search, export and the verbose view.
+    #[must_use]
+    pub fn plain_text(&self) -> Option<&str> {
+        match self {
+            Self::Content(content) => match &content.content {
+                ContentBlock::Text(text) => Some(text.text.as_str()),
+                ContentBlock::Image(_) => None,
+            },
+            Self::Diff(_) | Self::McpResource(_) | Self::ResourceLink(_) | Self::Terminal(_) => {
+                None
+            }
+        }
+    }
+}
+
 impl From<&str> for ToolCallContent {
     fn from(value: &str) -> Self {
         Self::Content(Content::new(ContentBlock::Text(TextContent::new(value))))
