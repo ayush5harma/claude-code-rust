@@ -135,7 +135,7 @@ pub fn render_markdown_with_tables(
                 out.extend(markdown::render_markdown_safe(&chunk, bg));
             }
             MarkdownBlock::Table(table) => {
-                if !out.is_empty() {
+                if out.last().is_some_and(|line| !line_is_blank(line)) {
                     out.push(Line::default());
                 }
                 out.extend(table.render_lines(width, bg));
@@ -603,7 +603,10 @@ fn render_row_lines(
         let mut spans = Vec::new();
         for (idx, cell) in cell_lines.iter().enumerate() {
             if idx > 0 {
-                spans.push(Span::styled(" ".repeat(spacing), base_style));
+                spans.push(Span::styled(
+                    column_divider(spacing),
+                    base_style.add_modifier(Modifier::DIM),
+                ));
             }
             spans.extend(cell[line_idx].spans.clone());
         }
@@ -617,11 +620,31 @@ fn render_separator_line(widths: &[usize], spacing: usize, base_style: Style) ->
     let mut spans = Vec::new();
     for (idx, width) in widths.iter().copied().enumerate() {
         if idx > 0 {
-            spans.push(Span::styled(" ".repeat(spacing), base_style));
+            spans.push(Span::styled(separator_divider(spacing), separator_style));
         }
         spans.push(Span::styled("─".repeat(width), separator_style));
     }
     Line::from(spans)
+}
+
+fn column_divider(spacing: usize) -> String {
+    if spacing == 0 {
+        String::new()
+    } else if spacing == 1 {
+        "│".to_owned()
+    } else {
+        format!(" {} ", "│")
+    }
+}
+
+fn separator_divider(spacing: usize) -> String {
+    if spacing == 0 {
+        String::new()
+    } else if spacing == 1 {
+        "┼".to_owned()
+    } else {
+        format!("{}┼{}", "─".repeat(spacing / 2), "─".repeat(spacing - spacing / 2))
+    }
 }
 
 fn render_cell_lines(
@@ -884,6 +907,8 @@ mod tests {
         assert!(left_cell <= left_header);
         assert!(center_cell > left_cell);
         assert!(right_cell > center_cell);
+        assert!(header.contains('│'));
+        assert!(separator.contains('┼'));
     }
 
     #[test]
@@ -994,5 +1019,27 @@ mod tests {
         assert!(rendered.iter().any(|line| line.contains("foo")));
         assert!(rendered.iter().any(|line| line.contains("Description")));
         assert!(!rendered.iter().any(|line| line.contains('─')));
+    }
+
+    #[test]
+    fn document_blocks_keep_one_blank_row_between_each_other() {
+        let rendered = render_strings(
+            "Paragraph.\n\n- Item\n\n> Quote\n\n```text\nfirst code\n```\n\n| Name | Value |\n| --- | --- |\n| one | two |\n\n```text\nlast code\n```\n\nAfter.",
+            80,
+        );
+
+        for pair in rendered.windows(2) {
+            assert!(
+                !(pair[0].trim().is_empty() && pair[1].trim().is_empty()),
+                "consecutive blank rows around document blocks: {rendered:?}"
+            );
+        }
+        assert!(rendered.iter().any(|line| line.contains("Paragraph.")));
+        assert!(rendered.iter().any(|line| line.contains("- Item")));
+        assert!(rendered.iter().any(|line| line.contains("Quote")));
+        assert!(rendered.iter().any(|line| line.contains("│")));
+        assert!(rendered.iter().any(|line| line.contains("▎ first code")));
+        assert!(rendered.iter().any(|line| line.contains("▎ last code")));
+        assert!(rendered.iter().any(|line| line.contains("After.")));
     }
 }

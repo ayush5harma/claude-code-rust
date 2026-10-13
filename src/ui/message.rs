@@ -281,7 +281,7 @@ mod tests {
             ("before\n\n# Heading\n\nafter", vec!["User", "before", "", "Heading", "", "after"]),
             (
                 "intro\n\n- one\n- two\n\noutro",
-                vec!["User", "intro", "  - one", "  - two", "outro"],
+                vec!["User", "intro", "", "  - one", "  - two", "", "outro"],
             ),
             (
                 "before\n\n```text\none\n\nthree\n```\n\nafter",

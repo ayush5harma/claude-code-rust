@@ -103,6 +103,14 @@ fn wrap_markdown_line_to_physical_rows(
     width: u16,
     in_fenced_code: bool,
 ) -> Vec<Line<'static>> {
+    // A plain line exactly as wide as the row, such as a padded code-block row, already is
+    // one physical row; laying it out again would only cost time on every frame.
+    if line.style == Style::default()
+        && line.alignment.is_none()
+        && line_display_width(line) == usize::from(width)
+    {
+        return vec![line.clone()];
+    }
     if in_fenced_code {
         return wrap_lines_to_physical_rows(std::slice::from_ref(line), width);
     }
@@ -185,7 +193,10 @@ pub(crate) fn wrap_styled_chunks(chunks: &[StyledChunk], width: usize) -> Vec<Li
 /// Splits a line into rows of at most `width` cells at grapheme boundaries and keeps every
 /// character, spaces included: the wrap for preformatted text such as code.
 #[must_use]
-pub(crate) fn hard_wrap_line(line: &Line<'_>, width: usize) -> Vec<Line<'static>> {
+pub(crate) fn hard_wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
+    if line_display_width(&line) <= width {
+        return vec![line];
+    }
     let mut rows = Vec::new();
     let mut spans = Vec::new();
     let mut row_width = 0usize;

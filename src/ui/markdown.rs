@@ -22,8 +22,14 @@ const CODE_TAB: &str = "    ";
 struct ClaudeRsStyleSheet;
 
 impl tui_markdown::StyleSheet for ClaudeRsStyleSheet {
-    fn heading(&self, _level: u8) -> Style {
-        Style::new().add_modifier(Modifier::BOLD)
+    fn heading(&self, level: u8) -> Style {
+        match level {
+            1 => Style::new()
+                .fg(theme::ROLE_ASSISTANT)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            2 => Style::new().add_modifier(Modifier::BOLD),
+            _ => Style::new().fg(theme::DIM).add_modifier(Modifier::BOLD),
+        }
     }
 
     fn heading_marker(&self, _level: u8) -> &'static str {
@@ -73,24 +79,16 @@ fn render_with_tui_markdown(text: &str, bg: Option<Color>) -> Vec<Line<'static>>
             Line::from(owned_spans).style(line_style)
         })
         .collect();
-    normalize_list_spacing(lines)
+    normalize_list_indentation(shorten_link_destinations(lines))
 }
 
-fn normalize_list_spacing(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+fn normalize_list_indentation(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
     let list_lines = rendered_list_line_flags(&lines);
     let mut normalized = Vec::with_capacity(lines.len());
 
     for (idx, line) in lines.into_iter().enumerate() {
-        if line_is_blank(&line) {
-            let before_list = list_lines.get(idx + 1).copied().unwrap_or(false);
-            let after_list = idx > 0 && list_lines.get(idx - 1).copied().unwrap_or(false);
-            if before_list || after_list {
-                continue;
-            }
-        }
-
         if list_lines[idx] {
-            normalized.push(indent_line(line, "  "));
+            normalized.push(indent_line(line));
         } else {
             normalized.push(line);
         }
@@ -126,11 +124,62 @@ fn starts_with_ordered_list_marker(text: &str) -> bool {
     digit_count > 0 && text[digit_count..].starts_with(". ")
 }
 
-fn indent_line(mut line: Line<'static>, indent: &'static str) -> Line<'static> {
+fn indent_line(mut line: Line<'static>) -> Line<'static> {
+    let existing_indent = line.spans.first().map_or(0, |span| {
+        span.content.as_ref().chars().take_while(|ch| ch.is_whitespace()).count()
+    });
+    if let Some(first) = line.spans.first_mut()
+        && existing_indent > 0
+    {
+        let content = first.content.to_string();
+        first.content = content.chars().skip(existing_indent).collect::<String>().into();
+    }
+    let indent = " ".repeat(2 + existing_indent / 2);
     line.spans.insert(0, Span::styled(indent, line.style));
     line
 }
 
+fn shorten_link_destinations(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    const MAX_LINK_DESTINATION_WIDTH: usize = 48;
+
+    for line in &mut lines {
+        for span_idx in 1..line.spans.len() {
+            let is_destination = line.spans[span_idx - 1].content.as_ref() == " (";
+            if !is_destination {
+                continue;
+            }
+            let span = &mut line.spans[span_idx];
+            let content = span.content.as_ref();
+            if content.starts_with("http://") || content.starts_with("https://") {
+                let shortened = shorten_link_destination(content, MAX_LINK_DESTINATION_WIDTH);
+                span.content = shortened.into();
+                span.style = span.style.fg(theme::DIM).remove_modifier(Modifier::UNDERLINED);
+            }
+        }
+    }
+    lines
+}
+
+fn shorten_link_destination(destination: &str, width: usize) -> String {
+    if line_display_width(&Line::from(destination)) <= width {
+        return destination.to_owned();
+    }
+
+    let mut shortened = String::new();
+    let mut used = 0usize;
+    for grapheme in unicode_segmentation::UnicodeSegmentation::graphemes(destination, true) {
+        let grapheme_width = unicode_width::UnicodeWidthStr::width(grapheme);
+        if used + grapheme_width + 1 > width {
+            break;
+        }
+        shortened.push_str(grapheme);
+        used += grapheme_width;
+    }
+    shortened.push('…');
+    shortened
+}
+
+#[cfg(test)]
 fn line_is_blank(line: &Line<'_>) -> bool {
     line.spans.iter().all(|span| span.content.trim().is_empty())
 }
@@ -174,11 +223,11 @@ pub(super) fn render_code_block(
             language.to_owned(),
             Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
         );
-        rows.extend(hard_wrap_line(&Line::from(label), code_width).into_iter().map(row));
+        rows.extend(hard_wrap_line(Line::from(label), code_width).into_iter().map(row));
     }
     let code = code.strip_suffix('\n').unwrap_or(code).replace('\t', CODE_TAB);
     for line in highlight::highlight_code(&code, language) {
-        rows.extend(hard_wrap_line(&line, code_width).into_iter().map(row));
+        rows.extend(hard_wrap_line(line, code_width).into_iter().map(row));
     }
     rows
 }
@@ -235,24 +284,44 @@ mod tests {
     }
 
     #[test]
-    fn unordered_lists_use_indentation_instead_of_boundary_blank_lines() {
+    fn unordered_lists_keep_blank_rows_between_document_blocks() {
         let lines = render_markdown_safe("Intro\n\n- One\n- Two\n\nOutro", None);
 
-        assert_eq!(rendered_text(&lines), vec!["Intro", "  - One", "  - Two", "Outro"]);
+        assert_eq!(rendered_text(&lines), vec!["Intro", "", "  - One", "  - Two", "", "Outro"]);
     }
 
     #[test]
-    fn ordered_lists_use_indentation_instead_of_boundary_blank_lines() {
+    fn ordered_lists_keep_blank_rows_between_document_blocks() {
         let lines = render_markdown_safe("Intro\n\n1. One\n2. Two\n\nOutro", None);
 
-        assert_eq!(rendered_text(&lines), vec!["Intro", "  1. One", "  2. Two", "Outro"]);
+        assert_eq!(rendered_text(&lines), vec!["Intro", "", "  1. One", "  2. Two", "", "Outro"]);
     }
 
     #[test]
     fn nested_lists_keep_relative_indentation() {
-        let lines = render_markdown_safe("- Parent\n  - Child", None);
+        let lines = render_markdown_safe("- Parent\n  - Child\n    - Grandchild", None);
 
-        assert_eq!(rendered_text(&lines), vec!["  - Parent", "      - Child"]);
+        assert_eq!(rendered_text(&lines), vec!["  - Parent", "    - Child", "      - Grandchild"]);
+    }
+
+    #[test]
+    fn wrapped_nested_list_continuations_keep_the_compact_indent() {
+        let lines = render_markdown_safe(
+            "- Parent\n  - nested list item that wraps to another physical row",
+            None,
+        );
+        let rows = crate::ui::wrap::wrap_markdown_lines_to_physical_rows(&lines, 24);
+
+        assert_eq!(
+            rendered_text(&rows),
+            vec![
+                "  - Parent",
+                "    - nested list item",
+                "      that wraps to",
+                "      another physical",
+                "      row"
+            ]
+        );
     }
 
     #[test]
@@ -276,5 +345,44 @@ mod tests {
         assert_eq!(rendered_text(&lines), vec!["  - One"]);
         assert_eq!(lines[0].spans[0].style.bg, Some(Color::Blue));
         assert!(lines[0].spans.iter().all(|span| span.style.bg == Some(Color::Blue)));
+    }
+
+    #[test]
+    fn headings_have_distinct_hierarchy_styles() {
+        let lines = render_markdown_safe("# One\n\n## Two\n\n### Three", None);
+
+        let styles: Vec<_> =
+            lines.iter().filter(|line| !line_is_blank(line)).map(|line| line.style).collect();
+        assert!(styles[0].add_modifier.contains(Modifier::BOLD));
+        assert!(styles[0].add_modifier.contains(Modifier::UNDERLINED));
+        assert!(styles[1].add_modifier.contains(Modifier::BOLD));
+        assert!(!styles[1].add_modifier.contains(Modifier::UNDERLINED));
+        assert_eq!(styles[2].fg, Some(theme::DIM));
+    }
+
+    #[test]
+    fn long_link_destinations_are_dimmed_and_shortened_after_the_label() {
+        let lines = render_markdown_safe(
+            "[documentation](https://example.com/a/very/long/path/that/should/not/take/the/whole/terminal)",
+            None,
+        );
+
+        let destination = lines[0]
+            .spans
+            .iter()
+            .find(|span| span.content.starts_with("https://"))
+            .expect("rendered link destination");
+        assert!(destination.content.ends_with('…'));
+        assert_eq!(destination.style.fg, Some(theme::DIM));
+        assert!(!destination.style.add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn literal_parenthesized_urls_are_not_shortened_as_link_destinations() {
+        let url =
+            "https://example.com/a/very/long/path/that/is/plain/prose/and/must/remain/visible";
+        let lines = render_markdown_safe(&format!("See ({url}) for details."), None);
+
+        assert!(rendered_text(&lines).join("\n").contains(url));
     }
 }
