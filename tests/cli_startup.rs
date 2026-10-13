@@ -154,6 +154,48 @@ fn executable_rejects_a_missing_added_directory_before_resolving_the_bridge() {
 }
 
 #[test]
+fn interactive_launch_without_a_terminal_exits_before_terminal_setup_and_logging() {
+    let home = tempfile::tempdir().expect("home");
+    let project = home.path().join("project");
+    std::fs::create_dir(&project).expect("project");
+    let output = Command::new(env!("CARGO_BIN_EXE_claude-rs"))
+        .arg("hello")
+        .current_dir(&project)
+        // The runtime log directory derives from the home directory on Unix.
+        .env("HOME", home.path())
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("XDG_CACHE_HOME")
+        .env("CLAUDE_CONFIG_DIR", home.path().join("profile"))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run without a terminal");
+
+    assert_eq!(output.status.code(), Some(25));
+    assert!(!output.stdout.contains(&0x1b), "escape sequences reached stdout");
+    assert!(output.stdout.is_empty(), "{}", String::from_utf8_lossy(&output.stdout));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "claude-rs needs an interactive terminal (stdin and stdout must be a TTY)\n"
+    );
+    if cfg!(unix) {
+        let mut pending = vec![home.path().to_path_buf()];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read dir") {
+                let path = entry.expect("entry").path();
+                assert!(
+                    path.extension().is_none_or(|extension| extension != "log"),
+                    "launch wrote a log: {}",
+                    path.display()
+                );
+                if path.is_dir() {
+                    pending.push(path);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn executable_generates_manuals_without_a_bridge() {
     let dir = tempfile::tempdir().expect("manual directory");
     let output_dir = dir.path().join("nested/man1");

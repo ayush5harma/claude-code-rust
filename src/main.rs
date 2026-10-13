@@ -5,6 +5,7 @@ use clap::Parser;
 use claude_code_rust::Cli;
 use claude_code_rust::app::PostExitAction;
 use claude_code_rust::error::AppError;
+use std::io::{IsTerminal as _, Write as _};
 use std::time::Instant;
 use tracing::info_span;
 
@@ -56,6 +57,15 @@ fn run() -> anyhow::Result<i32> {
             return Ok(error.exit_code());
         }
     };
+    // Checked before logging starts: every launch writes a runtime log and retention keeps
+    // only the newest 100, so scripted launches without a terminal would evict real logs.
+    if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+        writeln!(
+            std::io::stderr().lock(),
+            "claude-rs needs an interactive terminal (stdin and stdout must be a TTY)"
+        )?;
+        return Ok(AppError::NO_TERMINAL_EXIT_CODE);
+    }
 
     let _logging = claude_code_rust::logging::LoggingRuntime::init(&cli)?;
     {

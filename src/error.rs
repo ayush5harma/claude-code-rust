@@ -33,6 +33,10 @@ impl AppError {
     pub const CONNECTION_FAILED_EXIT_CODE: i32 = 22;
     pub const SESSION_NOT_FOUND_EXIT_CODE: i32 = 23;
     pub const AUTH_REQUIRED_EXIT_CODE: i32 = 24;
+    /// An interactive launch whose stdin or stdout is not a terminal. Not a variant: the
+    /// check runs before logging and the bridge exist, so there is no failure report to
+    /// write, only one line on stderr.
+    pub const NO_TERMINAL_EXIT_CODE: i32 = 25;
 
     #[must_use]
     pub fn exit_code(&self) -> i32 {

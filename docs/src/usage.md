@@ -97,6 +97,8 @@ An initial prompt whose text matches a subcommand name can be passed after `--`,
 
 After the TUI exits, the app prints a resume hint whenever a session was established, using the active or most recently established session id.
 
+An interactive launch needs a terminal. When stdin or stdout is not a terminal (a pipe, a redirect, a job without a TTY), `claude-rs` prints one line to stderr and exits with status 25 before it writes to stdout or starts a runtime log. Support commands such as `doctor`, `logs`, `config` and `completions` work without a terminal.
+
 ## Support And Diagnostics
 
 Use support commands when you need a repeatable snapshot of the local environment or diagnostic logs.
