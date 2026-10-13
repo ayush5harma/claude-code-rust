@@ -223,13 +223,31 @@ pub(super) fn filter_command_candidates(
             body.to_lowercase().contains(&query_lower)
         })
         .collect::<Vec<_>>();
-    // An exact command must precede substring matches before Enter can submit.
-    // Keep all other matches in inventory order for deliberate arrow selection.
+    // Rank by match class so a typed prefix finds its command within the few
+    // visible rows: with ~400 skill and plugin commands, name-substring order
+    // buried `/resume` under `/ai-regression-testing` for `/res`. The sort is
+    // stable, so inventory order is kept inside a class and the list stays
+    // deterministic for deliberate arrow selection. Class 0 (exact) keeps the
+    // guarantee Enter relies on.
     matches.sort_by_key(|candidate| {
-        candidate.primary.strip_prefix('/').unwrap_or(&candidate.primary).to_lowercase()
-            != query_lower
+        let body = candidate.primary.strip_prefix('/').unwrap_or(&candidate.primary);
+        match_class(&body.to_lowercase(), &query_lower)
     });
     matches.into_iter().cloned().collect()
+}
+
+/// 0 exact name, 1 name prefix, 2 a `:`/`-`/`_`/`/` separated segment prefix,
+/// 3 any other substring. Both arguments are already lowercased.
+fn match_class(name: &str, query: &str) -> u8 {
+    if name == query {
+        0
+    } else if name.starts_with(query) {
+        1
+    } else if name.split([':', '-', '_', '/']).any(|segment| segment.starts_with(query)) {
+        2
+    } else {
+        3
+    }
 }
 
 fn candidate_matches(candidate: &SlashCandidate, query_lower: &str) -> bool {

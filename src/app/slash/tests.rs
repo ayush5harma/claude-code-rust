@@ -5,8 +5,8 @@ use serde_json::json;
 
 // Re-import submodule items needed by tests
 use super::candidates::{
-    argument_candidates, detect_slash_at_cursor, find_advertised_command,
-    supported_command_candidates,
+    argument_candidates, detect_slash_at_cursor, filter_command_candidates,
+    find_advertised_command, supported_command_candidates,
 };
 
 fn requested_slash_state(app: &App) -> Option<SlashState> {
@@ -2361,4 +2361,64 @@ async fn export_to_an_existing_file_is_refused_without_asking_the_bridge() {
             assert!(block.text.contains("already exists"), "{}", block.text);
         })
         .await;
+}
+
+fn ranked_names(names: &[&str], query: &str) -> Vec<String> {
+    let candidates = names
+        .iter()
+        .map(|name| SlashCandidate {
+            insert_value: (*name).to_owned(),
+            primary: (*name).to_owned(),
+            secondary: None,
+        })
+        .collect::<Vec<_>>();
+    filter_command_candidates(&candidates, query).into_iter().map(|c| c.primary).collect()
+}
+
+// Alphabetical, as the inventory arrives.
+const RANKING_INVENTORY: &[&str] = &[
+    "/__remote-workflow",
+    "/agent-architecture-audit",
+    "/agent-skills:code-review",
+    "/ai-regression-testing",
+    "/deep-research",
+    "/ecc:resume-session",
+    "/reload",
+    "/rename",
+    "/resume",
+    "/review",
+];
+
+#[test]
+fn command_matches_rank_prefix_then_segment_then_substring() {
+    assert_eq!(
+        ranked_names(RANKING_INVENTORY, "re"),
+        [
+            "/reload",
+            "/rename",
+            "/resume",
+            "/review",
+            "/__remote-workflow",
+            "/agent-skills:code-review",
+            "/ai-regression-testing",
+            "/deep-research",
+            "/ecc:resume-session",
+            "/agent-architecture-audit",
+        ]
+    );
+    assert_eq!(
+        ranked_names(RANKING_INVENTORY, "res"),
+        ["/resume", "/deep-research", "/ecc:resume-session", "/ai-regression-testing"]
+    );
+    assert_eq!(ranked_names(RANKING_INVENTORY, "resu"), ["/resume", "/ecc:resume-session"]);
+    assert_eq!(ranked_names(RANKING_INVENTORY, "resume"), ["/resume", "/ecc:resume-session"]);
+    assert_eq!(ranked_names(RANKING_INVENTORY, "code"), ["/agent-skills:code-review"]);
+}
+
+#[test]
+fn command_ranking_is_case_insensitive_and_exact_wins() {
+    assert_eq!(
+        ranked_names(&["/ecc:resume-session", "/Resume-All", "/resume"], "RESUME"),
+        ["/resume", "/Resume-All", "/ecc:resume-session"]
+    );
 }
