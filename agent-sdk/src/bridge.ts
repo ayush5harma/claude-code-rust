@@ -1025,6 +1025,7 @@ async function handleCommand(
         handleReloadPluginsCommand,
       });
       return;
+    case "list_sessions":
     case "generate_session_title":
     case "rename_session":
     case "tag_session":

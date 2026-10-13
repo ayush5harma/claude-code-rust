@@ -952,6 +952,22 @@ test("fixture session info preserves and clears a seeded title", async () => {
   } finally { await cleanup(); }
 });
 
+test("list_sessions answers with a fresh SDK listing under its request id", async () => {
+  const cwd = process.cwd();
+  const { bridge, cleanup } = ultracodeFixtureBridge({
+    STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId: "older", cwd, lastModified: 1 }]),
+  });
+  try {
+    bridge.writeCommand({ command: "create_session", cwd, launch_settings: {} });
+    const connected = await nextMatching(bridge, event => event.event === "connected");
+    bridge.writeCommand({ command: "list_sessions", request_id: "picker-open" });
+    const listed = await nextMatching(bridge, event => event.event === "sessions_listed" && event.request_id === "picker-open");
+    const ids = (listed.sessions as BridgeEnvelope[]).map(session => session.session_id);
+    assert.ok(ids.includes("older"));
+    assert.ok(ids.includes(connected.session_id as string));
+  } finally { await cleanup(); }
+});
+
 test("resume resolves exact SDK title while an exact ID wins over another title", async () => {
   const cwd = process.cwd();
   const sessions = [
