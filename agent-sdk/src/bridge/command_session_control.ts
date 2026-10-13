@@ -23,6 +23,7 @@ import { FastModeVerificationError } from "./session_preferences.js";
 import { SessionObservations } from "./session_observations.js";
 
 const thinkingObservations = new SessionObservations();
+const RELOAD_CONTROL_TIMEOUT_MS = 10_000;
 import {
   applyUltracode,
   emitUltracodeUpdate,
@@ -555,9 +556,25 @@ async function reloadSkillsAndStyles(
     return;
   }
   try {
-    const { skills } = await session.query.reloadSkills();
-    const { available_output_styles: outputStyles } =
-      await session.query.reloadOutputStyles();
+    // The SDK control plane may leave a request pending while it still applies
+    // its side effects. Measured 2026-10-13: a fresh session reloaded skills
+    // but never acknowledged the request, leaving the composer disabled.
+    const skillsRequest = boundedReloadControl(
+      "skills",
+      session.sessionId,
+      session.query.reloadSkills(),
+    );
+    const stylesRequest = boundedReloadControl(
+      "output_styles",
+      session.sessionId,
+      session.query.reloadOutputStyles(),
+    );
+    const [skillsResult, stylesResult] = await Promise.all([
+      skillsRequest,
+      stylesRequest,
+    ]);
+    const { skills } = skillsResult;
+    const { available_output_styles: outputStyles } = stylesResult;
     writeEvent(
       {
         event: "skills_and_styles_reloaded",
@@ -583,6 +600,46 @@ async function reloadSkillsAndStyles(
       `failed to reload skills and output styles: ${message}`,
       requestId,
     );
+  }
+}
+
+async function boundedReloadControl<T>(
+  phase: "skills" | "output_styles",
+  sessionId: string,
+  request: Promise<T>,
+): Promise<T> {
+  bridgeLogger.debug({
+    target: LOG_TARGETS.APP_SESSION,
+    eventName: "reload_skills_and_styles_control_started",
+    message: "reload skills and styles SDK control started",
+    outcome: "start",
+    sessionId,
+    fields: { phase },
+  });
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const result = await Promise.race([
+      request,
+      new Promise<T>((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error(`reload ${phase.replace("_", " ")} request timed out.`)),
+          RELOAD_CONTROL_TIMEOUT_MS,
+        );
+      }),
+    ]);
+    bridgeLogger.debug({
+      target: LOG_TARGETS.APP_SESSION,
+      eventName: "reload_skills_and_styles_control_completed",
+      message: "reload skills and styles SDK control completed",
+      outcome: "success",
+      sessionId,
+      fields: { phase },
+    });
+    return result;
+  } finally {
+    if (timeout !== undefined) {
+      clearTimeout(timeout);
+    }
   }
 }
 
