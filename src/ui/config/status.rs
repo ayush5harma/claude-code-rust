@@ -93,30 +93,21 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
 }
 
 fn derive_session_name(app: &App) -> String {
-    if let Some(title) = app.session_runtime.session_title.as_ref() {
-        return title.clone();
+    if let Some(title) = app.active_session_custom_title() {
+        return title.to_owned();
     }
-    if let Some(ref sid) = app.session_runtime.session_id {
-        let sid_str = sid.to_string();
-        if let Some(session) = app.recent_sessions.iter().find(|s| s.session_id == sid_str) {
-            if !session.summary.trim().is_empty() {
-                let summary = &session.summary;
-                return if summary.len() > 60 {
-                    format!("{}...", &summary[..57])
-                } else {
-                    summary.clone()
-                };
-            }
-            if let Some(ref prompt) = session.first_prompt
-                && !prompt.trim().is_empty()
-            {
-                return if prompt.len() > 60 {
-                    format!("{}...", &prompt[..57])
-                } else {
-                    prompt.clone()
-                };
-            }
-        }
+    if let Some(sid) = app.session_runtime.session_id.as_ref()
+        && let Some(session) = app.recent_sessions.iter().find(|s| s.session_id == sid.as_str())
+        && let Some(summary) = [Some(session.summary.as_str()), session.first_prompt.as_deref()]
+            .into_iter()
+            .flatten()
+            .find(|text| !text.trim().is_empty())
+    {
+        return if summary.chars().count() > 60 {
+            format!("{}...", summary.chars().take(57).collect::<String>())
+        } else {
+            summary.to_owned()
+        };
     }
     "(unnamed session)".to_owned()
 }
@@ -219,9 +210,41 @@ mod tests {
                 .find(|line| line.contains("Session name"))
                 .expect("session name row")
         };
-        assert!(name_row(&app).contains("Listed summary"));
+        assert!(name_row(&app).contains("Stale listed title"));
         app.session_runtime.session_title = Some("probe-e2e".to_owned());
         assert!(name_row(&app).contains("probe-e2e"));
+    }
+
+    #[test]
+    fn status_name_fallback_preserves_unicode_and_uses_only_the_active_session() {
+        let mut app = App::test_default();
+        app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("active"));
+        let unicode = "\u{1f980}".repeat(20);
+        app.recent_sessions = vec![crate::app::RecentSessionInfo {
+            session_id: "active".to_owned(),
+            summary: unicode.clone(),
+            last_modified_ms: 0,
+            file_size_bytes: 0,
+            cwd: None,
+            git_branch: None,
+            custom_title: Some(unicode.clone()),
+            first_prompt: None,
+        }];
+        let name_row = |app: &App| {
+            status_lines(app)
+                .into_iter()
+                .map(|line| line.to_string())
+                .find(|line| line.starts_with("Session name:"))
+                .expect("name row")
+        };
+        assert_eq!(name_row(&app), format!("Session name: {unicode}"));
+        app.recent_sessions[0].custom_title = None;
+        assert_eq!(name_row(&app), format!("Session name: {unicode}"));
+        app.recent_sessions[0].summary.clear();
+        app.recent_sessions[0].first_prompt = Some("\u{1f980}".repeat(61));
+        assert_eq!(name_row(&app), format!("Session name: {}...", "\u{1f980}".repeat(57)));
+        app.recent_sessions[0].session_id = "other".to_owned();
+        assert_eq!(name_row(&app), "Session name: (unnamed session)");
     }
 
     #[test]
