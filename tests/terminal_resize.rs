@@ -2127,7 +2127,7 @@ fn ctrl_v_attaches_the_system_clipboard_image_and_sends_it_with_the_prompt() {
 #[test]
 fn agents_panel_shows_current_session_messages_and_stops_only_the_selected_running_agent() {
     let mut test = TerminalTest::start("session-agents", 3);
-    test.submit_command("/agents");
+    test.submit("/agents", "/agents");
     test.wait_screen_with("Review parser", &["Session agents", "Running"]);
     test.wait_screen("Parser path checked");
     assert_eq!(test.commands("list_session_agents").len(), 1);
