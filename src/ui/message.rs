@@ -158,12 +158,13 @@ mod tests {
                 .find(|line| line.to_string().contains("Résumé 東京"))
                 .expect("rendered heading");
             assert_eq!(heading.to_string(), "Résumé 東京");
-            assert!(
+            assert!(heading.spans.iter().any(|span| {
                 heading
-                    .spans
-                    .iter()
-                    .any(|span| span.style.add_modifier.contains(ratatui::style::Modifier::BOLD,))
-            );
+                    .style
+                    .patch(span.style)
+                    .add_modifier
+                    .contains(ratatui::style::Modifier::BOLD)
+            }));
         }
     }
 
