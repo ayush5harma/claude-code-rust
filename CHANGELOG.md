@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.15.2-fork.3] - 2026-10-13
+
+### Features
+
+- Launch with named or forked sessions, additional directories, settings and MCP configuration, and system-prompt overrides.
+- Reload skills and output styles, export saved conversations without overwriting files, and inspect working-tree changes with `/diff`.
+- Browse and stop current-session agents, search retained transcript text, tag or delete saved sessions, and resume by exact title with explicit ambiguity handling.
+- Inspect sanitized hook progress, duration, and startup timing in Status.
+- Edit drafts in an external editor, insert multiline input, open rewind and task views, and inspect retained transcript details with remappable shortcuts.
+- Configure composer styling and see session/context information plus a bounded user-configured status line. Session accents remain a fork-only presentation feature.
+
+### Fixes
+
+- Keep the composer usable after failed resume or session-list requests, preserve cached picker entries, and refresh sessions without blocking unrelated controls.
+- Preserve Unicode session titles, use listed names while live metadata is pending, and clear stale names after an acknowledged rename reset.
+- Preserve fenced shebangs and comments; improve Markdown hierarchy, nested lists, tables, code wrapping, Read line numbers, and safe ANSI tool styling.
+- Retain final stopped-agent status and show each Bash result only once in the detail view.
+- Start skill and output-style reload controls together and bound stalled acknowledgments so the composer recovers.
+- Validate launch configuration before mutating a resumed session title.
+
+### Verification tooling
+
+- Add renderer comparisons and isolated live parity scenarios with explicit failures, gaps, and skips.
+- Run complete bridge contract tests on Ubuntu and Windows with independent SDK fixtures.
+
 ## [0.15.2-fork.2] - 2026-10-11
 
 This fork release is upstream 0.15.2 (main at 26f9b12) plus two pull requests raised upstream, and nothing else. The only fork change is the release workflow, which publishes GitHub releases without npm.
