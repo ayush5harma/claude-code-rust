@@ -356,7 +356,7 @@ readline
             capabilities: {
               prompt_image: false,
               prompt_embedded_context: false,
-              supports_session_listing: false,
+              supports_session_listing: SCENARIO === 'session-management',
               supports_resume_session: false,
             },
           },
@@ -411,6 +411,11 @@ readline
           pending.push(message.message_uuid);
           send({ event: 'user_message_queued', session_id: SESSION, message_uuid: message.message_uuid });
         } else streamReply(message.message_uuid);
+        break;
+      case 'list_sessions':
+        if (SCENARIO === 'session-management') {
+          send({ event: 'sessions_listed', request_id: message.request_id, sessions: managedSessions() });
+        }
         break;
       case 'tag_session':
       case 'delete_session': {
