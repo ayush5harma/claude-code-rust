@@ -67,8 +67,8 @@ Config output redacts obvious credentials by default. Export refuses to overwrit
 Expand the baseline with a named diagnostics preset:
 
 ```bash
-claude-rs --enable-logs --diagnostics-preset session
-claude-rs --enable-logs --diagnostics-preset render
+claude-rs --diagnostics-preset session
+claude-rs --diagnostics-preset render
 ```
 
 Available presets:
@@ -84,7 +84,7 @@ Available presets:
 Use an explicit log path when you want the file somewhere predictable:
 
 ```bash
-claude-rs --enable-logs --diagnostics-preset bridge --log-file claude-rs.log
+claude-rs --diagnostics-preset bridge --log-file claude-rs.log
 ```
 
 Use an explicit tracing filter for targeted debugging:
@@ -111,7 +111,7 @@ claude-rs-20260614T075924Z-p12345-r8f3a2c1.log
 
 Logs rotate at 10 MB and keep up to five rotated files per run. Default runtime logs are retained up to 256 MB, 30 days, or 100 managed files, while always preserving at least 10 newest files. Retention only applies to app-managed timestamped files in the default runtime log directory; explicit `--log-file` paths are never cleaned up by the app.
 
-`--log-append` appends to an explicit `--log-file`. When used without `--log-file`, it appends to the legacy shared default file `claude-rs.log` for compatibility; prefer the normal timestamped defaults for new diagnostics.
+`--log-append` appends to the `--log-file` file instead of truncating it, and requires `--log-file`. An invalid `--log-filter` is rejected before startup with the filter text you gave.
 
 ## Finding Logs
 
@@ -165,7 +165,7 @@ Unexpected Rust panics install a local panic hook. The hook writes a redacted `l
 
 ## Bridge Diagnostics
 
-When detailed diagnostics are requested through `--enable-logs`, a preset, `--log-file`, `--log-filter`, `--log-append`, or `RUST_LOG`, bridge diagnostics are enabled and bridge stderr is captured into the structured log. The always-on baseline leaves the high-volume bridge diagnostic stream disabled while retaining native bridge lifecycle warnings and errors.
+When detailed diagnostics are requested through `--enable-logs`, a preset, `--log-file`, `--log-filter`, or `RUST_LOG`, bridge diagnostics are enabled and bridge stderr is captured into the structured log. The always-on baseline leaves the high-volume bridge diagnostic stream disabled while retaining native bridge lifecycle warnings and errors.
 
 The bridge script can be overridden with:
 
@@ -192,7 +192,7 @@ Release npm installs use the root package launcher to start the native platform 
 To investigate a missing or unexpected alert, run with a preset that includes notification records, or add the target to a custom filter:
 
 ```bash
-claude-rs --enable-logs --diagnostics-preset session
+claude-rs --diagnostics-preset session
 claude-rs --log-filter "info,app.notify=debug"
 ```
 

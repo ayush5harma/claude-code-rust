@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
-use clap::Parser;
 use claude_code_rust::Cli;
 use claude_code_rust::app::PostExitAction;
 use claude_code_rust::error::AppError;
+use std::io::{IsTerminal as _, Write as _};
 use std::time::Instant;
 use tracing::info_span;
 
@@ -37,7 +37,16 @@ fn main() {
 }
 
 fn run() -> anyhow::Result<i32> {
-    let cli = Cli::parse();
+    let cli = match Cli::parse_from_args(std::env::args_os()) {
+        Ok(cli) => cli,
+        Err(error) => {
+            // Help and version arrive here too, as errors that print to stdout and exit 0.
+            // A print failure is ignored, as clap's own `Error::exit` does: `--help | head`
+            // closes stdout early, and that is no reason to fail.
+            let _ = error.print();
+            return Ok(error.exit_code());
+        }
+    };
     if let Err(error) = cli.validate() {
         error.print()?;
         return Ok(error.exit_code());
@@ -56,6 +65,15 @@ fn run() -> anyhow::Result<i32> {
             return Ok(error.exit_code());
         }
     };
+    // Checked before logging starts: every launch writes a runtime log and retention keeps
+    // only the newest 100, so scripted launches without a terminal would evict real logs.
+    if !has_interactive_terminal() {
+        writeln!(
+            std::io::stderr().lock(),
+            "claude-rs needs an interactive terminal (stdin and stdout must be a TTY)"
+        )?;
+        return Ok(AppError::NO_TERMINAL_EXIT_CODE);
+    }
 
     let _logging = claude_code_rust::logging::LoggingRuntime::init(&cli)?;
     {
@@ -112,6 +130,26 @@ fn run() -> anyhow::Result<i32> {
     }))?;
 
     Ok(exit_code)
+}
+
+/// The TUI draws on stdout, so stdout must be a terminal. Input may come from a pipe on
+/// Unix: crossterm is built with `use-dev-tty` and reads keys from `/dev/tty` when stdin is
+/// not a terminal (`echo x | claude-rs hi`), so that case needs `/dev/tty` to open.
+fn has_interactive_terminal() -> bool {
+    if !std::io::stdout().is_terminal() {
+        return false;
+    }
+    if std::io::stdin().is_terminal() {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        std::fs::File::open("/dev/tty").is_ok()
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
 }
 
 fn run_post_exit_action(app: &claude_code_rust::app::App, action: PostExitAction) -> i32 {

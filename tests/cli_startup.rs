@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use clap::Parser;
 use claude_code_rust::{Cli, StartupLaunch};
 use std::process::Command;
 
@@ -42,7 +41,7 @@ fn interactive_startup_flags_normalize_to_one_launch() {
         ),
     ];
     for (args, launch, prompt) in cases {
-        let cli = Cli::try_parse_from(&args).expect("parse startup");
+        let cli = Cli::parse_from_args(&args).expect("parse startup");
         cli.validate().expect("valid launch");
         assert_eq!(cli.startup_launch(), launch, "{args:?}");
         assert_eq!(cli.initial_prompt(), prompt, "{args:?}");
@@ -51,7 +50,7 @@ fn interactive_startup_flags_normalize_to_one_launch() {
 
 #[test]
 fn session_options_support_existing_resume_syntax() {
-    let cli = Cli::try_parse_from([
+    let cli = Cli::parse_from_args([
         "claude-rs",
         "resume",
         "session-1",
@@ -94,7 +93,7 @@ fn contradictory_or_invalid_startup_arguments_are_rejected() {
         vec!["claude-rs", "--fork-session", "explain this project"],
     ] {
         assert!(
-            Cli::try_parse_from(&args).and_then(|cli| cli.validate()).is_err(),
+            Cli::parse_from_args(&args).and_then(|cli| cli.validate()).is_err(),
             "accepted {args:?}"
         );
     }
@@ -151,6 +150,169 @@ fn executable_rejects_a_missing_added_directory_before_resolving_the_bridge() {
         "{error}"
     );
     assert!(!error.contains("missing-bridge.js"), "runtime resolved the bridge: {error}");
+}
+
+#[test]
+fn executable_rejects_a_bad_working_directory_or_bridge_script_as_usage_errors() {
+    let temp = tempfile::tempdir().expect("temp");
+    let missing = temp.path().join("missing");
+    let file = temp.path().join("notes.txt");
+    std::fs::write(&file, "").expect("file");
+    let cases: [(&[&std::ffi::OsStr], String); 3] = [
+        (
+            &["-C".as_ref(), missing.as_os_str()],
+            format!("{} is not an existing directory", missing.display()),
+        ),
+        (
+            &["-C".as_ref(), file.as_os_str()],
+            format!("{} is not an existing directory", file.display()),
+        ),
+        (
+            &["--bridge-script".as_ref(), missing.as_os_str()],
+            format!("--bridge-script: {} is not an existing file", missing.display()),
+        ),
+    ];
+    for (args, expected) in cases {
+        let output = Command::new(env!("CARGO_BIN_EXE_claude-rs"))
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run with a bad path");
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains(&expected), "{error}");
+        assert!(!error.contains("doctor"), "usage error suggests doctor: {error}");
+    }
+}
+
+#[test]
+fn executable_refuses_a_mistyped_command_but_sends_it_after_a_separator() {
+    let home = tempfile::tempdir().expect("home");
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_claude-rs"))
+            .args(args)
+            .env("HOME", home.path())
+            .env("CLAUDE_CONFIG_DIR", home.path().join("profile"))
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run claude-rs")
+    };
+
+    let typo = run(&["doctr"]);
+    assert_eq!(typo.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&typo.stderr).contains("did you mean `doctor`?"),
+        "{}",
+        String::from_utf8_lossy(&typo.stderr)
+    );
+
+    // Past argument checks, the prompt launch stops only at the missing terminal.
+    let escaped = run(&["--", "doctr"]);
+    assert_eq!(escaped.status.code(), Some(25), "{}", String::from_utf8_lossy(&escaped.stderr));
+}
+
+#[test]
+fn help_into_a_closed_pipe_exits_cleanly() {
+    let (reader, writer) = std::io::pipe().expect("pipe");
+    // Closed before the child starts, as `claude-rs --help | head -1` can leave it.
+    drop(reader);
+    let output = Command::new(env!("CARGO_BIN_EXE_claude-rs"))
+        .arg("--help")
+        .stdout(writer)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run help");
+    assert_eq!(output.status.code(), Some(0));
+    assert!(output.stderr.is_empty(), "{}", String::from_utf8_lossy(&output.stderr));
+}
+
+/// `echo x | claude-rs hi` from a terminal: crossterm reads keys from `/dev/tty`, so piped
+/// stdin is not a reason to refuse. The launch is made to stop right after the terminal
+/// check, at a missing bridge script, so it never needs a bridge.
+#[cfg(unix)]
+#[test]
+fn piped_stdin_with_a_terminal_on_stdout_passes_the_terminal_check() {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use std::io::Read as _;
+
+    let home = tempfile::tempdir().expect("home");
+    let project = home.path().join("project");
+    std::fs::create_dir(&project).expect("project");
+    let missing_bridge = home.path().join("missing-bridge.js");
+    let pair = native_pty_system()
+        .openpty(PtySize { rows: 24, cols: 100, pixel_width: 0, pixel_height: 0 })
+        .expect("open pty");
+    let mut command = CommandBuilder::new("/bin/sh");
+    // The pty is the shell's controlling terminal and stdout; stdin becomes a pipe.
+    command.args([
+        "-c",
+        "echo x | exec \"$0\" --no-update-check hi",
+        env!("CARGO_BIN_EXE_claude-rs"),
+    ]);
+    command.cwd(&project);
+    command.env("HOME", home.path());
+    command.env("CLAUDE_CONFIG_DIR", home.path().join("profile"));
+    command.env("CLAUDE_RS_AGENT_BRIDGE", &missing_bridge);
+    command.env("CLAUDE_ARCHIVE_SKIP", "1");
+    let mut reader = pair.master.try_clone_reader().expect("pty reader");
+    let mut child = pair.slave.spawn_command(command).expect("spawn claude-rs");
+    drop(pair.slave);
+    let output = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        // macOS reports EIO rather than EOF once the last writer has closed.
+        let _ = reader.read_to_end(&mut output);
+        String::from_utf8_lossy(&output).into_owned()
+    });
+    let status = child.wait().expect("wait for claude-rs");
+    drop(pair.master);
+    let output = output.join().expect("pty output");
+
+    assert!(!output.contains("needs an interactive terminal"), "{output}");
+    assert_eq!(status.exit_code(), 21, "{output}");
+    assert!(output.contains(&missing_bridge.display().to_string()), "{output}");
+}
+
+#[test]
+fn interactive_launch_without_a_terminal_exits_before_terminal_setup_and_logging() {
+    let home = tempfile::tempdir().expect("home");
+    let project = home.path().join("project");
+    std::fs::create_dir(&project).expect("project");
+    let output = Command::new(env!("CARGO_BIN_EXE_claude-rs"))
+        .arg("hello")
+        .current_dir(&project)
+        // The runtime log directory derives from the home directory on Unix.
+        .env("HOME", home.path())
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("XDG_CACHE_HOME")
+        .env("CLAUDE_CONFIG_DIR", home.path().join("profile"))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run without a terminal");
+
+    assert_eq!(output.status.code(), Some(25));
+    assert!(!output.stdout.contains(&0x1b), "escape sequences reached stdout");
+    assert!(output.stdout.is_empty(), "{}", String::from_utf8_lossy(&output.stdout));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "claude-rs needs an interactive terminal (stdin and stdout must be a TTY)\n"
+    );
+    if cfg!(unix) {
+        let mut pending = vec![home.path().to_path_buf()];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read dir") {
+                let path = entry.expect("entry").path();
+                assert!(
+                    path.extension().is_none_or(|extension| extension != "log"),
+                    "launch wrote a log: {}",
+                    path.display()
+                );
+                if path.is_dir() {
+                    pending.push(path);
+                }
+            }
+        }
+    }
 }
 
 #[test]

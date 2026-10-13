@@ -107,53 +107,67 @@ pub(super) fn apply_actions(
     stdout: &mut Stdout,
     actions: &[TerminalModeAction],
 ) -> std::io::Result<()> {
+    apply_actions_with(actions, |action| apply_action(stdout, action))
+}
+
+/// Runs every action and reports the first failure, so a restore sequence still undoes
+/// as much as it can. A failed `EnableRawMode` stops the sequence instead: without raw
+/// mode there is no terminal to configure, and the remaining actions would only write
+/// escape sequences into whatever stdout is (measured: 58 bytes into a pipe).
+fn apply_actions_with(
+    actions: &[TerminalModeAction],
+    mut apply: impl FnMut(TerminalModeAction) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let mut first_error = None;
 
-    for action in actions {
-        let result = match action {
-            TerminalModeAction::EnableRawMode => enable_raw_mode(),
-            TerminalModeAction::DisableRawMode => disable_raw_mode(),
-            TerminalModeAction::EnterAlternateScreen => execute!(stdout, EnterAlternateScreen),
-            TerminalModeAction::LeaveAlternateScreen => execute!(stdout, LeaveAlternateScreen),
-            TerminalModeAction::EnableFocusChange => execute!(stdout, EnableFocusChange),
-            TerminalModeAction::DisableFocusChange => execute!(stdout, DisableFocusChange),
-            TerminalModeAction::HideCursor => execute!(stdout, Hide),
-            TerminalModeAction::ShowCursor => execute!(stdout, Show),
-            TerminalModeAction::SetBlinkingBarCursor => {
-                execute!(stdout, SetCursorStyle::BlinkingBar)
-            }
-            TerminalModeAction::RestoreDefaultCursorShape => {
-                execute!(stdout, SetCursorStyle::DefaultUserShape)
-            }
-            TerminalModeAction::DisableLineWrap => execute!(stdout, DisableLineWrap),
-            TerminalModeAction::EnableLineWrap => {
-                execute!(stdout, crossterm::terminal::EnableLineWrap)
-            }
-            #[cfg(target_os = "macos")]
-            TerminalModeAction::PushKeyboardEnhancement => execute!(
-                stdout,
-                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-            ),
-            #[cfg(target_os = "macos")]
-            TerminalModeAction::PopKeyboardEnhancement => {
-                execute!(stdout, PopKeyboardEnhancementFlags)
-            }
-        };
-
-        if let Err(err) = result
-            && first_error.is_none()
-        {
-            let kind = err.kind();
-            first_error = Some(std::io::Error::new(
-                kind,
+    for &action in actions {
+        if let Err(err) = apply(action) {
+            let err = std::io::Error::new(
+                err.kind(),
                 format!("terminal action {action:?} failed: {err}"),
-            ));
+            );
+            if action == TerminalModeAction::EnableRawMode {
+                return Err(err);
+            }
+            first_error.get_or_insert(err);
         }
     }
 
     match first_error {
         Some(err) => Err(err),
         None => Ok(()),
+    }
+}
+
+fn apply_action(stdout: &mut Stdout, action: TerminalModeAction) -> std::io::Result<()> {
+    match action {
+        TerminalModeAction::EnableRawMode => enable_raw_mode(),
+        TerminalModeAction::DisableRawMode => disable_raw_mode(),
+        TerminalModeAction::EnterAlternateScreen => execute!(stdout, EnterAlternateScreen),
+        TerminalModeAction::LeaveAlternateScreen => execute!(stdout, LeaveAlternateScreen),
+        TerminalModeAction::EnableFocusChange => execute!(stdout, EnableFocusChange),
+        TerminalModeAction::DisableFocusChange => execute!(stdout, DisableFocusChange),
+        TerminalModeAction::HideCursor => execute!(stdout, Hide),
+        TerminalModeAction::ShowCursor => execute!(stdout, Show),
+        TerminalModeAction::SetBlinkingBarCursor => {
+            execute!(stdout, SetCursorStyle::BlinkingBar)
+        }
+        TerminalModeAction::RestoreDefaultCursorShape => {
+            execute!(stdout, SetCursorStyle::DefaultUserShape)
+        }
+        TerminalModeAction::DisableLineWrap => execute!(stdout, DisableLineWrap),
+        TerminalModeAction::EnableLineWrap => {
+            execute!(stdout, crossterm::terminal::EnableLineWrap)
+        }
+        #[cfg(target_os = "macos")]
+        TerminalModeAction::PushKeyboardEnhancement => execute!(
+            stdout,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        ),
+        #[cfg(target_os = "macos")]
+        TerminalModeAction::PopKeyboardEnhancement => {
+            execute!(stdout, PopKeyboardEnhancementFlags)
+        }
     }
 }
 
@@ -278,6 +292,51 @@ mod tests {
         assert!(
             shutdown_restore_actions().contains(&TerminalModeAction::RestoreDefaultCursorShape)
         );
+    }
+
+    fn failing_on(
+        failing: TerminalModeAction,
+        attempted: &mut Vec<TerminalModeAction>,
+    ) -> impl FnMut(TerminalModeAction) -> std::io::Result<()> + '_ {
+        move |action| {
+            attempted.push(action);
+            if action == failing {
+                Err(std::io::Error::other("Device not configured"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn failed_raw_mode_stops_startup_before_any_escape_sequence() {
+        let mut attempted = Vec::new();
+
+        let error = apply_actions_with(
+            chat_startup_actions(),
+            failing_on(TerminalModeAction::EnableRawMode, &mut attempted),
+        )
+        .expect_err("raw mode failure");
+
+        assert_eq!(attempted, [TerminalModeAction::EnableRawMode]);
+        assert_eq!(
+            error.to_string(),
+            "terminal action EnableRawMode failed: Device not configured"
+        );
+    }
+
+    #[test]
+    fn restore_continues_past_a_failed_action_and_reports_the_first() {
+        let mut attempted = Vec::new();
+
+        let error = apply_actions_with(
+            shutdown_restore_actions(),
+            failing_on(TerminalModeAction::ShowCursor, &mut attempted),
+        )
+        .expect_err("show cursor failure");
+
+        assert_eq!(attempted, shutdown_restore_actions());
+        assert_eq!(error.to_string(), "terminal action ShowCursor failed: Device not configured");
     }
 
     #[test]

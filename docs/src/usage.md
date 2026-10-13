@@ -95,9 +95,13 @@ claude-rs --system-prompt-file ./release-bot.md
 
 `--system-prompt` and `--system-prompt-file` replace Claude Code's default system prompt; `--append-system-prompt` and `--append-system-prompt-file` add to it, or to the replacement. Each pair is mutually exclusive, a text value must not be empty, and a file is read once at startup. `claude-rs` always keeps one instruction of its own in the system prompt, which tells Claude not to stop the bridge runtime process: appended text follows it, and a replacement prompt is followed by it. The SDK records a conversation's system prompt on its first request and reuses it on resume, so these options shape new sessions; a resumed session keeps the prompt it started with.
 
-An initial prompt whose text matches a subcommand name can be passed after `--`, for example `claude-rs -- "doctor"`. Startup arguments cannot be combined with support commands such as `doctor`, `logs`, `config`, or `completions`.
+An initial prompt whose text matches a subcommand name can be passed after `--`, for example `claude-rs -- "doctor"`. A one-word prompt of four or more letters that is one slip away from a command name (a different case, two neighbouring letters swapped, or one inner letter dropped or doubled), such as `claude-rs doctr` or `claude-rs lgos`, is refused with the command it resembles instead of being sent to Claude; `claude-rs -- doctr` sends it.
+
+The session options (from `--model` to `--append-system-prompt-file` in the table below) belong to interactive launches. With the `resume` command they may come before or after it, as in `claude-rs --model opus resume <id>` or `claude-rs resume <id> --model opus`; giving the same option in both places is an error. Support commands such as `doctor`, `logs`, `config`, or `completions` accept none of the startup arguments, and their help and completions do not list them.
 
 After the TUI exits, the app prints a resume hint whenever a session was established, using the active or most recently established session id.
+
+An interactive launch needs a terminal. When stdout is not a terminal (a pipe, a redirect, a job without a TTY), or stdin is not one and the controlling terminal `/dev/tty` cannot be opened, `claude-rs` prints one line to stderr and exits with status 25 before it writes to stdout or starts a runtime log. Support commands such as `doctor`, `logs`, `config` and `completions` work without a terminal.
 
 ## Support And Diagnostics
 
@@ -118,20 +122,14 @@ See [Diagnostics](diagnostics.md) for full options, logging presets, bundle cont
 
 ## CLI Options
 
-The installed `claude-rs --help` command exposes these options; the session options are listed under their own heading:
+The installed `claude-rs --help` command exposes these options; the session and diagnostics options are listed under their own headings. Each diagnostics option, and the `RUST_LOG` environment variable, turns on detailed logging:
 
 | Option | Purpose |
 | --- | --- |
-| `-r, --resume [ID_OR_TITLE]` | Resume by exact ID or displayed title, or open the picker without a value. |
+| `-r, --resume [<ID>]` | Resume by exact ID or displayed title, or open the picker without a value. |
 | `-c, --continue` | Continue the latest session for the working directory and its git worktrees; start new if none exists. |
 | `--no-update-check` | Disable startup update checks. |
-| `-C, --dir <DIR>` | Run in a specific working directory. |
-| `--bridge-script <PATH>` | Use a specific Agent SDK bridge script. |
-| `--enable-logs` | Expand the always-on baseline to detailed info-level diagnostics. |
-| `--diagnostics-preset <runtime|session|render|bridge|full>` | Use a named diagnostics filter. |
-| `--log-file <PATH>` | Write tracing diagnostics to a specific file. |
-| `--log-filter <FILTER>` | Use explicit tracing filter directives. |
-| `--log-append` | Append to the active log file instead of resetting it on startup. |
+| `-C, --dir <DIR>` | Run in a specific working directory, which must exist. |
 | `--model <MODEL>` | Set the initial session model without changing saved preferences. |
 | `--effort <LEVEL>` | Set the initial session effort; availability depends on the model. |
 | `--permission-mode <MODE>` | Set the initial session permission mode without changing saved preferences. |
@@ -146,12 +144,48 @@ The installed `claude-rs --help` command exposes these options; the session opti
 | `--system-prompt-file <FILE>` | Replace Claude Code's system prompt for new sessions with a file's text. |
 | `--append-system-prompt <TEXT>` | Append text to the system prompt of new sessions. |
 | `--append-system-prompt-file <FILE>` | Append a file's text to the system prompt of new sessions. |
+| `--enable-logs` | Turn on detailed logging at info level. |
+| `--diagnostics-preset <runtime|session|render|bridge|full>` | Turn on detailed logging with a named diagnostics filter. |
+| `--log-file <PATH>` | Turn on detailed logging and write it to a specific file. |
+| `--log-filter <FILTER>` | Turn on detailed logging with explicit tracing filter directives. |
+| `--log-append` | Append to the `--log-file` file instead of truncating it; requires `--log-file`. Earlier versions accepted it alone and appended to a shared `claude-rs.log`; that now exits with status 2. |
 
 See [Diagnostics](diagnostics.md) before enabling verbose logs.
 
+`claude-rs --help` ends with the exit statuses and environment variables below; `-h` leaves them out.
+
+## Exit Status
+
+| Status | Meaning |
+| --- | --- |
+| `0` | Success, including `--help` and `--version`. |
+| `1` | Any other failure, such as `doctor --strict` finding a hard failure or `config show` reading an invalid file. |
+| `2` | Invalid command line: an unknown or misspelled command or flag, a missing value, conflicting options, or a path that does not exist. |
+| `20` | The bridge runtime was not found. |
+| `21` | The bridge process failed to start or crashed. |
+| `22` | Bridge initialization, protocol, SDK or connection failure, including a timeout. |
+| `23` | The requested session could not be resumed. |
+| `24` | Authentication is required. |
+| `25` | An interactive launch had no terminal: stdout must be a TTY, and so must stdin unless `/dev/tty` can be opened. |
+
+Statuses 20 to 24 come with a failure report on stderr naming a next step; see [Diagnostics](diagnostics.md).
+
+## Environment
+
+| Variable | Effect |
+| --- | --- |
+| `CLAUDE_RS_AGENT_BRIDGE` | Agent bridge script to run. The npm launcher sets it to the bundled script. |
+| `CLAUDE_RS_AGENT_BRIDGE_RUNTIME` | Runtime that runs the bridge script; debug builds only. |
+| `CLAUDE_RUST_NO_UPDATE_CHECK` | `1`, `true` or `yes` disables update checks, as `--no-update-check` does. |
+| `CLAUDE_CONFIG_DIR` | Claude profile directory to use instead of `~/.claude`; see [Settings](settings.md). |
+| `RUST_LOG` | Tracing filter used without `--log-filter` or `--diagnostics-preset`; setting it turns on detailed logging. |
+| `NO_COLOR` | Disables colour in support command output. |
+
+The installer scripts read their own `CLAUDE_RS_*` variables; see [Installation](installation.md).
+
 ## Shell Completions
 
-`claude-rs completions <shell>` prints a completion script for `bash`, `zsh`, `fish`, `powershell`, or `elvish`. It works with script, npm, archive, and source installations and does not start the bridge or require credentials. All five scripts suggest CLI commands and flags. Bash, Zsh, and Fish also suggest fixed choices such as effort levels; the generated PowerShell and Elvish scripts currently complete command and option names. They do not query live session IDs, model catalogs, or agents. The TUI's slash-command completion is separate.
+`claude-rs completions <shell>` prints a completion script for `bash`, `zsh`, `fish`, `powershell`, or `elvish`. It works with script, npm, archive, and source installations and does not start the bridge or require credentials. All five scripts suggest CLI commands and flags; hidden ones, such as the `man` packaging command, are left out. Bash, Zsh, and Fish also suggest fixed choices such as effort levels; the generated PowerShell and Elvish scripts currently complete command and option names. They do not query live session IDs, model catalogs, or agents. The TUI's slash-command completion is separate.
 
 For PowerShell, enable completions in the current session:
 

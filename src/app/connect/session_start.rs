@@ -188,12 +188,10 @@ mod tests {
     use crate::agent::model::EffortLevel;
     use crate::agent::wire::{SessionConfig, SessionLaunchSettings};
     use crate::app::App;
-    use clap::Parser;
 
     #[test]
     fn rewind_uses_current_model_mode_and_effort_after_startup_choices_change() {
-        use clap::Parser;
-        let cli = crate::Cli::try_parse_from([
+        let cli = crate::Cli::parse_from_args([
             "claude-rs",
             "--model",
             "opus",
@@ -231,7 +229,7 @@ mod tests {
 
     #[test]
     fn explicit_cli_choices_apply_until_startup_completes() {
-        let cli = crate::Cli::try_parse_from([
+        let cli = crate::Cli::parse_from_args([
             "claude-rs",
             "--resume",
             "--model",
@@ -274,7 +272,7 @@ mod tests {
             settings: Some(r#"{"model":"haiku"}"#.to_owned()),
             ..SessionConfig::default()
         };
-        let cli = crate::Cli::try_parse_from(["claude-rs", "--model", "opus", "-n", "First"])
+        let cli = crate::Cli::parse_from_args(["claude-rs", "--model", "opus", "-n", "First"])
             .expect("CLI");
         let mut app = App::test_default();
         app.startup =

@@ -672,7 +672,6 @@ mod tests {
 
     #[test]
     fn worker_arguments_parse_back_to_the_requested_install() {
-        use clap::Parser as _;
         let methods = [
             InstallMethod::Npm,
             InstallMethod::Script { install_dir: None },
@@ -680,7 +679,7 @@ mod tests {
         ];
         for method in methods {
             let args = worker_args(VERSION, &method).expect("worker arguments");
-            let cli = crate::Cli::try_parse_from(
+            let cli = crate::Cli::parse_from_args(
                 std::iter::once(OsString::from("claude-rs")).chain(args),
             )
             .expect("worker command line");
@@ -696,8 +695,7 @@ mod tests {
 
     #[test]
     fn failure_notice_waits_for_the_launch_transcript_and_is_shown_once() {
-        use clap::Parser as _;
-        let cli = crate::Cli::try_parse_from(["claude-rs"]).expect("CLI");
+        let cli = crate::Cli::parse_from_args(["claude-rs"]).expect("CLI");
         let mut app = App::test_default();
         app.startup = crate::app::state::StartupState::from_cli(&cli);
         app.update_install_failure = Some("npm update install for v9.9.9 failed.".to_owned());
