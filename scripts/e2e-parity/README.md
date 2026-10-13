@@ -137,6 +137,9 @@ cleaned up at exit.
   isolated config and scratch cwd, without a model call to generate history.
   The performance row fails when the build exceeds stock or the installed
   baseline by more than 10% plus its documented absolute slack.
+  `WORK/perf-<target>-idle-{start,end}.txt` records process IDs, parent IDs,
+  resident memory, cumulative CPU time and executable names for diagnosing
+  idle CPU and memory failures without recording command arguments.
 - `/copy` saves and restores a plain-text clipboard and skips when the
   clipboard holds anything else; the Ctrl+V image check is skipped.
 - Every session id the run creates is appended to `--sessions-file` (default

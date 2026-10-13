@@ -139,9 +139,11 @@ perf_measure() {
   local p sec tree=()
   mapfile -t tree < <(tree_pids "$pid")
   while read -r p sec; do c0[$p]=$sec; done < <(cpu_by_pid "${tree[@]}")
+  ps -o pid=,ppid=,rss=,time=,ucomm= -p "$(printf '%s\n' "${tree[@]}" | paste -sd, -)" >"$WORK/perf-$t-idle-start.txt"
   sleep "$PERF_IDLE_SECONDS"
   cpu1=0
   mapfile -t tree < <(tree_pids "$pid")
+  ps -o pid=,ppid=,rss=,time=,ucomm= -p "$(printf '%s\n' "${tree[@]}" | paste -sd, -)" >"$WORK/perf-$t-idle-end.txt"
   while read -r p sec; do
     cpu1=$(awk -v a="$cpu1" -v b="$sec" -v z="${c0[$p]:-0}" 'BEGIN {printf "%.2f", a + b - z}')
   done < <(cpu_by_pid "${tree[@]}")
