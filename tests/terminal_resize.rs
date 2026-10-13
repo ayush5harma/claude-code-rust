@@ -2681,6 +2681,7 @@ fn render_corpus_resumes_then_streams_into_scrollback_in_order() {
     test.wait_turn_finished("That is the full picture.");
     let expected = [
         "Transcript renderer overview",
+        "#!/usr/bin/env bash",
         "1992 lines hidden",
         "(+500)",
         "unresolved import `crate::ui::render_cache`",
