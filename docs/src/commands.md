@@ -42,7 +42,7 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/reload` | `/reload` | Re-read skills and output styles from disk for the active session. |
 | `/export` | `/export [path]` | Save the complete conversation as a Markdown file. |
 
-In the `/resume` picker, `t` edits the selected session's SDK tag; `Ctrl+U` clears the draft and Enter saves it (an empty tag clears the saved tag). `d` opens deletion confirmation for the selected ID, and only `y` confirms it. Esc cancels either action before submission. The active session cannot be deleted; switch to another session first. Tags and deletions persist through the public Agent SDK session APIs, and the picker refreshes after the SDK acknowledges them.
+In the `/resume` picker, `t` edits the selected session's SDK tag; pasting inserts at the end of the draft as one line (line breaks become spaces), `Ctrl+U` clears the draft and Enter saves it (an empty tag clears the saved tag). `d` opens deletion confirmation for the selected ID, and only `y` confirms it. Esc cancels either action before submission. The active session cannot be deleted; switch to another session first. Tags and deletions persist through the public Agent SDK session APIs, and the picker refreshes after the SDK acknowledges them.
 
 Enter completes the selected slash command or argument and submits it when ready. Tab completes without submitting. Exact command names appear ahead of substring matches; arrow keys can select a different match. App commands that still need required arguments stay in the composer; commands with argument choices show those choices, while `/btw` continues as ordinary question text. An empty suggestion menu allows Enter to submit the typed input for normal validation.
 

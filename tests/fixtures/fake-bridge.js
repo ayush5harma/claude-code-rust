@@ -247,6 +247,16 @@ function streamReply(messageUuid) {
     alert({ ...proactive, tool_use_id: `upstream-${replyNumber}`, local_sent: true });
     send({ event: 'session_update', session_id: SESSION, update: { type: 'notification_update', notification: { ...proactive, tool_use_id: `replay-${replyNumber}` }, replay: true } });
   }
+  if (SCENARIO === 'verbose-bash') {
+    // A finished Bash call as the real bridge sends it: the result text rides in
+    // both the update's content and its raw output.
+    const output = 'FIXTURE_BASH_OUTPUT';
+    send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call', tool_call: { tool_call_id: 'bash-verbose', title: 'echo fixture', kind: 'execute', status: 'in_progress', content: [], raw_input: { command: 'echo fixture' }, locations: [], meta: { claudeCode: { toolName: 'Bash' } } } } });
+    send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call_update', tool_call_update: { tool_call_id: 'bash-verbose', fields: { status: 'completed', raw_output: output, content: [{ type: 'content', content: { type: 'text', text: output } }] } } } });
+    send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text: 'bash finished\n' }, source_message_uuid: null } });
+    send({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'completed', queued_turn_count: 0 });
+    return;
+  }
   if (SCENARIO === 'resize-replay') {
     const text = Array.from({ length: LINES }, (_, index) => `${index + 1}. streamed line ${index + 1}\n`).join('');
     send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text }, source_message_uuid: null } });

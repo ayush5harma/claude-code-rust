@@ -2480,6 +2480,54 @@ fn session_picker_confirms_exact_id_before_delete_and_shows_acknowledged_tag() {
 }
 
 #[test]
+fn session_picker_tag_field_takes_a_bracketed_paste_appended_on_one_line() {
+    let mut test = TerminalTest::start("session-management", 0);
+    test.submit("/resume", "/resume");
+    test.wait_screen_with("Resume Session", &["Saved project work"]);
+    test.send(b"\x1b[A");
+    test.wait_until("saved session selected", |test| {
+        test.screen().contains("> just now - Saved project work")
+    });
+
+    // Seed an existing tag so the field opens pre-filled, as it does for a tagged session.
+    test.send(b"t");
+    test.wait_screen("Tag:");
+    test.send(b"work");
+    test.wait_screen("Tag: work");
+    test.send(b"\r");
+    test.wait_until("first tag saved", |test| {
+        test.commands("tag_session").len() == 1 && test.screen().contains("[tag: work]")
+    });
+
+    test.send(b"t");
+    test.wait_screen("Tag: work");
+    test.paste("-a\nb\r\nc");
+    test.wait_screen("Tag: work-a b c");
+    test.send(b"\r");
+    test.wait_until("pasted tag saved", |test| test.commands("tag_session").len() == 2);
+    assert_eq!(test.commands("tag_session")[1]["tag"], "work-a b c");
+    test.shutdown();
+}
+
+#[test]
+fn detailed_transcript_shows_a_bash_result_once() {
+    let mut test = TerminalTest::start("verbose-bash", 3);
+    test.submit("run it", "run it");
+    test.wait_screen("bash finished");
+    test.send(b"\x0f");
+    test.wait_screen_with("Detailed transcript", &["Tool: echo fixture"]);
+    let screen = test.screen();
+    assert_eq!(
+        rows_with(&screen, "FIXTURE_BASH_OUTPUT").len(),
+        1,
+        "the Bash result must appear once in the detailed view:\n{screen}"
+    );
+    test.send(b"\x0f");
+    test.wait_screen("Type a message");
+    test.shutdown();
+}
+
+#[test]
 fn native_diff_browses_session_and_working_tree_files() {
     let mut test = TerminalTest::start("native-diff", 3);
     test.submit("/diff", "/diff");
