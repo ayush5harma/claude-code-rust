@@ -10,22 +10,23 @@
 # its own, and C is left running (the active session).
 fk_title_sessions() {
   [[ -n $FK_TITLE_DONE ]] && return 0
-  FK_TITLE_DONE=1
+  [[ -z $FK_TITLE_FAILED ]] || return 1
   local stamp which title id
   stamp=$(date +%H%M%S)
   FK_TITLE_DUP=FK_DUP_$stamp
   FK_TITLE_UNIQ=FK_UNIQ_$stamp
-  prepare_cwd fktitle || return 1
+  prepare_cwd fktitle || { FK_TITLE_FAILED=1; return 1; }
   for which in A B C; do
     title=$FK_TITLE_DUP
     [[ $which == C ]] && title=$FK_TITLE_UNIQ
-    rs_start fktitle --model "$MODEL" --permission-mode bypassPermissions || return 1
+    rs_start fktitle --model "$MODEL" --permission-mode bypassPermissions || { FK_TITLE_FAILED=1; return 1; }
     id=$(jq -r .sessionId <<<"$REG")
-    submit fktitle "/rename $title" || return 1
-    wait_registry "$(cwd_of fktitle)" ".name == \"$title\"" 15 || return 1
+    submit fktitle "/rename $title" || { FK_TITLE_FAILED=1; return 1; }
+    wait_registry "$(cwd_of fktitle)" ".name == \"$title\"" 15 || { FK_TITLE_FAILED=1; return 1; }
     printf -v "FK_TITLE_$which" '%s' "$id"
     [[ $which == C ]] || rs_stop fktitle
   done
+  FK_TITLE_DONE=1
 }
 
 def fork.picker_current fork "/resume picker: current session" "Active session listed and marked"
@@ -56,10 +57,13 @@ chk_fork_resume_title_ambiguous() {
     sleep 3
     SCREEN=$(screen fktitle)
     shot
-    res FAIL "two sessions are titled $FK_TITLE_DUP: no ambiguity message; $(grep -c 'Type a message' <<<"$SCREEN" | sed 's/^0$/composer gone/; s/^1$/composer present/'), last row: $(grep -v '^ *$' <<<"$SCREEN" | grep -v '^\[\|^Loc\|^personal' | tail -1)"
+    local slash_errors composer
+    slash_errors=$(grep -c '"bridge_event":"slash_error"' "$WORK/logs/fktitle.log" 2>/dev/null)
+    composer=$(grep -c 'Type a message' <<<"$SCREEN" | sed 's/^0$/composer gone/; s/^1$/composer present/')
+    res FAIL "two sessions are titled $FK_TITLE_DUP: no ambiguity message; $composer, last row: $(grep -v '^ *$' <<<"$SCREEN" | grep -v '^\[\|^Loc\|^personal' | tail -1); bridge log slash_error events: ${slash_errors:-0}"
     defect "/resume <title> that matches two sessions shows no error and leaves the UI stuck on \"Resuming session\"" \
-      "1. Have two sessions in one project with the same /rename title. 2. In a third session type /resume <that title> and press Enter. The bridge answers with a slash_error (ambiguous session title, logged as bridge_event slash_error), but the screen only shows the spinner row and the composer does not come back; only Ctrl+Q works. The same happens for /resume <unknown title> on the installed 0.15.2-fork.2, and for claude-rs -r <ambiguous title> at launch (an empty composer, no mode or model in the footer)." \
-      "$(grep -v '^ *$' <<<"$SCREEN" | tail -8)"
+      "1. Have two sessions in one project with the same /rename title. 2. In a third session type /resume <that title> and press Enter. Observed in this run: the bridge log holds ${slash_errors:-0} slash_error event(s) for the session, but the screen shows no message, only the spinner row, and the composer does not come back. Seen manually on 2026-10-13 and not re-checked by the suite: only Ctrl+Q leaves that state; /resume <unknown title> behaves the same, on the installed 0.15.2-fork.2 as well; claude-rs -r <ambiguous title> at launch ends in an empty composer with no mode or model in the footer." \
+      "$(grep -v '^ *$' <<<"$SCREEN" | tail -8 | sed '/^Loc: /q')"
   fi
   # The session may be wedged: leave it by Ctrl+Q (rs_stop copes with that).
   rs_stop fktitle
@@ -109,6 +113,23 @@ chk_fork_flag_fork_session() {
 # fk_picker_row_count: rows of the open picker.
 fk_picker_row_count() { grep -Ec '(ago|just now) - ' <<<"${1-$SCREEN}" || true; }
 
+# fk_dialog_id [screen]: the session id the open manage dialog names, read
+# from the dialog itself: the line above "Tag:" in the tag dialog or above
+# "Press y to confirm" in the delete dialog, never another id on the screen.
+fk_dialog_id() {
+  tr -d '│' <<<"${1-$SCREEN}" | awk '
+    { line[NR] = $0 }
+    END {
+      for (i = 1; i < NR; i++) {
+        if ((line[i] ~ /Session: [0-9a-f]+-/ && line[i + 1] ~ /Tag:/) ||
+            (line[i] ~ /Delete session [0-9a-f]+-/ && line[i + 1] ~ /Press y to confirm|Deleting/)) {
+          if (match(line[i], /[0-9a-f]+-[0-9a-f]+-[0-9a-f]+-[0-9a-f]+-[0-9a-f]+/)) id = substr(line[i], RSTART, RLENGTH)
+        }
+      }
+      if (id != "") print id
+    }'
+}
+
 # fk_picker_manage <sess> <key> <ids...>: move down the picker until <key> (t
 # or d) opens the manage overlay of one of the listed ids, and print that id.
 # The overlay stays open. Anything else (the active session, a session the
@@ -119,8 +140,7 @@ fk_picker_manage() {
   for ((i = 0; i < 8; i++)); do keys "$s" Up; done
   for ((i = 0; i < 8; i++)); do
     keys "$s" "$key"
-    if wait_for "$s" '(Session: |Delete session )[0-9a-f-]{36}' 2; then
-      id=$(grep -Eo '(Session: |Delete session )[0-9a-f-]{36}' <<<"$SCREEN" | head -1 | grep -Eo '[0-9a-f-]{36}')
+    if wait_for "$s" '(Session: |Delete session )[0-9a-f-]{36}' 2 && id=$(fk_dialog_id "$SCREEN") && [[ -n $id ]]; then
       for a in "$@"; do
         [[ $a == "$id" ]] && { printf '%s\n' "$id"; return 0; }
       done
@@ -160,12 +180,19 @@ chk_fork_session_tag_paste() {
   sleep 0.5
   SCREEN=$(screen fktitle)
   shot
+  local pasted_row typed_row
+  pasted_row=$(first_match 'Tag:' | squash)
   if grep -q 'Tag: fkpaste' <<<"$SCREEN"; then
-    res PASS "pasting into the tag field of $id shows: $(first_match 'Tag:')"
+    res PASS "pasting into the tag field of $id shows: $pasted_row"
   else
-    res FAIL "pasting fkpaste into the tag field of $id left it empty: '$(first_match 'Tag:')' (typed keys do work)"
+    shot
+    # The same characters typed key by key, in the same dialog.
+    keys fktitle -l 'fkpaste'
+    sleep 0.5
+    typed_row=$(first_match 'Tag:' "$(screen fktitle)" | squash)
+    res FAIL "pasting fkpaste into the tag field of $id left it empty: '$pasted_row'; typing the same characters then showed: '$typed_row'"
     defect "Pasted text is ignored in the session tag field" \
-      "1. Open /resume. 2. Press t on a session. 3. Paste text (bracketed paste, as a terminal sends it). The Tag: field stays empty and Enter then saves an empty tag, clearing the session's existing tag (transcript record {\"type\":\"tag\",\"tag\":\"\"}); typing the same characters works." \
+      "1. Open /resume. 2. Press t on a session without a tag (the field starts empty). 3. Paste text as a terminal sends it (bracketed paste). Observed in this run: the Tag: field stays empty after the paste, and typing the same characters key by key into it afterwards fills it ('$typed_row')." \
       "$(grep -v '^ *$' <<<"$SCREEN" | head -8)"
   fi
   keys fktitle Escape
@@ -234,7 +261,7 @@ chk_fork_session_delete() {
   fi
   file=$(transcript_of fktitle "$id")
   SCREEN=$(screen fktitle)
-  grep -q 'Press y to confirm' <<<"$SCREEN" || { res FAIL "no 'Press y to confirm' for $id"; keys fktitle Escape; close_view fktitle; return; }
+  [[ $(fk_dialog_id "$SCREEN") == "$id" ]] && grep -q 'Press y to confirm' <<<"$SCREEN" || { res FAIL "no 'Press y to confirm' for $id"; keys fktitle Escape; close_view fktitle; return; }
   keys fktitle y
   for ((i = 0; i < 40; i++)); do
     [[ -e $file ]] || break
@@ -354,7 +381,7 @@ chk_fork_composer_rules() {
   printf '%s\n' '{"presentation":{"composerStyle":"rules"}}' >"$f" || { res FAIL "could not write $f"; return; }
   FK_APP_SETTINGS_CREATED=$(cat "$f")
   prepare_cwd fkrules || { res FAIL "could not prepare the cwd"; return; }
-  rs_start fkrules --model "$MODEL" || { rm -f "$f"; FK_APP_SETTINGS_CREATED=''; res FAIL "session did not start"; return; }
+  rs_start fkrules --model "$MODEL" || { fk_app_settings_remove; res FAIL "session did not start"; return; }
   sleep 1
   SCREEN=$(screen fkrules)
   shot
@@ -362,12 +389,12 @@ chk_fork_composer_rules() {
   id=$(jq -r .sessionId <<<"$REG")
   want=$(fk_accent_rgb "$id")
   rule=$(screen_e fkrules | LC_ALL=C grep -a '─────' | head -1 | LC_ALL=C sed -nE 's/.*\x1b\[38;2;([0-9]+);([0-9]+);([0-9]+)m.*/\1,\2,\3/p')
-  rm -f "$f"
-  FK_APP_SETTINGS_CREATED=''
+  FK_APP_SETTINGS_NOTE=''
+  fk_app_settings_remove || true
   rs_stop fkrules
   if [[ $(grep -cE '^─{40,}$' <<<"$SCREEN") -ge 2 ]] && grep -qE '^ ?❯ ' <<<"$SCREEN" && [[ $rule == "$want" ]]; then
-    res PASS "rows: $rows; rule colour $rule is the session accent"
+    res PASS "rows: $rows; rule colour $rule is the session accent${FK_APP_SETTINGS_NOTE:+; $FK_APP_SETTINGS_NOTE}"
   else
-    res FAIL "rules around the prompt not as documented: rows '$rows', rule colour '${rule:-none}', accent $want"
+    res FAIL "rules around the prompt not as documented: rows '$rows', rule colour '${rule:-none}', accent $want${FK_APP_SETTINGS_NOTE:+; $FK_APP_SETTINGS_NOTE}"
   fi
 }

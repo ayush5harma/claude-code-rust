@@ -27,7 +27,10 @@ Code and spends real (small) model usage.
   `claude-rs-bridge-bun` from an installed release, `agent-sdk/dist` and
   `agent-sdk/package.json`, and a `node_modules` link to
   `agent-sdk/node_modules`) and pass that binary with `--bin`, without
-  `--bridge`.
+  `--bridge`. Make the scratch directory with
+  `mktemp -d "${TMPDIR:-/tmp}/claude-rs-release.XXXXXX"` (not inside the
+  checkout or the work directory) and delete it with `rm -rf` when the run is
+  done; it holds a copy of the binary and a symlink, nothing else.
 - A **logged-in stock Claude Code binary**, started directly. Resolution:
   `--claude`, else `$PARITY_CLAUDE_BIN`, else the installed
   `~/.local/share/claude/ClaudeCode.app` binary, else `~/.local/bin/claude`,

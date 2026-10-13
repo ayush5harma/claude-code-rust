@@ -143,7 +143,8 @@ EOF
     printf -- '- Date: %s\n' "$(date -u '+%Y-%m-%d %H:%M UTC')"
     printf -- '- claude-rs: %s\n' "$RS_VERSION"
     case $BIN in
-      "$REPO_DIR"/* | "$HOME"/*) printf -- '- Tested binary: `%s`\n' "${BIN#"$REPO_DIR"/}" ;;
+      "$REPO_DIR"/*) printf -- '- Tested binary: `%s`\n' "${BIN#"$REPO_DIR"/}" ;;
+      "$HOME"/*) printf -- '- Tested binary: `~/%s`\n' "${BIN#"$HOME"/}" ;;
       *) printf -- '- Tested binary: `claude-rs` from outside the checkout (a release build laid out like an installed release; see the suite README)\n' ;;
     esac
     printf -- '- Source checkout: `%s` (git describe --always --dirty)\n' "$SRC_REV"

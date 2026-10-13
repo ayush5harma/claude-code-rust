@@ -234,7 +234,7 @@ chk_input_ctrl_o() {
     res PASS "$(first_match 'Detailed transcript snapshot' | squash) / $(first_match 'Tool: ' | squash)"
     if [[ -n $dup ]]; then
       defect "The Ctrl+O transcript snapshot prints a Bash tool result twice" \
-        "1. Run a Bash tool call that prints one line (for example echo PARITY_BANG_7). 2. Press Ctrl+O. Under 'Tool: <command>' the output line appears twice in a row; the chat row and the command itself print it once." \
+        "1. Have a Bash tool call that prints one line in the session (here echo PARITY_BANG_7). 2. Press Ctrl+O. Observed in this run: under 'Tool: <command>' the output line appears twice in a row." \
         "$(grep -v '^ *$' <<<"$SCREEN" | squash | head -12)"
     fi
     keys main C-o

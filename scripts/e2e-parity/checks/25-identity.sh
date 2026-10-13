@@ -164,7 +164,7 @@ chk_rename_resume_name() {
     id_shot
     res FAIL "registry name after resume: '$(jq -r .name <<<"$REG")' (session $(jq -r .sessionId <<<"$REG")); it was $ID_TITLE before Ctrl+Q, which stock keeps; the footer does show '$(footer "$SCREEN" | head -1 | sed -E 's/.*\] //')' (PR #16)"
     defect "The agents registry loses the session name after a resume" \
-      "1. Run /rename <name>, then quit with Ctrl+Q. 2. Start claude-rs -r <session id>. 3. Run claude agents --json: the interactive entry's name is the directory-derived default (identity-NN), not <name>; stock keeps the name there. The footer and the Status tab show <name> again (the title is restored through the SDK session API), so the loss is only in the registry that agent views and scripts read." \
+      "1. Run /rename <name>, then quit with Ctrl+Q. 2. Start claude-rs -r <session id>. 3. Run claude agents --json: the interactive entry's name is the directory-derived default (identity-NN), not <name>; stock keeps the name there. Observed in this run: the footer shows <name> again after the resume." \
       "registry: $(jq -c '{name, sessionId, status}' <<<"$REG")"
   fi
 }

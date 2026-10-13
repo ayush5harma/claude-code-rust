@@ -315,16 +315,19 @@ chk_input_ctrl_z() {
 def input.ctrl_d input "Ctrl+D on an empty prompt exits" "Exits (press twice)"
 chk_input_ctrl_d() {
   rs_start quit --model "$MODEL" || { res FAIL "quit session did not start"; return; }
+  # One press only: shutdown runs the SessionEnd hooks, so give it time.
   keys quit C-d
-  sleep 0.4
-  keys quit C-d
-  sleep 2
+  local i
+  for ((i = 0; i < 20; i++)); do
+    pane_dead quit && break
+    sleep 0.5
+  done
   if pane_dead quit; then
-    res PASS "Ctrl+D on an empty prompt exited (the pane is dead; stock asks for two presses)"
+    res PASS "one Ctrl+D on an empty prompt exited (the pane is dead after it; stock asks for two presses)"
   else
     SCREEN=$(screen quit)
     shot
-    res FAIL "Ctrl+D twice on an empty prompt did not exit (composer: $(composer_line))"
+    res FAIL "one Ctrl+D on an empty prompt did not exit within 10 s (composer: $(composer_line))"
   fi
 }
 

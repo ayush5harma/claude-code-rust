@@ -63,7 +63,8 @@ cleanup works.
 - Results: 99 PASS, 5 FAIL, 6 GAP, 3 SKIP
 - Duration: 1296s over the recorded checks
 - Cost of this run: $0.5061, summed from the `/usage` readout of each claude-rs session when the suite stopped it (the performance group runs no model turns)
-- 2 row(s) are marked `[environment: ...]`: their reading depends on the profile the run used, not on claude-rs alone.
+- 3 row(s) are marked `[environment: ...]`: their reading depends on the profile the run used, not on claude-rs alone.
+- Review round, same day: after the full run above the checks listed here were changed and re-run alone on the same build (`fork.*`, `present.capture`, `session.statusline`, `input.ctrl_d`, `input.ctrl_o`, `rename.resume_name`, `rename.resume_history`, `input.bang`), in two partial runs (the second re-ran `fork.flag_name`, `fork.export`, `fork.session_tag_paste` and `session.statusline`). Their rows and the defects below are from those runs; every other row, the performance table and the counts are from the full run, and the counts did not change.
 
 ## Launch and resume
 
@@ -117,7 +118,7 @@ cleanup works.
 | Session name in /status | Status shows the session name | PASS | `rename.status_tab` Session name: parity-rn-114324 |
 | /color replies | Set, reset-to-default and invalid-colour lines | PASS | `color.replies` invalid, reset and 'Session color set to: blue' replies shown |
 | /color persisted | Transcript `agent-color` entry | PASS | `color.persisted` transcript agent-color: blue |
-| Name kept after Ctrl+Q and resume | Registry keeps the name | **FAIL** | `rename.resume_name` registry name after resume: 'identity-a8' (session 074f7e3a-c7ab-4272-a73d-c49fc03bebd0); it was parity-rn-114324 before Ctrl+Q, which stock keeps; the footer does show 'parity-rn-114324' (PR #16) |
+| Name kept after Ctrl+Q and resume | Registry keeps the name | **FAIL** | `rename.resume_name` registry name after resume: 'identity-bb' (session 29ee5250-027a-486a-9588-9f4dfc8d55da); it was parity-rn-121821 before Ctrl+Q, which stock keeps; the footer does show 'parity-rn-121821' (PR #16) |
 | /rename in the restored history | Shows `/rename <name>` and its output | **GAP** | `rename.resume_history` restored history shows the raw record '&lt;command-name&gt;/rename&lt;/command-name&gt;': the SDK exposes no reliable provenance for command-like user text on resume, so claude-rs keeps it verbatim (docs/src/commands.md) |
 
 ## Input
@@ -137,7 +138,7 @@ cleanup works.
 | Ctrl+V pastes an image | Attaches the clipboard image | SKIP | `input.ctrl_v_image` needs an image on the system clipboard; the suite never overwrites the owner's clipboard with an image (covered by the fork's own Ctrl+V tests) |
 | Tab completes a slash command | Completes the highlighted command | PASS | `input.tab_complete` /statu -&gt; │❯ /ecc:instinct-status |
 | Ctrl+Z suspends, fg resumes | Suspends to the shell | PASS | `input.ctrl_z` '[1]+ Stopped', then fg restored the composer |
-| Ctrl+D on an empty prompt exits | Exits (press twice) | PASS | `input.ctrl_d` Ctrl+D on an empty prompt exited (the pane is dead; stock asks for two presses) |
+| Ctrl+D on an empty prompt exits | Exits (press twice) | PASS | `input.ctrl_d` one Ctrl+D on an empty prompt exited (the pane is dead after it; stock asks for two presses) |
 | Ctrl+C clears the draft, then quits | First clears input; twice on empty exits | PASS | `input.ctrl_c` first Ctrl+C cleared the draft; 1 press(es) on the empty prompt quit (stock asks for two) |
 | Ctrl+T toggles the task list | Shows/hides the todo list | PASS | `input.ctrl_t` Tasks · Ctrl+T or Esc to close / #1 PARITY_TODO_ONE [Pending] |
 | Ctrl+O toggles the detailed transcript | Expands tool output / transcript view | PASS | `input.ctrl_o` Detailed transcript snapshot · Ctrl+O or Esc to close / Tool: echo PARITY_BANG_7 |
@@ -169,7 +170,7 @@ cleanup works.
 | Functionality | Claude Code | claude-rs (fork) | Evidence / notes |
 | --- | --- | --- | --- |
 | Context left in the footer | Context indicator near the prompt | PASS | `session.context` Loc: &lt;work&gt;/main … Ctx ▓░░░░░░░ 9% |
-| statusLine setting (user level) | Runs the command and shows its output under the prompt | PASS | `session.statusline` [environment: the statusLine command is the profile's own] extra footer row from the profile's statusLine command: personal \| Haiku 5.5 \| &lt;work&gt;/main.......... 9% of 900k \| direct 0K |
+| statusLine setting (user level) | Runs the command and shows its output under the prompt | PASS | `session.statusline` [environment: the statusLine command is the profile's own] the extra row 'personal \| Haiku 5.5 \| &lt;work&gt;/main.......... 8% of 900k' starts like the command's own output ('personal \| Haiku \| /private/tmp/claude-r') and was |
 | statusLine setting (project level) | Runs the project's command | **GAP** | `session.statusline_project` not run, by design: project and local settings cannot select an executable command (docs/src/settings.md); stock runs the fixture's printf PARITY_STATUSLINE |
 | Session cost | Cost of the session on request | PASS | `session.cost` Usage tab: $0.0572 cost · 2m 50s elapsed · 44s API time · +3 / -1 lines · 1 model |
 
@@ -183,32 +184,32 @@ cleanup works.
 
 | Functionality | Claude Code | claude-rs (fork) | Evidence / notes |
 | --- | --- | --- | --- |
-| --add-dir | Extra directory is readable without being the cwd | PASS | `fork.flag_add_dir` the model found fk_marker.txt in the added directory: reply 'FKADDMARK_7731 FKSYS_5519 FKENV_4412' |
-| --append-system-prompt | Appended text reaches the system prompt | PASS | `fork.flag_append_prompt` the appended instruction was followed: reply 'FKADDMARK_7731 FKSYS_5519 FKENV_4412' |
-| --settings (inline JSON) | Flag-settings layer applies (env) | PASS | `fork.flag_settings` printenv FORK_ENV_MARK printed the inline env value: reply 'FKADDMARK_7731 FKSYS_5519 FKENV_4412' |
-| -n, --name | Session name shown in Status and the footer | PASS | `fork.flag_name` Session name: fk-name-114324; footer: [Bypass Permissions] [Haiku 5.5/Med] [FAST:OFF] fk-name-114324 |
+| --add-dir | Extra directory is readable without being the cwd | PASS | `fork.flag_add_dir` the reply names the added directory and the marker read from it: '/private/var/folders/yb/spfnv4_12dz3gq_n60tf3h180000gn/T/claude-rs-dx-e2e-adddir.s0RLNY FKADDMARK_7731 FKSYS_5519'; the bridge log names it |
+| --append-system-prompt | Appended text reaches the system prompt | PASS | `fork.flag_append_prompt` the appended instruction was followed: reply '/private/var/folders/yb/spfnv4_12dz3gq_n60tf3h180000gn/T/claude-rs-dx-e2e-adddir.s0RLNY FKADDMARK_7731 FKSYS_5519' |
+| --settings (inline JSON) | Flag-settings layer applies (env) | PASS | `fork.flag_settings` printenv FORK_ENV_MARK printed the inline env value: reply 'FKENV_4412' |
+| -n, --name | Session name shown in Status and the footer | PASS | `fork.flag_name` Session name: fk-name-122326; footer: [Bypass Permissions] [Haiku 5.5/Med] [FAST:OFF] fk-name-122326 |
 | --mcp-config with --strict-mcp-config | Only the given MCP servers are used | PASS | `fork.flag_mcp_strict` 1/1 total 1 connected 1 needs auth 0 pending 0 disabled 0 failed 0; listed: › fkecho connected dynamic stdio |
-| Hook visibility | Slow-hook notice; startup and hook timing in Status | PASS | `fork.hook_visibility` Hook SessionStart:startup took 1.4 s; Status: SessionStart hooks finished: +2.3 s (5 hooks); Slowest 1: SessionStart:startup 1.4 s |
+| Hook visibility | Slow-hook notice; startup and hook timing in Status | PASS | `fork.hook_visibility` [environment: the profile's own hooks run in this session as well] Hook SessionStart:startup took 1.4 s; Status: SessionStart hooks finished: +2.5 s (5 hooks); Slowest 1: SessionStart:startup 1.4 s |
 | /reload | Skills are re-read without a restart | PASS | `fork.reload` before: '[ &gt; /parity-skill \| FKDESC_ONE probe skill (project)'; Reloaded skills (450) and output styles (5); after: '[ &gt; /parity-skill \| FKDESC_TWO probe skill (project)' |
 | /export | Writes the conversation; refuses to overwrite | PASS | `fork.export` Exported the conversation to &lt;work&gt;/fkflags/fk-export.md; the file holds the prompt and reply text; second run: 'Not exporting: &lt;work&gt;/fkflags/fk-export.md already exists and will not be overwritten.'; file unchanged |
-| /search and Ctrl+F | Transcript search finds earlier text | PASS | `fork.search` Match 1 of 1 -&gt; 'Claude: FKADDMARK_7731 FKSYS_5519 FKENV_4412'; Ctrl+F opened 'Transcript search' |
-| Footer: session name and context | Session title and context use | PASS | `fork.footer_session` [Bypass Permissions] [Haiku 5.5/Med] [FAST:OFF] fk-name-114324 \| Loc: &lt;work&gt;/fkflags … Ctx ▓░░░░░░░ 9% |
-| Footer: pending permissions | Prompt pending is visible without scrolling | PASS | `fork.footer_permissions` while the prompt was open the footer read: [Default] [Haiku 5.5/Med] [FAST:OFF] 1 PEND. PERM.; Esc rejected it (file not created) |
-| /agents | Subagent panel; stop a running subagent | PASS | `fork.agents` panel row: &gt; Run hold.mjs script Running a5045cb0d4e4bbc9d; s -&gt; 'Stop requested for the selected agent'; its command exited; row now: &gt; Run hold.mjs script Completed a5045cb0d4e4bbc9d |
+| /search and Ctrl+F | Transcript search finds earlier text | PASS | `fork.search` Match 1 of 1 -&gt; 'Claude: …b/spfnv4_12dz3gq_n60tf3h180000gn/T/claude-rs-dx-e2e-adddir.s0RLNY FKADDMARK_7731 FKSYS_5519 FKENV_4412'; Ctrl+F opened 'Transcript search' |
+| Footer: session name and context | Session title and context use | PASS | `fork.footer_session` [Bypass Permissions] [Haiku 5.5/Med] [FAST:OFF] fk-name-121821 \| Loc: &lt;work&gt;/fkflags … Ctx ▓░░░░░░░ 9% |
+| Footer: pending permissions | Prompt pending is visible without scrolling | PASS | `fork.footer_permissions` [environment: the profile's permission rules and hooks decide whether touch prompts] while the prompt was open the footer read: [Default] [Haiku 5.5/Med] [FAST:OFF] 1 PEND. PERM.; Esc rejected it (file not created) |
+| /agents | Subagent panel; stop a running subagent | PASS | `fork.agents` panel row: &gt; Run hold.mjs and reply Running a04a5d3810468cfca; s -&gt; 'Stop requested for the selected agent'; its command exited; row now: &gt; Run hold.mjs and reply Completed a04a5d3810468cfca |
 | Footer: agents and plan rows | Agent counts and the current plan | PASS | `fork.footer_agents` while a subagent ran: 'Agents: 1 running / 1' and plan row '░ 0/1 Run the hold.mjs fixture script with node' |
 | Footer: TodoWrite plan row | Latest todo list as a progress row | PASS | `fork.footer_plan` plan row after the todo turn: ░░ 0/2 PARITY_TODO_ONE |
-| /usage: session totals after a turn | Totals reflect the turn just run | PASS | `fork.usage_fresh` first open after a turn read '$0.0115 cost' ('r' then '$0.0115 cost') |
-| /resume picker: current session | Active session listed and marked | **FAIL** | `fork.picker_current` the active session (renamed FK_UNIQ_120305, transcript on disk) is not listed or marked [current]: &gt; 5s ago - FK_DUP_120305 [saved 3 KiB] messages ›\|12s ago - FK_DUP_120305 [saved 3 KiB] messages › |
-| /resume &lt;ambiguous title&gt; | Reports the ambiguity and the session ids | **FAIL** | `fork.resume_title_ambiguous` two sessions are titled FK_DUP_120305: no ambiguity message; composer gone, last row: ⠙ Resuming session FK_DUP_120305... |
-| -r &lt;exact title&gt; | Resumes the one session with that title | PASS | `fork.resume_title` -r FK_UNIQ_120305 resumed session c90aed62-6cc8-4c7c-8af3-98dad9f2d731; footer: [Auto] [Haiku 5.5/Med] [FAST:OFF] FK_UNIQ_120305 |
-| --fork-session | Resumes into a new session id; the original is untouched | PASS | `fork.flag_fork_session` forked as d4229cc6-9561-4357-ae15-89c10f91ddb7 from c90aed62-6cc8-4c7c-8af3-98dad9f2d731; the original transcript is byte-identical (cksum 602675410 3206); history replayed: &lt;command-name&gt;/rename&lt;/command-name&gt; |
-| Session tag: pasted text | A paste lands in the tag field | **FAIL** | `fork.session_tag_paste` pasting fkpaste into the tag field of c90aed62-6cc8-4c7c-8af3-98dad9f2d731 left it empty: '│ Tag: │' (typed keys do work) |
-| Session tag | Tag saved through the SDK and shown in the picker | PASS | `fork.session_tag` tagged 4f7c5018-3f36-4a88-a864-d0aeefd4e8a5; picker row: &gt; just now - FK_DUP_120305 [saved 3 KiB] [tag: fk-tag] messages › |
-| Session deletion | Confirmation, active-session protection, file removed | PASS | `fork.session_delete` confirmed delete of 4f7c5018-3f36-4a88-a864-d0aeefd4e8a5: transcript removed, rows 4 -&gt; 3; active session: 'Switch sessions before deleting the active session.' |
-| Resume picker: large sessions | Size shown; compact-first offered from 1 MiB | PASS | `fork.compact_first` row: &gt; 1s ago - Synthetic parity prompt 001: summarize the fixed sample text... [saved 1.3 MiB] messages ›; hint: Enter resume \| c compact-first (1 MiB+) \| Right messages \| t tag \| d delete \| Esc (c not pressed: compacti |
-| Session accent and /color | Stable colour per session; /color changes it | PASS | `fork.accent` id 62a289bb-97bf-4761-b8bc-e8bb9f938385 -&gt; palette 190,155,240; /color blue -&gt; 120,175,245; /color default -&gt; 190,155,240 |
+| /usage: session totals after a turn | Totals reflect the turn just run | PASS | `fork.usage_fresh` first open after a turn read '$0.0116 cost' ('r' then '$0.0116 cost') |
+| /resume picker: current session | Active session listed and marked | **FAIL** | `fork.picker_current` the active session (renamed FK_UNIQ_122040, transcript on disk) is not listed or marked [current]: &gt; 5s ago - FK_DUP_122040 [saved 3 KiB] messages ›\|12s ago - FK_DUP_122040 [saved 3 KiB] messages › |
+| /resume &lt;ambiguous title&gt; | Reports the ambiguity and the session ids | **FAIL** | `fork.resume_title_ambiguous` two sessions are titled FK_DUP_122040: no ambiguity message; composer gone, last row: ⠋ Resuming session FK_DUP_122040...; bridge log slash_error events: 1 |
+| -r &lt;exact title&gt; | Resumes the one session with that title | PASS | `fork.resume_title` -r FK_UNIQ_122040 resumed session 8c54662d-b038-4361-9ac6-70c20c9c7d90; footer: [Auto] [Haiku 5.5/Med] [FAST:OFF] FK_UNIQ_122040 |
+| --fork-session | Resumes into a new session id; the original is untouched | PASS | `fork.flag_fork_session` forked as 94b032e7-39d9-4c91-8c2c-ea86df208b01 from 8c54662d-b038-4361-9ac6-70c20c9c7d90; the original transcript is byte-identical (cksum 1152543210 3203); history replayed: &lt;command-name&gt;/rename&lt;/command-name&gt; |
+| Session tag: pasted text | A paste lands in the tag field | **FAIL** | `fork.session_tag_paste` pasting fkpaste into the tag field of df4d8d35-8dfc-4b20-b3d9-c4bf4e68d669 left it empty: 'Tag:'; typing the same characters then showed: 'Tag: fkpaste' |
+| Session tag | Tag saved through the SDK and shown in the picker | PASS | `fork.session_tag` tagged 106b0e62-1a6f-4860-bc78-69fc592ebfd8; picker row: &gt; just now - FK_DUP_122040 [saved 3 KiB] [tag: fk-tag] messages › |
+| Session deletion | Confirmation, active-session protection, file removed | PASS | `fork.session_delete` confirmed delete of 106b0e62-1a6f-4860-bc78-69fc592ebfd8: transcript removed, rows 4 -&gt; 3; active session: 'Switch sessions before deleting the active session.' |
+| Resume picker: large sessions | Size shown; compact-first offered from 1 MiB | PASS | `fork.compact_first` row: &gt; 3s ago - Synthetic parity prompt 001: summarize the fixed sample text... [saved 1.3 MiB] messages ›; hint: Enter resume \| c compact-first (1 MiB+) \| Right messages \| t tag \| d delete \| Esc (c not pressed: compacti |
+| Session accent and /color | Stable colour per session; /color changes it | PASS | `fork.accent` id 2023fd80-8298-4032-af9d-2bb259b25aa0 -&gt; palette 246,160,90; /color blue -&gt; 120,175,245; /color default -&gt; 246,160,90 |
 | Composer style: rules | Rules above and below the prompt in the session colour | PASS | `fork.composer_rules` rows: ────────────────────────\| ❯ Type a message...\|────────────────────────; rule colour 245,115,120 is the session accent |
-| Presentation capture, stock and claude-rs | Same Markdown reply and ANSI command; both screens kept | PASS | `present.capture` both replies captured: 68 non-blank rows (claude-rs), 49 (stock); ANSI command captured in both; files: &lt;work&gt;/presentation |
+| Presentation capture, stock and claude-rs | Same Markdown reply and ANSI command; both screens kept | PASS | `present.capture` both replies captured: 68 non-blank rows (claude-rs), 49 (stock); the ANSI command's output is on both screens; files: &lt;work&gt;/presentation |
 
 ## Known gaps
 
@@ -254,12 +255,12 @@ Found by `rename.resume_name`.
 
 **Steps**
 
-1. Run /rename <name>, then quit with Ctrl+Q. 2. Start claude-rs -r <session id>. 3. Run claude agents --json: the interactive entry's name is the directory-derived default (identity-NN), not <name>; stock keeps the name there. The footer and the Status tab show <name> again (the title is restored through the SDK session API), so the loss is only in the registry that agent views and scripts read.
+1. Run /rename <name>, then quit with Ctrl+Q. 2. Start claude-rs -r <session id>. 3. Run claude agents --json: the interactive entry's name is the directory-derived default (identity-NN), not <name>; stock keeps the name there. Observed in this run: the footer shows <name> again after the resume.
 
 **Screen**
 
 ~~~text
-registry: {"name":"identity-a8","sessionId":"074f7e3a-c7ab-4272-a73d-c49fc03bebd0","status":"idle"}
+registry: {"name":"identity-bb","sessionId":"29ee5250-027a-486a-9588-9f4dfc8d55da","status":"idle"}
 ~~~
 
 ### The Ctrl+O transcript snapshot prints a Bash tool result twice
@@ -268,7 +269,7 @@ Found by `input.ctrl_o`.
 
 **Steps**
 
-1. Run a Bash tool call that prints one line (for example echo PARITY_BANG_7). 2. Press Ctrl+O. Under 'Tool: <command>' the output line appears twice in a row; the chat row and the command itself print it once.
+1. Have a Bash tool call that prints one line in the session (here echo PARITY_BANG_7). 2. Press Ctrl+O. Observed in this run: under 'Tool: <command>' the output line appears twice in a row.
 
 **Screen**
 
@@ -281,10 +282,7 @@ Assistant:
 Tool: echo PARITY_BANG_7
 PARITY_BANG_7
 PARITY_BANG_7
-The command printed `PARITY_BANG_7`.
-
-User:
-Reply with exactly: PARITY_HISTORY
+The command ran and printed `PARITY_BANG_7`.
 ~~~
 
 ### A subagent stopped from /agents is listed as Completed
@@ -293,12 +291,12 @@ Found by `fork.agents`.
 
 **Steps**
 
-1. Ask for a foreground Agent call whose command runs for 90 s. 2. While it runs, open /agents, select the Running row and press s. The panel answers 'Stop requested for the selected agent', the command exits, and the row then reads Completed; the panel has a Stopped label for tasks whose terminal status is stopped, which this one never gets.
+1. Ask for a foreground Agent call whose command runs for 90 s. 2. While it runs, open /agents, select the Running row and press s. Observed in this run: the panel answers 'Stop requested for the selected agent', the command exits, and the row then reads Completed. (src/ui/config/agents.rs has a Stopped label for a task whose terminal_status is stopped; this row did not get it.)
 
 **Screen**
 
 ~~~text
-> Run hold.mjs script Completed a5045cb0d4e4bbc9d
+> Run hold.mjs and reply Completed a04a5d3810468cfca
 ~~~
 
 ### The /resume picker opened inside a running session shows a stale list
@@ -316,9 +314,9 @@ Found by `fork.picker_current`.
 │ Select a session to resume                                                                                           │
 │                                                                                                                      │
 │ Recent sessions for this project directory.                                                                          │
-│ > 5s ago - FK_DUP_120305 [saved 3 KiB]                                                                    messages › │
+│ > 5s ago - FK_DUP_122040 [saved 3 KiB]                                                                    messages › │
 │                                                                                                                      │
-│   12s ago - FK_DUP_120305 [saved 3 KiB]                                                                   messages › │
+│   12s ago - FK_DUP_122040 [saved 3 KiB]                                                                   messages › │
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │
@@ -332,7 +330,7 @@ Found by `fork.resume_title_ambiguous`.
 
 **Steps**
 
-1. Have two sessions in one project with the same /rename title. 2. In a third session type /resume <that title> and press Enter. The bridge answers with a slash_error (ambiguous session title, logged as bridge_event slash_error), but the screen only shows the spinner row and the composer does not come back; only Ctrl+Q works. The same happens for /resume <unknown title> on the installed 0.15.2-fork.2, and for claude-rs -r <ambiguous title> at launch (an empty composer, no mode or model in the footer).
+1. Have two sessions in one project with the same /rename title. 2. In a third session type /resume <that title> and press Enter. Observed in this run: the bridge log holds 1 slash_error event(s) for the session, but the screen shows no message, only the spinner row, and the composer does not come back. Seen manually on 2026-10-13 and not re-checked by the suite: only Ctrl+Q leaves that state; /resume <unknown title> behaves the same, on the installed 0.15.2-fork.2 as well; claude-rs -r <ambiguous title> at launch ends in an empty composer with no mode or model in the footer.
 
 **Screen**
 
@@ -340,11 +338,10 @@ Found by `fork.resume_title_ambiguous`.
 User
 /resume
 User
-/resume FK_DUP_120305
-⠙ Resuming session FK_DUP_120305...
-[Bypass Permissions]  [Haiku 5.5/Med]  [FAST:OFF]  FK_UNIQ_120305
-Loc: <work>/fktitle                                                   Ctx ░░░░░░░░ 6%
-personal | Haiku 5.5 | <work>/fktitle.......... 6% of 900k
+/resume FK_DUP_122040
+⠋ Resuming session FK_DUP_122040...
+[Bypass Permissions]  [Haiku 5.5/Med]  [FAST:OFF]  FK_UNIQ_122040
+Loc: <work>/fktitle                                                    Ctx ░░░░░░░░ 6%
 ~~~
 
 ### Pasted text is ignored in the session tag field
@@ -353,7 +350,7 @@ Found by `fork.session_tag_paste`.
 
 **Steps**
 
-1. Open /resume. 2. Press t on a session. 3. Paste text (bracketed paste, as a terminal sends it). The Tag: field stays empty and Enter then saves an empty tag, clearing the session's existing tag (transcript record {"type":"tag","tag":""}); typing the same characters works.
+1. Open /resume. 2. Press t on a session without a tag (the field starts empty). 3. Paste text as a terminal sends it (bracketed paste). Observed in this run: the Tag: field stays empty after the paste, and typing the same characters key by key into it afterwards fills it ('Tag: fkpaste').
 
 **Screen**
 
@@ -362,7 +359,7 @@ Found by `fork.session_tag_paste`.
 │ Edit tag or confirm deletion                                                                                         │
 │                                                                                                                      │
 │ The action applies to the selected session ID shown below.                                                           │
-│ Session: c90aed62-6cc8-4c7c-8af3-98dad9f2d731                                                                        │
+│ Session: df4d8d35-8dfc-4b20-b3d9-c4bf4e68d669                                                                        │
 │ Tag:                                                                                                                 │
 │ Enter saves; empty tag clears                                                                                        │
 │                                                                                                                      │

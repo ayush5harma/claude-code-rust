@@ -40,10 +40,30 @@ chk_session_statusline() {
     sleep 0.5
   done
   shot
-  if [[ -n $row ]]; then
-    res PASS "extra footer row from the profile's statusLine command: $row"
-  else
+  if [[ -z $row ]]; then
     res FAIL "no statusLine row below the footer; last row: $(grep -v '^ *$' <<<"$SCREEN" | tail -1)"
+    return
+  fi
+  # Specific, not just "an unrecognised last row": run the command once with
+  # the documented input and require the row to start the way its output does
+  # (digits masked), and to be unchanged across a second capture.
+  local id once want got later
+  id=$(jq -r '.sessionId // empty' <<<"$(registry_entry "$(cwd_of main)")")
+  # With the profile selected as the sessions select it (CONFIG_ENV), and the
+  # colour sequences the command prints removed, as claude-rs removes them.
+  once=$(cd "$(cwd_of main)" && jq -nc --arg id "$id" --arg cwd "$(cwd_of main)" --arg m "$MODEL_LABEL" \
+    '{session_id: $id, cwd: $cwd, workspace: {current_dir: $cwd, project_dir: $cwd}, model: {id: $m, display_name: $m}}' |
+    timeout 5 env ${CONFIG_ENV[@]+"${CONFIG_ENV[@]}"} bash -c "$cmd" 2>/dev/null | head -1 | perl -pe 's/\e\[[0-9;]*m//g')
+  want=$(sed -E 's/[0-9]+/N/g' <<<"${once:0:12}")
+  got=$(sed -E 's/[0-9]+/N/g' <<<"$row")
+  sleep 2
+  later=$(grep -v '^ *$' <<<"$(screen main)" | tail -1)
+  if [[ -z $once || ${#want} -lt 4 ]]; then
+    res FAIL "the profile's statusLine command printed nothing when run once with the documented input, so the row '$row' cannot be tied to it"
+  elif [[ $got == "$want"* && $later == "$row" ]]; then
+    res PASS "the extra row '$row' starts like the command's own output ('${once:0:40}') and was unchanged two seconds later"
+  else
+    res FAIL "the extra row '$row' does not match the command's output ('${once:0:40}') or changed ('$later')"
   fi
 }
 

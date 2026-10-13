@@ -74,17 +74,27 @@ EOF
   sleep 1
   tm kill-session -t presstock 2>/dev/null
   CUR_SHEBANG=$(grep -B2 -A2 '^\*\*!/usr/bin/env' "$dir/claude-rs.markdown.txt" | head -6)
-  if [[ -n $CUR_SHEBANG ]]; then
+  if [[ -n $CUR_SHEBANG ]] && grep -q '#!/usr/bin/env bash' "$dir/stock.markdown.txt"; then
     defect "A shebang first line in a fenced bash block is rendered as bold text without its #" \
       "1. Have the model answer with a fenced bash block whose first line is #!/usr/bin/env bash. 2. Look at the rendered block in claude-rs: the line reads **!/usr/bin/env bash** (the # is gone, literal asterisks appear, a blank row is inserted); stock shows #!/usr/bin/env bash." \
       "$CUR_SHEBANG"
   fi
   rows_rs=$(grep -vc '^ *$' "$dir/claude-rs.markdown.txt")
   rows_stock=$(grep -vc '^ *$' "$dir/stock.markdown.txt")
-  if grep -q 'PRES long line' "$dir/claude-rs.markdown.txt" && grep -q 'PRES long line' "$dir/stock.markdown.txt"; then
-    res PASS "both replies captured: $rows_rs non-blank rows (claude-rs), $rows_stock (stock); ANSI command captured in both; files: $dir"
+  local f missing=""
+  for f in claude-rs.markdown stock.markdown; do
+    grep -q 'PRES long line' "$dir/$f.txt" || missing+=" $f(PRES long line)"
+  done
+  # The command's output must be on both screens, or the capture claims too much
+  # (stock can sit on a permission prompt instead).
+  for f in claude-rs.ansi stock.ansi; do
+    grep -q 'ANSI_PLAIN_LINE' "$dir/$f.txt" || missing+=" $f(ANSI_PLAIN_LINE)"
+  done
+  if [[ -z $missing ]]; then
+    res PASS "both replies captured: $rows_rs non-blank rows (claude-rs), $rows_stock (stock); the ANSI command's output is on both screens; files: $dir"
   else
-    SCREEN=$(<"$dir/stock.markdown.txt")
-    res FAIL "the sample reply is incomplete: claude-rs has 'PRES long line': $(grep -c 'PRES long line' "$dir/claude-rs.markdown.txt"), stock: $(grep -c 'PRES long line' "$dir/stock.markdown.txt")"
+    SCREEN=$(<"$dir/stock.ansi.txt")
+    shot
+    res FAIL "capture incomplete, missing:$missing"
   fi
 }

@@ -6,16 +6,17 @@
 # presentation capture. Each check judges by what the screen, the files or the
 # registry show against the real stock Claude Code underneath. Nothing here
 # edits the profile: the sessions run in scratch cwds under the work directory.
-# Two files outside the work directory are touched, both marker-guarded and
-# restored in fork_cleanup: claude-rs's own app settings file (composer style)
-# and the processes the agents check starts.
+# Outside the work directory the suite touches three things, each guarded and
+# undone in fork_cleanup: claude-rs's own app settings file (composer style),
+# the processes the agents check starts, and the random directory --add-dir
+# points at.
 
 FK_NAME=fk-name-$(date +%H%M%S)
-FK_FLAGS_READY='' FK_FLAGS_REPLY=''
+FK_FLAGS_READY='' FK_FLAGS_REPLY='' FK_FLAGS_FAILED='' FK_ADD_DIR=''
+FK_AGENTS_FAILED='' FK_TITLE_FAILED=''
 FK_AGENTS_DONE='' FK_AGENTS_PANEL='' FK_AGENTS_STOP='' FK_AGENTS_FOOTER='' FK_AGENTS_PLAN='' FK_AGENTS_AFTER=''
 FK_TITLE_DONE='' FK_TITLE_A='' FK_TITLE_B='' FK_TITLE_C='' FK_TITLE_DUP='' FK_TITLE_UNIQ=''
-FK_APP_SETTINGS_CREATED=''
-FK_PRESENT_DONE=''
+FK_APP_SETTINGS_CREATED='' FK_APP_SETTINGS_NOTE=''
 
 # fk_app_settings: claude-rs's own preferences file (src/app/settings.rs:
 # dirs::config_dir()/claude-code-rust/settings.json). It holds Composer style.
@@ -24,13 +25,52 @@ fk_app_settings() {
   printf '%s\n' "$HOME/Library/Application Support/claude-code-rust/settings.json"
 }
 
-# fork_cleanup: called by run.sh's exit trap. Removes only what a check here
-# created, and only if it is still the file this run wrote.
-fork_cleanup() {
-  local f pid
-  if [[ -n $FK_APP_SETTINGS_CREATED ]] && f=$(fk_app_settings) && [[ -f $f ]] &&
-    [[ $(cat "$f") == "$FK_APP_SETTINGS_CREATED" ]]; then
+# fk_app_settings_remove: the one way the suite removes the app settings file.
+# It deletes the file only while its content is still exactly what the suite
+# wrote; claude-rs also keeps update-check results there, so a file that has
+# changed since is left alone and the note says so.
+fk_app_settings_remove() {
+  local f
+  [[ -n $FK_APP_SETTINGS_CREATED ]] || return 0
+  f=$(fk_app_settings) || return 0
+  if [[ ! -e $f ]]; then
+    FK_APP_SETTINGS_CREATED=''
+  elif [[ -f $f && $(cat "$f") == "$FK_APP_SETTINGS_CREATED" ]]; then
     rm -f -- "$f"
+    FK_APP_SETTINGS_CREATED=''
+  else
+    FK_APP_SETTINGS_NOTE="the app settings file was left in place: its content changed after the suite wrote it"
+    FK_APP_SETTINGS_CREATED=''
+    return 1
+  fi
+}
+
+# fk_add_dir_make: a random directory for --add-dir, outside the parent of the
+# work directory so that `ls ..` or find from the session's cwd cannot reach
+# it. Marker-guarded: fork_cleanup removes only a directory that carries it.
+fk_add_dir_make() {
+  local base parent want
+  want=$(cd "$(dirname "$WORK")" && pwd -P)
+  for base in "${TMPDIR:-}" "$HOME/.cache"; do
+    [[ -n $base && -d $base ]] || continue
+    parent=$(cd "$base" && pwd -P)
+    [[ $parent != "$want" ]] || continue
+    FK_ADD_DIR=$(mktemp -d "$parent/claude-rs-dx-e2e-adddir.XXXXXX") || continue
+    printf 'parity-adddir-v1\n' >"$FK_ADD_DIR/.parity-adddir"
+    printf 'FKADDMARK_7731\n' >"$FK_ADD_DIR/fk_marker.txt"
+    return 0
+  done
+  FK_ADD_DIR=''
+  return 1
+}
+
+# fork_cleanup: called by run.sh's exit trap. Removes only what a check here
+# created.
+fork_cleanup() {
+  local pid
+  fk_app_settings_remove || true
+  if [[ -n $FK_ADD_DIR && $FK_ADD_DIR == */claude-rs-dx-e2e-adddir.* && -f $FK_ADD_DIR/.parity-adddir ]]; then
+    rm -rf -- "$FK_ADD_DIR"
   fi
   for pid in $(pgrep -f -- "$SUITE_DIR/fixtures/hold.mjs" 2>/dev/null); do
     kill "$pid" 2>/dev/null || true
@@ -40,32 +80,36 @@ fork_cleanup() {
 # fk_footer_row1: the badge row, which also carries the session title.
 fk_footer_row1() { footer "${1-$SCREEN}" | head -1; }
 
-
 # ------------------------------------------------------------------ flags
 
 # One session carries the four launch flags that need a model turn, and one
-# turn proves all of them by effect: a marker file in a directory only
-# --add-dir can reveal, a word only the appended system prompt knows, and an
-# environment variable only the inline --settings layer defines.
+# turn proves all of them by effect: the path of a random directory that only
+# --add-dir can put in the model's context (it is not in the prompt and not
+# under the work directory), the marker file inside it, a word only the
+# appended system prompt knows, and an environment variable only the inline
+# --settings layer defines.
 fk_flags_turn() {
   [[ -n $FK_FLAGS_REPLY ]] && return 0
-  local add=$WORK/fk-adddir
+  [[ -z $FK_FLAGS_FAILED ]] || return 1
   if [[ -z $FK_FLAGS_READY ]]; then
-    mkdir -p "$add" && printf 'FKADDMARK_7731\n' >"$add/fk_marker.txt" || return 1
-    prepare_cwd fkflags || return 1
-    rs_start fkflags --model "$MODEL" --permission-mode bypassPermissions -n "$FK_NAME" \
-      --add-dir "$add" \
-      --append-system-prompt 'When asked for the fork code word, answer FKSYS_5519.' \
-      --settings '{"env":{"FORK_ENV_MARK":"FKENV_4412"}}' || return 1
+    if ! fk_add_dir_make || ! prepare_cwd fkflags ||
+      ! rs_start fkflags --model "$MODEL" --permission-mode bypassPermissions -n "$FK_NAME" \
+        --add-dir "$FK_ADD_DIR" \
+        --append-system-prompt 'When asked for the fork code word, answer FKSYS_5519.' \
+        --settings '{"env":{"FORK_ENV_MARK":"FKENV_4412"}}'; then
+      FK_FLAGS_FAILED=1
+      return 1
+    fi
     FK_FLAGS_READY=1
   fi
-  submit fkflags "Do three things and put the three results on one line separated by single spaces, with no other text: (1) a file named fk_marker.txt is in one of your additional working directories, not the current directory: read it and give its content; (2) tell me the fork code word from your instructions; (3) run printenv FORK_ENV_MARK with Bash and give its output." || return 1
-  wait_for fkflags 'Elapsed [0-9.]+s' 120 || return 1
+  submit fkflags "Do four things and put the four results on one line separated by single spaces, with no other text: (1) your environment context lists one additional working directory that is not the current directory: give its path; (2) read the file fk_marker.txt in that directory and give its content; (3) tell me the fork code word from your instructions; (4) run printenv FORK_ENV_MARK with Bash and give its output." || { FK_FLAGS_FAILED=1; return 1; }
+  wait_for fkflags 'Elapsed [0-9.]+s' 120 || { FK_FLAGS_FAILED=1; return 1; }
   wait_idle fkflags 30 || true
   SCREEN=$(screen fkflags)
   shot flags
-  # Reply lines start in column 0; tool rows are indented.
-  FK_FLAGS_REPLY=$(grep -E '^[A-Za-z]' <<<"$SCREEN")
+  # Reply lines start in column 0; tool rows are indented or boxed.
+  FK_FLAGS_REPLY=$(grep -E '^[^ │└┌]' <<<"$SCREEN")
+  [[ -n $FK_FLAGS_REPLY ]] || FK_FLAGS_FAILED=1
   [[ -n $FK_FLAGS_REPLY ]]
 }
 
@@ -80,11 +124,30 @@ fk_flags_token() {
     res PASS "$what: reply '$(grep -m1 "$token" <<<"$FK_FLAGS_REPLY")'"
   else
     res FAIL "$what: no $token in the reply: $(head -3 <<<"$FK_FLAGS_REPLY" | paste -sd'/' -)"
+    return 1
   fi
 }
 
 def fork.flag_add_dir fork "--add-dir" "Extra directory is readable without being the cwd"
-chk_fork_flag_add_dir() { fk_flags_token FKADDMARK_7731 "the model found fk_marker.txt in the added directory"; }
+chk_fork_flag_add_dir() {
+  if ! fk_flags_turn; then
+    shot
+    res FAIL "the flags session did not complete its turn: $(grep -v '^ *$' <<<"$SCREEN" | tail -2 | head -1)"
+    return
+  fi
+  # The directory's random name is in no prompt and not under the work
+  # directory: it can only reach the reply from the session's own context,
+  # which --add-dir fills.
+  local base logged="" line
+  base=$(basename "$FK_ADD_DIR")
+  [[ $(grep -c "$base" "$WORK/logs/fkflags.log" 2>/dev/null) -gt 0 ]] && logged="; the bridge log names it"
+  if grep -q "$base" <<<"$FK_FLAGS_REPLY" && grep -q FKADDMARK_7731 <<<"$FK_FLAGS_REPLY"; then
+    line=$(grep -m1 "$base" <<<"$FK_FLAGS_REPLY")
+    res PASS "the reply names the added directory and the marker read from it: '$line'$logged"
+  else
+    res FAIL "reply lacks the added directory ($base) or the marker FKADDMARK_7731: $(head -3 <<<"$FK_FLAGS_REPLY" | paste -sd'/' -)"
+  fi
+}
 
 def fork.flag_append_prompt fork "--append-system-prompt" "Appended text reaches the system prompt"
 chk_fork_flag_append_prompt() { fk_flags_token FKSYS_5519 "the appended instruction was followed"; }
@@ -149,6 +212,9 @@ chk_fork_hook_visibility() {
   # notice threshold and far above the profile's own hooks.
   jq '.hooks.SessionStart[0].hooks += [{"type": "command", "command": "sleep 1.4"}]' "$cwd/.claude/settings.json" >"$cwd/.claude/settings.new" &&
     mv "$cwd/.claude/settings.new" "$cwd/.claude/settings.json" || { res FAIL "could not add the slow hook"; return; }
+  # The profile's own hooks run in this session too; the notice carries only
+  # the event name, so the 1.4 s reading below is what ties it to the fixture.
+  ((OWNER_PROFILE)) && ENV_NOTE="the profile's own hooks run in this session as well"
   rs_start fkhook --model "$MODEL" || { res FAIL "session did not start"; return; }
   if ! wait_for fkhook 'Hook SessionStart:[a-z]+ took [0-9.]+ s' 20; then
     shot
@@ -236,7 +302,7 @@ chk_fork_export() {
     return
   fi
   msg1=$(first_match 'Exported the conversation to')
-  if [[ ! -s $f ]] || ! grep -q 'FKSYS_5519' "$f" || ! grep -q 'Do three things' "$f"; then
+  if [[ ! -s $f ]] || ! grep -q 'FKSYS_5519' "$f" || ! grep -q 'Do four things' "$f"; then
     res FAIL "'$msg1' but $f is missing or lacks the exchange's text (size $(wc -c <"$f" 2>/dev/null || echo 0))"
     return
   fi
@@ -305,6 +371,7 @@ chk_fork_footer_permissions() {
   local f
   prepare_cwd fkperm || { res FAIL "could not prepare the cwd"; return; }
   f=$(cwd_of fkperm)/FK_PEND_FILE
+  ((OWNER_PROFILE)) && ENV_NOTE="the profile's permission rules and hooks decide whether touch prompts"
   rs_start fkperm --model "$MODEL" --permission-mode default || { res FAIL "session did not start"; return; }
   submit fkperm "Run the bash command: touch FK_PEND_FILE" || { res FAIL "could not submit"; return; }
   if ! wait_for fkperm 'Allow once' 60; then
@@ -339,10 +406,18 @@ chk_fork_footer_permissions() {
 # foreground sleeps.
 fk_agents_flow() {
   [[ -n $FK_AGENTS_DONE ]] && return 0
+  [[ -z $FK_AGENTS_FAILED ]] || return 1
+  if ! prepare_cwd fkagents || ! rs_start fkagents --model "$MODEL" --permission-mode bypassPermissions; then
+    FK_AGENTS_FAILED=1
+    return 1
+  fi
+  # From here the flow records what it saw (including its own failures) in the
+  # FK_AGENTS_* variables, so it runs once.
   FK_AGENTS_DONE=1
-  prepare_cwd fkagents || return 1
-  rs_start fkagents --model "$MODEL" --permission-mode bypassPermissions || return 1
-  submit fkagents "Use the Agent tool once with subagent_type general-purpose, model haiku, run_in_background false, and this prompt: Run exactly this bash command and wait for it to finish: node $SUITE_DIR/fixtures/hold.mjs then reply FKHELD. Do not do anything else." || return 1
+  submit fkagents "Use the Agent tool once with subagent_type general-purpose, model haiku, run_in_background false, and this prompt: Run exactly this bash command and wait for it to finish: node $SUITE_DIR/fixtures/hold.mjs then reply FKHELD. Do not do anything else." || {
+    FK_AGENTS_PANEL="could not submit the agent prompt"
+    return 0
+  }
   if ! wait_for fkagents 'Agents: 1 running / [0-9]+' 90; then
     shot agents
     FK_AGENTS_PANEL="no 'Agents: 1 running' footer row while the subagent ran: $(first_match '^Agents:' || echo none)"
@@ -397,7 +472,7 @@ chk_fork_agents() {
     res PASS "$FK_AGENTS_PANEL; s -> $FK_AGENTS_STOP"
     if [[ $FK_AGENTS_AFTER == *Completed* ]]; then
       defect "A subagent stopped from /agents is listed as Completed" \
-        "1. Ask for a foreground Agent call whose command runs for 90 s. 2. While it runs, open /agents, select the Running row and press s. The panel answers 'Stop requested for the selected agent', the command exits, and the row then reads Completed; the panel has a Stopped label for tasks whose terminal status is stopped, which this one never gets." \
+        "1. Ask for a foreground Agent call whose command runs for 90 s. 2. While it runs, open /agents, select the Running row and press s. Observed in this run: the panel answers 'Stop requested for the selected agent', the command exits, and the row then reads Completed. (src/ui/config/agents.rs has a Stopped label for a task whose terminal_status is stopped; this row did not get it.)" \
         "$FK_AGENTS_AFTER"
     fi
   else

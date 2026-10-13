@@ -434,7 +434,8 @@ defect() {
   n=$(find "$WORK/defects" -name '*.md' | wc -l | tr -d ' ')
   text=$(
     printf '### %s\n\nFound by `%s`.\n\n**Steps**\n\n%s\n' "$1" "$CUR" "$2"
-    [[ -z ${3:-} ]] || printf '\n**Screen**\n\n~~~text\n%s\n~~~\n' "$3"
+    # Rows below "Loc:" are the profile's own status row, not claude-rs's.
+    [[ -z ${3:-} ]] || printf '\n**Screen**\n\n~~~text\n%s\n~~~\n' "$(sed '/^Loc: /q' <<<"$3")"
   )
   text=${text//"$WORK"/"<work>"}
   text=${text//"$REPO_DIR/"/}
