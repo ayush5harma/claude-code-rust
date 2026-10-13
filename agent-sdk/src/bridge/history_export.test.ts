@@ -51,10 +51,14 @@ function exportFromSavedSession(limits: { chunkBytes: number; maxBytes: number }
       import { exportSessionHistory } from ${JSON.stringify(new URL("./history_export.js", import.meta.url).href)};
       await exportSessionHistory(${JSON.stringify(SESSION_ID)}, ${JSON.stringify(cwd)}, "req-export", ${JSON.stringify(limits)});
     `;
+    const childEnv: NodeJS.ProcessEnv = { ...process.env, CLAUDE_CONFIG_DIR: configDir };
+    // Measured 2026-10-13 on windows-latest: Node turns an undefined child-environment
+    // value into the valid SDK project key "undefined", which hides this fixture's history.
+    delete childEnv.CLAUDE_CODE_PROJECT_DIR_NAME;
     const child = spawnSync(process.execPath, ["--input-type=module", "-"], {
       input: script,
       encoding: "utf8",
-      env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, CLAUDE_CODE_PROJECT_DIR_NAME: undefined },
+      env: childEnv,
       windowsHide: true,
     });
     assert.equal(child.status, 0, child.stderr);
