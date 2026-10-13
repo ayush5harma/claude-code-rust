@@ -361,7 +361,7 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         name: "/export",
         usage: "Usage: /export [path]",
         short_description: "Save the conversation as Markdown",
-        long_description: "Write the session's complete saved history to a Markdown file. Without a path it is created in the session directory; an existing file is never overwritten.",
+        long_description: "Write the session's complete saved history to a Markdown file. Without a path it is created in the session directory under a new default name; an existing file is never overwritten.",
         args: NO_ARGS,
     },
 ];
