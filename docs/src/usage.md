@@ -125,8 +125,8 @@ The installed `claude-rs --help` command exposes these options; the session opti
 | `-r, --resume [ID_OR_TITLE]` | Resume by exact ID or displayed title, or open the picker without a value. |
 | `-c, --continue` | Continue the latest session for the working directory and its git worktrees; start new if none exists. |
 | `--no-update-check` | Disable startup update checks. |
-| `-C, --dir <DIR>` | Run in a specific working directory. |
-| `--bridge-script <PATH>` | Use a specific Agent SDK bridge script. |
+| `-C, --dir <DIR>` | Run in a specific working directory, which must exist. |
+| `--bridge-script <PATH>` | Use a specific Agent SDK bridge script, which must be an existing file. |
 | `--enable-logs` | Expand the always-on baseline to detailed info-level diagnostics. |
 | `--diagnostics-preset <runtime|session|render|bridge|full>` | Use a named diagnostics filter. |
 | `--log-file <PATH>` | Write tracing diagnostics to a specific file. |

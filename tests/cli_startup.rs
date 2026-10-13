@@ -154,6 +154,40 @@ fn executable_rejects_a_missing_added_directory_before_resolving_the_bridge() {
 }
 
 #[test]
+fn executable_rejects_a_bad_working_directory_or_bridge_script_as_usage_errors() {
+    let temp = tempfile::tempdir().expect("temp");
+    let missing = temp.path().join("missing");
+    let file = temp.path().join("notes.txt");
+    std::fs::write(&file, "").expect("file");
+    let cases: [(&[&std::ffi::OsStr], String); 3] = [
+        (
+            &["-C".as_ref(), missing.as_os_str()],
+            format!("{} is not an existing directory", missing.display()),
+        ),
+        (
+            &["-C".as_ref(), file.as_os_str()],
+            format!("{} is not an existing directory", file.display()),
+        ),
+        (
+            &["--bridge-script".as_ref(), missing.as_os_str()],
+            format!("--bridge-script: {} is not an existing file", missing.display()),
+        ),
+    ];
+    for (args, expected) in cases {
+        let output = Command::new(env!("CARGO_BIN_EXE_claude-rs"))
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run with a bad path");
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains(&expected), "{error}");
+        assert!(!error.contains("doctor"), "usage error suggests doctor: {error}");
+    }
+}
+
+#[test]
 fn interactive_launch_without_a_terminal_exits_before_terminal_setup_and_logging() {
     let home = tempfile::tempdir().expect("home");
     let project = home.path().join("project");

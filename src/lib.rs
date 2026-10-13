@@ -78,10 +78,12 @@ pub struct Cli {
     pub no_update_check: bool,
 
     /// Working directory (defaults to cwd)
-    #[arg(long, short = 'C')]
+    #[arg(long, short = 'C', value_parser = parse_existing_dir)]
     pub dir: Option<std::path::PathBuf>,
 
     /// Path to the agent bridge script (defaults to agent-sdk/dist/bridge.js).
+    // Checked for interactive launches only (`Cli::session_config`): support commands
+    // never start the bridge, and `doctor` reports on a bad script instead of refusing it.
     #[arg(long)]
     pub bridge_script: Option<std::path::PathBuf>,
 
@@ -146,6 +148,16 @@ pub struct SessionOptions {
     /// Resume into a new session ID, leaving the original session unchanged.
     #[arg(long, global = true)]
     pub fork_session: bool,
+}
+
+/// `--dir` is made absolute once, here, so the session, relative `--add-dir` and file
+/// flags, and the config commands all see the same existing directory.
+fn parse_existing_dir(value: &str) -> Result<std::path::PathBuf, String> {
+    let path = std::path::absolute(value).map_err(|error| format!("cannot resolve it: {error}"))?;
+    if !path.is_dir() {
+        return Err(format!("{} is not an existing directory", path.display()));
+    }
+    Ok(path)
 }
 
 /// Session names are shown in the terminal, so control characters are dropped,
@@ -343,12 +355,23 @@ impl Cli {
         })
     }
 
-    /// Resolve the session configuration flags against the session working directory.
+    /// Resolve the session configuration flags against the session working directory, and
+    /// check the files an interactive launch needs, so a typo stops the launch with a CLI
+    /// error rather than a bridge failure report.
     pub fn session_config(&self) -> Result<agent::wire::SessionConfig, clap::Error> {
         use clap::CommandFactory;
-        self.session_config.resolve(&self.startup_cwd()).map_err(|message| {
-            Self::command().error(clap::error::ErrorKind::ValueValidation, message)
-        })
+        let invalid =
+            |message| Self::command().error(clap::error::ErrorKind::ValueValidation, message);
+        let config = self.session_config.resolve(&self.startup_cwd()).map_err(invalid)?;
+        if let Some(script) = &self.bridge_script
+            && !script.is_file()
+        {
+            return Err(invalid(format!(
+                "--bridge-script: {} is not an existing file",
+                script.display()
+            )));
+        }
+        Ok(config)
     }
 
     /// Normalize both resume spellings into one startup intent.
@@ -740,6 +763,83 @@ mod tests {
                 format!("--add-dir: {} is not an existing directory", path.display())
             );
         }
+    }
+
+    #[test]
+    fn working_directory_must_be_an_existing_directory() {
+        let project = tempfile::tempdir().expect("project");
+        let file = project.path().join("notes.txt");
+        std::fs::write(&file, "").expect("file");
+        let missing = project.path().join("missing");
+        for dir in [&missing, &file] {
+            let error = Cli::try_parse_from(["claude-rs".as_ref(), "-C".as_ref(), dir.as_os_str()])
+                .expect_err("not a directory");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+            assert_eq!(error.exit_code(), 2);
+            let message = error.to_string();
+            assert!(
+                message.contains(&format!("{} is not an existing directory", dir.display())),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_working_directory_is_blamed_before_added_directories() {
+        let project = tempfile::tempdir().expect("project");
+        let missing = project.path().join("missing");
+        let error = Cli::try_parse_from([
+            "claude-rs".as_ref(),
+            "-C".as_ref(),
+            missing.as_os_str(),
+            "--add-dir".as_ref(),
+            "x".as_ref(),
+        ])
+        .expect_err("missing working directory");
+        let message = error.to_string();
+        assert!(message.contains("--dir"), "{message}");
+        assert!(!message.contains(&missing.join("x").display().to_string()), "{message}");
+    }
+
+    #[test]
+    fn relative_working_directory_is_made_absolute() {
+        let cli = Cli::try_parse_from(["claude-rs", "-C", "src"]).expect("parse");
+        let expected = std::env::current_dir().expect("cwd").join("src");
+        assert_eq!(cli.dir.as_deref(), Some(expected.as_path()));
+        assert_eq!(cli.startup_cwd(), expected);
+    }
+
+    #[test]
+    fn bridge_script_must_be_an_existing_file_for_an_interactive_launch() {
+        let project = tempfile::tempdir().expect("project");
+        let missing = project.path().join("bridge.js");
+        for script in [&missing, &project.path().to_path_buf()] {
+            let cli = Cli::try_parse_from([
+                "claude-rs".as_ref(),
+                "--bridge-script".as_ref(),
+                script.as_os_str(),
+            ])
+            .expect("parse");
+            cli.validate().expect("valid arguments");
+            let error = cli.session_config().expect_err("missing bridge script");
+            assert_eq!(error.exit_code(), 2);
+            let message = error.to_string();
+            assert!(
+                message.contains(&format!(
+                    "--bridge-script: {} is not an existing file",
+                    script.display()
+                )),
+                "{message}"
+            );
+        }
+        std::fs::write(&missing, "").expect("bridge script");
+        let cli = Cli::try_parse_from([
+            "claude-rs".as_ref(),
+            "--bridge-script".as_ref(),
+            missing.as_os_str(),
+        ])
+        .expect("parse");
+        cli.session_config().expect("existing bridge script");
     }
 
     #[test]
