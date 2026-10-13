@@ -74,39 +74,6 @@ fn render_message_rows(
     }
 }
 
-/// Preprocess markdown that `tui_markdown` doesn't handle well.
-/// Headings (`# Title`) become `**Title**` (bold) with a blank line before.
-/// Handles variations: `#Title`, `#  Title`, `  ## Title  `, etc.
-/// Links are left as-is -- `tui_markdown` handles `[title](url)` natively.
-fn preprocess_markdown(text: &str) -> String {
-    let mut result = String::with_capacity(text.len());
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('#') {
-            // Strip all leading '#' characters
-            let after_hashes = trimmed.trim_start_matches('#');
-            // Extract heading content (trim spaces between # and text, and trailing)
-            let content = after_hashes.trim();
-            if !content.is_empty() {
-                // Blank line before heading for visual separation
-                if !result.is_empty() && !result.ends_with("\n\n") {
-                    result.push('\n');
-                }
-                result.push_str("**");
-                result.push_str(content);
-                result.push_str("**\n");
-                continue;
-            }
-        }
-        result.push_str(line);
-        result.push('\n');
-    }
-    if !text.ends_with('\n') {
-        result.pop();
-    }
-    result
-}
-
 /// Render the complete canonical source so paragraph separators and Markdown
 /// context survive caching. Streaming splits stable prefixes into text blocks
 /// at message construction time; each block retains its own render cache.
@@ -128,11 +95,12 @@ pub(super) fn render_text_cached(
         return;
     }
 
-    let mut preprocessed = preprocess_markdown(text);
-    if preserve_newlines {
-        preprocessed = force_markdown_line_breaks(&preprocessed);
-    }
-    let fresh = super::document_table::render_markdown_with_tables(&preprocessed, width, bg);
+    let source = if preserve_newlines {
+        std::borrow::Cow::Owned(force_markdown_line_breaks(text))
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    };
+    let fresh = super::document_table::render_markdown_with_tables(&source, width, bg);
 
     // Store in the full block cache with wrapped height.
     // For streaming messages this will be invalidated on the next chunk,

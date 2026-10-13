@@ -2,8 +2,23 @@
 // Copyright 2025 Simon Peter Rothgang
 
 use crate::failure;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+
+/// Markdown presentation shared by every renderer. The parser determines
+/// headings, so hashes in fenced code remain literal text.
+#[derive(Clone, Copy)]
+struct ClaudeRsStyleSheet;
+
+impl tui_markdown::StyleSheet for ClaudeRsStyleSheet {
+    fn heading(&self, _level: u8) -> Style {
+        Style::new().add_modifier(Modifier::BOLD)
+    }
+
+    fn heading_marker(&self, _level: u8) -> &'static str {
+        ""
+    }
+}
 
 pub(super) fn render_markdown_safe(text: &str, bg: Option<Color>) -> Vec<Line<'static>> {
     render_markdown_safe_with(text, bg, render_with_tui_markdown)
@@ -27,7 +42,8 @@ where
 }
 
 fn render_with_tui_markdown(text: &str, bg: Option<Color>) -> Vec<Line<'static>> {
-    let rendered = tui_markdown::from_str(text);
+    let rendered =
+        tui_markdown::from_str_with_options(text, &tui_markdown::Options::new(ClaudeRsStyleSheet));
     let lines = rendered
         .lines
         .into_iter()

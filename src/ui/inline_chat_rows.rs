@@ -2154,6 +2154,37 @@ mod tests {
     }
 
     #[test]
+    fn fenced_code_hashes_render_verbatim_while_headings_use_the_heading_style() {
+        let mut app = App::test_default();
+        app.transcript.messages.push(assistant_text_message(
+            "## Plan\n\n```bash\n#!/usr/bin/env bash\n# install dependencies\n```",
+        ));
+
+        let rows = serialize_live_rows(&mut app, 80);
+        let text = line_texts(&rows);
+
+        assert_eq!(
+            text,
+            [
+                "Claude",
+                "Plan",
+                "",
+                "```bash",
+                "#!/usr/bin/env bash",
+                "# install dependencies",
+                "```"
+            ]
+        );
+        let heading = rows[1].spans.iter().find(|span| span.content.contains("Plan"));
+        assert!(
+            heading.is_some_and(|span| span
+                .style
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD))
+        );
+    }
+
+    #[test]
     fn live_rows_render_assistant_notice_from_messages() {
         let mut app = App::test_default();
         app.transcript.messages.push(assistant_blocks_message(vec![MessageBlock::Notice(
