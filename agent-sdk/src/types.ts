@@ -890,6 +890,7 @@ export interface SettingsResult {
 }
 
 export type BridgeCommand =
+  | { command: "list_sessions" }
   | { command: "get_working_diff"; session_id: string }
   | { command: "inspect_settings"; session_id: string; app_settings_path?: string }
   | { command: "mutate_setting"; session_id: string; app_settings_path?: string; mutation: SettingsMutation }

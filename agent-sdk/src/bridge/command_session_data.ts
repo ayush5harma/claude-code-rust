@@ -47,6 +47,7 @@ type SessionDataCommand = Extract<
   BridgeCommand,
   {
     command:
+      | "list_sessions"
       | "generate_session_title"
       | "rename_session"
       | "tag_session"
@@ -83,6 +84,9 @@ export async function handleSessionDataCommand(
   deps: SessionDataCommandDeps,
 ): Promise<void> {
   switch (command.command) {
+    case "list_sessions":
+      await emitSessionsList(requestId);
+      return;
     case "generate_session_title":
       await generateTitle(command, requestId, deps);
       return;

@@ -444,6 +444,8 @@ readline
             cwd, git_branch: 'main', custom_title: 'Large saved conversation',
           }] });
         }
+        // The listing sent around connect predates the active session's transcript.
+        if (SCENARIO === 'session-refresh') send({ event: 'sessions_listed', sessions: managedSessions().filter(session => session.session_id !== SESSION) });
         if (SCENARIO === 'session-management') send({ event: 'sessions_listed', sessions: managedSessions() });
         if (SCENARIO.startsWith('resize-') || SCENARIO.startsWith('background-')) send({ event: 'status_snapshot', session_id: SESSION, account: { subscription_type: 'Fixture subscription' } });
         if (SCENARIO === 'session-accent') {
@@ -488,6 +490,23 @@ readline
           }, INTERVAL_MS);
         }
         break;
+      case 'list_sessions': {
+        // The listing as the SDK knows it now, which includes the active session. The
+        // `session-refresh` scenario holds the answer until the release file appears, so the
+        // picker's loading state can be observed.
+        const answer = () => send({ event: 'sessions_listed', request_id: message.request_id, sessions: managedSessions() });
+        if (SCENARIO !== 'session-refresh') {
+          answer();
+          break;
+        }
+        record({ type: 'barrier', name: 'list-held' });
+        const timer = setInterval(() => {
+          if (!fs.existsSync(RELEASE_FILE)) return;
+          clearInterval(timer);
+          answer();
+        }, INTERVAL_MS);
+        break;
+      }
       case 'list_session_agents':
         send({ event: 'session_agents_result', session_id: SESSION, request_id: message.request_id, action: message.command,
           agent_ids: ['agent-running', 'agent-completed'], messages: [] });

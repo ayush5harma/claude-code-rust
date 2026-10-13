@@ -837,6 +837,14 @@ impl AgentConnection {
         })
     }
 
+    /// Ask the bridge for a fresh session listing; the answer carries `request_id`.
+    pub fn list_sessions(&self, request_id: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: Some(request_id),
+            command: BridgeCommand::ListSessions,
+        })
+    }
+
     pub fn get_working_diff(&self, session_id: String, request_id: String) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: Some(request_id),

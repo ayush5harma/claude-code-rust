@@ -37,7 +37,7 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/mode` | `/mode <id>` | Switch to a mode advertised by the active session. |
 | `/model` | `/model <id>` | Switch to a model advertised by the active session. |
 | `/new-session` | `/new-session` | Start a fresh bridge session in the current folder. |
-| `/resume` | `/resume [session_id_or_title]` | Open the session picker, or resume an exact ID or displayed title. |
+| `/resume` | `/resume [session_id_or_title]` | Open the session picker (refreshed from the SDK each time it opens, with the active session marked `[current]`), or resume an exact ID or displayed title. |
 | `/rewind` | `/rewind <user_message_uuid> <both\|conversation\|code>` | Restore conversation, code, or both to a previous user message. |
 | `/reload` | `/reload` | Re-read skills and output styles from disk for the active session. |
 | `/export` | `/export [path]` | Save the complete conversation as a Markdown file. |

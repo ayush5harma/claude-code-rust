@@ -2431,6 +2431,26 @@ fn status_tab_shows_the_session_name_after_rename() {
 }
 
 #[test]
+fn resume_picker_loads_a_fresh_list_and_marks_the_active_session() {
+    let mut test = TerminalTest::start("session-refresh", 3);
+    test.submit("/resume", "/resume");
+    test.wait_journal("list-held");
+    // The list from connect names only the saved session; it is not shown as the answer.
+    let loading = test.wait_screen_with("Loading recent sessions", &["Resume Session"]);
+    assert!(!loading.contains("Saved project work"), "{loading}");
+
+    test.release();
+    let screen = test.wait_screen_with("[current]", &["Saved project work"]);
+    assert!(screen.contains("Current conversation"), "{screen}");
+    assert!(
+        screen.lines().any(|line| line.contains("> ") && line.contains("[current]")),
+        "the active session is selected:\n{screen}"
+    );
+    assert_eq!(test.commands("list_sessions").len(), 1);
+    test.shutdown();
+}
+
+#[test]
 fn resume_by_an_ambiguous_or_unknown_title_reports_why_and_returns_the_composer() {
     let mut test = TerminalTest::start("resume-failure", 3);
     test.submit_command("/resume Shared title");
