@@ -66,11 +66,11 @@ The command menu includes the full merged inventory and scrolls as you move thro
 
 ## Exporting the conversation
 
-`/export` writes the session's complete saved history to a Markdown file. The history comes from the Agent SDK's saved transcript, not from the chat on screen, so it includes messages the app no longer keeps in memory. Without a path the file is `claude-rs-<session title or short id>-<YYYYMMDD-HHMMSS>.md` in the session directory. `/export <path>` writes there instead: a relative path is relative to the session directory, a leading `~` is your home directory, and spaces in the path are kept.
+`/export` writes the session's complete saved history to a Markdown file. The history comes from the Agent SDK's saved transcript, not from the chat on screen, so it includes messages the app no longer keeps in memory. Without a path the file is `export-<session-id>-<YYYYMMDDTHHMMSSZ>.md` in the session directory, using the full session id and the UTC export time; if that name is taken it becomes `-2`, `-3`, ... before `.md`. `/export <path>` writes there instead: a relative path is relative to the session directory, a leading `~` is your home directory, and spaces in the path are kept.
 
 The file starts with the session title, id, directory, model and export time. Your messages and the assistant's text are written as they were. Each tool call is a heading with the tool name and a short summary of its input, followed by its result in a fenced block and, for edits and new files, a `diff` block. Long results and diffs are cut with a note, and terminal colour codes are removed. A session too large to send at once is cut from its end, and the file says how many later entries were left out.
 
-`/export` never overwrites a file and creates no directories: if the target exists, or its directory does not, it says so and writes nothing. When it finishes it shows the absolute path it wrote.
+`/export` never overwrites a file and creates no directories: if an explicit target exists, or its directory does not, it says so and writes nothing. When it finishes it shows the absolute path it wrote.
 
 ## Side Questions
 

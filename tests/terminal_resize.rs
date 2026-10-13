@@ -2791,15 +2791,23 @@ fn export_writes_the_saved_conversation_and_never_overwrites_it() {
     assert_eq!(std::fs::read_to_string(&target).expect("kept file"), file);
     assert_eq!(test.commands("export_session_history").len(), 1);
 
-    // Without a path the name comes from the session id and the clock.
+    // Without a path the name is the full session id and the UTC clock:
+    // export-<session-id>-<YYYYMMDDTHHMMSSZ>.md
     test.submit_command("/export");
     test.wait_until("the default-named export", |test| {
         std::fs::read_dir(test.project_dir()).is_ok_and(|entries| {
             entries.flatten().any(|entry| {
                 let name = entry.file_name();
-                let name = name.to_string_lossy();
-                name.starts_with("claude-rs-fake-ses-")
-                    && Path::new(&*name).extension().is_some_and(|ext| ext == "md")
+                name.to_string_lossy()
+                    .strip_prefix("export-fake-session-")
+                    .and_then(|rest| rest.strip_suffix(".md"))
+                    .is_some_and(|stamp| {
+                        let bytes = stamp.as_bytes();
+                        bytes.len() == 16
+                            && bytes[8] == b'T'
+                            && bytes[15] == b'Z'
+                            && bytes[..8].iter().chain(&bytes[9..15]).all(u8::is_ascii_digit)
+                    })
             })
         })
     });

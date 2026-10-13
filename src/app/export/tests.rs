@@ -2,7 +2,8 @@
 
 use super::markdown::{Header, render};
 use super::{
-    ExportProgress, apply_chunk, begin, default_file_name, resolve_destination, write_new_file,
+    Destination, ExportProgress, apply_chunk, begin, begin_at, default_stem, resolve_destination,
+    write_new_file,
 };
 use crate::agent::events::HistoryChunk;
 use crate::agent::model::{
@@ -249,32 +250,33 @@ fn a_session_cut_by_the_bridge_says_how_much_is_missing() {
     ));
 }
 
+const SESSION_ID: &str = "11d785e2-d277-406c-9f99-31d840a3705b";
+const DEFAULT_STEM: &str = "export-11d785e2-d277-406c-9f99-31d840a3705b-20261013T123045Z";
+
+fn export_instant() -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::parse_from_rfc3339("2026-10-13T12:30:45Z").expect("fixed instant").to_utc()
+}
+
 #[test]
-fn file_names_carry_a_safe_title_or_the_short_session_id() {
-    let stamp = "20261012-100000";
-    let cases = [
-        (Some("Fix the Auth bug!!"), "claude-rs-fix-the-auth-bug-20261012-100000.md"),
-        (Some("  --weird//name:*?  "), "claude-rs-weird-name-20261012-100000.md"),
-        (None, "claude-rs-abcdef12-20261012-100000.md"),
-        (Some("\u{65e5}\u{672c}\u{8a9e}"), "claude-rs-abcdef12-20261012-100000.md"),
-        (Some("a/../../etc"), "claude-rs-a-etc-20261012-100000.md"),
-    ];
-    for (title, expected) in cases {
-        assert_eq!(default_file_name(title, "abcdef1234567890", stamp), expected, "{title:?}");
-    }
-    let long = default_file_name(Some(&format!("{} tail", "word ".repeat(20))), "abcdef12", stamp);
-    // The slug is cut at 40 characters and never ends in a separator.
-    assert_eq!(long, format!("claude-rs-{}-{stamp}.md", "word-".repeat(8).trim_end_matches('-')));
+fn default_name_is_the_full_session_id_and_the_utc_basic_timestamp() {
+    // Fixed by the upstream issue's example, not derived from the helper.
+    assert_eq!(default_stem(SESSION_ID, export_instant()), DEFAULT_STEM);
+    // An instant given with a UTC offset must still be written in UTC.
+    let offset = chrono::DateTime::parse_from_rfc3339("2026-10-13T18:00:45+05:30")
+        .expect("offset instant")
+        .to_utc();
+    assert_eq!(default_stem(SESSION_ID, offset), DEFAULT_STEM);
 }
 
 #[test]
 fn destinations_resolve_against_the_session_directory_and_home() {
     let cwd = Path::new("/work/proj");
     let home = Path::new("/home/me");
-    let default = "claude-rs-x.md";
+    let explicit = |path: &str| Destination::Explicit(Path::new(path).to_path_buf());
+    let default = Destination::Default { dir: cwd.to_path_buf(), stem: "export-x".to_owned() };
+    assert_eq!(resolve_destination("", cwd, "export-x", Some(home)), default);
+    assert_eq!(resolve_destination("  ", cwd, "export-x", Some(home)), default);
     let cases = [
-        ("", "/work/proj/claude-rs-x.md"),
-        ("  ", "/work/proj/claude-rs-x.md"),
         ("notes.md", "/work/proj/notes.md"),
         ("sub/notes.md", "/work/proj/sub/notes.md"),
         ("/tmp/out.md", "/tmp/out.md"),
@@ -284,15 +286,15 @@ fn destinations_resolve_against_the_session_directory_and_home() {
     ];
     for (requested, expected) in cases {
         assert_eq!(
-            resolve_destination(requested, cwd, default, Some(home)),
-            Path::new(expected),
+            resolve_destination(requested, cwd, "export-x", Some(home)),
+            explicit(expected),
             "{requested:?}"
         );
     }
     // Without a home directory `~` is just a name.
     assert_eq!(
-        resolve_destination("~/out.md", cwd, default, None),
-        Path::new("/work/proj/~/out.md")
+        resolve_destination("~/out.md", cwd, "export-x", None),
+        explicit("/work/proj/~/out.md")
     );
 }
 
@@ -392,17 +394,80 @@ fn a_bridge_error_ends_the_export_without_a_file() {
     assert!(!dir.path().join("out.md").exists());
 }
 
+/// Run a whole default-named export and return the file name it wrote.
+fn export_default_once(dir: &Path, message: &str) -> String {
+    let mut app = app_in(dir);
+    let request_id = begin_at(&mut app, SESSION_ID, "", export_instant()).expect("begin");
+    let progress = apply_chunk(&mut app, chunk(Some(&request_id), vec![user(message)], true));
+    let ExportProgress::Written(path) = progress else { panic!("expected a written file") };
+    assert_eq!(path.parent(), Some(std::path::absolute(dir).expect("abs").as_path()));
+    path.file_name().and_then(|name| name.to_str()).expect("file name").to_owned()
+}
+
 #[test]
 fn the_default_destination_is_a_new_file_in_the_session_directory() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut app = app_in(dir.path());
-    let request_id = begin(&mut app, "s-1", "").expect("begin");
 
-    let progress = apply_chunk(&mut app, chunk(Some(&request_id), vec![user("hi")], true));
+    let name = export_default_once(dir.path(), "hi");
+
+    assert_eq!(name, format!("{DEFAULT_STEM}.md"));
+    let file = std::fs::read_to_string(dir.path().join(&name)).expect("export file");
+    assert!(file.contains("## User\n\nhi\n\n"), "{file}");
+}
+
+#[test]
+fn a_taken_default_name_gets_the_next_free_numeric_suffix() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join(format!("{DEFAULT_STEM}.md")), "first original").expect("seed");
+
+    let second = export_default_once(dir.path(), "second run");
+    assert_eq!(second, format!("{DEFAULT_STEM}-2.md"));
+    let third = export_default_once(dir.path(), "third run");
+    assert_eq!(third, format!("{DEFAULT_STEM}-3.md"));
+
+    // Nothing earlier was touched: the seed is byte-identical and -2 still holds its own run.
+    assert_eq!(
+        std::fs::read(dir.path().join(format!("{DEFAULT_STEM}.md"))).expect("read"),
+        b"first original"
+    );
+    let second_file = std::fs::read_to_string(dir.path().join(&second)).expect("read -2");
+    assert!(second_file.contains("second run") && !second_file.contains("third run"));
+    let third_file = std::fs::read_to_string(dir.path().join(&third)).expect("read -3");
+    assert!(third_file.contains("third run"));
+}
+
+#[test]
+fn a_default_name_taken_after_begin_still_never_overwrites() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut app = app_in(dir.path());
+    let request_id = begin_at(&mut app, SESSION_ID, "", export_instant()).expect("begin");
+    // Another export wins the name between the request and the last chunk.
+    std::fs::write(dir.path().join(format!("{DEFAULT_STEM}.md")), "racer").expect("racer");
+
+    let progress = apply_chunk(&mut app, chunk(Some(&request_id), vec![user("late")], true));
 
     let ExportProgress::Written(path) = progress else { panic!("expected a written file") };
-    let name = path.file_name().and_then(|name| name.to_str()).expect("file name");
-    assert!(name.starts_with("claude-rs-fix-the-bug-"), "unexpected default name {name}");
-    assert_eq!(path.extension().and_then(|ext| ext.to_str()), Some("md"));
-    assert_eq!(path.parent(), Some(std::path::absolute(dir.path()).expect("abs").as_path()));
+    assert_eq!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some(format!("{DEFAULT_STEM}-2.md").as_str())
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join(format!("{DEFAULT_STEM}.md"))).expect("read"),
+        b"racer"
+    );
+}
+
+#[test]
+fn an_explicit_existing_path_stays_an_error_and_gets_no_suffixed_copy() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("mine.md"), "original").expect("seed");
+    let mut app = app_in(dir.path());
+
+    let refusal =
+        begin_at(&mut app, SESSION_ID, "mine.md", export_instant()).expect_err("existing file");
+
+    assert!(refusal.contains("already exists"), "{refusal}");
+    assert!(app.history_export.is_none());
+    assert_eq!(std::fs::read(dir.path().join("mine.md")).expect("read"), b"original");
+    assert_eq!(std::fs::read_dir(dir.path()).expect("dir").count(), 1);
 }
