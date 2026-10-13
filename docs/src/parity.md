@@ -170,7 +170,7 @@ cleanup works.
 | Functionality | Claude Code | claude-rs (fork) | Evidence / notes |
 | --- | --- | --- | --- |
 | Context left in the footer | Context indicator near the prompt | PASS | `session.context` Loc: &lt;work&gt;/main … Ctx ▓░░░░░░░ 9% |
-| statusLine setting (user level) | Runs the command and shows its output under the prompt | PASS | `session.statusline` [environment: the statusLine command is the profile's own] the extra row 'personal \| Haiku 5.5 \| &lt;work&gt;/main.......... 8% of 900k' starts like the command's own output ('personal \| Haiku \| /private/tmp/claude-r') and was |
+| statusLine setting (user level) | Runs the command and shows its output under the prompt | PASS | `session.statusline` [environment: the statusLine command is the profile's own] the extra row 'personal \| Haiku 5.5 \| &lt;work&gt;/main.......... 8% of 900k' starts like the command's own output ('personal \| Haiku \| <work>') and was |
 | statusLine setting (project level) | Runs the project's command | **GAP** | `session.statusline_project` not run, by design: project and local settings cannot select an executable command (docs/src/settings.md); stock runs the fixture's printf PARITY_STATUSLINE |
 | Session cost | Cost of the session on request | PASS | `session.cost` Usage tab: $0.0572 cost · 2m 50s elapsed · 44s API time · +3 / -1 lines · 1 model |
 
@@ -184,8 +184,8 @@ cleanup works.
 
 | Functionality | Claude Code | claude-rs (fork) | Evidence / notes |
 | --- | --- | --- | --- |
-| --add-dir | Extra directory is readable without being the cwd | PASS | `fork.flag_add_dir` the reply names the added directory and the marker read from it: '/private/var/folders/yb/spfnv4_12dz3gq_n60tf3h180000gn/T/claude-rs-dx-e2e-adddir.s0RLNY FKADDMARK_7731 FKSYS_5519'; the bridge log names it |
-| --append-system-prompt | Appended text reaches the system prompt | PASS | `fork.flag_append_prompt` the appended instruction was followed: reply '/private/var/folders/yb/spfnv4_12dz3gq_n60tf3h180000gn/T/claude-rs-dx-e2e-adddir.s0RLNY FKADDMARK_7731 FKSYS_5519' |
+| --add-dir | Extra directory is readable without being the cwd | PASS | `fork.flag_add_dir` the reply names the added directory and the marker read from it: '<tmpdir>/claude-rs-dx-e2e-adddir.s0RLNY FKADDMARK_7731 FKSYS_5519'; the bridge log names it |
+| --append-system-prompt | Appended text reaches the system prompt | PASS | `fork.flag_append_prompt` the appended instruction was followed: reply '<tmpdir>/claude-rs-dx-e2e-adddir.s0RLNY FKADDMARK_7731 FKSYS_5519' |
 | --settings (inline JSON) | Flag-settings layer applies (env) | PASS | `fork.flag_settings` printenv FORK_ENV_MARK printed the inline env value: reply 'FKENV_4412' |
 | -n, --name | Session name shown in Status and the footer | PASS | `fork.flag_name` Session name: fk-name-122326; footer: [Bypass Permissions] [Haiku 5.5/Med] [FAST:OFF] fk-name-122326 |
 | --mcp-config with --strict-mcp-config | Only the given MCP servers are used | PASS | `fork.flag_mcp_strict` 1/1 total 1 connected 1 needs auth 0 pending 0 disabled 0 failed 0; listed: › fkecho connected dynamic stdio |

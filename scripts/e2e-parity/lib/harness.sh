@@ -410,14 +410,28 @@ def() {
   CHECK_STOCK[$1]=$4
 }
 
+# scrub_paths <text>: the published report must not carry private paths. macOS
+# reports temp paths with a /private prefix and $TMPDIR is a per-user folder
+# (both leaked into the 2026-10-13 report before this helper existed).
+scrub_paths() {
+  local t=$1 tmpd=${TMPDIR%/}
+  t=${t//"/private$WORK"/"<work>"}
+  t=${t//"$WORK"/"<work>"}
+  if [[ -n $tmpd ]]; then
+    t=${t//"/private$tmpd"/"<tmpdir>"}
+    t=${t//"$tmpd"/"<tmpdir>"}
+  fi
+  t=${t//"$REPO_DIR/"/}
+  printf '%s' "$t"
+}
+
 # res <PASS|FAIL|GAP|SKIP> <evidence>: record the current check's reading.
 res() {
   local status=$1 ev=$2 tilde='~'
   [[ -z ${ENV_NOTE:-} ]] || ev="[environment: $ENV_NOTE] $ev"
   # The table is published: no private paths, whatever the evidence quoted.
   # Replaced before the length cut so a path cannot be cut in half.
-  ev=${ev//"$WORK"/"<work>"}
-  ev=${ev//"$REPO_DIR/"/}
+  ev=$(scrub_paths "$ev")
   ev=${ev//"$HOME"/$tilde}
   ev=$(tr '\n\t' '  ' <<<"$ev" | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' | cut -c1-220)
   printf '%-5s %-28s %s\n' "$status" "$CUR" "$ev"
@@ -437,8 +451,7 @@ defect() {
     # Rows below "Loc:" are the profile's own status row, not claude-rs's.
     [[ -z ${3:-} ]] || printf '\n**Screen**\n\n~~~text\n%s\n~~~\n' "$(sed '/^Loc: /q' <<<"$3")"
   )
-  text=${text//"$WORK"/"<work>"}
-  text=${text//"$REPO_DIR/"/}
+  text=$(scrub_paths "$text")
   printf '%s\n' "$text" >"$WORK/defects/$(printf '%02d' $((n + 1))).md"
 }
 
