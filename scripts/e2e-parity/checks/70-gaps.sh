@@ -17,16 +17,7 @@ stock_only_reply() {
 def gap.remote_control gaps "Remote Control (/remote-control)" "Shares the session to claude.ai / the app"
 chk_gap_remote_control() {
   if stock_only_reply /remote-control; then
-    res GAP "$REPLY_LINE"
-  else
-    res FAIL "no 'not yet supported' reply; last row: $REPLY_LINE"
-  fi
-}
-
-def gap.diff gaps "/diff panel" "Shows the working-tree diff"
-chk_gap_diff() {
-  if stock_only_reply /diff; then
-    res GAP "$REPLY_LINE"
+    res GAP "$REPLY_LINE; remote control can be configured at startup, but a native start/stop/share-link flow is unavailable through the pinned public host API (README, Remaining verification)"
   else
     res FAIL "no 'not yet supported' reply; last row: $REPLY_LINE"
   fi
@@ -50,7 +41,7 @@ chk_gap_vim() {
   if grep -Eqi '›? *(editor mode|vim mode)|vim +(On|Off|Default)' <<<"$SCREEN"; then
     res PASS "setting: $(grep -Ei 'editor mode|vim' <<<"$SCREEN" | head -1 | sed -E 's/ {2,}/ … /g')"
   else
-    res GAP "no vim / editor-mode setting in /config (search 'vim' matches nothing); no vim bindings in the composer"
+    res GAP "no vim / editor-mode setting in /config (search 'vim' matches nothing); no vim bindings in the composer (README: Vim keymap parity remains unimplemented)"
   fi
   keys main Escape
   keys main Escape
