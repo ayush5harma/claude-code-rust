@@ -964,6 +964,61 @@ test("launch name titles a new session and renames a resumed one before it conne
   }
 });
 
+test("resume by custom title renames the resolved session ID", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-title-rename-"));
+  const journal = join(directory, "journal.jsonl");
+  const cwd = process.cwd();
+  const { bridge, cleanup } = ultracodeFixtureBridge({
+    STARTUP_JOURNAL: journal,
+    STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId: "saved-session", cwd, lastModified: 1, customTitle: "Old title" }]),
+  });
+  try {
+    bridge.writeCommand({ command: "resume_session", session_id: "Old title", launch_settings: { name: "New title" } });
+    const connected = await nextMatching(bridge, event => event.event === "connected");
+    assert.equal(connected.session_id, "saved-session");
+    const entries = readJournal(journal);
+    assert.deepEqual(entries.find(entry => entry.type === "rename"), {
+      type: "rename", sessionId: "saved-session", title: "New title", options: { dir: cwd },
+    });
+    assert.equal(entries.find(entry => entry.type === "launch")?.resume, "saved-session");
+    bridge.writeCommand({ command: "list_sessions", request_id: "after-rename" });
+    const listed = await nextMatching(bridge, event => event.event === "sessions_listed" && event.request_id === "after-rename");
+    const saved = (listed.sessions as BridgeEnvelope[]).find(entry => entry.session_id === "saved-session");
+    assert.equal(saved?.custom_title, "New title");
+  } finally {
+    await cleanup();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("invalid resume configuration leaves the persisted title unchanged and never queries", async () => {
+  for (const [flag, launchSettings] of [
+    ["--settings", { name: "Changed", settings: '{"model":' }],
+    ["--mcp-config", { name: "Changed", mcp_configs: ['{"mcpServers":'] }],
+  ] as const) {
+    const directory = mkdtempSync(join(tmpdir(), "claude-rs-invalid-resume-"));
+    const journal = join(directory, "journal.jsonl");
+    const cwd = process.cwd();
+    const { bridge, cleanup } = ultracodeFixtureBridge({
+      STARTUP_JOURNAL: journal,
+      STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId: "saved-session", cwd, lastModified: 1, customTitle: "Original" }]),
+    });
+    try {
+      bridge.writeCommand({ command: "resume_session", session_id: "saved-session", launch_settings: launchSettings });
+      const failed = await nextMatching(bridge, event => event.event === "session_resume_failed");
+      assert.match(String(failed.message), new RegExp(flag));
+      assert.equal(readJournal(journal).some(entry => entry.type === "rename" || entry.type === "query"), false);
+      bridge.writeCommand({ command: "list_sessions", request_id: "after-failure" });
+      const listed = await nextMatching(bridge, event => event.event === "sessions_listed" && event.request_id === "after-failure");
+      const saved = (listed.sessions as BridgeEnvelope[]).find(entry => entry.session_id === "saved-session");
+      assert.equal(saved?.custom_title, "Original");
+    } finally {
+      await cleanup();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+});
+
 test("resume without a launch name carries the saved custom title into the query options", async () => {
   const directory = mkdtempSync(join(tmpdir(), "claude-rs-resume-title-"));
   const journal = join(directory, "query-options.jsonl");
