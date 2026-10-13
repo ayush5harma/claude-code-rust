@@ -1994,6 +1994,33 @@ fn hook_runs_follow_the_session_and_reset_with_its_conversation() {
 }
 
 #[test]
+fn acknowledged_title_clear_survives_a_failed_list_refresh() {
+    let mut app = make_test_app();
+    app.session_runtime.session_id = Some(model::SessionId::new("active"));
+    let mut listed = listed_session("active", "Independent summary");
+    listed.custom_title = Some("Old name".to_owned());
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionsListed { sessions: vec![listed], request_id: None },
+    );
+    assert_eq!(app.active_session_custom_title(), Some("Old name"));
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate {
+            session_id: "active".to_owned(),
+            update: model::SessionUpdate::SessionTitleUpdate(None),
+        },
+    );
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionsListFailed { request_id: None, message: "SDK unavailable".to_owned() },
+    );
+    assert_eq!(app.active_session_custom_title(), None);
+    assert_eq!(app.recent_sessions[0].custom_title, None);
+    assert_eq!(app.recent_sessions[0].summary, "Independent summary");
+}
+
+#[test]
 fn session_title_follows_the_child_until_another_session_connects() {
     let mut app = make_test_app();
     app.session_runtime.session_id = Some(model::SessionId::new("current-session"));
