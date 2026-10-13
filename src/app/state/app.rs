@@ -16,6 +16,9 @@ pub struct App {
     pub(crate) diff_view: Option<Box<crate::app::diff_view::DiffViewState>>,
     /// The `/export` waiting for its history from the bridge.
     pub(crate) history_export: Option<crate::app::export::PendingExport>,
+    /// `/agents` view state; subagent status itself stays in `sdk_inventory.tasks`.
+    /// Boxed so `App` stays within the future-size bound of the async tests that own it.
+    pub(crate) agents: Box<crate::app::agents::AgentsView>,
     pub(crate) terminal_lifecycle: TerminalLifecycleState,
     pub(crate) terminal_child_cancel: Option<tokio::sync::oneshot::Sender<()>>,
     pub(crate) surface_dirty: SurfaceDirtyState,
@@ -110,7 +113,6 @@ pub struct App {
     pub(crate) usage: UsageState,
     /// Config > MCP live server snapshot and refresh lifecycle.
     pub(crate) mcp: McpState,
-    pub(crate) session_agents: Box<crate::app::session_agents::SessionAgentsState>,
 
     /// Central notification manager (bell + desktop toast when unfocused).
     pub(crate) notifications: notify::NotificationManager,
@@ -270,6 +272,7 @@ impl App {
             search: None,
             diff_view: None,
             history_export: None,
+            agents: Box::default(),
             mention: None,
             committed_mentions: Vec::new(),
             file_index: file_index::FileIndexState::default(),
@@ -292,7 +295,6 @@ impl App {
             post_exit_action: None,
             usage: UsageState::default(),
             mcp: McpState::default(),
-            session_agents: Box::default(),
             notifications: notify::NotificationManager::new(),
             render_cache_budget: RenderCacheBudget::default(),
             history_retention: HistoryRetentionPolicy::default(),

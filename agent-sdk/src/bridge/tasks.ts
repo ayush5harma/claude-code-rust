@@ -37,6 +37,7 @@ export type TaskTitleContext = {
 };
 
 const BACKGROUND_TASK_METADATA_KEY = "sdk_background_task";
+const LIFECYCLE_STARTED_METADATA_KEY = "sdk_lifecycle_started";
 
 export function isTaskToolName(name: string): boolean {
   return TASK_TOOL_NAMES.has(name);
@@ -704,6 +705,18 @@ function replaceTaskSnapshot(
     emitted.push(cloneTask(task));
   }
 
+  // TaskList is the plan-task inventory. Runtime tasks are reported by their
+  // own lifecycle and must remain in the complete snapshot sent to the UI.
+  for (const taskId of previousIds) {
+    if (nextTasks.has(taskId)) continue;
+    const task = session.tasksById.get(taskId);
+    const metadata = asRecordOrNull(task?.metadata);
+    if (!task || (typeof metadata?.task_type !== "string" && metadata?.[BACKGROUND_TASK_METADATA_KEY] !== true)) continue;
+    nextTasks.set(taskId, task);
+    nextIds.push(taskId);
+    emitted.push(cloneTask(task));
+  }
+
   const retained = new Set(nextIds);
   const removedTaskIds = previousIds.filter((taskId) => !retained.has(taskId));
   for (const taskId of removedTaskIds) {
@@ -1120,6 +1133,11 @@ export function taskLifecyclePatch(
   if (!taskId) return undefined;
   const patch = asRecordOrNull(msg.patch);
   const status = lifecycleTaskStatus(subtype, msg);
+  // Progress and updates can be queued behind the outcome. Only a new start
+  // or another outcome may change a settled row.
+  if (existing?.status === "completed" && status !== "completed" && subtype !== "task_started") {
+    return undefined;
+  }
   const description =
     nonEmptyString(patch?.description) ??
     nonEmptyString(msg.description) ??
@@ -1133,7 +1151,11 @@ export function taskLifecyclePatch(
     nonEmptyString(msg.task_description) ??
     description ??
     taskId;
-  const metadata = mergeMetadata(existing?.metadata, lifecycleMetadata(msg));
+  const lifecycleFields = lifecycleMetadata(msg);
+  const metadata = mergeMetadata(existing?.metadata,
+    subtype === "task_started"
+      ? { ...lifecycleFields, [LIFECYCLE_STARTED_METADATA_KEY]: true }
+      : lifecycleFields);
 
   if (
     !status &&
@@ -1188,15 +1210,31 @@ export function applyBackgroundTasksChanged(
     .filter((task): task is TaskPatch => Boolean(task));
 
   const nextIds = new Set(nextTasks.map((task) => task.task_id));
-  const removedTaskIds = session.taskOrder.filter((taskId) => {
+  const leaving = session.taskOrder.filter((taskId) => {
     if (nextIds.has(taskId)) {
       return false;
     }
     const metadata = asRecordOrNull(session.tasksById.get(taskId)?.metadata);
     return metadata?.[BACKGROUND_TASK_METADATA_KEY] === true;
   });
-  const tasks = nextTasks.map((task) => upsertTask(session, task));
-  const removed = removeTasks(session, removedTaskIds);
+  // The snapshot only says what is still in the background. A lifecycle-owned
+  // subagent may leave before its outcome arrives, so retain its row without
+  // inventing a terminal status. Other settled tasks keep their reported row.
+  const retained = leaving.filter((taskId) => {
+    const metadata = asRecordOrNull(session.tasksById.get(taskId)?.metadata);
+    return metadata?.terminal_status !== undefined || (metadata?.task_type === "local_agent" && metadata?.[LIFECYCLE_STARTED_METADATA_KEY] === true);
+  });
+  if (retained.length > 0) {
+    emitTaskStateUpdate(session, "task_lifecycle", retained.map((taskId) => upsertTask(session, {
+      task_id: taskId,
+      metadata: mergeMetadata(session.tasksById.get(taskId)?.metadata, { [BACKGROUND_TASK_METADATA_KEY]: null }),
+    })));
+  }
+  const tasks = nextTasks.map((task) => upsertTask(session, {
+    ...task,
+    metadata: mergeMetadata(session.tasksById.get(task.task_id)?.metadata, asRecordOrNull(task.metadata) as Record<string, Json> | undefined),
+  }));
+  const removed = removeTasks(session, leaving.filter((taskId) => !retained.includes(taskId)));
   emitTaskStateUpdate(session, "background_tasks", tasks, removed, true);
 }
 

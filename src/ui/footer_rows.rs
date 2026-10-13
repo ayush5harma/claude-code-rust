@@ -50,9 +50,6 @@ pub(crate) fn serialize_footer_rows(app: &App, total_width: u16) -> SerializedFo
     if let Some(rate_row) = build_rate_line(app, total_width) {
         rows.push(rate_row);
     }
-    if let Some(agent_row) = build_agent_line(app, total_width) {
-        rows.push(agent_row);
-    }
     if let Some(plan_row) = build_plan_line(app, total_width) {
         rows.push(plan_row);
     }
@@ -122,31 +119,6 @@ fn build_rate_line(app: &App, width: u16) -> Option<Line<'static>> {
         compose_footer_row(
             Line::from(Span::styled(
                 format!("Rate: {}", windows.join("  ")),
-                Style::default().fg(FOOTER_CONTEXT_VALUE),
-            )),
-            None,
-            width,
-            0,
-        )
-    })
-}
-
-fn build_agent_line(app: &App, width: u16) -> Option<Line<'static>> {
-    let mut total = 0usize;
-    let mut running = 0usize;
-    for task in app
-        .sdk_inventory
-        .tasks
-        .iter()
-        .filter(|task| crate::app::session_agents::is_session_agent_task(task))
-    {
-        total += 1;
-        running += usize::from(task.status == model::TaskStatus::InProgress);
-    }
-    (total > 0).then(|| {
-        compose_footer_row(
-            Line::from(Span::styled(
-                format!("Agents: {running} running / {total}"),
                 Style::default().fg(FOOTER_CONTEXT_VALUE),
             )),
             None,
@@ -285,6 +257,7 @@ fn build_primary_line(app: &App) -> Line<'static> {
         spans.push(Span::raw("  "));
         push_badge(&mut spans, fast_mode_text.to_owned(), fast_mode_color);
         push_session_title(&mut spans, app);
+        push_running_subagents_badge(&mut spans, app);
         Line::from(spans)
     } else {
         let (fast_mode_text, fast_mode_color) =
@@ -296,6 +269,7 @@ fn build_primary_line(app: &App) -> Line<'static> {
         }
         push_badge(&mut spans, fast_mode_text.to_owned(), fast_mode_color);
         push_session_title(&mut spans, app);
+        push_running_subagents_badge(&mut spans, app);
         Line::from(spans)
     }
 }
@@ -306,6 +280,14 @@ fn push_session_title(spans: &mut Vec<Span<'static>>, app: &App) {
     {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(title.clone(), Style::default().fg(app.session_runtime.accent)));
+    }
+}
+
+fn push_running_subagents_badge(spans: &mut Vec<Span<'static>>, app: &App) {
+    let running = crate::app::agents::running_subagent_count(app);
+    if running > 0 {
+        spans.push(Span::raw("  "));
+        push_badge(spans, format!("AGENTS:{running}"), Color::Yellow);
     }
 }
 
@@ -658,6 +640,36 @@ mod tests {
     }
 
     #[test]
+    fn first_row_counts_running_subagents_and_hides_the_count_at_zero() {
+        let subagent = |id: &str, status, terminal: Option<&str>| {
+            let mut task = model::TaskItem::new(id, id, status);
+            task.metadata = Some(
+                serde_json::json!({ "task_type": "local_agent", "terminal_status": terminal }),
+            );
+            task
+        };
+        let mut shell = model::TaskItem::new("shell", "shell", model::TaskStatus::InProgress);
+        shell.metadata = Some(serde_json::json!({ "task_type": "local_bash" }));
+        for with_mode in [true, false] {
+            let mut app = if with_mode { app_with_mode() } else { App::test_default() };
+            app.sdk_inventory.tasks = vec![
+                subagent("agent-1", model::TaskStatus::InProgress, None),
+                subagent("agent-2", model::TaskStatus::InProgress, None),
+                subagent("agent-3", model::TaskStatus::Completed, Some("completed")),
+                shell.clone(),
+            ];
+            let text = line_text(&serialize_footer_rows(&app, 80).rows[0]);
+            assert!(text.contains("[AGENTS:2]"), "{text}");
+
+            for task in &mut app.sdk_inventory.tasks {
+                task.status = model::TaskStatus::Completed;
+            }
+            let text = line_text(&serialize_footer_rows(&app, 80).rows[0]);
+            assert!(!text.contains("AGENTS"), "{text}");
+        }
+    }
+
+    #[test]
     fn serialize_footer_rows_produces_exactly_two_rows() {
         let app = App::test_default();
         let serialized = serialize_footer_rows(&app, 80);
@@ -827,17 +839,18 @@ mod tests {
     }
 
     #[test]
-    fn footer_counts_canonical_session_agents_without_treating_them_as_plan_steps() {
+    fn footer_counts_canonical_subagents_without_treating_them_as_plan_steps() {
         let mut app = App::test_default();
         let mut running = model::TaskItem::new("agent-1", "Review", model::TaskStatus::InProgress);
-        running.metadata = Some(serde_json::json!({"subagent_type":"general-purpose"}));
+        running.metadata =
+            Some(serde_json::json!({"task_type":"local_agent","subagent_type":"general-purpose"}));
         let mut done = model::TaskItem::new("agent-2", "Inspect", model::TaskStatus::Completed);
         done.metadata = Some(serde_json::json!({"task_type":"local_agent"}));
         app.sdk_inventory.tasks.extend([running, done]);
 
         let rows = serialize_footer_rows(&app, 100).rows;
-        assert_eq!(rows.len(), 3);
-        assert!(line_text(&rows[2]).contains("Agents: 1 running / 2"));
+        assert_eq!(rows.len(), 2);
+        assert!(line_text(&rows[0]).contains("AGENTS:1"));
         assert!(!rows.iter().any(|row| line_text(row).contains("0/2")));
     }
 

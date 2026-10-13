@@ -7,21 +7,13 @@ pub enum ConfigTab {
     Plugins,
     Status,
     Usage,
-    Agents,
     Mcp,
     Help,
 }
 
 impl ConfigTab {
-    pub const ALL: [Self; 7] = [
-        Self::Settings,
-        Self::Plugins,
-        Self::Status,
-        Self::Usage,
-        Self::Agents,
-        Self::Mcp,
-        Self::Help,
-    ];
+    pub const ALL: [Self; 6] =
+        [Self::Settings, Self::Plugins, Self::Status, Self::Usage, Self::Mcp, Self::Help];
 
     pub const fn title(self) -> &'static str {
         match self {
@@ -29,7 +21,6 @@ impl ConfigTab {
             Self::Plugins => "Plugins",
             Self::Status => "Status",
             Self::Usage => "Usage",
-            Self::Agents => "Agents",
             Self::Mcp => "MCP",
             Self::Help => "Help",
         }
@@ -40,8 +31,7 @@ impl ConfigTab {
             Self::Settings => Self::Plugins,
             Self::Plugins => Self::Status,
             Self::Status => Self::Usage,
-            Self::Usage => Self::Agents,
-            Self::Agents => Self::Mcp,
+            Self::Usage => Self::Mcp,
             Self::Mcp => Self::Help,
             Self::Help => Self::Settings,
         }
@@ -53,8 +43,7 @@ impl ConfigTab {
             Self::Plugins => Self::Settings,
             Self::Status => Self::Plugins,
             Self::Usage => Self::Status,
-            Self::Mcp => Self::Agents,
-            Self::Agents => Self::Usage,
+            Self::Mcp => Self::Usage,
             Self::Help => Self::Mcp,
         }
     }

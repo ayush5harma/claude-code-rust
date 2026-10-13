@@ -2934,23 +2934,51 @@ fn ctrl_v_attaches_the_system_clipboard_image_and_sends_it_with_the_prompt() {
 }
 
 #[test]
-fn agents_panel_shows_current_session_messages_and_stops_only_the_selected_running_agent() {
-    let mut test = TerminalTest::start("session-agents", 3);
-    test.submit_command("/agents");
-    test.wait_screen_with("Review parser", &["Session agents", "Running"]);
-    test.wait_screen("Parser path checked");
-    assert_eq!(test.commands("list_session_agents").len(), 1);
-    assert_eq!(test.commands("get_subagent_messages").len(), 1);
-    test.assert_prompts(&[]);
+fn agents_view_opens_from_an_empty_composer_stops_a_running_subagent_and_returns_to_chat() {
+    let mut test = TerminalTest::start("agents", 3);
+    test.wait_screen("[AGENTS:1]");
+
+    // With a draft, Left moves the cursor: the next character lands before the last one.
+    let log_offset =
+        std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
+    test.paste("keep this draft");
+    test.wait_composer_text(log_offset, "keep this draft");
+    test.send(b"\x1b[D");
+    // Keys that follow within the key-burst window count as pasted text.
+    std::thread::sleep(Duration::from_millis(300));
+    test.send(b"X");
+    test.wait_screen("keep this drafXt");
+    assert!(test.commands("list_subagents").is_empty(), "a draft keeps Left in the composer");
+
+    test.send(b"\x05\x15"); // End, then kill to line start.
+    test.wait_screen("Type a message");
+    test.send(b"\x1b[D");
+    let screen = test.wait_screen_with("Review parser", &["Subagents", "running", "Inspect docs"]);
+    assert!(!screen.contains("Watch logs"), "background shells are not listed:\n{screen}");
+    assert_eq!(test.commands("list_subagents").len(), 1);
 
     test.send(b"s");
-    test.wait_screen("Stop requested for the selected agent");
-    assert_eq!(test.commands("stop_subagent_task").len(), 1);
+    test.wait_screen("stopped");
+    let stops = test.commands("stop_subagent");
+    assert_eq!(stops.len(), 1);
+    assert_eq!(stops[0]["task_id"], "agent-running");
+
     test.send(b"\x1b[B");
-    test.wait_screen_with("Docs path checked", &["Inspect docs", "Completed"]);
-    assert_eq!(test.commands("get_subagent_messages").len(), 2);
-    test.send(b"s");
-    test.wait_screen("no running task to stop");
-    assert_eq!(test.commands("stop_subagent_task").len(), 1);
+    test.send(b"\r");
+    test.wait_screen_with("Docs path checked", &["Inspect the docs", "ls docs"]);
+    assert_eq!(test.commands("get_subagent_messages")[0]["agent_id"], "agent-done");
+    test.send(b"\x1b");
+    test.wait_screen("Review parser");
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+
+    test.submit("/agents", "/agents");
+    test.wait_screen("Review parser");
+    assert_eq!(test.commands("list_subagents").len(), 2);
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+    test.submit("after agents", "after agents");
+    test.wait_screen("reply 1 started");
+    test.assert_prompts(&["after agents"]);
     test.shutdown();
 }

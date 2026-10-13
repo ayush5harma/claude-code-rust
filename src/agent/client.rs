@@ -802,14 +802,10 @@ impl AgentConnection {
         })
     }
 
-    pub fn list_session_agents(
-        &self,
-        session_id: String,
-        request_id: String,
-    ) -> anyhow::Result<()> {
+    pub fn list_subagents(&self, session_id: String) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
-            request_id: Some(request_id),
-            command: BridgeCommand::ListSessionAgents { session_id },
+            request_id: None,
+            command: BridgeCommand::ListSubagents { session_id },
         })
     }
 
@@ -817,23 +813,10 @@ impl AgentConnection {
         &self,
         session_id: String,
         agent_id: String,
-        request_id: String,
     ) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
-            request_id: Some(request_id),
+            request_id: None,
             command: BridgeCommand::GetSubagentMessages { session_id, agent_id },
-        })
-    }
-
-    pub fn stop_subagent_task(
-        &self,
-        session_id: String,
-        agent_id: String,
-        request_id: String,
-    ) -> anyhow::Result<()> {
-        self.send(CommandEnvelope {
-            request_id: Some(request_id),
-            command: BridgeCommand::StopSubagentTask { session_id, agent_id },
         })
     }
 
@@ -861,6 +844,13 @@ impl AgentConnection {
         self.send(CommandEnvelope {
             request_id: Some(request_id),
             command: BridgeCommand::ExportSessionHistory { session_id },
+        })
+    }
+
+    pub fn stop_subagent(&self, session_id: String, task_id: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::StopSubagent { session_id, task_id },
         })
     }
 

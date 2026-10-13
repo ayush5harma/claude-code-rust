@@ -9,9 +9,6 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
         ClientEvent::WorkingDiffReceived { session_id, request_id, files, error } => {
             crate::app::diff_view::apply(app, &session_id, request_id.as_deref(), files, error);
         }
-        agents_result @ ClientEvent::SessionAgentsResultReceived { .. } => {
-            crate::app::session_agents::apply_result(app, agents_result);
-        }
         ClientEvent::SessionMutationResult {
             session_id,
             request_id,

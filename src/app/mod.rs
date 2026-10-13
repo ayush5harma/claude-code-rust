@@ -2,6 +2,7 @@
 // Copyright 2025 Simon Peter Rothgang
 
 pub(crate) mod activity;
+pub(crate) mod agents;
 pub(crate) mod auth;
 mod btw;
 mod cache_policy;
@@ -36,7 +37,6 @@ pub(crate) mod rewind_picker;
 pub(crate) mod search;
 mod service_status_check;
 mod session_accent;
-pub(crate) mod session_agents;
 pub(crate) mod session_picker;
 mod session_runtime;
 pub(crate) mod settings;

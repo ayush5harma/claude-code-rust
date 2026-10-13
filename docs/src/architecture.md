@@ -26,7 +26,7 @@ Important Rust areas:
 | `src/app/` | App state, lifecycle, sessions, config, permissions, input, slash commands, plugins, MCP, usage, and trust. |
 | `src/ui/` | Ratatui rendering for messages, markdown, diffs, tool calls, config tabs, help, autocomplete, and input. |
 
-The current runtime uses inline terminal-owned rendering rather than an older fullscreen-only model. Fullscreen views are still used for config, help, status, usage, MCP, and plugin surfaces. The reasons for that change are described in [I rebuilt Claude Code's terminal UI in Rust. Then I deleted 12,000 lines of it.](https://medium.com/@simonrothgang/i-rebuilt-claude-codes-terminal-ui-in-rust-then-i-deleted-12-000-lines-of-it-e8593a200452)
+The current runtime uses inline terminal-owned rendering rather than an older fullscreen-only model. Fullscreen views are still used for config, help, status, usage, MCP, plugin and subagent surfaces. The reasons for that change are described in [I rebuilt Claude Code's terminal UI in Rust. Then I deleted 12,000 lines of it.](https://medium.com/@simonrothgang/i-rebuilt-claude-codes-terminal-ui-in-rust-then-i-deleted-12-000-lines-of-it-e8593a200452)
 
 ## Agent SDK Bridge
 
@@ -121,6 +121,18 @@ A turn keeps one verb and one shuffled traversal of the shared welcome tips, adv
 The bridge normalizes confirmed launch results and SDK task lifecycle events into the existing `Detached` tool status. Requested background flags and host elapsed time do not confirm a handoff. Task-to-tool correlation survives foreground turn completion and resume; stale progress and repeated launch acknowledgements cannot reopen terminal execution. Live and replay use the same task adapters and transition rules.
 
 Rust keeps execution state on the original `ToolCallInfo`. Its history projection freezes the launch at its creation position with the fixed `↗` icon, allowing the transcript prefix to enter terminal history while the task runs independently. Actual completion, failure or stopping appends one separately identified result linked to that tool. The session owns pending interactions; foreground turn reset preserves background controls, which remain mutable at the end of the live region during transcript replay after resize. Cache and retention accounting include the frozen projections without adding them to the execution index or foreground activity set.
+
+A task row's lifecycle state is separate from its tool call. A notification that follows a finished tool call still settles the row, and only a new start or another outcome changes a settled row. A lifecycle-owned subagent keeps its row when it leaves `background_tasks_changed`, whether the outcome arrives before or after that snapshot, and drops only its background marker. A `TaskList` snapshot replaces plan tasks while retaining runtime lifecycle rows in the bridge's complete task snapshot.
+
+### Subagents view
+
+| Concern | Owner | Location |
+| --- | --- | --- |
+| Live subagent status, from the SDK task lifecycle | Bridge | `agent-sdk/src/bridge/tasks.ts` |
+| Saved transcript ids and messages, stop requests | Agent SDK, called by the bridge | `listSubagents()`, `getSubagentMessages()`, `Query.stopTask()` in `agent-sdk/src/bridge/subagents.ts` |
+| `/agents` selection, transcript view, sent stop requests, footer count | Rust | `src/app/agents.rs`, `src/ui/agents.rs` |
+
+The view lists the active session's `local_agent` lifecycle rows from the task state Rust already holds, one per task id; there is no second task store and no polling. The footer counts the rows the lifecycle reports as running. A row has a transcript only when `listSubagents()` returned its task id, which is read when the view opens and on `r`. A transcript read never changes a row's status. A stop request is offered only for a running row. Once it is sent the row shows stopping, its acknowledgement does not change that, and only the lifecycle reports it stopped. A rejected request is shown as an error and leaves the row as it was. The bridge refuses to stop a task it does not hold as a running subagent, and runs the request outside the session command lane because `stopTask()` can stay pending until its query ends.
 
 The bridge announces each live top-level SDK response through the typed `agent_response_started` update before sending its text. A response triggered by a background completion receives a fresh mutable assistant owner even when no user prompt is pending; history replay does not activate live responses. The renderer groups consecutive visible assistant messages under one speaker label, carrying speaker context across content already inserted into terminal history. Streaming ownership, message identities and tool insertion order remain separate from that visual grouping.
 

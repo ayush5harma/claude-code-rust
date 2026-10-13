@@ -418,75 +418,69 @@ fk_agents_flow() {
     FK_AGENTS_PANEL="could not submit the agent prompt"
     return 0
   }
-  if ! wait_for fkagents 'Agents: 1 running / [0-9]+' 90; then
+  if ! wait_for fkagents 'AGENTS:1' 90; then
     shot agents
-    FK_AGENTS_PANEL="no 'Agents: 1 running' footer row while the subagent ran: $(first_match '^Agents:' || echo none)"
+    FK_AGENTS_PANEL="no AGENTS:1 footer badge while the subagent ran"
     return 0
   fi
-  FK_AGENTS_FOOTER=$(first_match '^Agents:')
-  # The plan row (the subagent's task) lands a moment after the Agents row.
-  wait_for fkagents '^[▓░]+ [0-9]+/[0-9]+ ' 10 || true
+  FK_AGENTS_FOOTER=$(first_match 'AGENTS:1')
+  # A subagent is a lifecycle task, not a plan step.
   FK_AGENTS_PLAN=$(first_match '^[▓░]+ [0-9]+/[0-9]+ ' || true)
   enter_cmd fkagents /agents
-  if ! wait_for fkagents 'Session agents' 15; then
+  if ! wait_for fkagents 'Subagents' 15; then
     shot agents
     FK_AGENTS_PANEL="/agents did not open"
     return 0
   fi
-  # Rows read "> <name>  <status>"; the running one is the one to stop.
+  # Rows read "› <name>  <status>"; the running one is the one to stop.
   local i
   for ((i = 0; i < 8; i++)); do
-    grep -Eq '^ *> .* Running' <<<"$(screen fkagents)" && break
+    grep -Eq '^ *› .* running' <<<"$(screen fkagents)" && break
     keys fkagents Down
     sleep 0.4
   done
   SCREEN=$(screen fkagents)
   shot agents
-  if ! grep -Eq '^ *> .* Running' <<<"$SCREEN"; then
-    FK_AGENTS_PANEL="/agents lists no Running agent: $(grep -E 'Recorded|Completed|Running' <<<"$SCREEN" | head -3 | paste -sd'/' -)"
+  if ! grep -Eq '^ *› .* running' <<<"$SCREEN"; then
+    FK_AGENTS_PANEL="/agents lists no running agent: $(grep -E 'pending|running|completed|stopped' <<<"$SCREEN" | head -3 | paste -sd'/' -)"
     keys fkagents Escape
     return 0
   fi
-  FK_AGENTS_PANEL="panel row: $(first_match '^ *> .* Running')"
+  FK_AGENTS_PANEL="view row: $(first_match '^ *› .* running')"
   keys fkagents s
-  if wait_for fkagents 'Stop requested for the selected agent' 10; then
+  if wait_for fkagents '^ *› .* stopped' 20; then
     local end=$(($(now) + 20))
     while pgrep -f -- "$SUITE_DIR/fixtures/hold.mjs" >/dev/null && (($(now) < end)); do sleep 0.5; done
     if pgrep -f -- "$SUITE_DIR/fixtures/hold.mjs" >/dev/null; then
-      FK_AGENTS_STOP="'Stop requested' shown but the agent's command (hold.mjs) was still running 20 s later"
+      FK_AGENTS_STOP="row showed stopped but the agent's command (hold.mjs) was still running 20 s later"
     else
-      FK_AGENTS_AFTER=$(first_match '^ *> ' | squash)
-      FK_AGENTS_STOP="'Stop requested for the selected agent'; its command exited; row now: ${FK_AGENTS_AFTER:-?}"
+      FK_AGENTS_AFTER=$(first_match '^ *› .* stopped' | squash)
+      FK_AGENTS_STOP="row showed stopped; its command exited; row now: ${FK_AGENTS_AFTER:-?}"
     fi
   else
-    FK_AGENTS_STOP="pressing s on the running agent showed no 'Stop requested' notice"
+    FK_AGENTS_STOP="pressing s on the running agent did not produce a stopped lifecycle row"
   fi
   settle fkagents || true
   wait_idle fkagents 60 || true
 }
 
-def fork.agents fork "/agents" "Subagent panel; stop a running subagent"
+def fork.agents fork "/agents" "Subagents view; stop a running subagent"
 chk_fork_agents() {
   fk_agents_flow || { res FAIL "agents session did not start"; return; }
-  if [[ $FK_AGENTS_PANEL == panel\ row:* && $FK_AGENTS_STOP == "'Stop requested"*"its command exited"* ]]; then
+  if [[ $FK_AGENTS_PANEL == view\ row:* && $FK_AGENTS_STOP == row\ showed\ stopped*"its command exited"* ]]; then
     res PASS "$FK_AGENTS_PANEL; s -> $FK_AGENTS_STOP"
-    if [[ $FK_AGENTS_AFTER == *Completed* ]]; then
-      defect "A subagent stopped from /agents is listed as Completed" \
-        "1. Ask for a foreground Agent call whose command runs for 90 s. 2. While it runs, open /agents, select the Running row and press s. Observed in this run: the panel answers 'Stop requested for the selected agent', the command exits, and the row then reads Completed. (src/ui/config/agents.rs has a Stopped label for a task whose terminal_status is stopped; this row did not get it.)" \
-        "$FK_AGENTS_AFTER"
-    fi
   else
     res FAIL "${FK_AGENTS_PANEL:-no reading}; stop: ${FK_AGENTS_STOP:-not reached}"
   fi
 }
 
-def fork.footer_agents fork "Footer: agents and plan rows" "Agent counts and the current plan"
+def fork.footer_agents fork "Footer: running subagents" "Running subagent count excludes plan steps"
 chk_fork_footer_agents() {
   fk_agents_flow || { res FAIL "agents session did not start"; return; }
-  if [[ -n $FK_AGENTS_FOOTER && -n $FK_AGENTS_PLAN ]]; then
-    res PASS "while a subagent ran: '$FK_AGENTS_FOOTER' and plan row '$FK_AGENTS_PLAN'"
+  if [[ -n $FK_AGENTS_FOOTER && -z $FK_AGENTS_PLAN ]]; then
+    res PASS "while a subagent ran: '$FK_AGENTS_FOOTER' without a plan row"
   elif [[ -n $FK_AGENTS_FOOTER ]]; then
-    res FAIL "agents row '$FK_AGENTS_FOOTER' but no plan row for the subagent's task list"
+    res FAIL "agent badge '$FK_AGENTS_FOOTER' also created a plan row '$FK_AGENTS_PLAN'"
   else
     res FAIL "$FK_AGENTS_PANEL"
   fi

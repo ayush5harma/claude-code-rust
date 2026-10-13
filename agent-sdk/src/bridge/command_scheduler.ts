@@ -23,6 +23,9 @@ const LIFECYCLE_COMMANDS = new Set<BridgeCommand["command"]>([
 const UNBLOCKING_COMMANDS = new Set<BridgeCommand["command"]>([
   "side_question",
   "cancel_turn",
+  // stopTask can stay pending until its query ends; later session commands
+  // must not wait behind it.
+  "stop_subagent",
   "permission_response",
   "question_response",
   "user_dialog_response",

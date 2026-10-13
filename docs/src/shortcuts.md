@@ -26,6 +26,20 @@ See [Presentation and scrolling](settings.md#presentation-and-scrolling) for the
 
 The fullscreen settings surface has its own keys for tabs, panes, search and editors. See [Opening and navigating](settings.md#opening-and-navigating), [Editing a value](settings.md#editing-a-value) and [Lists and structured settings](settings.md#lists-and-structured-settings).
 
+## Subagents View
+
+`/agents`, or `Left` in an empty input, opens the current session's subagents.
+
+| Shortcut | Action |
+| --- | --- |
+| `Up`, `Down` | Select a subagent. |
+| `Enter` | Open the selected subagent's saved transcript. |
+| `s` | Ask the selected running subagent to stop. |
+| `r` | Check again which subagents have a saved transcript. |
+| `Esc` | Return to chat with the draft unchanged. |
+
+In a transcript, `Up` and `Down` scroll, `Page Up` and `Page Down` scroll by a page, and `Esc` or `Left` returns to the list.
+
 ## Chat Input
 
 | Shortcut | Action |
@@ -43,7 +57,8 @@ The fullscreen settings surface has its own keys for tabs, panes, search and edi
 | `Tab` | Focus prompts or accept suggestions. |
 | `Shift+Tab` | Cycle mode. |
 | `Up` | Move up through text, or recall the latest user message when the input is empty. |
-| `Down`, `Left`, `Right` | Move through text. |
+| `Left` | Move left through text, or open `/agents` when the input is empty. |
+| `Down`, `Right` | Move through text. |
 | `Home`, `End` | Move to line start or line end. |
 | `Ctrl+Left`, `Ctrl+Right` | Move by word. |
 | `Alt+Left`, `Alt+Right` | Move by word. |

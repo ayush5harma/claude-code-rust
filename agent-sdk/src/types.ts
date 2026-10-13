@@ -368,6 +368,12 @@ export interface TaskItem {
   source_tool_call_id?: string;
 }
 
+/** One readable entry of a saved subagent transcript. */
+export interface SubagentMessage {
+  role: "user" | "assistant" | "tool";
+  text: string;
+}
+
 export interface TaskStateUpdate {
   source: TaskUpdateSource;
   tasks: TaskItem[];
@@ -1037,9 +1043,20 @@ export type BridgeCommand =
       command: "get_usage";
       session_id: string;
     }
-  | { command: "list_session_agents"; session_id: string }
-  | { command: "get_subagent_messages"; session_id: string; agent_id: string }
-  | { command: "stop_subagent_task"; session_id: string; agent_id: string }
+  | {
+      command: "list_subagents";
+      session_id: string;
+    }
+  | {
+      command: "get_subagent_messages";
+      session_id: string;
+      agent_id: string;
+    }
+  | {
+      command: "stop_subagent";
+      session_id: string;
+      task_id: string;
+    }
   | {
       command: "get_rewind_targets";
       session_id: string;
@@ -1309,12 +1326,22 @@ export type BridgeEvent =
       error?: string;
     }
   | {
-      event: "session_agents_result";
+      event: "subagents_listed";
       session_id: string;
-      action: "list_session_agents" | "get_subagent_messages" | "stop_subagent_task";
-      agent_id?: string;
       agent_ids: string[];
-      messages: { role: "user" | "assistant"; text: string }[];
+      error?: string;
+    }
+  | {
+      event: "subagent_messages";
+      session_id: string;
+      agent_id: string;
+      messages: SubagentMessage[];
+      error?: string;
+    }
+  | {
+      event: "subagent_stop_result";
+      session_id: string;
+      task_id: string;
       error?: string;
     }
   | {
