@@ -19,6 +19,8 @@ The PR workflow runs this suite on Ubuntu, Windows, and macOS, and requires all 
 | `resize-ready` | Streams a completed transcript for scrollback checks across zoom and reading-mode resizes. |
 | `resize-replay` | Emits a large completed reply in one chunk for interruption and replay-budget checks. |
 | `resize-code` | Completes the first reply, then holds a second reply inside an unfinished code block. |
+| `read-result` | Emits a completed Read of a four-line Markdown file as `file_text` content for source-line rendering checks. |
+| `bash-colour` | Emits Bash output with SGR colours, a hyperlink escape, and cursor control for terminal rendering checks. |
 
 `FAKE_BRIDGE_JOURNAL` records commands, events, and the `reply-held` coordination point as JSONL. `FAKE_BRIDGE_RELEASE_FILE` lets a test release a held turn after exercising the UI. Reply length and interval remain configurable with `FAKE_BRIDGE_LINES`, `FAKE_BRIDGE_FOLLOW_UP_LINES`, and `FAKE_BRIDGE_INTERVAL_MS`.
 

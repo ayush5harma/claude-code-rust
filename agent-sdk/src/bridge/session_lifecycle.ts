@@ -1,4 +1,5 @@
 import { restoreResumedToolState } from "./history.js";
+import { stopStatusLine } from "./status_line.js";
 import { randomUUID } from "node:crypto";
 import { resetMainAgentActivity, type MainAgentResponse } from "./activity.js";
 import { spawn as spawnChild } from "node:child_process";
@@ -178,6 +179,7 @@ export type SessionState = {
   requestedModelId?: string;
   resolvedRuntimeModelId?: string;
   currentModel?: CurrentModel;
+  statusRate?: Record<string, { used_percentage: number; resets_at?: number }>;
   availableModels: AvailableModel[];
   mode: PermissionMode | null;
   supportedModeIds: PermissionMode[];
@@ -338,15 +340,18 @@ export function updateSessionId(
   if (session.sessionId === newSessionId) {
     return;
   }
+  stopStatusLine(session);
   resetMainAgentActivity(session);
   closeSideQuestions(session.sessionId, session.query);
   sessions.delete(session.sessionId);
   session.ultracode = undefined;
   session.sessionId = newSessionId;
+  session.statusRate = undefined;
   sessions.set(newSessionId, session);
 }
 
 export function beginSessionClose(session: SessionState): void {
+  stopStatusLine(session);
   resetMainAgentActivity(session);
   session.closing = true;
   for (const [toolUseId, toolCall] of session.toolCalls) {

@@ -23,6 +23,7 @@ pub struct App {
     pub transcript: Transcript,
     pub session_runtime: SessionRuntimeState,
     pub sdk_inventory: SdkInventoryState,
+    pub footer: Box<FooterState>,
     pub input: InputState,
     pub status: AppStatus,
     /// Authoritative source and request identity for an in-flight session resume.
@@ -233,6 +234,7 @@ impl App {
             transcript: Transcript::default(),
             session_runtime: SessionRuntimeState::test_default(),
             sdk_inventory: SdkInventoryState::default(),
+            footer: Box::default(),
             input: InputState::new(),
             status: AppStatus::Ready,
             pending_session_resume: None,

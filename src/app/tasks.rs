@@ -5,6 +5,18 @@ use crate::agent::model;
 use std::collections::{BTreeSet, HashSet};
 
 pub(super) fn apply_task_state_update(app: &mut App, update: model::TaskStateUpdate) {
+    let selects_plan = update.source != model::TaskUpdateSource::BackgroundTasks
+        && ((update.source == model::TaskUpdateSource::List && update.is_complete_snapshot)
+            || update.tasks.iter().any(is_user_plan_task)
+            || update.removed_task_ids.iter().any(|id| {
+                app.sdk_inventory
+                    .tasks
+                    .iter()
+                    .any(|task| task.task_id == *id && is_user_plan_task(task))
+            }));
+    if selects_plan {
+        app.footer.plan_source = super::state::PlanSource::Tasks;
+    }
     let previous_tasks = app.sdk_inventory.tasks.clone();
     let removed: HashSet<&str> =
         update.removed_task_ids.iter().map(std::string::String::as_str).collect();
@@ -50,13 +62,25 @@ pub(super) fn apply_task_state_update(app: &mut App, update: model::TaskStateUpd
     refresh_task_tool_displays_with_previous(app, &previous_tasks);
 }
 
-fn is_sdk_background_task(task: &model::TaskItem) -> bool {
+pub(crate) fn is_sdk_background_task(task: &model::TaskItem) -> bool {
     task.metadata
         .as_ref()
         .and_then(serde_json::Value::as_object)
         .and_then(|metadata| metadata.get("sdk_background_task"))
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
+}
+
+pub(crate) fn is_user_plan_task(task: &model::TaskItem) -> bool {
+    !is_sdk_background_task(task) && !is_session_agent_task(task)
+}
+
+pub(crate) fn is_session_agent_task(task: &model::TaskItem) -> bool {
+    let Some(metadata) = task.metadata.as_ref().and_then(serde_json::Value::as_object) else {
+        return false;
+    };
+    metadata.get("subagent_type").is_some_and(serde_json::Value::is_string)
+        || metadata.get("task_type").and_then(serde_json::Value::as_str) == Some("local_agent")
 }
 
 pub(super) fn refresh_task_tool_displays(app: &mut App) -> bool {
@@ -324,6 +348,62 @@ mod tests {
         assert_eq!(app.sdk_inventory.tasks.len(), 1);
         assert_eq!(app.sdk_inventory.tasks[0].subject, "new");
         assert_eq!(app.sdk_inventory.tasks[0].status, model::TaskStatus::InProgress);
+    }
+
+    #[test]
+    fn confirmed_task_updates_select_tasks_but_background_and_agent_updates_do_not() {
+        let mut app = App::test_default();
+        app.footer.plan_source = crate::app::state::PlanSource::Todo;
+        apply_task_state_update(
+            &mut app,
+            model::TaskStateUpdate::new(model::TaskUpdateSource::BackgroundTasks)
+                .tasks(vec![background_task("background", "Index files")]),
+        );
+        assert!(app.footer.plan_source == crate::app::state::PlanSource::Todo);
+
+        let mut agent = task("agent-1", "Review", model::TaskStatus::InProgress);
+        agent.metadata = Some(serde_json::json!({"subagent_type":"general-purpose"}));
+        apply_task_state_update(
+            &mut app,
+            model::TaskStateUpdate::new(model::TaskUpdateSource::Lifecycle).tasks(vec![agent]),
+        );
+        assert!(app.footer.plan_source == crate::app::state::PlanSource::Todo);
+
+        apply_task_state_update(
+            &mut app,
+            model::TaskStateUpdate::new(model::TaskUpdateSource::Create).tasks(vec![task(
+                "plan-1",
+                "Ship",
+                model::TaskStatus::Pending,
+            )]),
+        );
+        assert!(app.footer.plan_source == crate::app::state::PlanSource::Tasks);
+
+        app.footer.apply_todo_plan(vec![model::TodoPlanItem {
+            content: "New todo".to_owned(),
+            active_form: None,
+            status: model::TaskStatus::InProgress,
+        }]);
+        assert!(app.footer.plan_source == crate::app::state::PlanSource::Todo);
+        apply_task_state_update(
+            &mut app,
+            model::TaskStateUpdate::new(model::TaskUpdateSource::List)
+                .tasks(vec![task("plan-1", "Ship", model::TaskStatus::Completed)])
+                .complete_snapshot(true),
+        );
+        assert!(app.footer.plan_source == crate::app::state::PlanSource::Tasks);
+    }
+
+    #[test]
+    fn complete_empty_task_list_clears_a_selected_task_plan() {
+        let mut app = App::test_default();
+        app.footer.plan_source = crate::app::state::PlanSource::Todo;
+        apply_task_state_update(
+            &mut app,
+            model::TaskStateUpdate::new(model::TaskUpdateSource::List).complete_snapshot(true),
+        );
+        assert!(app.footer.plan_source == crate::app::state::PlanSource::Tasks);
+        assert!(app.sdk_inventory.tasks.is_empty());
     }
 
     #[test]

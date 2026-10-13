@@ -2153,6 +2153,102 @@ mod tests {
         );
     }
 
+    /// A `#` that starts a code line is code, not a heading: the shebang and the comment
+    /// must be shown exactly as written, with no inserted rows.
+    #[test]
+    fn fenced_code_lines_starting_with_hash_render_verbatim() {
+        let mut app = App::test_default();
+        app.transcript.messages.push(assistant_text_message(
+            "Run this:\n\n```bash\n#!/usr/bin/env bash\n# install deps\nnpm ci\n```\n",
+        ));
+
+        let rows = serialize_live_rows(&mut app, 80);
+
+        assert_eq!(
+            line_texts(&rows),
+            vec![
+                "Claude",
+                "Run this:",
+                "",
+                "  ▎ bash",
+                "  ▎ #!/usr/bin/env bash",
+                "  ▎ # install deps",
+                "  ▎ npm ci",
+            ]
+        );
+    }
+
+    /// Code rows are the code exactly as written: a line that looks like a list item or a
+    /// fence stays as typed, tabs become four spaces, and the shading reaches the row's end.
+    #[test]
+    fn fenced_code_renders_as_shaded_block_with_language_label() {
+        let mut app = App::test_default();
+        app.transcript
+            .messages
+            .push(assistant_text_message("~~~md\n- not a list item\n```\n\tx = 1\n~~~\n"));
+
+        let rows = serialize_live_rows(&mut app, 40);
+
+        assert_eq!(
+            line_texts(&rows),
+            vec!["Claude", "  ▎ md", "  ▎ - not a list item", "  ▎ ```", "  ▎     x = 1"]
+        );
+        let block_bg = crate::ui::highlight::code_background();
+        assert!(block_bg.is_some());
+        for row in &rows[1..] {
+            let cells: Vec<_> = row
+                .spans
+                .iter()
+                .flat_map(|span| span.content.chars().map(move |_| span.style.bg))
+                .collect();
+            assert_eq!(cells.len(), 40, "{row:?}");
+            assert!(cells[2..].iter().all(|bg| *bg == block_bg), "{row:?}");
+        }
+        let label = rows[1].spans.iter().find(|span| span.content == "md");
+        assert!(
+            label.is_some_and(|span| {
+                span.style.add_modifier.contains(ratatui::style::Modifier::ITALIC)
+            }),
+            "{:?}",
+            rows[1]
+        );
+    }
+
+    /// Code wraps at the cell, keeping every space, and a line exactly as wide as the
+    /// block stays on one row: the hard-break spaces added to prose never reach code.
+    #[test]
+    fn long_code_lines_wrap_at_the_cell_and_keep_spaces() {
+        let mut app = App::test_default();
+        app.transcript
+            .messages
+            .push(assistant_text_message("```\na  b  c  d  e  f  g  h\nexactly-16-cells\n```"));
+
+        let rows = serialize_live_rows(&mut app, 20);
+
+        assert_eq!(
+            line_texts(&rows),
+            vec!["Claude", "  ▎ a  b  c  d  e  f", "  ▎   g  h", "  ▎ exactly-16-cells"]
+        );
+    }
+
+    #[test]
+    fn markdown_headings_render_bold_without_their_markers() {
+        let mut app = App::test_default();
+        app.transcript.messages.push(assistant_text_message("## Plan\n\nStep one."));
+
+        let rows = serialize_live_rows(&mut app, 80);
+
+        assert_eq!(line_texts(&rows), vec!["Claude", "Plan", "", "Step one."]);
+        let heading = rows[1].spans.iter().find(|span| span.content.contains("Plan"));
+        assert!(
+            heading.is_some_and(|span| {
+                span.style.add_modifier.contains(ratatui::style::Modifier::BOLD)
+            }),
+            "{:?}",
+            rows[1]
+        );
+    }
+
     #[test]
     fn live_rows_render_assistant_notice_from_messages() {
         let mut app = App::test_default();

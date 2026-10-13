@@ -185,6 +185,14 @@ export type ToolCallContent =
       repository?: string;
     }
   | {
+      // A successful text Read: the file's own lines without line-number prefixes and the
+      // 1-based number of the first one, so the renderer never re-parses `cat -n` text.
+      type: "file_text";
+      path: string;
+      start_line: number;
+      text: string;
+    }
+  | {
       type: "mcp_resource";
       uri: string;
       mime_type?: string;
@@ -338,6 +346,7 @@ export interface TranscriptRetraction {
 }
 
 export type TaskStatus = "pending" | "in_progress" | "completed";
+export type TodoPlanItem = { content: string; active_form?: string; status: TaskStatus };
 export type TaskUpdateSource =
   | "task_create"
   | "task_update"
@@ -401,6 +410,8 @@ export type SessionUpdate =
   | { type: "tool_call_update"; tool_call_update: ToolCallUpdate }
   | ({ type: "transcript_retraction" } & TranscriptRetraction)
   | ({ type: "task_state_update" } & TaskStateUpdate)
+  | { type: "todo_plan_update"; items: TodoPlanItem[] }
+  | { type: "status_line_update"; text: string | null }
   | {
       type: "available_commands_update";
       commands: AvailableCommand[];

@@ -444,6 +444,28 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
         types::SessionUpdate::TaskStateUpdate { update: task_update } => {
             Some(model::SessionUpdate::TaskStateUpdate(convert_task_state_update(task_update)))
         }
+        types::SessionUpdate::TodoPlanUpdate { items } => {
+            Some(model::SessionUpdate::TodoPlanUpdate(
+                items
+                    .into_iter()
+                    .map(|item| model::TodoPlanItem {
+                        content: item.content,
+                        active_form: item.active_form,
+                        status: convert_task_status(item.status),
+                    })
+                    .collect(),
+            ))
+        }
+        types::SessionUpdate::StatusLineUpdate { text } => {
+            let text = text.map(|value| {
+                crate::ui::highlight::strip_ansi(&value)
+                    .chars()
+                    .filter(|ch| !ch.is_control())
+                    .take(512)
+                    .collect::<String>()
+            });
+            Some(model::SessionUpdate::StatusLineUpdate(text.filter(|value| !value.is_empty())))
+        }
         types::SessionUpdate::AvailableCommandsUpdate { commands, source, generation } => {
             Some(model::SessionUpdate::AvailableCommandsUpdate(map_available_commands_update(
                 commands, source, generation,
@@ -1029,6 +1051,9 @@ fn convert_tool_call_content(
                 model::Diff::new(new_path, new).old_text(Some(old)).repository(repository),
             ))
         }
+        types::ToolCallContent::FileText { path, start_line, text } => {
+            Some(model::ToolCallContent::FileText(model::FileText::new(path, start_line, text)))
+        }
         types::ToolCallContent::McpResource { uri, mime_type, text, blob_saved_to } => {
             Some(model::ToolCallContent::McpResource(
                 model::McpResource::new(uri)
@@ -1368,6 +1393,18 @@ mod tests {
                 error_code: Some(model::CompactionFailureCode::TooFewGroups),
                 error: Some("Prompt is too long".to_owned()),
             }))
+        );
+    }
+
+    #[test]
+    fn status_line_update_strips_terminal_controls_before_footer_rendering() {
+        let update: types::SessionUpdate = serde_json::from_str(
+            r#"{"type":"status_line_update","text":"safe\u001b[2J\u001b]52;c;c2VjcmV0\u0007status\n"}"#,
+        )
+        .expect("status line wire");
+        assert_eq!(
+            map_session_update(update),
+            Some(model::SessionUpdate::StatusLineUpdate(Some("safestatus".to_owned())))
         );
     }
 
@@ -1951,6 +1988,41 @@ mod tests {
                     ))
                     .blob_saved_to(Some("C:\\tmp\\manual.pdf".to_owned())),
             )]
+        );
+    }
+
+    #[test]
+    fn bridge_file_text_json_becomes_model_file_text() {
+        let content: types::ToolCallContent = serde_json::from_value(serde_json::json!({
+            "type": "file_text",
+            "path": "/work/notes.md",
+            "start_line": 7,
+            "text": "# Title\n\n- item"
+        }))
+        .expect("wire content");
+
+        let tool_call = convert_tool_call(types::ToolCall {
+            tool_call_id: "tool-read".to_owned(),
+            title: "Read notes.md".to_owned(),
+            kind: "read".to_owned(),
+            status: "completed".to_owned(),
+            source_message_uuid: None,
+            content: vec![content],
+            raw_input: None,
+            raw_output: None,
+            output_metadata: None,
+            task_metadata: None,
+            locations: Vec::new(),
+            meta: None,
+        });
+
+        assert_eq!(
+            tool_call.content,
+            vec![model::ToolCallContent::FileText(model::FileText::new(
+                "/work/notes.md",
+                7,
+                "# Title\n\n- item"
+            ))]
         );
     }
 

@@ -363,6 +363,26 @@ readline
           restored_input: null,
         });
         if (SCENARIO.startsWith('resize-') || SCENARIO.startsWith('background-')) send({ event: 'status_snapshot', session_id: SESSION, account: { subscription_type: 'Fixture subscription' } });
+        if (SCENARIO === 'read-result') {
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call', tool_call: {
+            tool_call_id: 'read-notes', title: 'Read NOTES.md', kind: 'read', status: 'completed',
+            content: [{ type: 'file_text', path: '/fixture/NOTES.md', start_line: 1, text: '# Fixture heading\n\n- first item\n1. numbered item' }],
+            raw_input: { file_path: '/fixture/NOTES.md' }, locations: [], meta: { claudeCode: { toolName: 'Read' } },
+          } } });
+        }
+        if (SCENARIO === 'bash-colour') {
+          const call = { tool_call_id: 'bash-colour', title: 'Run colour.sh', kind: 'execute', status: 'in_progress', content: [], raw_input: { command: './colour.sh' }, locations: [], meta: { claudeCode: { toolName: 'Bash' } } };
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call', tool_call: call } });
+          const output = '\x1b[31mFIXTURE_RED\x1b[0m plain \x1b[1;38;5;208mFIXTURE_ORANGE\x1b[0m\n\x1b]8;;https://example.com\x1b\\FIXTURE_LINK\x1b]8;;\x1b\\\x1b]0;hijacked\x07\x1b[2A end';
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call_update', tool_call_update: { tool_call_id: 'bash-colour', fields: { status: 'completed', raw_output: output } } } });
+        }
+        if (SCENARIO === 'footer-plan' && message.command === 'create_session') {
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'todo_plan_update', items: [
+            { content: 'Finished setup', status: 'completed' },
+            { content: 'Verify footer plan', status: 'in_progress' },
+          ] } });
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'status_line_update', text: 'FIXTURE_STATUS_ROW' } });
+        }
         if (SCENARIO === 'disconnect-during-auth' && message.command === 'create_session') {
           const timer = setInterval(() => {
             if (fs.existsSync(RELEASE_FILE)) {

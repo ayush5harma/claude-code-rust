@@ -306,6 +306,8 @@ pub enum SessionUpdate {
         error: ApiRetryError,
     },
     PromptSuggestionUpdate(String),
+    TodoPlanUpdate(Vec<super::tasks::TodoPlanItem>),
+    StatusLineUpdate(Option<String>),
     RuntimeSessionStateUpdate(RuntimeSessionState),
     SettingsParseError {
         file: Option<String>,

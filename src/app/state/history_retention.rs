@@ -80,6 +80,9 @@ impl super::App {
                 .capacity()
                 .saturating_add(diff.old_text.as_ref().map_or(0, String::capacity))
                 .saturating_add(diff.new_text.capacity()),
+            model::ToolCallContent::FileText(file) => {
+                file.path.capacity().saturating_add(file.text.capacity())
+            }
             model::ToolCallContent::McpResource(resource) => resource
                 .uri
                 .capacity()

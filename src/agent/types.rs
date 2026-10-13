@@ -558,6 +558,11 @@ pub enum ToolCallContent {
         new: String,
         repository: Option<String>,
     },
+    FileText {
+        path: String,
+        start_line: u32,
+        text: String,
+    },
     McpResource {
         uri: String,
         mime_type: Option<String>,
@@ -581,6 +586,13 @@ pub enum TaskStatus {
     Pending,
     InProgress,
     Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TodoPlanItem {
+    pub content: String,
+    pub active_form: Option<String>,
+    pub status: TaskStatus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -669,6 +681,12 @@ pub enum SessionUpdate {
     TaskStateUpdate {
         #[serde(flatten)]
         update: TaskStateUpdate,
+    },
+    TodoPlanUpdate {
+        items: Vec<TodoPlanItem>,
+    },
+    StatusLineUpdate {
+        text: Option<String>,
     },
     AvailableCommandsUpdate {
         commands: Vec<AvailableCommand>,

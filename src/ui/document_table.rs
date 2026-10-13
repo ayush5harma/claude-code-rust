@@ -6,7 +6,7 @@ use super::wrap::{
     StyledChunk, blank_line, display_width, line_display_width, pad_line_to_width,
     wrap_styled_chunks,
 };
-use pulldown_cmark::{Alignment, Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -68,6 +68,11 @@ struct DocumentTable {
 enum MarkdownBlock {
     Text(String),
     Table(DocumentTable),
+    /// A top-level code block: its content exactly as written and the fence's language.
+    Code {
+        code: String,
+        language: Option<String>,
+    },
 }
 
 const URL_TOKEN_SOFT_MIN_WIDTH: usize = 24;
@@ -105,12 +110,16 @@ impl TableCellAst {
     }
 }
 
+/// Renders Markdown whose tables and top-level code blocks need the terminal width: both are
+/// laid out here, everything else by the Markdown renderer. `preserve_newlines` turns single
+/// line breaks in prose into hard breaks; code keeps its own text either way.
 pub fn render_markdown_with_tables(
     text: &str,
     width: u16,
     bg: Option<Color>,
+    preserve_newlines: bool,
 ) -> Vec<Line<'static>> {
-    let blocks = split_markdown_tables(text);
+    let blocks = split_markdown_blocks(text);
     let mut out = Vec::new();
     for block in blocks {
         match block {
@@ -118,18 +127,34 @@ pub fn render_markdown_with_tables(
                 if chunk.trim().is_empty() {
                     continue;
                 }
+                let chunk = if preserve_newlines {
+                    super::message::force_markdown_line_breaks(&chunk)
+                } else {
+                    chunk
+                };
                 out.extend(markdown::render_markdown_safe(&chunk, bg));
             }
             MarkdownBlock::Table(table) => {
-                if !out.is_empty() {
+                if out.last().is_some_and(|line| !line_is_blank(line)) {
                     out.push(Line::default());
                 }
                 out.extend(table.render_lines(width, bg));
                 out.push(Line::default());
             }
+            MarkdownBlock::Code { code, language } => {
+                if out.last().is_some_and(|line| !line_is_blank(line)) {
+                    out.push(Line::default());
+                }
+                out.extend(markdown::render_code_block(&code, language.as_deref(), width, bg));
+                out.push(Line::default());
+            }
         }
     }
     out
+}
+
+fn line_is_blank(line: &Line<'_>) -> bool {
+    line.spans.iter().all(|span| span.content.trim().is_empty())
 }
 
 fn parser_options() -> Options {
@@ -138,24 +163,57 @@ fn parser_options() -> Options {
     options
 }
 
-fn split_markdown_tables(text: &str) -> Vec<MarkdownBlock> {
+fn split_markdown_blocks(text: &str) -> Vec<MarkdownBlock> {
     let mut blocks = Vec::new();
     let mut parser = Parser::new_ext(text, parser_options()).into_offset_iter().peekable();
     let mut text_start = 0usize;
+    // Open container blocks around the current event. Code inside a list item or a quote
+    // stays with its container, whose layout the Markdown renderer owns.
+    let mut depth = 0usize;
 
     loop {
         let Some((event, range)) = parser.next() else {
             break;
         };
-        if let Event::Start(Tag::Table(alignments)) = event {
-            if text_start < range.start {
-                blocks.push(MarkdownBlock::Text(text[text_start..range.start].to_owned()));
-            }
+        match event {
+            Event::Start(Tag::Table(alignments)) => {
+                if text_start < range.start {
+                    blocks.push(MarkdownBlock::Text(text[text_start..range.start].to_owned()));
+                }
 
-            let mut table_end = range.end;
-            let table = parse_table_ast(alignments, &mut parser, &mut table_end);
-            blocks.push(MarkdownBlock::Table(table));
-            text_start = table_end;
+                let mut table_end = range.end;
+                let table = parse_table_ast(alignments, &mut parser, &mut table_end);
+                blocks.push(MarkdownBlock::Table(table));
+                text_start = table_end;
+            }
+            Event::Start(Tag::CodeBlock(kind)) if depth == 0 => {
+                if text_start < range.start {
+                    blocks.push(MarkdownBlock::Text(text[text_start..range.start].to_owned()));
+                }
+
+                let language = match kind {
+                    CodeBlockKind::Fenced(info) => {
+                        // An info string can carry attributes: `rust,ignore`, `py title=x`.
+                        info.split(|ch: char| ch.is_whitespace() || ch == ',')
+                            .find(|word| !word.is_empty())
+                            .map(str::to_owned)
+                    }
+                    CodeBlockKind::Indented => None,
+                };
+                let mut code = String::new();
+                for (event, _) in parser.by_ref() {
+                    match event {
+                        Event::Text(content) => code.push_str(&content),
+                        Event::End(TagEnd::CodeBlock) => break,
+                        _ => {}
+                    }
+                }
+                blocks.push(MarkdownBlock::Code { code, language });
+                text_start = range.end;
+            }
+            Event::Start(_) => depth += 1,
+            Event::End(_) => depth = depth.saturating_sub(1),
+            _ => {}
         }
     }
 
@@ -545,7 +603,10 @@ fn render_row_lines(
         let mut spans = Vec::new();
         for (idx, cell) in cell_lines.iter().enumerate() {
             if idx > 0 {
-                spans.push(Span::styled(" ".repeat(spacing), base_style));
+                spans.push(Span::styled(
+                    column_divider(spacing),
+                    base_style.add_modifier(Modifier::DIM),
+                ));
             }
             spans.extend(cell[line_idx].spans.clone());
         }
@@ -559,11 +620,31 @@ fn render_separator_line(widths: &[usize], spacing: usize, base_style: Style) ->
     let mut spans = Vec::new();
     for (idx, width) in widths.iter().copied().enumerate() {
         if idx > 0 {
-            spans.push(Span::styled(" ".repeat(spacing), base_style));
+            spans.push(Span::styled(separator_divider(spacing), separator_style));
         }
         spans.push(Span::styled("─".repeat(width), separator_style));
     }
     Line::from(spans)
+}
+
+fn column_divider(spacing: usize) -> String {
+    if spacing == 0 {
+        String::new()
+    } else if spacing == 1 {
+        "│".to_owned()
+    } else {
+        format!(" {} ", "│")
+    }
+}
+
+fn separator_divider(spacing: usize) -> String {
+    if spacing == 0 {
+        String::new()
+    } else if spacing == 1 {
+        "┼".to_owned()
+    } else {
+        format!("{}┼{}", "─".repeat(spacing / 2), "─".repeat(spacing - spacing / 2))
+    }
 }
 
 fn render_cell_lines(
@@ -737,7 +818,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     fn render_strings(text: &str, width: u16) -> Vec<String> {
-        render_markdown_with_tables(text, width, None)
+        render_markdown_with_tables(text, width, None, false)
             .into_iter()
             .map(|line| line.spans.into_iter().map(|span| span.content.into_owned()).collect())
             .collect()
@@ -746,7 +827,7 @@ mod tests {
     #[test]
     fn structural_parser_extracts_markdown_tables() {
         let blocks =
-            split_markdown_tables("before\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\nafter");
+            split_markdown_blocks("before\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\nafter");
         assert_eq!(blocks.len(), 3);
         assert!(matches!(blocks[0], MarkdownBlock::Text(_)));
         assert!(matches!(blocks[1], MarkdownBlock::Table(_)));
@@ -756,9 +837,42 @@ mod tests {
     #[test]
     fn structural_parser_does_not_treat_code_fences_as_tables() {
         let input = "```text\n| not | a table |\n| --- | --- |\n```\n";
-        let blocks = split_markdown_tables(input);
-        assert_eq!(blocks.len(), 1);
-        assert!(matches!(blocks[0], MarkdownBlock::Text(_)));
+        let blocks = split_markdown_blocks(input);
+        assert!(!blocks.iter().any(|block| matches!(block, MarkdownBlock::Table(_))));
+        let [MarkdownBlock::Code { code, language }, ..] = blocks.as_slice() else {
+            panic!("expected the code block first, got {} blocks", blocks.len());
+        };
+        assert_eq!(code, "| not | a table |\n| --- | --- |\n");
+        assert_eq!(language.as_deref(), Some("text"));
+    }
+
+    /// Code inside a list item stays in the list's text so the item keeps its context.
+    #[test]
+    fn structural_parser_leaves_code_inside_list_items_to_the_list() {
+        let input = "1. Install:\n   ```sh\n   npm ci\n   ```\n2. Run it.\n";
+        let blocks = split_markdown_blocks(input);
+        let [MarkdownBlock::Text(text)] = blocks.as_slice() else {
+            panic!("expected one text block, got {} blocks", blocks.len());
+        };
+        assert_eq!(text, input);
+    }
+
+    #[test]
+    fn structural_parser_keeps_text_around_top_level_code_and_its_language() {
+        let input = "before\n\n```rust,ignore\nfn main() {}\n```\n\nafter\n";
+        let blocks = split_markdown_blocks(input);
+        let [
+            MarkdownBlock::Text(before),
+            MarkdownBlock::Code { code, language },
+            MarkdownBlock::Text(after),
+        ] = blocks.as_slice()
+        else {
+            panic!("expected text, code, text; got {} blocks", blocks.len());
+        };
+        assert_eq!(before, "before\n\n");
+        assert_eq!(code, "fn main() {}\n");
+        assert_eq!(language.as_deref(), Some("rust"));
+        assert_eq!(after.trim(), "after");
     }
 
     #[test]
@@ -793,6 +907,8 @@ mod tests {
         assert!(left_cell <= left_header);
         assert!(center_cell > left_cell);
         assert!(right_cell > center_cell);
+        assert!(header.contains('│'));
+        assert!(separator.contains('┼'));
     }
 
     #[test]
@@ -816,14 +932,14 @@ mod tests {
 
     #[test]
     fn malformed_markdown_falls_back_to_text_block() {
-        let blocks = split_markdown_tables("| a | b |\n| this is not a separator |\n| 1 | 2 |\n");
+        let blocks = split_markdown_blocks("| a | b |\n| this is not a separator |\n| 1 | 2 |\n");
         assert_eq!(blocks.len(), 1);
         assert!(matches!(blocks[0], MarkdownBlock::Text(_)));
     }
 
     #[test]
     fn structural_parser_preserves_empty_cells_in_valid_table_rows() {
-        let blocks = split_markdown_tables(
+        let blocks = split_markdown_blocks(
             "| Hassle | What users report | Refs |\n\
              | --- | --- | --- |\n\
              | Paste freeze | Pasting many lines froze the terminal |  |\n\
@@ -889,7 +1005,7 @@ mod tests {
     #[test]
     fn inline_markdown_spans_render_inside_cells() {
         let input = "| col |\n| --- |\n| **bold** and `code` |\n";
-        let rendered = render_markdown_with_tables(input, 24, None);
+        let rendered = render_markdown_with_tables(input, 24, None, false);
         let body = &rendered[2];
         assert!(body.spans.iter().any(|span| span.style.add_modifier.contains(Modifier::BOLD)));
         assert!(body.spans.iter().any(|span| span.style.add_modifier.contains(Modifier::REVERSED)));
@@ -903,5 +1019,27 @@ mod tests {
         assert!(rendered.iter().any(|line| line.contains("foo")));
         assert!(rendered.iter().any(|line| line.contains("Description")));
         assert!(!rendered.iter().any(|line| line.contains('─')));
+    }
+
+    #[test]
+    fn document_blocks_keep_one_blank_row_between_each_other() {
+        let rendered = render_strings(
+            "Paragraph.\n\n- Item\n\n> Quote\n\n```text\nfirst code\n```\n\n| Name | Value |\n| --- | --- |\n| one | two |\n\n```text\nlast code\n```\n\nAfter.",
+            80,
+        );
+
+        for pair in rendered.windows(2) {
+            assert!(
+                !(pair[0].trim().is_empty() && pair[1].trim().is_empty()),
+                "consecutive blank rows around document blocks: {rendered:?}"
+            );
+        }
+        assert!(rendered.iter().any(|line| line.contains("Paragraph.")));
+        assert!(rendered.iter().any(|line| line.contains("- Item")));
+        assert!(rendered.iter().any(|line| line.contains("Quote")));
+        assert!(rendered.iter().any(|line| line.contains("│")));
+        assert!(rendered.iter().any(|line| line.contains("▎ first code")));
+        assert!(rendered.iter().any(|line| line.contains("▎ last code")));
+        assert!(rendered.iter().any(|line| line.contains("After.")));
     }
 }

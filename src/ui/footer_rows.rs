@@ -21,7 +21,7 @@ const FOOTER_CONTEXT_VALUE: Color = Color::Gray;
 type FooterItem = Option<(String, Color)>;
 
 pub(crate) struct SerializedFooterRows {
-    pub rows: [Line<'static>; 2],
+    pub rows: Vec<Line<'static>>,
 }
 
 pub(crate) fn serialize_footer_rows(app: &App, total_width: u16) -> SerializedFooterRows {
@@ -46,7 +46,28 @@ pub(crate) fn serialize_footer_rows(app: &App, total_width: u16) -> SerializedFo
         SECONDARY_ROW_LEFT_MIN_WIDTH,
     );
 
-    SerializedFooterRows { rows: [first_row, second_row] }
+    let mut rows = vec![first_row, second_row];
+    if let Some(rate_row) = build_rate_line(app, total_width) {
+        rows.push(rate_row);
+    }
+    if let Some(agent_row) = build_agent_line(app, total_width) {
+        rows.push(agent_row);
+    }
+    if let Some(plan_row) = build_plan_line(app, total_width) {
+        rows.push(plan_row);
+    }
+    if let Some(status_line) = app.footer.status_line.as_ref() {
+        rows.push(compose_footer_row(
+            Line::from(Span::styled(
+                status_line.clone(),
+                Style::default().fg(FOOTER_CONTEXT_VALUE),
+            )),
+            None,
+            total_width,
+            0,
+        ));
+    }
+    SerializedFooterRows { rows }
 }
 
 fn footer_primary_hint(app: &App) -> FooterItem {
@@ -65,9 +86,118 @@ fn footer_mcp_auth_hint(app: &App) -> FooterItem {
 
 fn footer_context_usage_hint(app: &App) -> FooterItem {
     app.session_runtime.session_usage.context_usage_percent.map(|percentage| {
-        let remaining = 100_u8.saturating_sub(percentage);
-        (format!("{remaining}%"), FOOTER_CONTEXT_VALUE)
+        let filled = (usize::from(percentage) * 8 + 50) / 100;
+        let meter = format!("{}{}", "▓".repeat(filled), "░".repeat(8 - filled));
+        (format!("Ctx {meter} {percentage}%"), FOOTER_CONTEXT_VALUE)
     })
+}
+
+fn build_rate_line(app: &App, width: u16) -> Option<Line<'static>> {
+    let snapshot = app
+        .usage
+        .snapshot
+        .as_ref()
+        .filter(|snapshot| snapshot.source == crate::app::UsageSourceKind::Sdk);
+    let mut windows = Vec::new();
+    if let Some(window) = snapshot.and_then(|snapshot| snapshot.five_hour.as_ref()) {
+        windows.push(format!("5h {:.0}%", window.utilization));
+    }
+    if let Some(window) = snapshot.and_then(|snapshot| snapshot.seven_day.as_ref()) {
+        windows.push(format!("7d {:.0}%", window.utilization));
+    }
+    if windows.is_empty()
+        && let Some(update) = app.session_runtime.last_rate_limit_update.as_ref()
+        && let (Some(kind), Some(utilization)) = (&update.rate_limit_type, update.utilization)
+    {
+        let label = match kind.as_str() {
+            "five_hour" => Some("5h"),
+            "seven_day" => Some("7d"),
+            _ => None,
+        };
+        if let Some(label) = label {
+            windows.push(format!("{label} {:.0}%", utilization * 100.0));
+        }
+    }
+    (!windows.is_empty()).then(|| {
+        compose_footer_row(
+            Line::from(Span::styled(
+                format!("Rate: {}", windows.join("  ")),
+                Style::default().fg(FOOTER_CONTEXT_VALUE),
+            )),
+            None,
+            width,
+            0,
+        )
+    })
+}
+
+fn build_agent_line(app: &App, width: u16) -> Option<Line<'static>> {
+    let mut total = 0usize;
+    let mut running = 0usize;
+    for task in
+        app.sdk_inventory.tasks.iter().filter(|task| crate::app::tasks::is_session_agent_task(task))
+    {
+        total += 1;
+        running += usize::from(task.status == model::TaskStatus::InProgress);
+    }
+    (total > 0).then(|| {
+        compose_footer_row(
+            Line::from(Span::styled(
+                format!("Agents: {running} running / {total}"),
+                Style::default().fg(FOOTER_CONTEXT_VALUE),
+            )),
+            None,
+            width,
+            0,
+        )
+    })
+}
+
+fn build_plan_line(app: &App, width: u16) -> Option<Line<'static>> {
+    let task_steps = app
+        .sdk_inventory
+        .tasks
+        .iter()
+        .filter(|task| crate::app::tasks::is_user_plan_task(task))
+        .map(|task| (task.status, task.active_form.as_deref().unwrap_or(&task.subject)))
+        .collect::<Vec<_>>();
+    let steps = match app.footer.plan_source {
+        crate::app::PlanSource::Todo => app
+            .footer
+            .todo_plan
+            .iter()
+            .map(|item| (item.status, item.active_form.as_deref().unwrap_or(&item.content)))
+            .collect(),
+        crate::app::PlanSource::None if task_steps.is_empty() => app
+            .footer
+            .todo_plan
+            .iter()
+            .map(|item| (item.status, item.active_form.as_deref().unwrap_or(&item.content)))
+            .collect(),
+        crate::app::PlanSource::None | crate::app::PlanSource::Tasks => task_steps,
+    };
+    if steps.is_empty() {
+        return None;
+    }
+    let completed =
+        steps.iter().filter(|(status, _)| *status == model::TaskStatus::Completed).count();
+    let active = steps
+        .iter()
+        .find(|(status, _)| *status == model::TaskStatus::InProgress)
+        .or_else(|| steps.iter().find(|(status, _)| *status == model::TaskStatus::Pending));
+    let cells = steps.len().min(8);
+    let filled = (completed * cells + steps.len() / 2) / steps.len();
+    let meter = format!("{}{}", "▓".repeat(filled), "░".repeat(cells - filled));
+    let label = active.map_or("Done", |(_, label)| *label);
+    Some(compose_footer_row(
+        Line::from(Span::styled(
+            format!("{meter} {completed}/{} {label}", steps.len()),
+            Style::default().fg(theme::RUST_ORANGE),
+        )),
+        None,
+        width,
+        0,
+    ))
 }
 
 fn footer_secondary_hint(app: &App) -> FooterItem {
@@ -620,6 +750,121 @@ mod tests {
         let text = line_text(&serialized.rows[1]);
 
         assert!(text.contains("Loc:"));
+    }
+
+    #[test]
+    fn plan_row_prefers_sdk_tasks_and_excludes_background_execution() {
+        let mut app = App::test_default();
+        app.footer.todo_plan = vec![model::TodoPlanItem {
+            content: "Old todo".to_owned(),
+            active_form: None,
+            status: model::TaskStatus::InProgress,
+        }];
+        app.sdk_inventory.tasks.push(model::TaskItem::new(
+            "task-1",
+            "Completed task",
+            model::TaskStatus::Completed,
+        ));
+        app.sdk_inventory.tasks.push(model::TaskItem::new(
+            "task-2",
+            "Current task",
+            model::TaskStatus::InProgress,
+        ));
+        let mut background =
+            model::TaskItem::new("bg-1", "Background run", model::TaskStatus::InProgress);
+        background.metadata = Some(serde_json::json!({"sdk_background_task": true}));
+        app.sdk_inventory.tasks.push(background);
+
+        let rows = serialize_footer_rows(&app, 80).rows;
+        let plan = line_text(rows.last().expect("plan row"));
+        assert!(plan.contains("1/2 Current task"));
+        assert!(!plan.contains("Old todo"));
+        assert!(!plan.contains("Background run"));
+
+        app.sdk_inventory.tasks.clear();
+        let fallback = serialize_footer_rows(&app, 80).rows;
+        assert!(line_text(fallback.last().expect("TodoWrite row")).contains("0/1 Old todo"));
+    }
+
+    #[test]
+    fn latest_plan_source_controls_row_without_falling_back_to_stale_tasks() {
+        let mut app = App::test_default();
+        app.sdk_inventory.tasks.push(model::TaskItem::new(
+            "old-task",
+            "Old task plan",
+            model::TaskStatus::InProgress,
+        ));
+        app.footer.apply_todo_plan(vec![model::TodoPlanItem {
+            content: "Fresh todo plan".to_owned(),
+            active_form: None,
+            status: model::TaskStatus::InProgress,
+        }]);
+        let rows = serialize_footer_rows(&app, 100).rows;
+        assert!(line_text(rows.last().expect("todo row")).contains("Fresh todo plan"));
+        assert!(!line_text(rows.last().expect("todo row")).contains("Old task plan"));
+
+        app.footer.apply_todo_plan(Vec::new());
+        assert_eq!(serialize_footer_rows(&app, 100).rows.len(), 2);
+        app.footer.plan_source = crate::app::PlanSource::Tasks;
+        let rows = serialize_footer_rows(&app, 100).rows;
+        assert!(line_text(rows.last().expect("task row")).contains("Old task plan"));
+        app.sdk_inventory.tasks.clear();
+        assert_eq!(serialize_footer_rows(&app, 100).rows.len(), 2);
+    }
+
+    #[test]
+    fn footer_counts_canonical_session_agents_without_treating_them_as_plan_steps() {
+        let mut app = App::test_default();
+        let mut running = model::TaskItem::new("agent-1", "Review", model::TaskStatus::InProgress);
+        running.metadata = Some(serde_json::json!({"subagent_type":"general-purpose"}));
+        let mut done = model::TaskItem::new("agent-2", "Inspect", model::TaskStatus::Completed);
+        done.metadata = Some(serde_json::json!({"task_type":"local_agent"}));
+        app.sdk_inventory.tasks.extend([running, done]);
+
+        let rows = serialize_footer_rows(&app, 100).rows;
+        assert_eq!(rows.len(), 3);
+        assert!(line_text(&rows[2]).contains("Agents: 1 running / 2"));
+        assert!(!rows.iter().any(|row| line_text(row).contains("0/2")));
+    }
+
+    #[test]
+    fn sdk_rate_windows_add_a_footer_row() {
+        let mut app = App::test_default();
+        app.session_runtime.last_rate_limit_update = Some(model::RateLimitUpdate {
+            status: model::RateLimitStatus::Allowed,
+            error_code: None,
+            resets_at: None,
+            utilization: Some(0.42),
+            rate_limit_type: Some("five_hour".to_owned()),
+            limit_scope: None,
+            overage_status: None,
+            overage_resets_at: None,
+            overage_disabled_reason: None,
+            is_using_overage: None,
+            surpassed_threshold: None,
+            can_user_purchase_credits: None,
+            has_chargeable_saved_payment_method: None,
+        });
+
+        let rows = serialize_footer_rows(&app, 80).rows;
+        assert_eq!(rows.len(), 3);
+        assert!(line_text(&rows[2]).contains("Rate: 5h 42%"));
+    }
+
+    #[test]
+    fn status_line_adds_one_footer_row_without_hiding_plan_or_context() {
+        let mut app = App::test_default();
+        app.footer.status_line = Some("fixture status".to_owned());
+        app.footer.todo_plan = vec![model::TodoPlanItem {
+            content: "Current step".to_owned(),
+            active_form: None,
+            status: model::TaskStatus::InProgress,
+        }];
+        let rows = serialize_footer_rows(&app, 24).rows;
+        assert_eq!(rows.len(), 4);
+        assert!(line_text(&rows[1]).contains("Loc:"));
+        assert!(line_text(&rows[2]).contains("0/1"));
+        assert!(line_text(&rows[3]).contains("fixture status"));
     }
 
     #[test]

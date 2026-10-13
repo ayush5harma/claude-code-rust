@@ -178,6 +178,7 @@ pub fn create_app(cli: &Cli) -> App {
         update_install_failure,
         post_exit_action: None,
         usage: super::UsageState::default(),
+        footer: Box::default(),
         mcp: super::McpState::default(),
         notifications: super::notify::NotificationManager::new(),
         render_cache_budget: RenderCacheBudget::default(),

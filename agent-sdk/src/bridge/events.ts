@@ -377,6 +377,7 @@ export function emitConnectEvent(session: SessionState): void {
   }
   session.connectRequestId = undefined;
   session.connected = true;
+  void import("./status_line.js").then(({ scheduleStatusLine }) => scheduleStatusLine(session));
   session.authHintSent = false;
   const deferredBridgeEvents = session.deferredBridgeEvents;
   session.deferredBridgeEvents = undefined;

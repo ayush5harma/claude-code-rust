@@ -75,6 +75,10 @@ Automatic updates uses the same catalog and writer for the User-only `updates.au
 
 ### Presentation and timing
 
+A successful text Read reaches Rust as `file_text` tool content: the file's own lines and the number of the first one, taken by the bridge from the SDK's structured result rather than from the line-numbered text the model sees. Rust shows one source line per row behind a dim line-number gutter, wraps long lines under the text column, applies the head/tail cap to source lines before wrapping, and never parses line numbers back out of text. Markdown files are shown as source.
+
+Shell output keeps the colour and style the program asked for, and nothing else. `src/ui/ansi.rs` is the one control-sequence filter: a single linear pass that maps SGR sequences (reset, bold, dim, italic, underline, their off codes, the 16 standard and bright colours, 256-colour and truecolour foreground and background) to styles and drops every other escape sequence and control character, including OSC titles and OSC 8 hyperlinks, cursor movement, erase, mode changes, DCS/APC strings and C1 controls. Unknown or malformed SGR parameters are dropped, and an SGR sequence over 128 bytes is ignored. The terminal backend suppresses display colours when `NO_COLOR` is set.
+
 Tool titles share a one-line display projection and a source-keyed inline cache in the existing block cache. Shell command titles render literally; other tool titles retain Markdown styling. Full titles and command inputs remain canonical data. Spinner/status chrome, metadata badges and width clipping stay live, while unchanged title content survives body updates and resize. Inline cache bytes participate in the existing render budget and eviction workflow.
 
 | Concern | Owner | Location |
@@ -82,6 +86,8 @@ Tool titles share a one-line display projection and a source-keyed inline cache 
 | Normalizing SDK wall timestamps, result elapsed and API timing, tool and task elapsed metadata | Bridge | `agent-sdk/src/bridge/presentation_metadata.ts` |
 | Each message's clock and timing provenance, stored on the canonical transcript message | Rust | `src/app/presentation.rs` |
 | One formatter for locale, clock presets, custom patterns and timezone | Rust | `src/app/presentation.rs` |
+
+Message Markdown is parsed once per text block and width. Tables and top-level code blocks are laid out in `src/ui/document_table.rs` because they need the terminal width; everything else goes through `tui-markdown` with claude-rs's style sheet in `src/ui/markdown.rs`. A code block is drawn as indented, shaded rows behind a dim rail with its language as a label row, highlighted with the same theme as other code and wrapped at the cell, so the displayed code is the code as written; the fence lines are not shown. Code inside a list item or a quote stays with its container. The canonical text, which `/copy` uses, is never rewritten.
 
 Presentation preferences are projections of the acknowledged config snapshot; Rust keeps no second presentation store. History replay removes locally observed times and preserves native timestamps without reordering messages. Completed duration rows go through the same scrollback boundary and commit protocol as other transcript rows.
 
