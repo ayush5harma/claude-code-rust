@@ -221,7 +221,7 @@ impl TerminalTest {
         command.env("FAKE_BRIDGE_INTERVAL_MS", "15");
         command.env("FAKE_BRIDGE_FOLLOW_UP_LINES", "3");
         command.env("FAKE_BRIDGE_SCENARIO", scenario);
-        if scenario == "session-accent" {
+        if scenario == "session-accent" || scenario == "bash-colour" {
             command.env_remove("NO_COLOR");
             command.env("TERM", "xterm-256color");
             command.env("COLORTERM", "truecolor");
@@ -2599,6 +2599,57 @@ fn native_diff_browses_session_and_working_tree_files() {
     test.wait_until("refresh command", |test| test.commands("get_working_diff").len() == 2);
     test.send(b"\x1b");
     test.wait_until("return to chat", |test| test.screen().contains("[READY]"));
+    test.shutdown();
+}
+
+#[test]
+fn read_result_shows_one_source_line_per_row_behind_a_gutter() {
+    let mut test = TerminalTest::start("read-result", 3);
+    let screen = test.wait_screen_with("# Fixture heading", &["numbered item"]);
+
+    // A file with markdown syntax is shown as written; the numbers stay out of the text.
+    let heading = rows_with(&screen, "# Fixture heading");
+    let item = rows_with(&screen, "- first item");
+    let numbered = rows_with(&screen, "1. numbered item");
+    assert_eq!((heading.len(), item.len(), numbered.len()), (1, 1, 1), "{screen}");
+    assert!(heading[0].contains("1  # Fixture heading"), "{screen}");
+    assert!(item[0].contains("3  - first item"), "{screen}");
+    assert!(numbered[0].contains("4  1. numbered item"), "{screen}");
+    assert!(!screen.contains("1# Fixture"), "{screen}");
+    test.shutdown();
+}
+
+/// Foreground colour and boldness of the cell where `needle` starts on the visible screen.
+fn style_at(test: &TerminalTest, needle: &str) -> Option<(vt100::Color, bool)> {
+    let captured = test.output.lock().ok()?;
+    let screen = captured.parser.screen();
+    let (rows, cols) = screen.size();
+    for row in 0..rows {
+        let glyphs: Vec<&str> =
+            (0..cols).map(|col| screen.cell(row, col).map_or("", |cell| cell.contents())).collect();
+        // Wide glyphs leave empty continuation cells, so search by cell, not by byte.
+        let start = (0..cols).find(|&col| glyphs[usize::from(col)..].concat().starts_with(needle));
+        if let Some(col) = start {
+            let cell = screen.cell(row, col)?;
+            return Some((cell.fgcolor(), cell.bold()));
+        }
+    }
+    None
+}
+
+#[test]
+fn bash_output_shows_sgr_colours_and_ignores_other_control_sequences() {
+    let mut test = TerminalTest::start("bash-colour", 3);
+    test.wait_for("coloured Bash output", |test| style_at(test, "FIXTURE_ORANGE"));
+
+    assert_eq!(style_at(&test, "FIXTURE_RED"), Some((vt100::Color::Idx(1), false)));
+    assert_eq!(style_at(&test, "FIXTURE_ORANGE"), Some((vt100::Color::Idx(208), true)));
+    // The hyperlink keeps its label, the cursor-up is not obeyed (" end" follows on the
+    // same row) and the title text is not printed.
+    let screen = test.screen();
+    assert_eq!(rows_with(&screen, "FIXTURE_LINK end").len(), 1, "{screen}");
+    assert!(!screen.contains("hijacked"), "{screen}");
+    assert!(!screen.contains("example.com"), "{screen}");
     test.shutdown();
 }
 

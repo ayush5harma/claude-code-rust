@@ -99,6 +99,33 @@ fn result_without_text(id: &str) -> SessionUpdate {
 }
 
 #[test]
+fn a_read_result_exports_the_file_text_without_line_numbers() {
+    let updates = vec![
+        SessionUpdate::ToolCall(tool("read-1", "Read", json!({ "file_path": "/work/proj/a.txt" }))),
+        SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+            "read-1",
+            ToolCallUpdateFields::new().status(ToolCallStatus::Completed).content(vec![
+                ToolCallContent::FileText(crate::agent::model::FileText::new(
+                    "/work/proj/a.txt",
+                    5,
+                    "first\nsecond",
+                )),
+            ]),
+        )),
+    ];
+
+    let markdown = render(&header(), &updates, 0);
+
+    let expected = [
+        HEADER_MARKDOWN,
+        "## Assistant\n\n",
+        "### Tool: Read - /work/proj/a.txt\n\nResult:\n\n```\nfirst\nsecond\n```\n\n",
+    ]
+    .concat();
+    assert_eq!(markdown, expected);
+}
+
+#[test]
 fn a_failed_tool_is_labelled_as_an_error() {
     let updates = vec![
         SessionUpdate::ToolCall(tool("bash-1", "Bash", json!({ "command": "false" }))),

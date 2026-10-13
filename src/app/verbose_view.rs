@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::{App, FullscreenView, MessageBlock, MessageRole, SurfaceMode, view};
-use crate::agent::model::{ContentBlock, ToolCallContent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 const MAX_ROWS: usize = 5000;
@@ -30,18 +29,14 @@ pub(crate) fn open(app: &mut App) -> bool {
                 {
                     let tool = tool.display();
                     push_row(&mut rows, &mut truncated, &format!("  Tool: {}", tool.title));
-                    // A Bash result arrives as update content and again as raw
-                    // output; terminal_output (execute tools only) is what the
-                    // transcript renders, so it replaces the content text rather
-                    // than following it (measured: the line printed twice).
+                    // Measured 2026-10-13: Bash carries the same result in both
+                    // fields, so its terminal output replaces content text.
                     if let Some(output) = &tool.terminal_output {
                         push_text(&mut rows, &mut truncated, output);
                     } else {
                         for content in &tool.content {
-                            if let ToolCallContent::Content(content) = content
-                                && let ContentBlock::Text(text) = &content.content
-                            {
-                                push_text(&mut rows, &mut truncated, &text.text);
+                            if let Some(text) = content.plain_text() {
+                                push_text(&mut rows, &mut truncated, text);
                             }
                         }
                     }

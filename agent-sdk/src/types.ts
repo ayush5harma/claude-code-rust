@@ -185,6 +185,14 @@ export type ToolCallContent =
       repository?: string;
     }
   | {
+      // A successful text Read: the file's own lines without line-number prefixes and the
+      // 1-based number of the first one, so the renderer never re-parses `cat -n` text.
+      type: "file_text";
+      path: string;
+      start_line: number;
+      text: string;
+    }
+  | {
       type: "mcp_resource";
       uri: string;
       mime_type?: string;

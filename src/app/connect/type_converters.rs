@@ -1102,6 +1102,9 @@ fn convert_tool_call_content(
                 model::Diff::new(new_path, new).old_text(Some(old)).repository(repository),
             ))
         }
+        types::ToolCallContent::FileText { path, start_line, text } => {
+            Some(model::ToolCallContent::FileText(model::FileText::new(path, start_line, text)))
+        }
         types::ToolCallContent::McpResource { uri, mime_type, text, blob_saved_to } => {
             Some(model::ToolCallContent::McpResource(
                 model::McpResource::new(uri)
@@ -2161,6 +2164,41 @@ mod tests {
                     ))
                     .blob_saved_to(Some("C:\\tmp\\manual.pdf".to_owned())),
             )]
+        );
+    }
+
+    #[test]
+    fn bridge_file_text_json_becomes_model_file_text() {
+        let content: types::ToolCallContent = serde_json::from_value(serde_json::json!({
+            "type": "file_text",
+            "path": "/work/notes.md",
+            "start_line": 7,
+            "text": "# Title\n\n- item"
+        }))
+        .expect("wire content");
+
+        let tool_call = convert_tool_call(types::ToolCall {
+            tool_call_id: "tool-read".to_owned(),
+            title: "Read notes.md".to_owned(),
+            kind: "read".to_owned(),
+            status: "completed".to_owned(),
+            source_message_uuid: None,
+            content: vec![content],
+            raw_input: None,
+            raw_output: None,
+            output_metadata: None,
+            task_metadata: None,
+            locations: Vec::new(),
+            meta: None,
+        });
+
+        assert_eq!(
+            tool_call.content,
+            vec![model::ToolCallContent::FileText(model::FileText::new(
+                "/work/notes.md",
+                7,
+                "# Title\n\n- item"
+            ))]
         );
     }
 

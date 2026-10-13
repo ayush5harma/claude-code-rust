@@ -1792,6 +1792,79 @@ test("buildToolResultFields preserves failed Read image output", () => {
   ]);
 });
 
+test("buildToolResultFields maps a text Read to the file's own lines and first line number", () => {
+  const base = createToolCall("tc-read-text", "Read", {
+    file_path: "/work/notes.md",
+    offset: 7,
+  });
+  const result = {
+    type: "text",
+    file: {
+      filePath: "/work/notes.md",
+      content: "# Title\n\n- item",
+      numLines: 3,
+      startLine: 7,
+      totalLines: 20,
+    },
+  };
+  // What the model sees: tab-separated line numbers. It must not reach the renderer.
+  const numbered = "     7\t# Title\n     8\t\n     9\t- item";
+  const fields = buildToolResultFields(
+    false,
+    [{ type: "text", text: numbered }],
+    base,
+    result,
+  );
+
+  assert.equal(fields.status, "completed");
+  assert.deepEqual(fields.content, [
+    {
+      type: "file_text",
+      path: "/work/notes.md",
+      start_line: 7,
+      text: "# Title\n\n- item",
+    },
+  ]);
+  assert.equal(fields.raw_output, undefined);
+});
+
+test("buildToolResultFields keeps numbered text when a Read result has no usable file record", () => {
+  const base = createToolCall("tc-read-flat", "Read", { file_path: "a.txt" });
+  const numbered = "     1\tone\n     2\ttwo";
+  for (const rawResult of [
+    undefined,
+    { type: "text", file: { filePath: "a.txt", content: "", startLine: 1 } },
+    { type: "text", file: { filePath: "a.txt", content: "one", startLine: 0 } },
+    { type: "text", file: { content: "one", startLine: 1 } },
+  ]) {
+    const fields = buildToolResultFields(
+      false,
+      [{ type: "text", text: numbered }],
+      base,
+      rawResult,
+    );
+    assert.deepEqual(fields.content, [
+      { type: "content", content: { type: "text", text: numbered } },
+    ]);
+  }
+});
+
+test("buildToolResultFields does not map a failed Read to file_text", () => {
+  const base = createToolCall("tc-read-err", "Read", { file_path: "a.txt" });
+  const fields = buildToolResultFields(
+    true,
+    [{ type: "text", text: "File does not exist." }],
+    base,
+    {
+      type: "text",
+      file: { filePath: "a.txt", content: "one", startLine: 1 },
+    },
+  );
+
+  assert.equal(fields.status, "failed");
+  assert.equal(fields.content?.[0]?.type, "content");
+});
+
 test("buildToolResultFields renders file_unchanged Read results compactly", () => {
   const base = createToolCall("tc-read", "Read", { file_path: "src/main.rs" });
   const fields = buildToolResultFields(

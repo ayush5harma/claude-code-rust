@@ -221,17 +221,7 @@ fn edit_from_input(
 }
 
 fn result_text(call: &ToolCall) -> String {
-    let texts: Vec<&str> = call
-        .content
-        .iter()
-        .filter_map(|content| match content {
-            ToolCallContent::Content(content) => match &content.content {
-                ContentBlock::Text(text) => Some(text.text.as_str()),
-                ContentBlock::Image(_) => None,
-            },
-            _ => None,
-        })
-        .collect();
+    let texts: Vec<&str> = call.content.iter().filter_map(ToolCallContent::plain_text).collect();
     if !texts.is_empty() {
         return clean(&texts.join("\n"));
     }
