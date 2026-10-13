@@ -33,6 +33,8 @@ fn app_with_status_connection() -> (App, crate::agent::client::CommandReceiver) 
     let mut app = App::test_default();
     let rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    // The live title the bridge reported; the listed one may lag behind it.
+    app.session_runtime.session_title = Some("Current custom title".to_owned());
     app.config.active_tab = ConfigTab::Status;
     app.recent_sessions = vec![crate::app::RecentSessionInfo {
         session_id: "session-1".to_owned(),
@@ -41,7 +43,7 @@ fn app_with_status_connection() -> (App, crate::agent::client::CommandReceiver) 
         file_size_bytes: 0,
         cwd: Some("/test".to_owned()),
         git_branch: None,
-        custom_title: Some("Current custom title".to_owned()),
+        custom_title: Some("Stale listed title".to_owned()),
         first_prompt: Some("First prompt".to_owned()),
     }];
     (app, rx)
@@ -557,6 +559,18 @@ fn status_tab_r_opens_session_rename_overlay() {
     assert_eq!(app.config.session_rename_overlay().map(|overlay| overlay.cursor), Some(20));
 }
 
+#[test]
+fn status_rename_uses_listed_unicode_title_while_live_title_is_unavailable() {
+    let (mut app, _rx) = app_with_status_connection();
+    app.session_runtime.session_title = None;
+    let listed = "\u{1f980}".repeat(20);
+    app.recent_sessions[0].custom_title = Some(listed.clone());
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+    let overlay = app.config.session_rename_overlay().expect("rename draft");
+    assert_eq!(overlay.draft, listed);
+    assert_eq!(overlay.cursor, 20);
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn activating_usage_tab_starts_refresh_lifecycle() {
     tokio::task::LocalSet::new()
@@ -687,6 +701,7 @@ fn status_tab_g_generates_session_title_from_current_title_fallback() {
 #[test]
 fn status_tab_g_requires_existing_session_metadata() {
     let (mut app, mut rx) = app_with_status_connection();
+    app.session_runtime.session_title = None;
     app.recent_sessions[0].custom_title = None;
     app.recent_sessions[0].summary.clear();
     app.recent_sessions[0].first_prompt = None;

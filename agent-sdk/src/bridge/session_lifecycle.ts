@@ -224,6 +224,8 @@ export type SessionState = {
   resumeUpdates?: SessionUpdate[];
   restoredInput?: string;
   pendingRewindResult?: PendingRewindResult;
+  /** Counts title reads, so only the latest one is sent. */
+  titleReads?: number;
 };
 
 export const sessions = new Map<string, SessionState>();

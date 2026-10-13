@@ -502,6 +502,15 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                 error,
             );
         }
+        model::SessionUpdate::SessionTitleUpdate(title) => {
+            if let Some(id) = app.session_runtime.session_id.as_ref()
+                && let Some(listed) =
+                    app.recent_sessions.iter_mut().find(|session| session.session_id == id.as_str())
+            {
+                listed.custom_title.clone_from(&title);
+            }
+            app.session_runtime.session_title = title;
+        }
         model::SessionUpdate::PromptSuggestionUpdate(suggestion) => {
             app.session_runtime.prompt_suggestion =
                 (!suggestion.trim().is_empty()).then_some(suggestion);
