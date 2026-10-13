@@ -885,7 +885,7 @@ export function handleTaskSystemMessage(
   if (!normalizeToolCallUpdateFields(toolCall, fields ?? {}, subtype as "task_started" | "task_progress" | "task_updated" | "task_notification")) {
     // A finished tool call rejects later lifecycle updates so a progress frame
     // cannot revive it. The task row is separate state, and the SDK confirms a
-    // stopped task after the earlier killed patch finished its tool call.
+    // stopped task after its killed patch (live measurement 2026-10-13).
     if (subtype === "task_notification") applyTaskLifecycleState(session, subtype, msg);
     return true;
   }
