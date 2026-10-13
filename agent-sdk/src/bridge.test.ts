@@ -1720,25 +1720,37 @@ test("reload_skills_and_styles reports the names both SDK reloads returned", asy
   sessions.clear();
   const session = makeSessionState();
   const calls: string[] = [];
+  let resolveSkills!: (value: { skills: Array<{ name: string; description: string; argumentHint: string }> }) => void;
+  let resolveStyles!: (value: { available_output_styles: string[] }) => void;
+  const skills = new Promise<{ skills: Array<{ name: string; description: string; argumentHint: string }> }>(resolve => {
+    resolveSkills = resolve;
+  });
+  const styles = new Promise<{ available_output_styles: string[] }>(resolve => {
+    resolveStyles = resolve;
+  });
   session.query = {
-    reloadSkills: async () => {
+    reloadSkills: () => {
       calls.push("skills");
-      return { skills: [{ name: "deploy", description: "d", argumentHint: "" }, { name: "lint", description: "l", argumentHint: "" }] };
+      return skills;
     },
-    reloadOutputStyles: async () => {
+    reloadOutputStyles: () => {
       calls.push("styles");
-      return { available_output_styles: ["default", "Explanatory", "mine"] };
+      return styles;
     },
   } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
   sessions.set(session.sessionId, session);
 
   try {
     const events = await captureBridgeEventsAsync(async () => {
-      await handleSessionControlCommand(
+      const reload = handleSessionControlCommand(
         { command: "reload_skills_and_styles", session_id: session.sessionId },
         "req-reload",
         promptControlDeps(),
       );
+      assert.deepEqual(calls, ["skills", "styles"]);
+      resolveSkills({ skills: [{ name: "deploy", description: "d", argumentHint: "" }, { name: "lint", description: "l", argumentHint: "" }] });
+      resolveStyles({ available_output_styles: ["default", "Explanatory", "mine"] });
+      await reload;
     });
 
     assert.deepEqual(calls, ["skills", "styles"]);
