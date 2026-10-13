@@ -65,7 +65,7 @@ macro_rules! help_exit_status_and_environment {
   22  Bridge initialization, protocol or connection failure
   23  The requested session could not be resumed
   24  Authentication required
-  25  Interactive launch without a terminal (stdin and stdout must be a TTY)
+  25  Interactive launch without a terminal on stdout (or on stdin without /dev/tty)
 
 Environment:
   CLAUDE_RS_AGENT_BRIDGE          Agent bridge script to run

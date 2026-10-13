@@ -227,6 +227,52 @@ fn help_into_a_closed_pipe_exits_cleanly() {
     assert!(output.stderr.is_empty(), "{}", String::from_utf8_lossy(&output.stderr));
 }
 
+/// `echo x | claude-rs hi` from a terminal: crossterm reads keys from `/dev/tty`, so piped
+/// stdin is not a reason to refuse. The launch is made to stop right after the terminal
+/// check, at a missing bridge script, so it never needs a bridge.
+#[cfg(unix)]
+#[test]
+fn piped_stdin_with_a_terminal_on_stdout_passes_the_terminal_check() {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use std::io::Read as _;
+
+    let home = tempfile::tempdir().expect("home");
+    let project = home.path().join("project");
+    std::fs::create_dir(&project).expect("project");
+    let missing_bridge = home.path().join("missing-bridge.js");
+    let pair = native_pty_system()
+        .openpty(PtySize { rows: 24, cols: 100, pixel_width: 0, pixel_height: 0 })
+        .expect("open pty");
+    let mut command = CommandBuilder::new("/bin/sh");
+    // The pty is the shell's controlling terminal and stdout; stdin becomes a pipe.
+    command.args([
+        "-c",
+        "echo x | exec \"$0\" --no-update-check hi",
+        env!("CARGO_BIN_EXE_claude-rs"),
+    ]);
+    command.cwd(&project);
+    command.env("HOME", home.path());
+    command.env("CLAUDE_CONFIG_DIR", home.path().join("profile"));
+    command.env("CLAUDE_RS_AGENT_BRIDGE", &missing_bridge);
+    command.env("CLAUDE_ARCHIVE_SKIP", "1");
+    let mut reader = pair.master.try_clone_reader().expect("pty reader");
+    let mut child = pair.slave.spawn_command(command).expect("spawn claude-rs");
+    drop(pair.slave);
+    let output = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        // macOS reports EIO rather than EOF once the last writer has closed.
+        let _ = reader.read_to_end(&mut output);
+        String::from_utf8_lossy(&output).into_owned()
+    });
+    let status = child.wait().expect("wait for claude-rs");
+    drop(pair.master);
+    let output = output.join().expect("pty output");
+
+    assert!(!output.contains("needs an interactive terminal"), "{output}");
+    assert_eq!(status.exit_code(), 21, "{output}");
+    assert!(output.contains(&missing_bridge.display().to_string()), "{output}");
+}
+
 #[test]
 fn interactive_launch_without_a_terminal_exits_before_terminal_setup_and_logging() {
     let home = tempfile::tempdir().expect("home");

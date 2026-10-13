@@ -67,7 +67,7 @@ fn run() -> anyhow::Result<i32> {
     };
     // Checked before logging starts: every launch writes a runtime log and retention keeps
     // only the newest 100, so scripted launches without a terminal would evict real logs.
-    if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+    if !has_interactive_terminal() {
         writeln!(
             std::io::stderr().lock(),
             "claude-rs needs an interactive terminal (stdin and stdout must be a TTY)"
@@ -130,6 +130,26 @@ fn run() -> anyhow::Result<i32> {
     }))?;
 
     Ok(exit_code)
+}
+
+/// The TUI draws on stdout, so stdout must be a terminal. Input may come from a pipe on
+/// Unix: crossterm is built with `use-dev-tty` and reads keys from `/dev/tty` when stdin is
+/// not a terminal (`echo x | claude-rs hi`), so that case needs `/dev/tty` to open.
+fn has_interactive_terminal() -> bool {
+    if !std::io::stdout().is_terminal() {
+        return false;
+    }
+    if std::io::stdin().is_terminal() {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        std::fs::File::open("/dev/tty").is_ok()
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
 }
 
 fn run_post_exit_action(app: &claude_code_rust::app::App, action: PostExitAction) -> i32 {

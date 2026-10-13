@@ -99,7 +99,7 @@ The session options (from `--model` to `--append-system-prompt-file` in the tabl
 
 After the TUI exits, the app prints a resume hint whenever a session was established, using the active or most recently established session id.
 
-An interactive launch needs a terminal. When stdin or stdout is not a terminal (a pipe, a redirect, a job without a TTY), `claude-rs` prints one line to stderr and exits with status 25 before it writes to stdout or starts a runtime log. Support commands such as `doctor`, `logs`, `config` and `completions` work without a terminal.
+An interactive launch needs a terminal. When stdout is not a terminal (a pipe, a redirect, a job without a TTY), or stdin is not one and the controlling terminal `/dev/tty` cannot be opened, `claude-rs` prints one line to stderr and exits with status 25 before it writes to stdout or starts a runtime log. Support commands such as `doctor`, `logs`, `config` and `completions` work without a terminal.
 
 ## Support And Diagnostics
 
@@ -164,7 +164,7 @@ See [Diagnostics](diagnostics.md) before enabling verbose logs.
 | `22` | Bridge initialization, protocol, SDK or connection failure, including a timeout. |
 | `23` | The requested session could not be resumed. |
 | `24` | Authentication is required. |
-| `25` | An interactive launch had no terminal: stdin and stdout must both be a TTY. |
+| `25` | An interactive launch had no terminal: stdout must be a TTY, and so must stdin unless `/dev/tty` can be opened. |
 
 Statuses 20 to 24 come with a failure report on stderr naming a next step; see [Diagnostics](diagnostics.md).
 
