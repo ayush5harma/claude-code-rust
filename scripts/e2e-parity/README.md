@@ -64,7 +64,7 @@ turns but idles 120 s of settling plus a 60 s sample per target
 (`PARITY_PERF_SETTLE`, `PARITY_PERF_IDLE`), so a full run with it takes about
 21 minutes (one 12-minute block is the performance sampling); without it (a
 debug build) about 9. Measured 2026-10-13 on Haiku, 113 checks, owner profile:
-$0.50 to $0.56, 527 s without the performance group and 1277 s with it; the
+$0.50 to $0.56, 527 s without the performance group and 1277 to 1308 s with it; the
 plan-mode check is $0.30 of it because the stock child plans on Sonnet.
 
 ## Running
