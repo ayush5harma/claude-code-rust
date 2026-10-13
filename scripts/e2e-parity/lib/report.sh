@@ -126,6 +126,8 @@ scripts/e2e-parity/run.sh --config-dir "$PARITY_CONFIG_DIR" --report docs/src/pa
 cargo build && npm run build --prefix agent-sdk
 scripts/e2e-parity/run.sh --owner-profile --bin target/debug/claude-rs \
   --bridge agent-sdk/dist/bridge.js --report docs/src/parity.md
+# A release build ignores --bridge: lay it out like an installed release
+# (see the suite README) and pass only --bin.
 
 # One check, one group, or one check file:
 scripts/e2e-parity/run.sh --only cmd.model
@@ -140,7 +142,10 @@ EOF
     printf '## Last run\n\n'
     printf -- '- Date: %s\n' "$(date -u '+%Y-%m-%d %H:%M UTC')"
     printf -- '- claude-rs: %s\n' "$RS_VERSION"
-    printf -- '- Tested binary: `%s`\n' "${BIN#"$REPO_DIR"/}"
+    case $BIN in
+      "$REPO_DIR"/* | "$HOME"/*) printf -- '- Tested binary: `%s`\n' "${BIN#"$REPO_DIR"/}" ;;
+      *) printf -- '- Tested binary: `claude-rs` from outside the checkout (a release build laid out like an installed release; see the suite README)\n' ;;
+    esac
     printf -- '- Source checkout: `%s` (git describe --always --dirty)\n' "$SRC_REV"
     if ((OWNER_PROFILE)); then
       printf -- '- Profile: the owner'"'"'s own (--owner-profile): its settings, hooks, plugins and MCP servers applied\n'

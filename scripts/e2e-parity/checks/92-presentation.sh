@@ -73,7 +73,7 @@ EOF
   keys presstock C-c
   sleep 1
   tm kill-session -t presstock 2>/dev/null
-  CUR_SHEBANG=$(grep -n -B1 -A1 '^\*\*!/usr/bin/env' "$dir/claude-rs.markdown.txt" | head -4)
+  CUR_SHEBANG=$(grep -B2 -A2 '^\*\*!/usr/bin/env' "$dir/claude-rs.markdown.txt" | head -6)
   if [[ -n $CUR_SHEBANG ]]; then
     defect "A shebang first line in a fenced bash block is rendered as bold text without its #" \
       "1. Have the model answer with a fenced bash block whose first line is #!/usr/bin/env bash. 2. Look at the rendered block in claude-rs: the line reads **!/usr/bin/env bash** (the # is gone, literal asterisks appear, a blank row is inserted); stock shows #!/usr/bin/env bash." \
