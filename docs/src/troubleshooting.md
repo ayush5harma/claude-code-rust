@@ -31,7 +31,7 @@ For a source build, the bridge has to be built before the app can spawn it. See 
 To capture the bridge's own startup output, run with bridge logging enabled and inspect the log:
 
 ```bash
-claude-rs --enable-logs --diagnostics-preset bridge
+claude-rs --diagnostics-preset bridge
 claude-rs logs --latest
 ```
 
@@ -54,7 +54,7 @@ claude-rs doctor
 Billing, model availability, and service limits are controlled by Anthropic and surface here as session errors rather than install problems. For the authentication and permission flow in the log, use the `session` preset:
 
 ```bash
-claude-rs --enable-logs --diagnostics-preset session
+claude-rs --diagnostics-preset session
 ```
 
 ## The Wrong `claude-rs` Runs

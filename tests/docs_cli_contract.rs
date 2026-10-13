@@ -9,7 +9,8 @@
 use clap::CommandFactory;
 use claude_code_rust::Cli;
 
-/// Long flags clap generates on its own. They are intentionally not in the table.
+/// Long flags clap generates on its own. They are intentionally not in the table, and
+/// neither are hidden flags, which `--help` does not show.
 const IMPLICIT_ARGS: &[&str] = &["help", "version"];
 
 /// Extract the long flag from the first column of a CLI Options row.
@@ -69,7 +70,7 @@ fn docs_cli_options_table_matches_clap() {
     let command = Cli::command();
     let expected: Vec<String> = command
         .get_arguments()
-        .filter(|arg| !IMPLICIT_ARGS.contains(&arg.get_id().as_str()))
+        .filter(|arg| !IMPLICIT_ARGS.contains(&arg.get_id().as_str()) && !arg.is_hide_set())
         .filter_map(|arg| arg.get_long().map(str::to_owned))
         .collect();
 

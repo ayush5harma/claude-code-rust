@@ -52,7 +52,7 @@ impl DiagnosticsPreset {
     about = "Native Rust terminal for Claude Code"
 )]
 #[command(
-    after_help = "Examples:\n  claude-rs --enable-logs --diagnostics-preset session\n  claude-rs --enable-logs --diagnostics-preset render"
+    after_help = "Examples:\n  claude-rs --diagnostics-preset session\n  claude-rs --diagnostics-preset render"
 )]
 #[allow(clippy::struct_excessive_bools)]
 pub struct Cli {
@@ -84,41 +84,50 @@ pub struct Cli {
     /// Path to the agent bridge script (defaults to agent-sdk/dist/bridge.js).
     // Checked for interactive launches only (`Cli::session_config`): support commands
     // never start the bridge, and `doctor` reports on a bad script instead of refusing it.
-    #[arg(long)]
+    // Hidden: a development override (as is CLAUDE_RS_AGENT_BRIDGE), and the default it
+    // names is not where installed builds find their bridge.
+    #[arg(long, hide = true)]
     pub bridge_script: Option<std::path::PathBuf>,
 
-    /// Enable detailed info-level diagnostics in addition to the always-on warning/error baseline.
-    #[arg(long)]
-    pub enable_logs: bool,
-
-    /// Named diagnostics preset for common logging workflows.
-    /// Ignored when `--log-filter` is provided explicitly.
-    #[arg(long, value_enum)]
-    pub diagnostics_preset: Option<DiagnosticsPreset>,
-
-    /// Write tracing diagnostics to a file.
-    ///
-    /// When omitted, interactive runs use a timestamped default log path.
-    #[arg(long, value_name = "PATH")]
-    pub log_file: Option<std::path::PathBuf>,
-
-    /// Tracing filter directives (example: `info,app.render=trace`).
-    /// Overrides `--diagnostics-preset` and falls back to `RUST_LOG` when omitted.
-    #[arg(long, value_name = "FILTER")]
-    pub log_filter: Option<String>,
-
-    /// Append to an explicit `--log-file`.
-    ///
-    /// Without `--log-file`, appends to the legacy shared default log for compatibility.
-    #[arg(long)]
-    pub log_append: bool,
-
-    // Last, because a flattened help heading also applies to the arguments that follow it.
+    // After the flattened groups, whose help heading would otherwise carry over to these.
     #[command(flatten)]
     pub session_options: SessionOptions,
 
     #[command(flatten)]
     pub session_config: SessionConfigArgs,
+
+    // Each of these, and RUST_LOG, turns on detailed logging (`logging`'s
+    // `detailed_diagnostics_requested`), so each help line says so.
+    /// Turn on detailed logging: info-level diagnostics on top of the always-on warning and error baseline.
+    #[arg(long, help_heading = "Diagnostics Options")]
+    pub enable_logs: bool,
+
+    /// Turn on detailed logging with a named filter preset; ignored when `--log-filter` is given.
+    #[arg(long, value_enum, help_heading = "Diagnostics Options")]
+    pub diagnostics_preset: Option<DiagnosticsPreset>,
+
+    /// Turn on detailed logging and write it to this file instead of a new timestamped file.
+    #[arg(long, value_name = "PATH", help_heading = "Diagnostics Options")]
+    pub log_file: Option<std::path::PathBuf>,
+
+    /// Turn on detailed logging with these tracing filter directives (example: `info,app.render=trace`).
+    ///
+    /// Overrides `--diagnostics-preset`. Without it, `RUST_LOG` is used, and setting `RUST_LOG`
+    /// also turns on detailed logging.
+    #[arg(long, value_name = "FILTER", value_parser = parse_log_filter, help_heading = "Diagnostics Options")]
+    pub log_filter: Option<String>,
+
+    /// Append to the `--log-file` file instead of truncating it.
+    #[arg(long, requires = "log_file", help_heading = "Diagnostics Options")]
+    pub log_append: bool,
+}
+
+/// Checked while parsing, so a bad filter is a usage error quoting the user's own text,
+/// not a startup failure quoting the directives logging appends to it.
+fn parse_log_filter(value: &str) -> Result<String, String> {
+    tracing_subscriber::EnvFilter::try_new(value)
+        .map(|_| value.to_owned())
+        .map_err(|error| error.to_string())
 }
 
 /// Per-launch options, separate from persisted application preferences.
@@ -1061,6 +1070,54 @@ mod tests {
             let cli = Cli::parse_from_args(args.iter().copied()).expect("parse");
             cli.validate().expect("fork with a resume");
             assert!(cli.session_options.fork_session, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn log_append_requires_an_explicit_log_file() {
+        let error = Cli::parse_from_args(["claude-rs", "--log-append"]).expect_err("no log file");
+        assert_eq!(error.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        assert!(error.to_string().contains("--log-file"), "{error}");
+        let cli = Cli::parse_from_args(["claude-rs", "--log-append", "--log-file", "run.log"])
+            .expect("append to a log file");
+        assert!(cli.log_append);
+    }
+
+    #[test]
+    fn an_invalid_log_filter_is_a_usage_error_quoting_the_given_text() {
+        let error = Cli::parse_from_args(["claude-rs", "--log-filter", "app.render=loud"])
+            .expect_err("invalid filter");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        assert_eq!(error.exit_code(), 2);
+        let message = error.to_string();
+        assert!(message.contains("'app.render=loud'"), "{message}");
+        assert!(!message.contains("tui_markdown"), "{message}");
+        let cli = Cli::parse_from_args(["claude-rs", "--log-filter", "info,app.render=trace"])
+            .expect("valid filter");
+        assert_eq!(cli.log_filter.as_deref(), Some("info,app.render=trace"));
+    }
+
+    #[test]
+    fn help_groups_diagnostics_options_after_session_options() {
+        let help = Cli::command().render_help().to_string();
+        let position = |text: &str| help.find(text).unwrap_or_else(|| panic!("{text}\n{help}"));
+        let options = position("\nOptions:\n");
+        let session = position("\nSession Options:\n");
+        let diagnostics = position("\nDiagnostics Options:\n");
+        let examples = position("\nExamples:\n");
+        assert!(options < session && session < diagnostics && diagnostics < examples, "{help}");
+        assert!((session..diagnostics).contains(&position("--model")), "{help}");
+        for flag in ["--enable-logs", "--diagnostics-preset", "--log-file", "--log-filter"] {
+            assert!((diagnostics..examples).contains(&position(flag)), "{flag}\n{help}");
+        }
+        assert!(!help[examples..].contains("--enable-logs"), "{help}");
+        assert!(!help.contains("--bridge-script"), "{help}");
+
+        let command = Cli::command();
+        for id in ["enable_logs", "diagnostics_preset", "log_file", "log_filter"] {
+            let arg = command.get_arguments().find(|arg| arg.get_id() == id).expect(id);
+            let text = arg.get_help().map(ToString::to_string).unwrap_or_default();
+            assert!(text.starts_with("Turn on detailed logging"), "{id}: {text}");
         }
     }
 

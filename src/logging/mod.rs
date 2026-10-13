@@ -226,7 +226,6 @@ fn detailed_diagnostics_requested(cli: &Cli) -> bool {
         || cli.diagnostics_preset.is_some()
         || cli.log_file.is_some()
         || cli.log_filter.is_some()
-        || cli.log_append
         || std::env::var_os("RUST_LOG").is_some()
 }
 
@@ -337,7 +336,6 @@ fn baseline_field_allowed(name: &str) -> bool {
 enum LogPathSource {
     Explicit,
     Default,
-    DefaultLegacyAppend,
 }
 
 impl LogPathSource {
@@ -345,7 +343,6 @@ impl LogPathSource {
         match self {
             Self::Explicit => "explicit",
             Self::Default => "default",
-            Self::DefaultLegacyAppend => "default_legacy_append",
         }
     }
 }
@@ -414,14 +411,6 @@ fn resolve_log_path(cli: &Cli) -> anyhow::Result<Option<ResolvedLogPath>> {
             path,
             source: LogPathSource::Explicit,
             open_mode: if cli.log_append { LogOpenMode::Append } else { LogOpenMode::Truncate },
-            retention: None,
-        }));
-    }
-    if cli.log_append {
-        return Ok(Some(ResolvedLogPath {
-            path: default_legacy_log_path()?,
-            source: LogPathSource::DefaultLegacyAppend,
-            open_mode: LogOpenMode::Append,
             retention: None,
         }));
     }
@@ -1274,33 +1263,6 @@ mod tests {
         let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
         assert_eq!(resolved.source.as_str(), "default");
         assert_eq!(resolved.open_mode, LogOpenMode::CreateNew);
-    }
-
-    #[test]
-    fn resolve_log_path_keeps_legacy_default_for_append_without_explicit_path() {
-        let cli = Cli {
-            prompt: None,
-            resume: None,
-            continue_session: false,
-            session_options: crate::SessionOptions::default(),
-            session_config: crate::SessionConfigArgs::default(),
-            command: None,
-            no_update_check: false,
-            dir: None,
-            bridge_script: None,
-            enable_logs: false,
-            diagnostics_preset: None,
-            log_file: None,
-            log_filter: None,
-            log_append: true,
-        };
-
-        let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
-        assert_eq!(resolved.source, LogPathSource::DefaultLegacyAppend);
-        assert_eq!(resolved.open_mode, LogOpenMode::Append);
-        assert!(resolved.retention.is_none());
-        let path = resolved.path.to_string_lossy().replace('\\', "/");
-        assert!(path.ends_with("claude-code-rust/logs/claude-rs.log"));
     }
 
     #[test]

@@ -120,7 +120,7 @@ See [Diagnostics](diagnostics.md) for full options, logging presets, bundle cont
 
 ## CLI Options
 
-The installed `claude-rs --help` command exposes these options; the session options are listed under their own heading:
+The installed `claude-rs --help` command exposes these options; the session and diagnostics options are listed under their own headings. Each diagnostics option, and the `RUST_LOG` environment variable, turns on detailed logging:
 
 | Option | Purpose |
 | --- | --- |
@@ -128,12 +128,6 @@ The installed `claude-rs --help` command exposes these options; the session opti
 | `-c, --continue` | Continue the latest session for the working directory and its git worktrees; start new if none exists. |
 | `--no-update-check` | Disable startup update checks. |
 | `-C, --dir <DIR>` | Run in a specific working directory, which must exist. |
-| `--bridge-script <PATH>` | Use a specific Agent SDK bridge script, which must be an existing file. |
-| `--enable-logs` | Expand the always-on baseline to detailed info-level diagnostics. |
-| `--diagnostics-preset <runtime|session|render|bridge|full>` | Use a named diagnostics filter. |
-| `--log-file <PATH>` | Write tracing diagnostics to a specific file. |
-| `--log-filter <FILTER>` | Use explicit tracing filter directives. |
-| `--log-append` | Append to the active log file instead of resetting it on startup. |
 | `--model <MODEL>` | Set the initial session model without changing saved preferences. |
 | `--effort <LEVEL>` | Set the initial session effort; availability depends on the model. |
 | `--permission-mode <MODE>` | Set the initial session permission mode without changing saved preferences. |
@@ -148,6 +142,11 @@ The installed `claude-rs --help` command exposes these options; the session opti
 | `--system-prompt-file <FILE>` | Replace Claude Code's system prompt for new sessions with a file's text. |
 | `--append-system-prompt <TEXT>` | Append text to the system prompt of new sessions. |
 | `--append-system-prompt-file <FILE>` | Append a file's text to the system prompt of new sessions. |
+| `--enable-logs` | Turn on detailed logging at info level. |
+| `--diagnostics-preset <runtime|session|render|bridge|full>` | Turn on detailed logging with a named diagnostics filter. |
+| `--log-file <PATH>` | Turn on detailed logging and write it to a specific file. |
+| `--log-filter <FILTER>` | Turn on detailed logging with explicit tracing filter directives. |
+| `--log-append` | Append to the `--log-file` file instead of truncating it; requires `--log-file`. |
 
 See [Diagnostics](diagnostics.md) before enabling verbose logs.
 
