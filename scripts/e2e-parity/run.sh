@@ -308,6 +308,8 @@ cleanup() {
   rm -f -- "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SOCKET" "/private/tmp/tmux-$(id -u)/$SOCKET"
   # A claude-rs that outlived its pane is found by the log file it was given.
   pkill -f -- "--log-file $WORK/" 2>/dev/null || true
+  # Checks that touch anything outside WORK undo it here (checks/90-fork.sh).
+  ! declare -F fork_cleanup >/dev/null || fork_cleanup
   collect_session_ids
   ((KEEP)) || remove_scratch
 }

@@ -146,8 +146,7 @@ chk_cmd_context() {
 # open_view <sess> <command> <ERE>: run a command that opens a fullscreen view
 # and wait for it; the caller closes it with close_view.
 open_view() {
-  keys "$1" Escape
-  wait_for "$1" "$EMPTY_COMPOSER" 5 || true
+  settle "$1" || true
   enter_cmd "$1" "$2"
   wait_for "$1" "$3" 15
 }
@@ -263,7 +262,7 @@ chk_cmd_memory() {
     if grep -Eq 'CLAUDE\.md|[Mm]emory file' <<<"$SCREEN"; then
       res PASS "memory files offered: $(first_match 'CLAUDE\.md|[Mm]emory file')"
     else
-      res FAIL "opens the Memory settings pane ($(first_match 'Automatic memory')), not a memory-file picker"
+      res GAP "opens the Memory settings pane ($(first_match 'Automatic memory')), not a memory-file picker: the pinned public host SDK has no memory picker or editor operation (README, Remaining verification)"
     fi
   else
     shot
@@ -361,6 +360,10 @@ chk_cmd_init() {
   rs_stop init
 }
 
+# badges_of <footer row>: the mode, model and fast badges without the session
+# title that follows them.
+badges_of() { grep -Eo '^\[[^]]*\] +\[[^]]*\] +\[[^]]*\]' <<<"$1"; }
+
 def cmd.rewind commands "/rewind (stock: Esc Esc)" "Restores the conversation to an earlier message"
 chk_cmd_rewind() {
   # Its own session: a rewind restarts the session underneath.
@@ -371,7 +374,7 @@ chk_cmd_rewind() {
     return
   fi
   local before_footer after_footer
-  before_footer=$(footer | head -1)
+  before_footer=$(badges_of "$(footer | head -1)")
   type_slow rewind "/rewind "
   if ! wait_for rewind 'Reply with exactly: PARITY_REWIND_ME +\| [0-9a-f-]{36}' 10; then
     shot
@@ -393,7 +396,7 @@ chk_cmd_rewind() {
   wait_for rewind 'Loc: ' 20 || true
   sleep 2
   SCREEN=$(screen rewind)
-  after_footer=$(footer | head -1)
+  after_footer=$(badges_of "$(footer | head -1)")
   shot
   if [[ $after_footer != "$before_footer" ]]; then
     ((OWNER_PROFILE)) && ENV_NOTE="the model and mode a restart falls back to are the profile's settings"
@@ -458,6 +461,59 @@ chk_cmd_clear() {
   fi
 }
 
+# scratch_git <dir> <args...>: git against a scratch repository, with the user's
+# and the system's git configuration out of the picture.
+scratch_git() {
+  env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git -C "$1" "${@:2}"
+}
+
+def cmd.diff commands "/diff" "Shows the working-tree diff"
+chk_cmd_diff() {
+  local cwd i
+  prepare_cwd fkdiff || { res FAIL "could not prepare the cwd"; return; }
+  cwd=$(cwd_of fkdiff)
+  printf '.parity/\n' >"$cwd/.gitignore"
+  scratch_git "$cwd" init -q . &&
+    scratch_git "$cwd" add -A &&
+    scratch_git "$cwd" -c user.name=parity -c user.email=parity@example.invalid -c commit.gpgsign=false commit -q -m seed ||
+    { res SKIP "git could not seed the fixture repository"; return; }
+  printf 'FKDIFF_ADDED_LINE\n' >>"$cwd/parity_read.txt"
+  printf 'FKDIFF_UNTRACKED\n' >"$cwd/fk_untracked.txt"
+  rs_start fkdiff --model "$MODEL" || { res FAIL "session did not start"; return; }
+  if ! open_view fkdiff /diff 'Diff +· +current session and working tree'; then
+    shot
+    res FAIL "/diff did not open a diff view"
+    rs_stop fkdiff
+    return
+  fi
+  wait_for fkdiff 'parity_read\.txt' 10 || true
+  local modified="" untracked="" files
+  files=$(grep -Eo '(parity_read|fk_untracked)\.txt' <<<"$SCREEN" | sort -u | paste -sd' ' -)
+  for ((i = 0; i < 6; i++)); do
+    wait_for fkdiff '┌parity_read\.txt' 1 && break
+    keys fkdiff Down
+  done
+  if wait_for fkdiff '\+FKDIFF_ADDED_LINE' 5 && grep -q '^.*@@ ' <<<"$SCREEN"; then
+    modified="$(first_match '@@ ' | squash) / $(first_match '\+FKDIFF_ADDED_LINE' | squash)"
+  fi
+  shot modified
+  for ((i = 0; i < 6; i++)); do
+    wait_for fkdiff '┌fk_untracked\.txt' 1 && break
+    keys fkdiff Up
+  done
+  if wait_for fkdiff '\+FKDIFF_UNTRACKED' 5; then
+    untracked=$(first_match '\+FKDIFF_UNTRACKED' | squash)
+  fi
+  shot untracked
+  close_view fkdiff
+  rs_stop fkdiff
+  if [[ -n $modified && -n $untracked ]]; then
+    res PASS "listed: $files; modified file hunk: $modified; untracked file: $untracked"
+  else
+    res FAIL "listed: ${files:-none}; modified hunk '${modified:-missing}'; untracked '${untracked:-missing}'"
+  fi
+}
+
 def cmd.exit commands "/exit" "Exits the TUI"
 chk_cmd_exit() {
   rs_start exit --model "$MODEL" || { res FAIL "exit session did not start"; return; }
@@ -466,7 +522,7 @@ chk_cmd_exit() {
   if pane_dead exit; then
     res PASS "/exit closed claude-rs"
   elif wait_for exit 'not yet supported' 5; then
-    res GAP "$(first_match 'not yet supported'); Ctrl+Q quits instead"
+    res FAIL "/exit did not close claude-rs: $(first_match 'not yet supported')"
   else
     shot
     res FAIL "still running, no message"

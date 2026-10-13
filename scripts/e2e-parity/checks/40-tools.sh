@@ -210,22 +210,38 @@ chk_tools_todo() {
 def input.ctrl_t input "Ctrl+T toggles the task list" "Shows/hides the todo list"
 chk_input_ctrl_t() {
   ensure_main || { res FAIL "main session did not start"; return; }
-  if same_screen_after main C-t; then
-    res GAP "screen unchanged after Ctrl+T (task rows are only inline in the transcript)"
-  else
-    res PASS "toggled: $DIFF_LINE"
+  keys main C-t
+  if wait_for main 'Tasks . Ctrl\+T or Esc to close' 5; then
+    shot
+    res PASS "$(first_match 'Tasks . Ctrl' | squash) / $(first_match '#[a-z0-9]+ .*\[|No tasks in the current session' | squash)"
     keys main C-t
+    wait_for main "$EMPTY_COMPOSER" 5 || true
+  else
+    shot
+    res FAIL "Ctrl+T did not open the task view"
   fi
 }
 
 def input.ctrl_o input "Ctrl+O toggles the detailed transcript" "Expands tool output / transcript view"
 chk_input_ctrl_o() {
   ensure_main || { res FAIL "main session did not start"; return; }
-  if same_screen_after main C-o; then
-    res GAP "screen unchanged after Ctrl+O with tool rows on screen"
-  else
-    res PASS "toggled: $DIFF_LINE"
+  keys main C-o
+  if wait_for main 'Detailed transcript snapshot . Ctrl\+O or Esc to close' 5; then
+    shot
+    # The row after "Tool: <command>" is the output; a repeat of it is one result shown twice.
+    local dup
+    dup=$(squash <<<"$SCREEN" | awk '/^Tool: /{t = 1; n = 0; next} t && NF {n++; if (n == 1) {a = $0} else if (n == 2) {if ($0 == a) {print a}; t = 0}}' | head -1)
+    res PASS "$(first_match 'Detailed transcript snapshot' | squash) / $(first_match 'Tool: ' | squash)"
+    if [[ -n $dup ]]; then
+      defect "The Ctrl+O transcript snapshot prints a Bash tool result twice" \
+        "1. Have a Bash tool call that prints one line in the session (here echo PARITY_BANG_7). 2. Press Ctrl+O. Observed in this run: under 'Tool: <command>' the output line appears twice in a row." \
+        "$(grep -v '^ *$' <<<"$SCREEN" | squash | head -12)"
+    fi
     keys main C-o
+    wait_for main "$EMPTY_COMPOSER" 5 || true
+  else
+    shot
+    res FAIL "Ctrl+O did not open the transcript snapshot"
   fi
 }
 

@@ -11,6 +11,7 @@
   - [Help](help.md)
 - [Development](development.md)
   - [Live End-to-End Suite](parity.md)
+  - [Presentation Gaps](presentation-gaps.md)
 - [Architecture](architecture.md)
 - [Governance](governance.md)
 - [Changelog](changelog.md)

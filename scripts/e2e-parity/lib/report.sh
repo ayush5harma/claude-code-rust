@@ -2,7 +2,7 @@
 # shellcheck disable=SC2154 # RESULTS, WORK, versions and timings come from run.sh
 # Renders the run's results as docs/src/parity.md.
 
-GROUP_ORDER=(launch commands identity input tools session agents gaps perf)
+GROUP_ORDER=(launch commands identity input tools session agents fork gaps perf)
 declare -A GROUP_TITLE=(
   [launch]="Launch and resume"
   [commands]="Built-in commands, exercised"
@@ -11,6 +11,7 @@ declare -A GROUP_TITLE=(
   [tools]="Tools, permissions and extensions"
   [session]="Session info"
   [agents]="Agents (the session registry)"
+  [fork]="Fork features, proved live"
   [gaps]="Known gaps"
   [perf]="Performance"
 )
@@ -79,7 +80,7 @@ group_has_results() {
 }
 
 write_report() {
-  local out=$1 id status ev g counts partial=""
+  local out=$1 id status ev g counts partial="" d
   ((${#ONLY[@]})) && partial=" (partial run: --only ${ONLY[*]})"
   counts=$(awk -F'\t' '{n[$2]++} END {printf "%d PASS, %d FAIL, %d GAP, %d SKIP", n["PASS"], n["FAIL"], n["GAP"], n["SKIP"]}' "$RESULTS")
   mkdir -p "$(dirname "$out")"
@@ -111,11 +112,11 @@ The login is per config directory on macOS, so pass a logged-in directory with
 `--config-dir` or `PARITY_CONFIG_DIR`, or `--owner-profile` to use the current
 profile (sessions still run in scratch directories). It is local and opt-in:
 never run in CI, and it spends real model usage. Every turn uses Haiku unless
-`--model` says otherwise; a full run costs about $0.45 (measured $0.43 to
-$0.48 on 2026-10-12, most of it the plan-mode check, whose stock child plans on
-Sonnet) and takes about 5 minutes, or about 15 with the performance group,
-which only a release build runs. The run ends with the cost and warns above `PARITY_COST_BUDGET`
-(default $0.60).
+`--model` says otherwise; a full run costs about $0.50 (measured $0.50 to $0.56
+on 2026-10-13, 113 checks, most of it the plan-mode check, whose stock child
+plans on Sonnet) and takes about 9 minutes, or about 21 with the performance
+group, which only a release build runs. The run ends with the cost and warns
+above `PARITY_COST_BUDGET` (default $0.60).
 
 ```sh
 # The installed release (its bridge and runtime ship next to the binary):
@@ -125,6 +126,8 @@ scripts/e2e-parity/run.sh --config-dir "$PARITY_CONFIG_DIR" --report docs/src/pa
 cargo build && npm run build --prefix agent-sdk
 scripts/e2e-parity/run.sh --owner-profile --bin target/debug/claude-rs \
   --bridge agent-sdk/dist/bridge.js --report docs/src/parity.md
+# A release build ignores --bridge: lay it out like an installed release
+# (see the suite README) and pass only --bin.
 
 # One check, one group, or one check file:
 scripts/e2e-parity/run.sh --only cmd.model
@@ -139,7 +142,11 @@ EOF
     printf '## Last run\n\n'
     printf -- '- Date: %s\n' "$(date -u '+%Y-%m-%d %H:%M UTC')"
     printf -- '- claude-rs: %s\n' "$RS_VERSION"
-    printf -- '- Tested binary: `%s`\n' "${BIN#"$REPO_DIR"/}"
+    case $BIN in
+      "$REPO_DIR"/*) printf -- '- Tested binary: `%s`\n' "${BIN#"$REPO_DIR"/}" ;;
+      "$HOME"/*) printf -- '- Tested binary: `~/%s`\n' "${BIN#"$HOME"/}" ;;
+      *) printf -- '- Tested binary: `claude-rs` from outside the checkout (a release build laid out like an installed release; see the suite README)\n' ;;
+    esac
     printf -- '- Source checkout: `%s` (git describe --always --dirty)\n' "$SRC_REV"
     if ((OWNER_PROFILE)); then
       printf -- '- Profile: the owner'"'"'s own (--owner-profile): its settings, hooks, plugins and MCP servers applied\n'
@@ -178,6 +185,20 @@ EOF
       done < <(ordered_results)
       printf '\n'
     done
+
+    if compgen -G "$WORK/defects/*.md" >/dev/null; then
+      cat <<'EOF'
+## Defects found by this run
+
+Real claude-rs defects the checks above ran into, with the steps and the
+screen each one showed. The suite records them; it does not fix them.
+
+EOF
+      for d in "$WORK"/defects/*.md; do
+        cat "$d"
+        printf '\n'
+      done
+    fi
 
     if [[ -s $WORK/inventory.tsv ]]; then
       cat <<'EOF'

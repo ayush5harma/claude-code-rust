@@ -66,13 +66,17 @@ first_match() {
   sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<<"$line"
 }
 
+# squash: a screen excerpt without box borders and runs of spaces.
+squash() { perl -CSD -Mutf8 -pe 's/[│┌┐└┘─]//g; s/ +/ /g; s/^ //; s/ $//'; }
+
 # tool_row <ERE>: the first tool-call row (status glyph first) matching the
 # pattern, so evidence never quotes the echoed prompt instead.
 tool_row() {
   first_match "^ +[✓✗↗⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] .*($1)"
 }
 
-composer_line() { grep -E '^ ?❯ ' <<<"${1-$SCREEN}" | tail -1 | sed -E 's/[[:space:]]+$//'; }
+# The composer row is `│❯ text` in the filled style and ` ❯ text` between rules.
+composer_line() { grep -E '^[│ ]?❯ ' <<<"${1-$SCREEN}" | tail -1 | sed -E 's/[[:space:]]+$//'; }
 
 # Footer rows: the mode/model row and the Loc row are the last two non-blank
 # lines while chat is shown.
@@ -94,9 +98,9 @@ shift_enter() { tm send-keys -t "$1" -H "${SHIFT_ENTER_HEX[@]}"; }
 # /rename TRANSPORT_CHECK exactly in a fresh TUI.
 composer_rows_text() {
   awk '
-    /^ ?❯ / { on = 1; sub(/^ ?❯ /, ""); print; next }
-    on && (/^\[[A-Za-z ]+\] / || /^Loc: / || /^$/) { exit }
-    on { sub(/^   /, ""); print }
+    /^[│ ]?❯ / { on = 1; sub(/^[│ ]?❯ /, ""); print; next }
+    on && (/^\[[A-Za-z ]+\] / || /^Loc: / || /^$/ || /^│$/ || /^─+$/) { exit }
+    on { sub(/^(│  |   )/, ""); print }
   ' <<<"$1"
 }
 
@@ -153,6 +157,16 @@ type_text() {
   tm send-keys -t "$s" -l -- "$text" || exit 3
   tm send-keys -t "$s" -H 1b 5b 32 30 31 7e || exit 3
   require_composer_text "$s" "$text" suffix
+}
+
+# type_text_raw <sess> <text>: a bracketed paste without waiting for the
+# composer to show it, for fields that are not the composer.
+type_text_raw() {
+  local s=$1 text=$2
+  sleep 0.1
+  tm send-keys -t "$s" -H 1b 5b 32 30 30 7e || exit 3
+  tm send-keys -t "$s" -l -- "$text" || exit 3
+  tm send-keys -t "$s" -H 1b 5b 32 30 31 7e || exit 3
 }
 
 # type_slow <sess> <text>: one key at a time, for popups that only refresh
@@ -300,20 +314,38 @@ note_session() {
   grep -qx -- "$1" "$WORK/run-sessions.txt" 2>/dev/null || printf '%s\n' "$1" >>"$WORK/run-sessions.txt"
 }
 
+# settle <sess>: back at the empty composer. An Escape on an empty composer is
+# the first half of Esc Esc, which opens the rewind picker (since PR #24), so
+# Escape is sent only while something else is on screen, a second apart.
+settle() {
+  local s=$1 i
+  for ((i = 0; i < 3; i++)); do
+    wait_for "$s" "$EMPTY_COMPOSER" 1 && return 0
+    keys "$s" Escape
+    sleep 1.2
+  done
+  wait_for "$s" "$EMPTY_COMPOSER" 3
+}
+
 # rs_cost <sess>: read the session's cost from the Usage tab and log it.
 rs_cost() {
   local s=$1 cost
   pane_dead "$s" && return 0
-  keys "$s" Escape
+  wait_for "$s" "$EMPTY_COMPOSER" 1 || keys "$s" Escape
   # A leftover draft would be submitted with "/usage" appended; Ctrl+C
   # clears it (only when non-empty: on an empty prompt it quits).
   if ! wait_for "$s" "$EMPTY_COMPOSER" 3; then
-    grep -Eq '^ ?❯ ' <<<"$SCREEN" || return 0
+    grep -Eq '^[│ ]?❯ ' <<<"$SCREEN" || return 0
     keys "$s" C-c
     wait_for "$s" "$EMPTY_COMPOSER" 3 || return 0
   fi
   enter_cmd "$s" "/usage"
   if wait_for "$s" '\$[0-9.]+ cost' 15; then
+    # Read straight after a turn, the totals can still be the last refresh's
+    # ($0.0000 for a session's first turn on 2026-10-13); `r` re-reads them.
+    keys "$s" r
+    sleep 3
+    SCREEN=$(screen "$s")
     cost=$(grep -Eo '\$[0-9.]+ cost' <<<"$SCREEN" | head -1 | tr -dc '0-9.')
     printf '%s\t%s\n' "$s" "$cost" >>"$WORK/costs.tsv"
   fi
@@ -341,7 +373,7 @@ ensure() {
   local s=$1
   shift
   if session_exists "$s" && ! pane_dead "$s"; then
-    keys "$s" Escape
+    settle "$s" || true
     return 0
   fi
   rs_start "$s" "$@"
@@ -378,19 +410,49 @@ def() {
   CHECK_STOCK[$1]=$4
 }
 
+# scrub_paths <text>: the published report must not carry private paths. macOS
+# reports temp paths with a /private prefix and $TMPDIR is a per-user folder
+# (both leaked into the 2026-10-13 report before this helper existed).
+scrub_paths() {
+  local t=$1 tmpd=${TMPDIR%/}
+  t=${t//"/private$WORK"/"<work>"}
+  t=${t//"$WORK"/"<work>"}
+  if [[ -n $tmpd ]]; then
+    t=${t//"/private$tmpd"/"<tmpdir>"}
+    t=${t//"$tmpd"/"<tmpdir>"}
+  fi
+  t=${t//"$REPO_DIR/"/}
+  printf '%s' "$t"
+}
+
 # res <PASS|FAIL|GAP|SKIP> <evidence>: record the current check's reading.
 res() {
   local status=$1 ev=$2 tilde='~'
   [[ -z ${ENV_NOTE:-} ]] || ev="[environment: $ENV_NOTE] $ev"
   # The table is published: no private paths, whatever the evidence quoted.
   # Replaced before the length cut so a path cannot be cut in half.
-  ev=${ev//"$WORK"/"<work>"}
-  ev=${ev//"$REPO_DIR/"/}
+  ev=$(scrub_paths "$ev")
   ev=${ev//"$HOME"/$tilde}
   ev=$(tr '\n\t' '  ' <<<"$ev" | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' | cut -c1-220)
   printf '%-5s %-28s %s\n' "$status" "$CUR" "$ev"
   printf '%s\t%s\t%s\n' "$CUR" "$status" "$ev" >>"$RESULTS"
   RESULT_SET=1
+}
+
+# defect <title> <steps> [screen text]: record a real claude-rs defect the
+# current check found, with the steps and the screen it showed. The report
+# lists them under "Defects found by this run"; nothing here fixes them.
+defect() {
+  local n text
+  mkdir -p "$WORK/defects"
+  n=$(find "$WORK/defects" -name '*.md' | wc -l | tr -d ' ')
+  text=$(
+    printf '### %s\n\nFound by `%s`.\n\n**Steps**\n\n%s\n' "$1" "$CUR" "$2"
+    # Rows below "Loc:" are the profile's own status row, not claude-rs's.
+    [[ -z ${3:-} ]] || printf '\n**Screen**\n\n~~~text\n%s\n~~~\n' "$(sed '/^Loc: /q' <<<"$3")"
+  )
+  text=$(scrub_paths "$text")
+  printf '%s\n' "$text" >"$WORK/defects/$(printf '%02d' $((n + 1))).md"
 }
 
 # shot <label>: keep the screen a check judged by, for a human to re-read.

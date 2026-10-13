@@ -151,10 +151,8 @@ chk_color_persisted() {
   fi
 }
 
-# Stock keeps the name across a resume. Under claude-rs the registry entry of
-# the resumed session reads whatever Claude Code assigns it; the bridge passes
-# no --name on resume (the fork's resume handling went with 7bcd788), so a
-# missing name reads GAP, not FAIL. The evidence states only what was read.
+# Stock keeps the name across a resume; claude-rs restores the SDK title on
+# resume since PR #16, so a missing name is a FAIL.
 def rename.resume_name identity "Name kept after Ctrl+Q and resume" "Registry keeps the name"
 chk_rename_resume_name() {
   id_resumed
@@ -163,7 +161,11 @@ chk_rename_resume_name() {
     id_shot
     res PASS "after Ctrl+Q and resume the registry name is $ID_TITLE (session $(jq -r .sessionId <<<"$REG"))"
   else
-    res GAP "registry name after resume: '$(jq -r .name <<<"$REG")' (session $(jq -r .sessionId <<<"$REG")); it was $ID_TITLE before Ctrl+Q, which stock keeps"
+    id_shot
+    res FAIL "registry name after resume: '$(jq -r .name <<<"$REG")' (session $(jq -r .sessionId <<<"$REG")); it was $ID_TITLE before Ctrl+Q, which stock keeps; the footer does show '$(footer "$SCREEN" | head -1 | sed -E 's/.*\] //')' (PR #16)"
+    defect "The agents registry loses the session name after a resume" \
+      "1. Run /rename <name>, then quit with Ctrl+Q. 2. Start claude-rs -r <session id>. 3. Run claude agents --json: the interactive entry's name is the directory-derived default (identity-NN), not <name>; stock keeps the name there. Observed in this run: the footer shows <name> again after the resume." \
+      "registry: $(jq -c '{name, sessionId, status}' <<<"$REG")"
   fi
 }
 
@@ -174,7 +176,7 @@ chk_rename_resume_history() {
   SCREEN=$(screen "$ID_SESS")
   shot
   if grep -q '<command-name>' <<<"$SCREEN"; then
-    res FAIL "restored history shows the raw record: $(first_match '<command-name>')"
+    res GAP "restored history shows the raw record '$(first_match '<command-name>')': the SDK exposes no reliable provenance for command-like user text on resume, so claude-rs keeps it verbatim (docs/src/commands.md)"
   elif grep -q "/rename $ID_TITLE" <<<"$SCREEN"; then
     res PASS "restored as '$(first_match "/rename $ID_TITLE")'$(grep -q "Session renamed to: $ID_TITLE" <<<"$SCREEN" && echo ' with its output')"
   else

@@ -13,7 +13,7 @@ clear_draft() {
 
 # composer_rows <sess>: the composer's rows, from the ❯ line to the footer.
 composer_rows() {
-  screen "$1" | awk '/^ ?❯ /{on=1} on && /^\[/{exit} on' | sed -E 's/[[:space:]]+$//' | grep -v '^$'
+  screen "$1" | awk '/^[│ ]?❯ /{on=1} on && /^\[/{exit} on' | sed -E 's/[[:space:]]+$//' | grep -Ev '^│?$'
 }
 
 # stable_screen <sess>: a capture that did not change for a second, without
@@ -78,7 +78,8 @@ chk_input_backslash_enter() {
     clear_draft main
   else
     SCREEN=$(screen main)
-    res GAP "Enter submitted 'pm_bs_one\\' as a prompt instead of continuing the line"
+    shot
+    res FAIL "Enter submitted 'pm_bs_one\\' as a prompt instead of continuing the line"
     wait_idle main 60 || true
   fi
 }
@@ -110,7 +111,7 @@ chk_input_bang() {
   if [[ -f $transcript ]] && grep -q 'bash-stdout>PARITY_BANG_7' "$transcript"; then
     res PASS "ran locally: transcript has <bash-stdout>PARITY_BANG_7"
   elif [[ -f $transcript ]] && grep -q '"name":"Bash".*echo PARITY_BANG_7' "$transcript"; then
-    res GAP "sent to the model as a prompt; the model then ran Bash itself (transcript tool_use Bash 'echo PARITY_BANG_7')"
+    res GAP "sent to the model as a prompt; the model then ran Bash itself (transcript tool_use Bash 'echo PARITY_BANG_7'); README: shell input remains unimplemented"
   else
     SCREEN=$(screen main)
     shot
@@ -144,6 +145,7 @@ chk_input_esc_cancel() {
   clear_draft main
   submit main "Count from 1 to 1500, one number per line, no other text." || { res FAIL "could not submit"; return; }
   if ! wait_for main '^ *1[0-9]$' 30; then
+    shot
     res FAIL "the counting turn never streamed"
     return
   fi
@@ -168,13 +170,26 @@ chk_input_esc_esc() {
   ensure_main || { res FAIL "main session did not start"; return; }
   clear_draft main
   wait_for main "$EMPTY_COMPOSER" 5 || true
-  if same_screen_after main Escape Escape; then
-    res GAP "nothing happens (stock opens the rewind picker); /rewind with arguments is the claude-rs route"
-  elif grep -Eqi 'rewind|restore|previous message' <<<"$(screen main)"; then
-    res PASS "picker: $DIFF_LINE"
+  # Two separate key events: sent together, tmux delivers ESC ESC, which a
+  # terminal parser reads as Alt+Escape.
+  # A prompt suggestion (the "Suggestion:" row, which arrives a moment after a
+  # turn) takes an Escape for itself, so the pair is retried a second later.
+  local attempt
+  for attempt in 1 2 3; do
     keys main Escape
+    sleep 0.3
+    keys main Escape
+    wait_for main 'Rewind: select message' 3 && break
+    sleep 1.2
+  done
+  if grep -q 'Rewind: select message' <<<"$SCREEN"; then
+    shot
+    res PASS "picker: $(first_match 'Rewind: select message' | squash) / $(first_match '> [0-9]+ ' | squash) (pair $attempt)"
+    keys main Escape
+    wait_for main "$EMPTY_COMPOSER" 5 || true
   else
-    res FAIL "screen changed but no picker: $DIFF_LINE"
+    shot
+    res FAIL "Esc Esc on an empty prompt did not open the rewind picker (composer: $(composer_line))"
   fi
 }
 
@@ -220,7 +235,8 @@ chk_input_ctrl_g() {
   if wait_for main 'PARITY_EDITOR_TEXT' 8; then
     res PASS "draft replaced by the editor's text: $(composer_line)"
   else
-    res GAP "Ctrl+G does nothing (composer: $(composer_line)); EDITOR was a script that writes PARITY_EDITOR_TEXT"
+    shot
+    res FAIL "Ctrl+G did not hand the draft to \$EDITOR (composer: $(composer_line)); EDITOR was a script that writes PARITY_EDITOR_TEXT"
   fi
   clear_draft main
 }
@@ -299,14 +315,19 @@ chk_input_ctrl_z() {
 def input.ctrl_d input "Ctrl+D on an empty prompt exits" "Exits (press twice)"
 chk_input_ctrl_d() {
   rs_start quit --model "$MODEL" || { res FAIL "quit session did not start"; return; }
+  # One press only: shutdown runs the SessionEnd hooks, so give it time.
   keys quit C-d
-  sleep 0.4
-  keys quit C-d
-  sleep 2
+  local i
+  for ((i = 0; i < 20; i++)); do
+    pane_dead quit && break
+    sleep 0.5
+  done
   if pane_dead quit; then
-    res PASS "Ctrl+D twice exited"
+    res PASS "one Ctrl+D on an empty prompt exited (the pane is dead after it; stock asks for two presses)"
   else
-    res GAP "Ctrl+D twice on an empty prompt does not exit (it is delete-after-cursor in claude-rs)"
+    SCREEN=$(screen quit)
+    shot
+    res FAIL "one Ctrl+D on an empty prompt did not exit within 10 s (composer: $(composer_line))"
   fi
 }
 

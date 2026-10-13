@@ -24,11 +24,11 @@ The login is per config directory on macOS, so pass a logged-in directory with
 `--config-dir` or `PARITY_CONFIG_DIR`, or `--owner-profile` to use the current
 profile (sessions still run in scratch directories). It is local and opt-in:
 never run in CI, and it spends real model usage. Every turn uses Haiku unless
-`--model` says otherwise; a full run costs about $0.45 (measured $0.43 to
-$0.48 on 2026-10-12, most of it the plan-mode check, whose stock child plans on
-Sonnet) and takes about 5 minutes, or about 15 with the performance group,
-which only a release build runs. The run ends with the cost and warns above `PARITY_COST_BUDGET`
-(default $0.60).
+`--model` says otherwise; a full run costs about $0.50 (measured $0.50 to $0.56
+on 2026-10-13, 113 checks, most of it the plan-mode check, whose stock child
+plans on Sonnet) and takes about 9 minutes, or about 21 with the performance
+group, which only a release build runs. The run ends with the cost and warns
+above `PARITY_COST_BUDGET` (default $0.60).
 
 ```sh
 # The installed release (its bridge and runtime ship next to the binary):
@@ -38,6 +38,8 @@ scripts/e2e-parity/run.sh --config-dir "$PARITY_CONFIG_DIR" --report docs/src/pa
 cargo build && npm run build --prefix agent-sdk
 scripts/e2e-parity/run.sh --owner-profile --bin target/debug/claude-rs \
   --bridge agent-sdk/dist/bridge.js --report docs/src/parity.md
+# A release build ignores --bridge: lay it out like an installed release
+# (see the suite README) and pass only --bin.
 
 # One check, one group, or one check file:
 scripts/e2e-parity/run.sh --only cmd.model
@@ -50,31 +52,32 @@ cleanup works.
 
 ## Last run
 
-- Date: 2026-10-12 18:49 UTC
+- Date: 2026-10-13 06:35 UTC
 - claude-rs: 0.15.2-fork.2
-- Tested binary: `target/debug/claude-rs`
-- Source checkout: `v0.15.2-fork.2-4-ge4c5df2` (git describe --always --dirty)
+- Tested binary: `claude-rs` from outside the checkout (a release build laid out like an installed release; see the suite README)
+- Source checkout: `v0.15.2-fork.2-123-g99bfebc-dirty` (git describe --always --dirty)
 - Profile: the owner's own (--owner-profile): its settings, hooks, plugins and MCP servers applied
 - Model: haiku
 - Installed baseline binary: `~/.local/share/claude-rs/0.15.2-fork.2/claude-rs`
 - Claude Code: 2.1.296
-- Results: 59 PASS, 5 FAIL, 13 GAP, 9 SKIP
-- Duration: 285s over the recorded checks
-- Cost of this run: $0.4321, summed from the `/usage` readout of each claude-rs session when the suite stopped it (the performance group runs no model turns)
-- 4 row(s) are marked `[environment: ...]`: their reading depends on the profile the run used, not on claude-rs alone.
+- Results: 99 PASS, 5 FAIL, 6 GAP, 3 SKIP
+- Duration: 1296s over the recorded checks
+- Cost of this run: $0.5061, summed from the `/usage` readout of each claude-rs session when the suite stopped it (the performance group runs no model turns)
+- 3 row(s) are marked `[environment: ...]`: their reading depends on the profile the run used, not on claude-rs alone.
+- Review round, same day: after the full run above the checks listed here were changed and re-run alone on the same build (`fork.*`, `present.capture`, `session.statusline`, `input.ctrl_d`, `input.ctrl_o`, `rename.resume_name`, `rename.resume_history`, `input.bang`), in two partial runs (the second re-ran `fork.flag_name`, `fork.export`, `fork.session_tag_paste` and `session.statusline`). Their rows and the defects below are from those runs; every other row, the performance table and the counts are from the full run, and the counts did not change.
 
 ## Launch and resume
 
 | Functionality | Claude Code | claude-rs (fork) | Evidence / notes |
 | --- | --- | --- | --- |
-| New session starts | Starts at the prompt; the session is registered | PASS | `launch.new` composer ready; registry: {"kind":"interactive","sessionId":"3c4fc1bd-6037-442c-9443-719f378b69f2","status":"idle"} |
+| New session starts | Starts at the prompt; the session is registered | PASS | `launch.new` composer ready; registry: {"kind":"interactive","sessionId":"63e0d247-82d6-467a-9b14-25c8d98ee1cf","status":"idle"} |
 | Prompt round trip | Answer streamed into the transcript | PASS | `launch.roundtrip` reply line: PARITY_PONG |
-| Registry busy during a turn, idle after | `claude agents --json` status busy, then idle | PASS | `launch.busy_idle` busy while the turn ran, then {"status":"idle","name":"main-02"} |
-| Initial prompt argument | `claude "prompt"` sends it once ready | PASS | `launch.initial_prompt` argv prompt answered: PARITY_RESUME_SEED (session f4474561-0a82-4ba0-8126-c8e7c58ba641) |
-| Continue latest session (-c) | Reopens the latest conversation in the cwd | PASS | `launch.continue` history replayed; registry id f4474561-0a82-4ba0-8126-c8e7c58ba641, seed f4474561-0a82-4ba0-8126-c8e7c58ba641 |
-| Resume by id (-r &lt;id&gt;) | Reopens that conversation | PASS | `launch.resume_id` -r f4474561-0a82-4ba0-8126-c8e7c58ba641 replayed the seed turn |
-| Resume picker (-r without id) | Lists recent sessions to pick from | PASS | `launch.resume_picker` picker lists the seed: │ &gt; 2s ago - PARITY_RESUME_SEED messages › │ |
-| --model | Starts on the given model | PASS | `launch.model_flag` --model haiku: [Bypass Permissions] [Haiku 5.5/Med] [FAST:OFF] |
+| Registry busy during a turn, idle after | `claude agents --json` status busy, then idle | PASS | `launch.busy_idle` busy while the turn ran, then {"status":"idle","name":"main-4c"} |
+| Initial prompt argument | `claude "prompt"` sends it once ready | PASS | `launch.initial_prompt` argv prompt answered: PARITY_RESUME_SEED (session 152e5520-33e6-4677-88de-5ec919395ae0) |
+| Continue latest session (-c) | Reopens the latest conversation in the cwd | PASS | `launch.continue` history replayed; registry id 152e5520-33e6-4677-88de-5ec919395ae0, seed 152e5520-33e6-4677-88de-5ec919395ae0 |
+| Resume by id (-r &lt;id&gt;) | Reopens that conversation | PASS | `launch.resume_id` -r 152e5520-33e6-4677-88de-5ec919395ae0 replayed the seed turn |
+| Resume picker (-r without id) | Lists recent sessions to pick from | PASS | `launch.resume_picker` picker lists the seed: │ &gt; 2s ago - PARITY_RESUME_SEED [saved 350 KiB] messages › │ |
+| --model | Starts on the given model | PASS | `launch.model_flag` --model haiku: [Bypass Permissions] [Haiku 5.5/Med] [FAST:OFF] PARITY_PONG |
 | --permission-mode | Starts in the given mode | PASS | `launch.permission_mode_flag` --permission-mode plan: [Plan] [Sonnet 5.5/Med] [FAST:OFF] |
 | --effort | Starts at the given effort | PASS | `launch.effort_flag` --effort low: [Auto] [Haiku 5.5/Low] [FAST:OFF] |
 | --agent | Main thread runs as the named agent | PASS | `launch.agent_flag` parity-agent's fixed reply: PARITY_AGENT_OK |
@@ -83,61 +86,62 @@ cleanup works.
 
 | Functionality | Claude Code | claude-rs (fork) | Evidence / notes |
 | --- | --- | --- | --- |
-| Every stock built-in classified | 100 built-ins in 2.1.293 (local, local-jsx, prompt) | PASS | `cmd.inventory` 100 stock built-ins: 17 app-owned, 26 forwarded, 3 equivalent, 54 stock-only (table below); SDK advertised 494 commands |
-| /model &lt;alias&gt; | Switches the session model | PASS | `cmd.model` footer followed: [Bypass Permissions] [Sonnet 5.5/Med] [FAST:OFF], then back to Haiku |
+| Every stock built-in classified | 100 built-ins in 2.1.293 (local, local-jsx, prompt) | PASS | `cmd.inventory` 100 stock built-ins: 21 app-owned, 25 forwarded, 2 equivalent, 52 stock-only (table below); SDK advertised 494 commands |
+| /model &lt;alias&gt; | Switches the session model | PASS | `cmd.model` footer followed: [Bypass Permissions] [Sonnet 5.5/Med] [FAST:OFF] PARITY_PONG, then back to Haiku |
 | /effort &lt;level&gt; | Changes the session effort | PASS | `cmd.effort` footer went to /Low] and back to /Med] |
 | /fast | Toggles fast mode, or says the model has none | PASS | `cmd.fast` reported for Haiku: failed to enable fast mode: SDK reported state off |
 | /compact | Summarises the conversation, keeps the session | PASS | `cmd.compact` Session successfully compacted. |
 | /context | Shows the context usage breakdown | PASS | `cmd.context` breakdown shown: dataviz Built-in ~480 |
-| /usage (stock 2.1.293 has no /cost) | Plan limits and session cost | PASS | `cmd.usage` │ $0.0226 cost · 1m 7s elapsed · 17s API time · +0 / -0 lines · 1 model │ \| 5-hour 94% used |
-| /status | Version, session id, account, model | PASS | `cmd.status` Session ID: 3c4fc1bd-6037-442c-9443-719f378b69f2 \| Model: Haiku 5.5 |
-| /help | Shortcuts and commands | PASS | `cmd.help` Help tab: Shortcuts Commands Subagents 1/32 |
+| /usage (stock 2.1.293 has no /cost) | Plan limits and session cost | PASS | `cmd.usage` │ $0.0232 cost · 1m 20s elapsed · 18s API time · +0 / -0 lines · 1 model │ \| 5-hour 37% used |
+| /status | Version, session id, account, model | PASS | `cmd.status` Session ID: 63e0d247-82d6-467a-9b14-25c8d98ee1cf \| Model: Haiku 5.5 |
+| /help | Shortcuts and commands | PASS | `cmd.help` Help tab: Shortcuts Commands Subagents 1/38 |
 | /mcp | Server list with status | PASS | `cmd.mcp` 1/30 total 30 connected 17 needs auth 10 pending 0 disabled 0 failed 3; project server: › parity connected project stdio |
-| /config | Settings UI | PASS | `cmd.config` Settings opened: General Memory Permissions Sandbox Hooks Workflows & Worktrees \| Save in: User (all projects) 1/27 |
-| /memory | Picks a CLAUDE.md memory file to edit | **FAIL** | `cmd.memory` opens the Memory settings pane (Automatic memory On), not a memory-file picker |
-| /permissions | Lists allow/deny rules from every scope | **FAIL** | `cmd.permissions` [environment: the profile's settings.json is a Nix symlink] User scope row 'Allow rules Not set here' although settings.json (a symlink) has 10 allow rules; pane note: Settings path must be a regular file. |
-| /hooks | Lists configured hooks | **FAIL** | `cmd.hooks` [environment: the profile's settings.json is a Nix symlink] User scope 'Definitions Not set here' although settings.json (a symlink) defines 7 hook events; pane note: Settings path must be a regular file. |
+| /config | Settings UI | PASS | `cmd.config` Settings opened: General Memory Permissions Sandbox Hooks Workflows & Worktrees \| Save in: User (all projects) 1/28 |
+| /memory | Picks a CLAUDE.md memory file to edit | **GAP** | `cmd.memory` opens the Memory settings pane (Automatic memory On), not a memory-file picker: the pinned public host SDK has no memory picker or editor operation (README, Remaining verification) |
+| /permissions | Lists allow/deny rules from every scope | PASS | `cmd.permissions` pane open; 'Allow rules 10 items' (settings.json allow rules: 10) |
+| /hooks | Lists configured hooks | PASS | `cmd.hooks` pane open; 'Definitions 7 entries' (settings.json hook events: 7) |
 | /resume | Session picker for this project | PASS | `cmd.resume` picker: │ Select a session to resume │ |
 | /btw &lt;question&gt; | Side answer that stays out of the conversation | PASS | `cmd.btw` ╭─ Claude · BTW ───────────────────────────────────────────────────────────────────────────────────────────────────────╮ answered 4 |
 | /init | Writes CLAUDE.md for the project | PASS | `cmd.init` CLAUDE.md written in the scratch cwd: # CLAUDE.md |
-| /rewind (stock: Esc Esc) | Restores the conversation to an earlier message | **FAIL** | `cmd.rewind` [environment: the model and mode a restart falls back to are the profile's settings] conversation rewound, but the session came back as '[Auto] [Opus 5.5/XHigh] [FAST:OFF]' (was '[Bypass Permissions] [Haiku 5.5/Med] [FAS |
-| /copy | Copies the last response to the clipboard | SKIP | `cmd.copy` clipboard holds non-text data («class furl» «class icns» «class AVIF» «class 8BPS» GIF picture «class jp2 » JPEG picture TIFF picture «class PNGf» «class BMP » «class TPIC»); not overwriting it |
-| /clear | Starts a fresh conversation (new session id) | PASS | `cmd.clear` new session d9e3f3a1-3d1d-4048-817a-16295a0dd91c (was 3c4fc1bd-6037-442c-9443-719f378b69f2); transcript cleared |
-| /exit | Exits the TUI | **GAP** | `cmd.exit` /exit is not yet supported; Ctrl+Q quits instead |
+| /rewind (stock: Esc Esc) | Restores the conversation to an earlier message | PASS | `cmd.rewind` conversation rewound; draft restored: │❯ Reply with exactly: PARITY_REWIND_ME; footer kept: [Bypass Permissions] [Haiku 5.5/Med] [FAST:OFF] |
+| /copy | Copies the last response to the clipboard | SKIP | `cmd.copy` clipboard holds non-text data («class HTML»); not overwriting it |
+| /clear | Starts a fresh conversation (new session id) | PASS | `cmd.clear` new session a465caf6-4e7c-4390-a797-226729bda319 (was 63e0d247-82d6-467a-9b14-25c8d98ee1cf); transcript cleared |
+| /diff | Shows the working-tree diff | PASS | `cmd.diff` listed: fk_untracked.txt parity_read.txt; modified file hunk: @@ -1,2 +1,3 @@ / +FKDIFF_ADDED_LINE; untracked file: +FKDIFF_UNTRACKED |
+| /exit | Exits the TUI | PASS | `cmd.exit` /exit closed claude-rs |
 
 ## Session name and colour (/rename, /color)
 
 | Functionality | Claude Code | claude-rs (fork) | Evidence / notes |
 | --- | --- | --- | --- |
-| /rename output, live | Prints `Session renamed to: <name>` | PASS | `rename.live_output` Session renamed to: parity-rn-001452 |
-| /rename persisted | sessions/&lt;pid&gt;.json, transcript custom-title and `claude agents --json` carry the name | PASS | `rename.persisted` sessions/80972.json name, transcript custom-title and `claude agents --json` all read parity-rn-001452 |
-| Session name in /status | Status shows the session name | PASS | `rename.status_tab` Session name: parity-rn-001452 |
+| /rename output, live | Prints `Session renamed to: <name>` | PASS | `rename.live_output` Session renamed to: parity-rn-114324 |
+| /rename persisted | sessions/&lt;pid&gt;.json, transcript custom-title and `claude agents --json` carry the name | PASS | `rename.persisted` sessions/81358.json name, transcript custom-title and `claude agents --json` all read parity-rn-114324 |
+| Session name in /status | Status shows the session name | PASS | `rename.status_tab` Session name: parity-rn-114324 |
 | /color replies | Set, reset-to-default and invalid-colour lines | PASS | `color.replies` invalid, reset and 'Session color set to: blue' replies shown |
 | /color persisted | Transcript `agent-color` entry | PASS | `color.persisted` transcript agent-color: blue |
-| Name kept after Ctrl+Q and resume | Registry keeps the name | **GAP** | `rename.resume_name` registry name after resume: 'identity-39' (session 12ef2415-255b-4c62-9707-ffb23120cbf9); it was parity-rn-001452 before Ctrl+Q, which stock keeps |
-| /rename in the restored history | Shows `/rename <name>` and its output | **FAIL** | `rename.resume_history` restored history shows the raw record: &lt;command-name&gt;/rename&lt;/command-name&gt; |
+| Name kept after Ctrl+Q and resume | Registry keeps the name | **FAIL** | `rename.resume_name` registry name after resume: 'identity-bb' (session 29ee5250-027a-486a-9588-9f4dfc8d55da); it was parity-rn-121821 before Ctrl+Q, which stock keeps; the footer does show 'parity-rn-121821' (PR #16) |
+| /rename in the restored history | Shows `/rename <name>` and its output | **GAP** | `rename.resume_history` restored history shows the raw record '&lt;command-name&gt;/rename&lt;/command-name&gt;': the SDK exposes no reliable provenance for command-like user text on resume, so claude-rs keeps it verbatim (docs/src/commands.md) |
 
 ## Input
 
 | Functionality | Claude Code | claude-rs (fork) | Evidence / notes |
 | --- | --- | --- | --- |
-| Multi-line input: Shift+Enter | Inserts a newline | PASS | `input.shift_enter` two composer rows: ❯ pm_line_one/ pm_line_two |
-| Multi-line input: backslash then Enter | `\\` at the end of a line plus Enter inserts a newline | **GAP** | `input.backslash_enter` Enter submitted 'pm_bs_one\' as a prompt instead of continuing the line |
+| Multi-line input: Shift+Enter | Inserts a newline | PASS | `input.shift_enter` two composer rows: │❯ pm_line_one/│ pm_line_two |
+| Multi-line input: backslash then Enter | `\\` at the end of a line plus Enter inserts a newline | PASS | `input.backslash_enter` newline inserted: │❯ pm_bs_one/│ pm_bs_two |
 | @file mention autocomplete | Suggests matching files | PASS | `input.at_mention` suggestion: [ &gt; parity_mention.txt |
-| ! bash mode | Runs the command locally, no model turn | **GAP** | `input.bang` sent to the model as a prompt; the model then ran Bash itself (transcript tool_use Bash 'echo PARITY_BANG_7') |
-| Up recalls the previous prompt | Previous prompt into the empty composer | PASS | `input.up_history` ❯ Reply with exactly: PARITY_HISTORY |
-| Esc cancels a running turn | Interrupts the turn | PASS | `input.esc_cancel` idle 0s after Esc, stopped at 61; Conversation interrupted. Tell the model how to proceed. |
-| Esc Esc on an empty prompt | Opens the rewind / message picker | **GAP** | `input.esc_esc` nothing happens (stock opens the rewind picker); /rewind with arguments is the claude-rs route |
+| ! bash mode | Runs the command locally, no model turn | **GAP** | `input.bang` sent to the model as a prompt; the model then ran Bash itself (transcript tool_use Bash 'echo PARITY_BANG_7'); README: shell input remains unimplemented |
+| Up recalls the previous prompt | Previous prompt into the empty composer | PASS | `input.up_history` │❯ Reply with exactly: PARITY_HISTORY |
+| Esc cancels a running turn | Interrupts the turn | PASS | `input.esc_cancel` idle 0s after Esc, stopped at 48; Conversation interrupted. Tell the model how to proceed. |
+| Esc Esc on an empty prompt | Opens the rewind / message picker | PASS | `input.esc_esc` picker: Rewind: select message / &gt; 14 [Request interrupted by user] (pair 2) |
 | Shift+Tab cycles the mode | Cycles permission modes | PASS | `input.shift_tab` cycle from [Bypass Permissions]: [Default] [Auto] [Accept Edits] [Plan] [Bypass Permissions] |
-| Ctrl+L redraws | Redraws the screen | PASS | `input.ctrl_l` screen intact after redraw: ❯ Type a message... |
-| Ctrl+G edits the draft in $EDITOR | Opens the draft in the external editor | **GAP** | `input.ctrl_g` Ctrl+G does nothing (composer: ❯ pm_editor_seed); EDITOR was a script that writes PARITY_EDITOR_TEXT |
+| Ctrl+L redraws | Redraws the screen | PASS | `input.ctrl_l` screen intact after redraw: │❯ Type a message... |
+| Ctrl+G edits the draft in $EDITOR | Opens the draft in the external editor | PASS | `input.ctrl_g` draft replaced by the editor's text: │❯ PARITY_EDITOR_TEXT |
 | Ctrl+V pastes an image | Attaches the clipboard image | SKIP | `input.ctrl_v_image` needs an image on the system clipboard; the suite never overwrites the owner's clipboard with an image (covered by the fork's own Ctrl+V tests) |
-| Tab completes a slash command | Completes the highlighted command | PASS | `input.tab_complete` /statu -&gt; ❯ /ecc:instinct-status |
+| Tab completes a slash command | Completes the highlighted command | PASS | `input.tab_complete` /statu -&gt; │❯ /ecc:instinct-status |
 | Ctrl+Z suspends, fg resumes | Suspends to the shell | PASS | `input.ctrl_z` '[1]+ Stopped', then fg restored the composer |
-| Ctrl+D on an empty prompt exits | Exits (press twice) | **GAP** | `input.ctrl_d` Ctrl+D twice on an empty prompt does not exit (it is delete-after-cursor in claude-rs) |
+| Ctrl+D on an empty prompt exits | Exits (press twice) | PASS | `input.ctrl_d` one Ctrl+D on an empty prompt exited (the pane is dead after it; stock asks for two presses) |
 | Ctrl+C clears the draft, then quits | First clears input; twice on empty exits | PASS | `input.ctrl_c` first Ctrl+C cleared the draft; 1 press(es) on the empty prompt quit (stock asks for two) |
-| Ctrl+T toggles the task list | Shows/hides the todo list | **GAP** | `input.ctrl_t` screen unchanged after Ctrl+T (task rows are only inline in the transcript) |
-| Ctrl+O toggles the detailed transcript | Expands tool output / transcript view | **GAP** | `input.ctrl_o` screen unchanged after Ctrl+O with tool rows on screen |
+| Ctrl+T toggles the task list | Shows/hides the todo list | PASS | `input.ctrl_t` Tasks · Ctrl+T or Esc to close / #1 PARITY_TODO_ONE [Pending] |
+| Ctrl+O toggles the detailed transcript | Expands tool output / transcript view | PASS | `input.ctrl_o` Detailed transcript snapshot · Ctrl+O or Esc to close / Tool: echo PARITY_BANG_7 |
 
 ## Tools, permissions and extensions
 
@@ -152,12 +156,12 @@ cleanup works.
 | Glob and Grep tools | Search rows with results | SKIP | `tools.grep_glob` [environment: the profile's settings decide the stock child's tool set] the stock child has no Glob/Grep tool in this configuration: │ Error: No such tool available: Glob. Glob is not available in this session — find fil |
 | Todo / task list (TodoWrite or TaskCreate) | Tasks shown as a checklist | PASS | `tools.todo` ✓ □ Create task #1: PARITY_TODO_ONE |
 | AskUserQuestion | Question with options; the answer returns to the model | PASS | `tools.ask` widget '│ ▸ PARITY_RED - Pick PARITY_RED'; answer returned and echoed: PARITY_RED |
-| Plan mode and plan approval | Plan shown for approval; work starts once approved | PASS | `tools.plan` ExitPlanMode approval '▸ ✓ Approve ✗ Reject'; approved, then parity_plan.txt was written (prompts: 2; footer [Default] [Haiku 5.5/Med] [FAST:OFF]) |
+| Plan mode and plan approval | Plan shown for approval; work starts once approved | PASS | `tools.plan` ExitPlanMode approval '▸ ✓ Approve ✗ Reject'; approved, then parity_plan.txt was written (prompts: 2; footer [Default] [Haiku 5.5/Med] [FAST:OFF] Parity_plan.txt file creation) |
 | Subagent (Agent tool) | Agent row; the result comes back | PASS | `tools.subagent` ✓ ◇ Agent: general-purpose [depth: 1] [model: haiku] -&gt; PARITY_SUB_OK |
 | Background subagent | Runs in the background; result reported later | PASS | `tools.background_agent` '↗ ◇ Agent: general-purpose [depth: 1] [model: haiku] [backgrounded]'; result delivered: PARITY_BG_OK |
 | MCP tool call | Calls a project MCP server's tool | PASS | `tools.mcp` ✓ ⌬ Parity: Parity echo -&gt; └─ PARITY_MCP_ECHO:PARITY_MCP_IN |
-| SessionStart hook | Project hook runs at start | PASS | `tools.hook_start` project SessionStart hook wrote .parity/session-start at 1791830815 |
-| SessionEnd hook | Project hook runs at exit | PASS | `tools.hook_end` Ctrl+Q ran the project SessionEnd hook (.parity/session-end at 1791830959) |
+| SessionStart hook | Project hook runs at start | PASS | `tools.hook_start` project SessionStart hook wrote .parity/session-start at 1791872145 |
+| SessionEnd hook | Project hook runs at exit | PASS | `tools.hook_end` Ctrl+Q ran the project SessionEnd hook (.parity/session-end at 1791872304) |
 | Skill as a slash command | Project skill runs as /&lt;name&gt; | PASS | `tools.skill` advertised: yes; /parity-skill answered PARITY_SKILL_OK |
 | Plugin commands | Installed plugins' commands in the slash menu | PASS | `tools.plugin` 412 plugin commands advertised; menu lists e.g. /agent-skills:api-and-interface-design (not run: each is a full prompt) |
 
@@ -165,15 +169,47 @@ cleanup works.
 
 | Functionality | Claude Code | claude-rs (fork) | Evidence / notes |
 | --- | --- | --- | --- |
-| Context left in the footer | Context indicator near the prompt | PASS | `session.context` Loc: &lt;work&gt;/main … 90% |
-| statusLine setting | Runs the command and shows its output under the prompt | **GAP** | `session.statusline` project statusLine (printf PARITY_STATUSLINE) not shown; footer: [Bypass Permissions] [Haiku 5.5/Med] [FAST:OFF] |
-| Session cost | Cost of the session on request | PASS | `session.cost` Usage tab: $0.0552 cost · 2m 39s elapsed · 34s API time · +3 / -1 lines · 1 model |
+| Context left in the footer | Context indicator near the prompt | PASS | `session.context` Loc: &lt;work&gt;/main … Ctx ▓░░░░░░░ 9% |
+| statusLine setting (user level) | Runs the command and shows its output under the prompt | PASS | `session.statusline` [environment: the statusLine command is the profile's own] the extra row 'personal \| Haiku 5.5 \| &lt;work&gt;/main.......... 8% of 900k' starts like the command's own output ('personal \| Haiku \| <work>') and was |
+| statusLine setting (project level) | Runs the project's command | **GAP** | `session.statusline_project` not run, by design: project and local settings cannot select an executable command (docs/src/settings.md); stock runs the fixture's printf PARITY_STATUSLINE |
+| Session cost | Cost of the session on request | PASS | `session.cost` Usage tab: $0.0572 cost · 2m 50s elapsed · 44s API time · +3 / -1 lines · 1 model |
 
 ## Agents (the session registry)
 
 | Functionality | Claude Code | claude-rs (fork) | Evidence / notes |
 | --- | --- | --- | --- |
-| Session in `claude agents --json` | Interactive entry with name and status | PASS | `agents.registry` {"kind":"interactive","name":"main-02","status":"idle","pid":69318} |
+| Session in `claude agents --json` | Interactive entry with name and status | PASS | `agents.registry` {"kind":"interactive","name":"main-4c","status":"idle","pid":71353} |
+
+## Fork features, proved live
+
+| Functionality | Claude Code | claude-rs (fork) | Evidence / notes |
+| --- | --- | --- | --- |
+| --add-dir | Extra directory is readable without being the cwd | PASS | `fork.flag_add_dir` the reply names the added directory and the marker read from it: '<tmpdir>/claude-rs-dx-e2e-adddir.s0RLNY FKADDMARK_7731 FKSYS_5519'; the bridge log names it |
+| --append-system-prompt | Appended text reaches the system prompt | PASS | `fork.flag_append_prompt` the appended instruction was followed: reply '<tmpdir>/claude-rs-dx-e2e-adddir.s0RLNY FKADDMARK_7731 FKSYS_5519' |
+| --settings (inline JSON) | Flag-settings layer applies (env) | PASS | `fork.flag_settings` printenv FORK_ENV_MARK printed the inline env value: reply 'FKENV_4412' |
+| -n, --name | Session name shown in Status and the footer | PASS | `fork.flag_name` Session name: fk-name-122326; footer: [Bypass Permissions] [Haiku 5.5/Med] [FAST:OFF] fk-name-122326 |
+| --mcp-config with --strict-mcp-config | Only the given MCP servers are used | PASS | `fork.flag_mcp_strict` 1/1 total 1 connected 1 needs auth 0 pending 0 disabled 0 failed 0; listed: › fkecho connected dynamic stdio |
+| Hook visibility | Slow-hook notice; startup and hook timing in Status | PASS | `fork.hook_visibility` [environment: the profile's own hooks run in this session as well] Hook SessionStart:startup took 1.4 s; Status: SessionStart hooks finished: +2.5 s (5 hooks); Slowest 1: SessionStart:startup 1.4 s |
+| /reload | Skills are re-read without a restart | PASS | `fork.reload` before: '[ &gt; /parity-skill \| FKDESC_ONE probe skill (project)'; Reloaded skills (450) and output styles (5); after: '[ &gt; /parity-skill \| FKDESC_TWO probe skill (project)' |
+| /export | Writes the conversation; refuses to overwrite | PASS | `fork.export` Exported the conversation to &lt;work&gt;/fkflags/fk-export.md; the file holds the prompt and reply text; second run: 'Not exporting: &lt;work&gt;/fkflags/fk-export.md already exists and will not be overwritten.'; file unchanged |
+| /search and Ctrl+F | Transcript search finds earlier text | PASS | `fork.search` Match 1 of 1 -&gt; 'Claude: …b/spfnv4_12dz3gq_n60tf3h180000gn/T/claude-rs-dx-e2e-adddir.s0RLNY FKADDMARK_7731 FKSYS_5519 FKENV_4412'; Ctrl+F opened 'Transcript search' |
+| Footer: session name and context | Session title and context use | PASS | `fork.footer_session` [Bypass Permissions] [Haiku 5.5/Med] [FAST:OFF] fk-name-121821 \| Loc: &lt;work&gt;/fkflags … Ctx ▓░░░░░░░ 9% |
+| Footer: pending permissions | Prompt pending is visible without scrolling | PASS | `fork.footer_permissions` [environment: the profile's permission rules and hooks decide whether touch prompts] while the prompt was open the footer read: [Default] [Haiku 5.5/Med] [FAST:OFF] 1 PEND. PERM.; Esc rejected it (file not created) |
+| /agents | Subagent panel; stop a running subagent | PASS | `fork.agents` panel row: &gt; Run hold.mjs and reply Running a04a5d3810468cfca; s -&gt; 'Stop requested for the selected agent'; its command exited; row now: &gt; Run hold.mjs and reply Completed a04a5d3810468cfca |
+| Footer: agents and plan rows | Agent counts and the current plan | PASS | `fork.footer_agents` while a subagent ran: 'Agents: 1 running / 1' and plan row '░ 0/1 Run the hold.mjs fixture script with node' |
+| Footer: TodoWrite plan row | Latest todo list as a progress row | PASS | `fork.footer_plan` plan row after the todo turn: ░░ 0/2 PARITY_TODO_ONE |
+| /usage: session totals after a turn | Totals reflect the turn just run | PASS | `fork.usage_fresh` first open after a turn read '$0.0116 cost' ('r' then '$0.0116 cost') |
+| /resume picker: current session | Active session listed and marked | **FAIL** | `fork.picker_current` the active session (renamed FK_UNIQ_122040, transcript on disk) is not listed or marked [current]: &gt; 5s ago - FK_DUP_122040 [saved 3 KiB] messages ›\|12s ago - FK_DUP_122040 [saved 3 KiB] messages › |
+| /resume &lt;ambiguous title&gt; | Reports the ambiguity and the session ids | **FAIL** | `fork.resume_title_ambiguous` two sessions are titled FK_DUP_122040: no ambiguity message; composer gone, last row: ⠋ Resuming session FK_DUP_122040...; bridge log slash_error events: 1 |
+| -r &lt;exact title&gt; | Resumes the one session with that title | PASS | `fork.resume_title` -r FK_UNIQ_122040 resumed session 8c54662d-b038-4361-9ac6-70c20c9c7d90; footer: [Auto] [Haiku 5.5/Med] [FAST:OFF] FK_UNIQ_122040 |
+| --fork-session | Resumes into a new session id; the original is untouched | PASS | `fork.flag_fork_session` forked as 94b032e7-39d9-4c91-8c2c-ea86df208b01 from 8c54662d-b038-4361-9ac6-70c20c9c7d90; the original transcript is byte-identical (cksum 1152543210 3203); history replayed: &lt;command-name&gt;/rename&lt;/command-name&gt; |
+| Session tag: pasted text | A paste lands in the tag field | **FAIL** | `fork.session_tag_paste` pasting fkpaste into the tag field of df4d8d35-8dfc-4b20-b3d9-c4bf4e68d669 left it empty: 'Tag:'; typing the same characters then showed: 'Tag: fkpaste' |
+| Session tag | Tag saved through the SDK and shown in the picker | PASS | `fork.session_tag` tagged 106b0e62-1a6f-4860-bc78-69fc592ebfd8; picker row: &gt; just now - FK_DUP_122040 [saved 3 KiB] [tag: fk-tag] messages › |
+| Session deletion | Confirmation, active-session protection, file removed | PASS | `fork.session_delete` confirmed delete of 106b0e62-1a6f-4860-bc78-69fc592ebfd8: transcript removed, rows 4 -&gt; 3; active session: 'Switch sessions before deleting the active session.' |
+| Resume picker: large sessions | Size shown; compact-first offered from 1 MiB | PASS | `fork.compact_first` row: &gt; 3s ago - Synthetic parity prompt 001: summarize the fixed sample text... [saved 1.3 MiB] messages ›; hint: Enter resume \| c compact-first (1 MiB+) \| Right messages \| t tag \| d delete \| Esc (c not pressed: compacti |
+| Session accent and /color | Stable colour per session; /color changes it | PASS | `fork.accent` id 2023fd80-8298-4032-af9d-2bb259b25aa0 -&gt; palette 246,160,90; /color blue -&gt; 120,175,245; /color default -&gt; 246,160,90 |
+| Composer style: rules | Rules above and below the prompt in the session colour | PASS | `fork.composer_rules` rows: ────────────────────────\| ❯ Type a message...\|────────────────────────; rule colour 245,115,120 is the session accent |
+| Presentation capture, stock and claude-rs | Same Markdown reply and ANSI command; both screens kept | PASS | `present.capture` both replies captured: 68 non-blank rows (claude-rs), 49 (stock); the ANSI command's output is on both screens; files: &lt;work&gt;/presentation |
 
 ## Known gaps
 
@@ -182,9 +218,8 @@ line is under Session info.
 
 | Functionality | Claude Code | claude-rs (fork) | Evidence / notes |
 | --- | --- | --- | --- |
-| Remote Control (/remote-control) | Shares the session to claude.ai / the app | **GAP** | `gap.remote_control` /remote-control is not yet supported |
-| /diff panel | Shows the working-tree diff | **GAP** | `gap.diff` /diff is not yet supported |
-| Vim editing mode | Editor mode: vim in /config | **GAP** | `gap.vim` no vim / editor-mode setting in /config (search 'vim' matches nothing); no vim bindings in the composer |
+| Remote Control (/remote-control) | Shares the session to claude.ai / the app | **GAP** | `gap.remote_control` /remote-control is not yet supported; remote control can be configured at startup, but a native start/stop/share-link flow is unavailable through the pinned public host API (README, Remaining verification) |
+| Vim editing mode | Editor mode: vim in /config | **GAP** | `gap.vim` no vim / editor-mode setting in /config (search 'vim' matches nothing); no vim bindings in the composer (README: Vim keymap parity remains unimplemented) |
 
 ## Performance
 
@@ -202,12 +237,151 @@ notes record.
 
 | Metric | claude-rs under test (0.15.2-fork.2) | claude-rs baseline (0.15.2-fork.2) | Claude Code 2.1.296 | Reading | Notes |
 | --- | --- | --- | --- | --- | --- |
-| Launch to an input-ready prompt (Median of 3 launches, ms) | n/a  | n/a  | n/a  | SKIP | `perf.launch_ready` debug build (target/debug/claude-rs): not comparable with the release baseline; use cargo build --release or PARITY_PERF_DEBUG=1 |
-| Launch to the session engine registered (Median of 3, ms (entry in `claude agents --json`)) | n/a  | n/a  | n/a  | SKIP | `perf.launch_registered` debug build (target/debug/claude-rs): not comparable with the release baseline; use cargo build --release or PARITY_PERF_DEBUG=1 |
-| Idle CPU, whole process tree (CPU seconds over 60s at the prompt) | n/a  | n/a  | n/a  | SKIP | `perf.idle_cpu` debug build (target/debug/claude-rs): not comparable with the release baseline; use cargo build --release or PARITY_PERF_DEBUG=1 |
-| Resident memory, whole process tree (MB at the end of the idle window) | n/a  | n/a  | n/a  | SKIP | `perf.rss` debug build (target/debug/claude-rs): not comparable with the release baseline; use cargo build --release or PARITY_PERF_DEBUG=1 |
-| Input latency (39 characters from send-keys to the screen, median of 5, ms) | n/a  | n/a  | n/a  | SKIP | `perf.input_latency` debug build (target/debug/claude-rs): not comparable with the release baseline; use cargo build --release or PARITY_PERF_DEBUG=1 |
-| Resume a synthetic long transcript (Offline 400-record fixture; launch with -r until its final marker shows, median of 3, ms) | n/a  | n/a  | n/a  | SKIP | `perf.resume_render` debug build (target/debug/claude-rs): not comparable with the release baseline; use cargo build --release or PARITY_PERF_DEBUG=1 |
+| Launch to an input-ready prompt (Median of 3 launches, ms) | 278 ms | 279 ms | 825 ms | PASS | `perf.launch_ready` claude-rs 278 vs baseline 279 and stock 825 ms (load avg 2.69) |
+| Launch to the session engine registered (Median of 3, ms (entry in `claude agents --json`)) | 736 ms | 737 ms | 733 ms | PASS | `perf.launch_registered` claude-rs 736 vs baseline 737 and stock 733 ms (load avg 2.69) |
+| Idle CPU, whole process tree (CPU seconds over 60s at the prompt) | 1.87 CPU s | 1.21 CPU s | 0.55 CPU s | **FAIL** | `perf.idle_cpu` claude-rs is worse than stock: 1.87 vs 0.55 CPU s; processes: rs 13, stock 11 (load avg 2.69) |
+| Resident memory, whole process tree (MB at the end of the idle window) | 1129 MB | 1042 MB | 1021 MB | PASS | `perf.rss` claude-rs 1129 vs baseline 1042 and stock 1021 MB; processes: rs 13, stock 11 (load avg 2.69) |
+| Input latency (39 characters from send-keys to the screen, median of 5, ms) | 47 ms | 45 ms | 50 ms | PASS | `perf.input_latency` claude-rs 47 vs baseline 45 and stock 50 ms (load avg 2.69) |
+| Resume a synthetic long transcript (Offline 400-record fixture; launch with -r until its final marker shows, median of 3, ms) | 932 ms | 796 ms | 1048 ms | PASS | `perf.resume_render` claude-rs 932 vs baseline 796 and stock 1048 ms; 400-record synthetic, non-billed transcript (load avg 2.69) |
+
+## Defects found by this run
+
+Real claude-rs defects the checks above ran into, with the steps and the
+screen each one showed. The suite records them; it does not fix them.
+
+### The agents registry loses the session name after a resume
+
+Found by `rename.resume_name`.
+
+**Steps**
+
+1. Run /rename <name>, then quit with Ctrl+Q. 2. Start claude-rs -r <session id>. 3. Run claude agents --json: the interactive entry's name is the directory-derived default (identity-NN), not <name>; stock keeps the name there. Observed in this run: the footer shows <name> again after the resume.
+
+**Screen**
+
+~~~text
+registry: {"name":"identity-bb","sessionId":"29ee5250-027a-486a-9588-9f4dfc8d55da","status":"idle"}
+~~~
+
+### The Ctrl+O transcript snapshot prints a Bash tool result twice
+
+Found by `input.ctrl_o`.
+
+**Steps**
+
+1. Have a Bash tool call that prints one line in the session (here echo PARITY_BANG_7). 2. Press Ctrl+O. Observed in this run: under 'Tool: <command>' the output line appears twice in a row.
+
+**Screen**
+
+~~~text
+Detailed transcript snapshot · Ctrl+O or Esc to close
+User:
+!echo PARITY_BANG_7
+
+Assistant:
+Tool: echo PARITY_BANG_7
+PARITY_BANG_7
+PARITY_BANG_7
+The command ran and printed `PARITY_BANG_7`.
+~~~
+
+### A subagent stopped from /agents is listed as Completed
+
+Found by `fork.agents`.
+
+**Steps**
+
+1. Ask for a foreground Agent call whose command runs for 90 s. 2. While it runs, open /agents, select the Running row and press s. Observed in this run: the panel answers 'Stop requested for the selected agent', the command exits, and the row then reads Completed. (src/ui/config/agents.rs has a Stopped label for a task whose terminal_status is stopped; this row did not get it.)
+
+**Screen**
+
+~~~text
+> Run hold.mjs and reply Completed a04a5d3810468cfca
+~~~
+
+### The /resume picker opened inside a running session shows a stale list
+
+Found by `fork.picker_current`.
+
+**Steps**
+
+1. Start claude-rs in a directory that already holds two sessions. 2. Rename the session with /rename (a transcript is written). 3. Type /resume.
+
+**Screen**
+
+~~~text
+┌Resume Session────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Select a session to resume                                                                                           │
+│                                                                                                                      │
+│ Recent sessions for this project directory.                                                                          │
+│ > 5s ago - FK_DUP_122040 [saved 3 KiB]                                                                    messages › │
+│                                                                                                                      │
+│   12s ago - FK_DUP_122040 [saved 3 KiB]                                                                   messages › │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+~~~
+
+### /resume <title> that matches two sessions shows no error and leaves the UI stuck on "Resuming session"
+
+Found by `fork.resume_title_ambiguous`.
+
+**Steps**
+
+1. Have two sessions in one project with the same /rename title. 2. In a third session type /resume <that title> and press Enter. Observed in this run: the bridge log holds 1 slash_error event(s) for the session, but the screen shows no message, only the spinner row, and the composer does not come back. Seen manually on 2026-10-13 and not re-checked by the suite: only Ctrl+Q leaves that state; /resume <unknown title> behaves the same, on the installed 0.15.2-fork.2 as well; claude-rs -r <ambiguous title> at launch ends in an empty composer with no mode or model in the footer.
+
+**Screen**
+
+~~~text
+User
+/resume
+User
+/resume FK_DUP_122040
+⠋ Resuming session FK_DUP_122040...
+[Bypass Permissions]  [Haiku 5.5/Med]  [FAST:OFF]  FK_UNIQ_122040
+Loc: <work>/fktitle                                                    Ctx ░░░░░░░░ 6%
+~~~
+
+### Pasted text is ignored in the session tag field
+
+Found by `fork.session_tag_paste`.
+
+**Steps**
+
+1. Open /resume. 2. Press t on a session without a tag (the field starts empty). 3. Paste text as a terminal sends it (bracketed paste). Observed in this run: the Tag: field stays empty after the paste, and typing the same characters key by key into it afterwards fills it ('Tag: fkpaste').
+
+**Screen**
+
+~~~text
+┌Manage Session────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Edit tag or confirm deletion                                                                                         │
+│                                                                                                                      │
+│ The action applies to the selected session ID shown below.                                                           │
+│ Session: df4d8d35-8dfc-4b20-b3d9-c4bf4e68d669                                                                        │
+│ Tag:                                                                                                                 │
+│ Enter saves; empty tag clears                                                                                        │
+│                                                                                                                      │
+~~~
+
+### A shebang first line in a fenced bash block is rendered as bold text without its #
+
+Found by `present.capture`.
+
+**Steps**
+
+1. Have the model answer with a fenced bash block whose first line is #!/usr/bin/env bash. 2. Look at the rendered block in claude-rs: the line reads **!/usr/bin/env bash** (the # is gone, literal asterisks appear, a blank row is inserted); stock shows #!/usr/bin/env bash.
+
+**Screen**
+
+~~~text
+```bash
+
+**!/usr/bin/env bash**
+set -euo pipefail
+for f in *.txt; do echo "PRES bash $f"; done
+~~~
 
 ## Built-in command inventory
 
@@ -222,7 +396,7 @@ stock child; their output appears only where claude-rs renders it.
 | --- | --- | --- | --- |
 | `/add-dir` | local, local-jsx | **stock-only** | not app-owned and not advertised over the SDK |
 | `/advisor` | local, local-jsx | forwarded |  |
-| `/agents` | local | forwarded |  |
+| `/agents` | local | app-owned | also advertised by the SDK; the app command wins |
 | `/artifacts` | local-jsx | **stock-only** | not app-owned and not advertised over the SDK |
 | `/auto-mode-setup` | local, local-jsx | forwarded |  |
 | `/autocompact` | local, local-jsx | forwarded |  |
@@ -245,10 +419,10 @@ stock child; their output appears only where claude-rs renders it.
 | `/design-login` | local-jsx | **stock-only** | not app-owned and not advertised over the SDK |
 | `/design-revoke` | local | forwarded |  |
 | `/desktop` | local-jsx | **stock-only** | not app-owned and not advertised over the SDK |
-| `/diff` | local-jsx | **stock-only** | not app-owned and not advertised over the SDK |
+| `/diff` | local-jsx | app-owned |  |
 | `/effort` | local, local-jsx | app-owned | also advertised by the SDK; the app command wins |
-| `/exit` | local, local-jsx | equivalent | Ctrl+Q (Ctrl+C on an empty draft) |
-| `/export` | local-jsx | **stock-only** | not app-owned and not advertised over the SDK |
+| `/exit` | local, local-jsx | app-owned |  |
+| `/export` | local-jsx | app-owned |  |
 | `/extra-usage` | local, local-jsx | forwarded |  |
 | `/fast` | local, local-jsx | app-owned | also advertised by the SDK; the app command wins |
 | `/feedback` | local-jsx | **stock-only** | not app-owned and not advertised over the SDK |

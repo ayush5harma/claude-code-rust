@@ -19,7 +19,18 @@ Code and spends real (small) model usage.
   `cargo build` and `npm run build --prefix agent-sdk` (the Bun runtime
   defaults to the newest installed release's). A debug build skips the
   performance group, which would otherwise fail by construction; use
-  `cargo build --release` to measure it.
+  `cargo build --release` to measure it. A release build ignores `--bridge`
+  and the `CLAUDE_RS_AGENT_BRIDGE*` variables (`src/agent/bridge.rs` honours
+  them in debug builds only): it finds the bridge script and the Bun runtime
+  next to its own executable. To measure a source release build, copy it into
+  a scratch directory laid out like an installed release (the binary,
+  `claude-rs-bridge-bun` from an installed release, `agent-sdk/dist` and
+  `agent-sdk/package.json`, and a `node_modules` link to
+  `agent-sdk/node_modules`) and pass that binary with `--bin`, without
+  `--bridge`. Make the scratch directory with
+  `mktemp -d "${TMPDIR:-/tmp}/claude-rs-release.XXXXXX"` (not inside the
+  checkout or the work directory) and delete it with `rm -rf` when the run is
+  done; it holds a copy of the binary and a symlink, nothing else.
 - A **logged-in stock Claude Code binary**, started directly. Resolution:
   `--claude`, else `$PARITY_CLAUDE_BIN`, else the installed
   `~/.local/share/claude/ClaudeCode.app` binary, else `~/.local/bin/claude`,
@@ -54,9 +65,10 @@ readout of each claude-rs session when the suite stops it, and warns above
 `$PARITY_COST_BUDGET` (default 0.60). The performance group runs no model
 turns but idles 120 s of settling plus a 60 s sample per target
 (`PARITY_PERF_SETTLE`, `PARITY_PERF_IDLE`), so a full run with it takes about
-15 minutes; without it (a debug build) about 5. Measured 2026-10-12 on Haiku,
-86 checks, owner profile: $0.43 to $0.48, 277 to 322 s; the plan-mode check is
-$0.35 of it because the stock child plans on Sonnet.
+21 minutes (one 12-minute block is the performance sampling); without it (a
+debug build) about 9. Measured 2026-10-13 on Haiku, 113 checks, owner profile:
+$0.50 to $0.56, 527 s without the performance group and 1277 to 1308 s with it; the
+plan-mode check is $0.30 of it because the stock child plans on Sonnet.
 
 ## Running
 
@@ -102,7 +114,23 @@ cleaned up at exit.
   repository, so `/init` and the file tools write nothing that matters. The
   first launch in each directory answers claude-rs's trust prompt with Yes.
 - The suite never edits the config directory's `settings.json`; setting-
-  dependent checks use project settings in the scratch directory.
+  dependent checks use project settings in the scratch directory, or flags
+  (`--settings`) of the session under test.
+- Two things outside the work directory are touched, both guarded and undone
+  by `fork_cleanup` (`checks/90-fork.sh`, called from the exit trap):
+  `fork.composer_rules` writes claude-rs's own app settings file
+  (`~/Library/Application Support/claude-code-rust/settings.json`, where the
+  Composer style preference lives) for the few seconds of one session, only
+  if no such file exists, and deletes it again; `fork.agents` starts one
+  fixture process (`fixtures/hold.mjs`, a 90 s timer) inside a subagent and
+  stops it from the `/agents` panel, and the cleanup kills any that remain.
+- `fork.compact_first` writes a synthetic 1.3 MiB transcript under the scratch
+  cwd's project folder without a model call and never presses `c`, which
+  would compact it with a billed turn.
+- `present.capture` also starts the stock TUI, in its own scratch cwd, for two
+  prompts; its screens land under `WORK/presentation/`. Checks that find a
+  real claude-rs defect also write `WORK/defects/NN.md`, which the report
+  prints under "Defects found by this run".
 - The suite starts no background sessions of its own beyond the one the
   background-subagent check asks a model turn to start.
 - Resume rendering uses an offline 400-record synthetic transcript under the
@@ -135,6 +163,8 @@ cleaned up at exit.
 - `lib/harness.sh`: tmux, screen polling, session lifecycle, result
   recording. `lib/report.sh`: `docs/src/parity.md`.
 - `checks/NN-<group>.sh`: one `def` plus one `chk_<id>` function per check.
+  `90-fork.sh`, `91-fork-sessions.sh` and `92-presentation.sh` hold the checks
+  for the fork's own features (ids `fork.*`, `present.capture`).
 - `data/stock-commands.txt`: stock's built-in slash commands (refresh it when
   stock adds commands).
 - `fixtures/`: the scratch project, the MCP echo server and the `$EDITOR`

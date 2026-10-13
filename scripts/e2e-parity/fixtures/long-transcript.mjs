@@ -5,9 +5,12 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const [configDir, work, stockVersion = "2.1.293"] = process.argv.slice(2);
+// The optional name and repeat count make a larger history in a cwd of its own
+// (the compact-first picker option appears from 1 MiB; the default is ~90 KB).
+const [configDir, work, stockVersion = "2.1.293", name = "perf-resume-synthetic", repeat = "3"] =
+  process.argv.slice(2);
 if (!configDir || !work) throw new Error("expected isolated config and work paths");
-const cwd = join(work, "perf-resume-synthetic");
+const cwd = join(work, name);
 const projectDir = join(configDir, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
 mkdirSync(cwd, { recursive: true });
 mkdirSync(projectDir, { recursive: true });
@@ -52,12 +55,12 @@ for (let pair = 1; pair <= 200; pair++) {
       type: "text",
       text: pair === 200
         ? `Synthetic parity response ${label}. ${marker}`
-        : `Synthetic parity response ${label}. ${"The quick brown fox crosses the measured terminal viewport. ".repeat(3)}`,
+        : `Synthetic parity response ${label}. ${"The quick brown fox crosses the measured terminal viewport. ".repeat(Number(repeat))}`,
     }],
   }, 2 * pair - 1);
 }
 
 const transcript = `${records.map((record) => JSON.stringify(record)).join("\n")}\n`;
-writeFileSync(join(work, "perf-resume-synthetic.source.jsonl"), transcript);
+writeFileSync(join(work, `${name}.source.jsonl`), transcript);
 writeFileSync(join(projectDir, `${sessionId}.jsonl`), transcript);
 process.stdout.write(`${sessionId}\t${cwd}\t${marker}\t${records.length}\n`);
