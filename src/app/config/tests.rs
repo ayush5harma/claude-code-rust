@@ -705,6 +705,7 @@ fn status_tab_g_generates_session_title_from_current_title_fallback() {
 fn status_tab_g_requires_existing_session_metadata() {
     let (mut app, mut rx) = app_with_status_connection();
     app.session_runtime.session_title = None;
+    app.recent_sessions[0].custom_title = None;
     app.recent_sessions[0].summary.clear();
     app.recent_sessions[0].first_prompt = None;
 
