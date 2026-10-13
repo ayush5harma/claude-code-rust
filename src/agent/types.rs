@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub use super::model::UltracodeState;
+use super::model::{HookOutcome, HookPhase};
 
 /// Startup reasons are an open SDK vocabulary; unknown tokens must survive the wire.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -721,6 +722,16 @@ pub enum SessionUpdate {
     },
     PromptSuggestionUpdate {
         suggestion: String,
+    },
+    HookActivity {
+        hook_id: String,
+        hook_name: String,
+        hook_event: String,
+        phase: HookPhase,
+        outcome: Option<HookOutcome>,
+        exit_code: Option<i64>,
+        output: Option<String>,
+        observed_at_ms: u64,
     },
     RuntimeSessionStateUpdate {
         state: RuntimeSessionState,

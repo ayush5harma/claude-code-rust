@@ -66,6 +66,7 @@ pub(super) fn reset_for_conversation(
     app.sdk_inventory.tasks.clear();
     app.focus = super::super::FocusManager::default();
     clear_cached_active_session_title(app);
+    app.session_runtime.hook_runs.clear();
     reset_messages_for_new_session(app, false);
     app.chat_render.reset();
     app.mention = None;

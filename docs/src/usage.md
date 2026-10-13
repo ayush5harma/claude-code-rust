@@ -14,6 +14,10 @@ claude-rs "Explain this project"
 
 The prompt is sent automatically after project trust, startup dialogs, and session selection are complete. The TUI stays open for follow-up messages.
 
+Use `/status` to inspect measured startup milestones and hook activity for the active session. The Startup section shows when the bridge launched, when pre-connect `SessionStart` hooks finished, when the SDK connected, and when the composer became ready. Hook durations are based on when the bridge received the SDK's start and response events, so they are observations rather than exact execution times. The Hooks section lists the run count, total observed time, and slowest runs; it clears when a different session becomes active.
+
+The Hooks settings pane controls transcript notices through **Hooks: notices**. The default `slow_and_failed` mode reports hooks that take at least 500 ms, fail, or are cancelled. Choose `all` for every finished hook or `off` to suppress notices. The Status summary remains available in every mode.
+
 Start in a specific working directory:
 
 ```bash

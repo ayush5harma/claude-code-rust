@@ -88,6 +88,7 @@ const CATEGORY_SETTINGS: Record<string, string[]> = {
     "sandbox.allowAppleEvents"
   ],
   "hooks": [
+    "presentation.hookNotices",
     "disableAllHooks",
     "allowedHttpHookUrls",
     "httpHookAllowedEnvVars",

@@ -132,6 +132,39 @@ pub enum ApiRetryError {
     Unknown,
 }
 
+/// Where a hook run stands, as the bridge reports one SDK hook message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HookPhase {
+    Started,
+    Progress,
+    Finished,
+}
+
+/// How a finished hook run ended, as the SDK declares it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HookOutcome {
+    Success,
+    Error,
+    Cancelled,
+}
+
+/// One hook message from the SDK. The SDK declares no timing, so
+/// `observed_at_ms` is when the bridge saw it (epoch milliseconds) and the
+/// app derives durations from it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HookActivity {
+    pub hook_id: String,
+    pub hook_name: String,
+    pub hook_event: String,
+    pub phase: HookPhase,
+    pub outcome: Option<HookOutcome>,
+    pub exit_code: Option<i64>,
+    pub output: Option<String>,
+    pub observed_at_ms: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RuntimeSessionState {
     Idle,
@@ -306,6 +339,7 @@ pub enum SessionUpdate {
         error: ApiRetryError,
     },
     PromptSuggestionUpdate(String),
+    HookActivity(HookActivity),
     RuntimeSessionStateUpdate(RuntimeSessionState),
     SettingsParseError {
         file: Option<String>,

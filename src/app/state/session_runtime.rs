@@ -3,7 +3,7 @@
 
 use crate::agent::client::AgentConnection;
 use crate::agent::model;
-use crate::app::state::{LoginHint, ModeState, SessionUsageState};
+use crate::app::state::{HookRuns, LoginHint, ModeState, SessionUsageState};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -40,6 +40,8 @@ pub struct SessionRuntimeState {
     pub last_rate_limit_update: Option<model::RateLimitUpdate>,
     /// Account info from the bridge status snapshot (email, org, subscription).
     pub account_info: Option<model::AccountInfo>,
+    /// Hook runs of the active session, from the bridge's hook activity.
+    pub hook_runs: HookRuns,
 }
 
 impl Default for SessionRuntimeState {
@@ -62,6 +64,7 @@ impl Default for SessionRuntimeState {
             prompt_suggestion: None,
             last_rate_limit_update: None,
             account_info: None,
+            hook_runs: HookRuns::default(),
         }
     }
 }
@@ -85,6 +88,7 @@ impl SessionRuntimeState {
     pub(crate) fn activate_session(&mut self, session_id: model::SessionId) {
         if self.session_id.as_ref() != Some(&session_id) {
             self.ultracode = None;
+            self.hook_runs.clear();
         }
         self.last_resumable_session_id = Some(session_id.clone());
         self.session_id = Some(session_id);
@@ -99,6 +103,7 @@ impl SessionRuntimeState {
 
     pub fn clear_identity(&mut self) {
         self.ultracode = None;
+        self.hook_runs.clear();
         self.session_id = None;
         self.conversation_id = None;
         self.current_model = None;

@@ -430,6 +430,18 @@ export type SessionUpdate =
       error: ApiRetryError;
     }
   | { type: "prompt_suggestion_update"; suggestion: string }
+  | {
+      type: "hook_activity";
+      hook_id: string;
+      hook_name: string;
+      hook_event: string;
+      phase: "started" | "progress" | "finished";
+      outcome?: "success" | "error" | "cancelled";
+      exit_code?: number;
+      output?: string;
+      /** Epoch milliseconds at which the bridge saw the SDK message; the SDK declares no hook timing. */
+      observed_at_ms: number;
+    }
   | { type: "runtime_session_state_update"; state: RuntimeSessionState }
   | ({ type: "settings_parse_error" } & SettingsParseErrorUpdate)
   | { type: "session_status_update"; status: "requesting" | "idle" }
