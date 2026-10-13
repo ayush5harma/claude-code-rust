@@ -87,6 +87,8 @@ Tool titles share a one-line display projection and a source-keyed inline cache 
 | Each message's clock and timing provenance, stored on the canonical transcript message | Rust | `src/app/presentation.rs` |
 | One formatter for locale, clock presets, custom patterns and timezone | Rust | `src/app/presentation.rs` |
 
+Message Markdown is parsed once per text block and width. Tables and top-level code blocks are laid out in `src/ui/document_table.rs` because they need the terminal width; everything else goes through `tui-markdown` with claude-rs's style sheet in `src/ui/markdown.rs`. A code block is drawn as indented, shaded rows behind a dim rail with its language as a label row, highlighted with the same theme as other code and wrapped at the cell, so the displayed code is the code as written; the fence lines are not shown. Code inside a list item or a quote stays with its container. The canonical text, which `/copy` uses, is never rewritten.
+
 Presentation preferences are projections of the acknowledged config snapshot; Rust keeps no second presentation store. History replay removes locally observed times and preserves native timestamps without reordering messages. Completed duration rows go through the same scrollback boundary and commit protocol as other transcript rows.
 
 ### Transcript reading and `/copy`

@@ -204,6 +204,12 @@ fn find_syntax_for_path(path: &Path) -> Option<&'static SyntaxReference> {
     }
 }
 
+/// The background `highlight_code`'s theme picks its colours for. Code blocks are drawn on
+/// it so the syntax colours stay legible whatever the terminal's own background is.
+pub(crate) fn code_background() -> Option<Color> {
+    highlight_theme().settings.background.map(|color| Color::Rgb(color.r, color.g, color.b))
+}
+
 fn highlight_theme() -> &'static Theme {
     theme(EmbeddedThemeName::Base16OceanDark)
 }

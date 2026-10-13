@@ -95,12 +95,8 @@ pub(super) fn render_text_cached(
         return;
     }
 
-    let source = if preserve_newlines {
-        std::borrow::Cow::Owned(force_markdown_line_breaks(text))
-    } else {
-        std::borrow::Cow::Borrowed(text)
-    };
-    let fresh = super::document_table::render_markdown_with_tables(&source, width, bg);
+    let fresh =
+        super::document_table::render_markdown_with_tables(text, width, bg, preserve_newlines);
 
     // Store in the full block cache with wrapped height.
     // For streaming messages this will be invalidated on the next chunk,
@@ -124,7 +120,7 @@ pub(super) fn render_text_block_cached(
 }
 
 /// Convert single line breaks into hard breaks so user-entered newlines persist.
-fn force_markdown_line_breaks(text: &str) -> String {
+pub(super) fn force_markdown_line_breaks(text: &str) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let mut out = String::with_capacity(text.len());
     for (i, line) in lines.iter().enumerate() {
@@ -289,7 +285,7 @@ mod tests {
             ),
             (
                 "before\n\n```text\none\n\nthree\n```\n\nafter",
-                vec!["User", "before", "", "```text", "one", "", "three", "```", "", "after"],
+                vec!["User", "before", "", "  ▎ text", "  ▎ one", "  ▎", "  ▎ three", "", "after"],
             ),
             ("\n\nhello\n\n", vec!["User", "hello"]),
             ("", vec!["User"]),

@@ -2699,6 +2699,10 @@ fn render_corpus_resumes_then_streams_into_scrollback_in_order() {
             })
         })
     });
+    // Every fence in the corpus is top-level: its rows are the code, never the markers.
+    let fence_rows: Vec<String> =
+        test.transcript_rows().into_iter().filter(|row| row.contains("```")).collect();
+    assert!(fence_rows.is_empty(), "fence markers rendered as text: {fence_rows:?}");
     test.shutdown();
 }
 
