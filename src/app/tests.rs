@@ -635,7 +635,46 @@ fn welcomed_app(connected: Instant, reduced_motion: bool) -> App {
         serde_json::json!(reduced_motion),
     ));
     app.transcript.messages.push(ChatMessage::welcome("1.2.3", "Pro", "/demo", "session-1"));
+    app.chat_render.observe_terminal_size(110, 34);
     app
+}
+
+/// Runs one frame-loop scheduling step at `at` and reports whether it asked
+/// for a draw, clearing the request for the next step.
+fn scheduled_draw(app: &mut App, at: Instant) -> bool {
+    schedule_animation_frame(app, at);
+    std::mem::take(&mut app.surface_dirty.chat.repaint)
+}
+
+#[test]
+fn welcome_hello_ends_with_exactly_one_more_draw() {
+    let connected = Instant::now();
+    let mut app = welcomed_app(connected, false);
+    app.surface_dirty.chat.repaint = false;
+
+    assert!(scheduled_draw(&mut app, connected + Duration::from_millis(100)));
+    assert!(scheduled_draw(&mut app, connected + Duration::from_millis(1_199)));
+    assert!(
+        scheduled_draw(&mut app, connected + Duration::from_millis(1_200)),
+        "the draw that commits the rested welcome"
+    );
+    assert!(!scheduled_draw(&mut app, connected + Duration::from_millis(1_216)));
+    assert!(!scheduled_draw(&mut app, connected + Duration::from_secs(60)), "idle stays idle");
+}
+
+#[test]
+fn hello_schedules_no_redraws_while_the_crab_cannot_wave() {
+    let connected = Instant::now();
+    let at = connected + Duration::from_millis(100);
+
+    let mut unknown_preference = welcomed_app(connected, false);
+    unknown_preference.config.snapshot = None;
+    assert!(!frame_is_animating(&unknown_preference, at));
+
+    // 36 columns is the width at which the overview drops the crab column.
+    let mut narrow = welcomed_app(connected, false);
+    narrow.chat_render.observe_terminal_size(36, 34);
+    assert!(!frame_is_animating(&narrow, at));
 }
 
 #[test]

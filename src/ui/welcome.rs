@@ -77,10 +77,17 @@ pub(crate) fn ferris_phase(app: &App, welcome: &WelcomeBlock, now: Instant) -> F
     }
 }
 
-/// Whether the frame loop must keep redrawing for the hello. The connecting
-/// loop needs nothing here: the Connecting status already redraws.
+/// Whether the frame loop must keep redrawing for the hello: only while a
+/// wave can actually be seen, so not before the motion preference is known
+/// and not when the terminal is too narrow to show the crab. The window
+/// still holds the welcome back from scrollback then; it is the whole
+/// transcript, so nothing waits behind it, and the next draw for any reason
+/// after the window closes commits it. The connecting loop needs nothing
+/// here: the Connecting status already redraws.
 pub(crate) fn ferris_hello_live(app: &App, now: Instant) -> bool {
-    hello_window(app, now).is_some()
+    app.config.snapshot.is_some()
+        && ferris_column_visible(usize::from(app.chat_render.terminal_size().width))
+        && hello_window(app, now).is_some()
 }
 
 /// Whether the welcome rows may be committed to scrollback, where they can
@@ -178,9 +185,8 @@ pub(crate) fn overview_lines(
     };
 
     let ferris_width = ferris_column_width();
-    let overview_offset = ferris_width.saturating_add(FERRIS_TEXT_GAP);
-    let overview_width = width.saturating_sub(overview_offset);
-    let side_by_side = overview_width >= minimum_overview_width();
+    let overview_width = width.saturating_sub(ferris_width.saturating_add(FERRIS_TEXT_GAP));
+    let side_by_side = ferris_column_visible(width);
     let text_width = if side_by_side { overview_width } else { width };
     let text_rows = overview_text_rows(
         block,
@@ -238,6 +244,13 @@ fn welcome_field_lines(
 fn ferris_column_width() -> usize {
     display_width(FERRIS_LEFT_PADDING)
         .saturating_add(FERRIS_REST.iter().map(|line| display_width(line)).max().unwrap_or(0))
+}
+
+/// Whether a row `width` columns wide shows the crab beside the overview; a
+/// narrower one shows the overview text alone.
+fn ferris_column_visible(width: usize) -> bool {
+    let overview_offset = ferris_column_width().saturating_add(FERRIS_TEXT_GAP);
+    width.saturating_sub(overview_offset) >= minimum_overview_width()
 }
 
 fn ferris_rows(ferris: &FerrisFrame) -> Vec<Line<'static>> {
