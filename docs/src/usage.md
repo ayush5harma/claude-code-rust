@@ -146,7 +146,7 @@ The installed `claude-rs --help` command exposes these options; the session and 
 | `--diagnostics-preset <runtime|session|render|bridge|full>` | Turn on detailed logging with a named diagnostics filter. |
 | `--log-file <PATH>` | Turn on detailed logging and write it to a specific file. |
 | `--log-filter <FILTER>` | Turn on detailed logging with explicit tracing filter directives. |
-| `--log-append` | Append to the `--log-file` file instead of truncating it; requires `--log-file`. |
+| `--log-append` | Append to the `--log-file` file instead of truncating it; requires `--log-file`. Earlier versions accepted it alone and appended to a shared `claude-rs.log`; that now exits with status 2. |
 
 See [Diagnostics](diagnostics.md) before enabling verbose logs.
 
