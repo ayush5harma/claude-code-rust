@@ -51,6 +51,8 @@ mod tests {
         let cli = test_cli(Some(Command::Resume {
             session_id: Some("abc-123".to_owned()),
             prompt: None,
+            session_options: crate::SessionOptions::default(),
+            session_config: crate::SessionConfigArgs::default(),
         }));
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();

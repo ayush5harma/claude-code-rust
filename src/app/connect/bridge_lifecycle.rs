@@ -1059,11 +1059,10 @@ mod launch_command_tests {
     use crate::app::connect::session_start::{
         SessionStartReason, session_launch_settings_for_reason,
     };
-    use clap::Parser;
 
     /// The first command the app sends the bridge for a command line, as JSON.
     fn startup_command(args: &[&str]) -> serde_json::Value {
-        let cli = crate::Cli::try_parse_from(args).expect("parse CLI");
+        let cli = crate::Cli::parse_from_args(args).expect("parse CLI");
         cli.validate().expect("valid launch");
         let mut app = App::test_default();
         app.startup = crate::app::state::StartupState::from_cli(&cli)

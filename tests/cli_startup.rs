@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use clap::Parser;
 use claude_code_rust::{Cli, StartupLaunch};
 use std::process::Command;
 
@@ -42,7 +41,7 @@ fn interactive_startup_flags_normalize_to_one_launch() {
         ),
     ];
     for (args, launch, prompt) in cases {
-        let cli = Cli::try_parse_from(&args).expect("parse startup");
+        let cli = Cli::parse_from_args(&args).expect("parse startup");
         cli.validate().expect("valid launch");
         assert_eq!(cli.startup_launch(), launch, "{args:?}");
         assert_eq!(cli.initial_prompt(), prompt, "{args:?}");
@@ -51,7 +50,7 @@ fn interactive_startup_flags_normalize_to_one_launch() {
 
 #[test]
 fn session_options_support_existing_resume_syntax() {
-    let cli = Cli::try_parse_from([
+    let cli = Cli::parse_from_args([
         "claude-rs",
         "resume",
         "session-1",
@@ -94,7 +93,7 @@ fn contradictory_or_invalid_startup_arguments_are_rejected() {
         vec!["claude-rs", "--fork-session", "explain this project"],
     ] {
         assert!(
-            Cli::try_parse_from(&args).and_then(|cli| cli.validate()).is_err(),
+            Cli::parse_from_args(&args).and_then(|cli| cli.validate()).is_err(),
             "accepted {args:?}"
         );
     }

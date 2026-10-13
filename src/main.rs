@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
-use clap::Parser;
 use claude_code_rust::Cli;
 use claude_code_rust::app::PostExitAction;
 use claude_code_rust::error::AppError;
@@ -38,7 +37,14 @@ fn main() {
 }
 
 fn run() -> anyhow::Result<i32> {
-    let cli = Cli::parse();
+    let cli = match Cli::parse_from_args(std::env::args_os()) {
+        Ok(cli) => cli,
+        Err(error) => {
+            // Help and version arrive here too, as errors that print to stdout and exit 0.
+            error.print()?;
+            return Ok(error.exit_code());
+        }
+    };
     if let Err(error) = cli.validate() {
         error.print()?;
         return Ok(error.exit_code());

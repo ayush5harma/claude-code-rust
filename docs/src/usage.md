@@ -93,7 +93,9 @@ claude-rs --system-prompt-file ./release-bot.md
 
 `--system-prompt` and `--system-prompt-file` replace Claude Code's default system prompt; `--append-system-prompt` and `--append-system-prompt-file` add to it, or to the replacement. Each pair is mutually exclusive, a text value must not be empty, and a file is read once at startup. `claude-rs` always keeps one instruction of its own in the system prompt, which tells Claude not to stop the bridge runtime process: appended text follows it, and a replacement prompt is followed by it. The SDK records a conversation's system prompt on its first request and reuses it on resume, so these options shape new sessions; a resumed session keeps the prompt it started with.
 
-An initial prompt whose text matches a subcommand name can be passed after `--`, for example `claude-rs -- "doctor"`. Startup arguments cannot be combined with support commands such as `doctor`, `logs`, `config`, or `completions`.
+An initial prompt whose text matches a subcommand name can be passed after `--`, for example `claude-rs -- "doctor"`.
+
+The session options (from `--model` to `--append-system-prompt-file` in the table below) belong to interactive launches. With the `resume` command they may come before or after it, as in `claude-rs --model opus resume <id>` or `claude-rs resume <id> --model opus`; giving the same option in both places is an error. Support commands such as `doctor`, `logs`, `config`, or `completions` accept none of the startup arguments, and their help and completions do not list them.
 
 After the TUI exits, the app prints a resume hint whenever a session was established, using the active or most recently established session id.
 

@@ -122,31 +122,31 @@ pub struct Cli {
 }
 
 /// Per-launch options, separate from persisted application preferences.
-#[derive(Args, Debug, Clone, Default)]
+#[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 #[command(next_help_heading = "Session Options")]
 pub struct SessionOptions {
     /// Starting model alias or full model ID; does not change saved preferences.
-    #[arg(long, global = true, value_name = "MODEL", value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    #[arg(long, value_name = "MODEL", value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub model: Option<String>,
 
     /// Starting reasoning effort; availability depends on the selected model.
-    #[arg(long, global = true, value_enum)]
+    #[arg(long, value_enum)]
     pub effort: Option<agent::model::EffortLevel>,
 
     /// Starting permission mode; does not change saved preferences.
-    #[arg(long, global = true, value_enum)]
+    #[arg(long, value_enum)]
     pub permission_mode: Option<permission_mode::DefaultPermissionMode>,
 
     /// Main-thread agent to use for this session.
-    #[arg(long, global = true, value_name = "NAME", value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    #[arg(long, value_name = "NAME", value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub agent: Option<String>,
 
     /// Name the new or resumed session.
-    #[arg(long, short = 'n', global = true, value_name = "NAME", value_parser = parse_session_name)]
+    #[arg(long, short = 'n', value_name = "NAME", value_parser = parse_session_name)]
     pub name: Option<String>,
 
     /// Resume into a new session ID, leaving the original session unchanged.
-    #[arg(long, global = true)]
+    #[arg(long)]
     pub fork_session: bool,
 }
 
@@ -175,40 +175,178 @@ fn parse_session_name(value: &str) -> Result<String, String> {
 // `/resume`, as Claude Code keeps these flags for its whole process. Relative paths
 // resolve against `--dir`, or the current directory without it. (A doc comment here
 // would replace the command's about text in `--help`.)
-#[derive(Args, Debug, Clone, Default)]
+#[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 #[command(next_help_heading = "Session Options")]
 pub struct SessionConfigArgs {
     /// Additional directory Claude may access (repeatable).
-    #[arg(long = "add-dir", global = true, value_name = "DIR")]
+    #[arg(long = "add-dir", value_name = "DIR")]
     pub add_dirs: Vec<std::path::PathBuf>,
 
     /// Settings JSON file, or inline JSON, applied as Claude Code's --settings layer.
-    #[arg(long, global = true, value_name = "FILE-OR-JSON")]
+    #[arg(long, value_name = "FILE-OR-JSON")]
     pub settings: Option<String>,
 
     /// MCP server config file, or inline JSON, with an `mcpServers` object (repeatable).
-    #[arg(long = "mcp-config", global = true, value_name = "FILE-OR-JSON")]
+    #[arg(long = "mcp-config", value_name = "FILE-OR-JSON")]
     pub mcp_configs: Vec<String>,
 
     /// Use only the MCP servers from --mcp-config, ignoring all other MCP configuration.
-    #[arg(long, global = true)]
+    #[arg(long)]
     pub strict_mcp_config: bool,
 
     /// Replace Claude Code's system prompt for new sessions.
-    #[arg(long, global = true, value_name = "TEXT", conflicts_with = "system_prompt_file", value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    #[arg(long, value_name = "TEXT", conflicts_with = "system_prompt_file", value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub system_prompt: Option<String>,
 
     /// Replace Claude Code's system prompt for new sessions with a file's text.
-    #[arg(long, global = true, value_name = "FILE")]
+    #[arg(long, value_name = "FILE")]
     pub system_prompt_file: Option<std::path::PathBuf>,
 
     /// Append text to the system prompt of new sessions.
-    #[arg(long, global = true, value_name = "TEXT", conflicts_with = "append_system_prompt_file", value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    #[arg(long, value_name = "TEXT", conflicts_with = "append_system_prompt_file", value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub append_system_prompt: Option<String>,
 
     /// Append a file's text to the system prompt of new sessions.
-    #[arg(long, global = true, value_name = "FILE")]
+    #[arg(long, value_name = "FILE")]
     pub append_system_prompt_file: Option<std::path::PathBuf>,
+}
+
+/// A launch flag's parsed value, which clap leaves empty when the flag is absent.
+trait LaunchFlag {
+    fn is_given(&self) -> bool;
+}
+
+impl<T> LaunchFlag for Option<T> {
+    fn is_given(&self) -> bool {
+        self.is_some()
+    }
+}
+
+impl LaunchFlag for bool {
+    fn is_given(&self) -> bool {
+        *self
+    }
+}
+
+impl<T> LaunchFlag for Vec<T> {
+    fn is_given(&self) -> bool {
+        !self.is_empty()
+    }
+}
+
+/// Moves a value given after `resume` into the root's slot; a flag is accepted in one
+/// position only.
+fn merge_flag<T: LaunchFlag>(root: &mut T, resumed: T, flag: &str) -> Result<(), String> {
+    if !resumed.is_given() {
+        return Ok(());
+    }
+    if root.is_given() {
+        return Err(format!("the argument '{flag}' cannot be used both before and after `resume`"));
+    }
+    *root = resumed;
+    Ok(())
+}
+
+// The flag lists below destructure exhaustively, so a new field fails to compile until
+// it is listed in both.
+impl SessionOptions {
+    fn given_flags(&self) -> impl Iterator<Item = &'static str> {
+        let Self { model, effort, permission_mode, agent, name, fork_session } = self;
+        [
+            ("--model", model.is_given()),
+            ("--effort", effort.is_given()),
+            ("--permission-mode", permission_mode.is_given()),
+            ("--agent", agent.is_given()),
+            ("--name", name.is_given()),
+            ("--fork-session", fork_session.is_given()),
+        ]
+        .into_iter()
+        .filter_map(|(flag, given)| given.then_some(flag))
+    }
+
+    fn merge(&mut self, resumed: Self) -> Result<(), String> {
+        let Self { model, effort, permission_mode, agent, name, fork_session } = resumed;
+        merge_flag(&mut self.model, model, "--model")?;
+        merge_flag(&mut self.effort, effort, "--effort")?;
+        merge_flag(&mut self.permission_mode, permission_mode, "--permission-mode")?;
+        merge_flag(&mut self.agent, agent, "--agent")?;
+        merge_flag(&mut self.name, name, "--name")?;
+        merge_flag(&mut self.fork_session, fork_session, "--fork-session")
+    }
+}
+
+impl SessionConfigArgs {
+    fn given_flags(&self) -> impl Iterator<Item = &'static str> {
+        let Self {
+            add_dirs,
+            settings,
+            mcp_configs,
+            strict_mcp_config,
+            system_prompt,
+            system_prompt_file,
+            append_system_prompt,
+            append_system_prompt_file,
+        } = self;
+        [
+            ("--add-dir", add_dirs.is_given()),
+            ("--settings", settings.is_given()),
+            ("--mcp-config", mcp_configs.is_given()),
+            ("--strict-mcp-config", strict_mcp_config.is_given()),
+            ("--system-prompt", system_prompt.is_given()),
+            ("--system-prompt-file", system_prompt_file.is_given()),
+            ("--append-system-prompt", append_system_prompt.is_given()),
+            ("--append-system-prompt-file", append_system_prompt_file.is_given()),
+        ]
+        .into_iter()
+        .filter_map(|(flag, given)| given.then_some(flag))
+    }
+
+    fn merge(&mut self, resumed: Self) -> Result<(), String> {
+        let Self {
+            add_dirs,
+            settings,
+            mcp_configs,
+            strict_mcp_config,
+            system_prompt,
+            system_prompt_file,
+            append_system_prompt,
+            append_system_prompt_file,
+        } = resumed;
+        merge_flag(&mut self.add_dirs, add_dirs, "--add-dir")?;
+        merge_flag(&mut self.settings, settings, "--settings")?;
+        merge_flag(&mut self.mcp_configs, mcp_configs, "--mcp-config")?;
+        merge_flag(&mut self.strict_mcp_config, strict_mcp_config, "--strict-mcp-config")?;
+        merge_flag(&mut self.system_prompt, system_prompt, "--system-prompt")?;
+        merge_flag(&mut self.system_prompt_file, system_prompt_file, "--system-prompt-file")?;
+        merge_flag(&mut self.append_system_prompt, append_system_prompt, "--append-system-prompt")?;
+        merge_flag(
+            &mut self.append_system_prompt_file,
+            append_system_prompt_file,
+            "--append-system-prompt-file",
+        )?;
+        // clap checks these pairs within one position only.
+        for (text, file, text_flag, file_flag) in [
+            (
+                self.system_prompt.is_given(),
+                self.system_prompt_file.is_given(),
+                "--system-prompt",
+                "--system-prompt-file",
+            ),
+            (
+                self.append_system_prompt.is_given(),
+                self.append_system_prompt_file.is_given(),
+                "--append-system-prompt",
+                "--append-system-prompt-file",
+            ),
+        ] {
+            if text && file {
+                return Err(format!(
+                    "the argument '{text_flag}' cannot be used with '{file_flag}'"
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl SessionConfigArgs {
@@ -305,39 +443,56 @@ fn absolute_path(
 }
 
 impl Cli {
+    /// Parse a command line. Use this rather than clap's own parse: session options are
+    /// accepted before `resume` and after it, and this moves the second spelling into
+    /// [`Cli::session_options`] and [`Cli::session_config`], the only fields read later.
+    pub fn parse_from_args<I, T>(args: I) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        use clap::CommandFactory;
+        let mut cli = <Self as Parser>::try_parse_from(args)?;
+        if let Some(Command::Resume { session_options, session_config, .. }) = &mut cli.command {
+            let options = std::mem::take(session_options);
+            let config = std::mem::take(session_config);
+            cli.session_options
+                .merge(options)
+                .and_then(|()| cli.session_config.merge(config))
+                .map_err(|message| {
+                    Self::command().error(clap::error::ErrorKind::ArgumentConflict, message)
+                })?;
+        }
+        Ok(cli)
+    }
+
     pub fn validate(&self) -> Result<(), clap::Error> {
         use clap::CommandFactory;
-        let has_session_options = self.session_options.model.is_some()
-            || self.session_options.effort.is_some()
-            || self.session_options.permission_mode.is_some()
-            || self.session_options.agent.is_some()
-            || self.session_options.name.is_some()
-            || self.session_options.fork_session
-            || !self.session_config.add_dirs.is_empty()
-            || self.session_config.settings.is_some()
-            || !self.session_config.mcp_configs.is_empty()
-            || self.session_config.strict_mcp_config
-            || self.session_config.system_prompt.is_some()
-            || self.session_config.system_prompt_file.is_some()
-            || self.session_config.append_system_prompt.is_some()
-            || self.session_config.append_system_prompt_file.is_some();
+        let mut startup_arguments = [
+            ("--resume", self.resume.is_some()),
+            ("--continue", self.continue_session),
+            ("a prompt", self.prompt.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(argument, given)| given.then_some(argument));
         let conflict = match &self.command {
-            Some(Command::Resume { .. }) => {
-                self.resume.is_some() || self.continue_session || self.prompt.is_some()
-            }
-            Some(_) => {
-                self.resume.is_some()
-                    || self.continue_session
-                    || self.prompt.is_some()
-                    || has_session_options
-            }
-            None => false,
+            Some(Command::Resume { .. }) => startup_arguments
+                .next()
+                .map(|argument| format!("{argument} cannot be combined with the `resume` command")),
+            Some(command) => startup_arguments
+                .chain(self.session_options.given_flags())
+                .chain(self.session_config.given_flags())
+                .next()
+                .map(|argument| {
+                    format!(
+                        "{argument} applies only to interactive launches, not `{}`",
+                        command.name()
+                    )
+                }),
+            None => None,
         };
-        if conflict {
-            return Err(Self::command().error(
-                clap::error::ErrorKind::ArgumentConflict,
-                "interactive startup arguments cannot be combined with this subcommand",
-            ));
+        if let Some(message) = conflict {
+            return Err(Self::command().error(clap::error::ErrorKind::ArgumentConflict, message));
         }
         if self.session_options.fork_session && !self.startup_launch().resume_or_pick() {
             return Err(Self::command().error(
@@ -430,6 +585,8 @@ impl StartupLaunch {
     }
 }
 
+// One value per process, parsed once: the size of `Resume` costs nothing worth boxing for.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 pub enum Command {
     /// Resume a previous session by exact ID or title, or pick from recent sessions
@@ -438,6 +595,12 @@ pub enum Command {
         session_id: Option<String>,
         /// Initial prompt to send after resuming.
         prompt: Option<String>,
+        // Accepted here as well as before `resume`; `Cli::parse_from_args` moves them into
+        // the root's fields and leaves these empty.
+        #[command(flatten)]
+        session_options: SessionOptions,
+        #[command(flatten)]
+        session_config: SessionConfigArgs,
     },
     /// Print a shell completion script.
     Completions {
@@ -456,6 +619,22 @@ pub enum Command {
     Logs(LogsArgs),
     /// Inspect and export redacted configuration
     Config(ConfigArgs),
+}
+
+impl Command {
+    /// The name the command is invoked by.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Resume { .. } => "resume",
+            Self::Completions { .. } => "completions",
+            Self::Man { .. } => "man",
+            Self::UpdateWorker(_) => "update-worker",
+            Self::Doctor(_) => "doctor",
+            Self::Logs(_) => "logs",
+            Self::Config(_) => "config",
+        }
+    }
 }
 
 #[derive(Args, Clone, Debug, PartialEq, Eq)]
@@ -570,35 +749,48 @@ pub enum ConfigFileSelector {
 mod tests {
     use super::{
         Cli, Command, ConfigArgs, ConfigCommand, ConfigExportArgs, ConfigFileSelector,
-        ConfigPathArgs, ConfigShowArgs, DoctorArgs, LogsArgs,
+        ConfigPathArgs, ConfigShowArgs, DoctorArgs, LogsArgs, SessionConfigArgs, SessionOptions,
     };
-    use clap::{CommandFactory, Parser};
+    use clap::CommandFactory;
 
     #[test]
     fn cli_without_subcommand_starts_new_session() {
-        let cli = Cli::try_parse_from(["claude-rs"]).expect("parse");
+        let cli = Cli::parse_from_args(["claude-rs"]).expect("parse");
         assert!(cli.command.is_none());
     }
 
     #[test]
     fn cli_resume_without_id_requests_picker() {
-        let cli = Cli::try_parse_from(["claude-rs", "resume"]).expect("parse");
-        assert_eq!(cli.command, Some(Command::Resume { session_id: None, prompt: None }));
+        let cli = Cli::parse_from_args(["claude-rs", "resume"]).expect("parse");
+        assert_eq!(
+            cli.command,
+            Some(Command::Resume {
+                session_id: None,
+                prompt: None,
+                session_options: SessionOptions::default(),
+                session_config: SessionConfigArgs::default(),
+            })
+        );
     }
 
     #[test]
     fn cli_resume_with_id_resumes_directly() {
-        let cli = Cli::try_parse_from(["claude-rs", "resume", "abc-123"]).expect("parse");
+        let cli = Cli::parse_from_args(["claude-rs", "resume", "abc-123"]).expect("parse");
         assert_eq!(
             cli.command,
-            Some(Command::Resume { session_id: Some("abc-123".to_owned()), prompt: None })
+            Some(Command::Resume {
+                session_id: Some("abc-123".to_owned()),
+                prompt: None,
+                session_options: SessionOptions::default(),
+                session_config: SessionConfigArgs::default(),
+            })
         );
     }
 
     #[test]
     fn cli_resume_flag_selects_the_same_session_as_the_subcommand() {
-        let flag = Cli::try_parse_from(["claude-rs", "--resume", "abc-123"]).expect("flag");
-        let command = Cli::try_parse_from(["claude-rs", "resume", "abc-123"]).expect("command");
+        let flag = Cli::parse_from_args(["claude-rs", "--resume", "abc-123"]).expect("flag");
+        let command = Cli::parse_from_args(["claude-rs", "resume", "abc-123"]).expect("command");
         assert_eq!(flag.startup_launch(), command.startup_launch());
     }
 
@@ -610,7 +802,7 @@ mod tests {
             &["claude-rs", "--perf-append"],
         ];
         for args in cases {
-            let error = Cli::try_parse_from(args.iter().copied()).expect_err("removed flag");
+            let error = Cli::parse_from_args(args.iter().copied()).expect_err("removed flag");
             assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
         }
     }
@@ -628,20 +820,20 @@ mod tests {
 
     #[test]
     fn cli_doctor_defaults_to_human_output() {
-        let cli = Cli::try_parse_from(["claude-rs", "doctor"]).expect("parse");
+        let cli = Cli::parse_from_args(["claude-rs", "doctor"]).expect("parse");
         assert_eq!(cli.command, Some(Command::Doctor(DoctorArgs { json: false, strict: false })));
     }
 
     #[test]
     fn cli_doctor_accepts_json_and_strict() {
         let cli =
-            Cli::try_parse_from(["claude-rs", "doctor", "--json", "--strict"]).expect("parse");
+            Cli::parse_from_args(["claude-rs", "doctor", "--json", "--strict"]).expect("parse");
         assert_eq!(cli.command, Some(Command::Doctor(DoctorArgs { json: true, strict: true })));
     }
 
     #[test]
     fn cli_logs_defaults_to_summary() {
-        let cli = Cli::try_parse_from(["claude-rs", "logs"]).expect("parse");
+        let cli = Cli::parse_from_args(["claude-rs", "logs"]).expect("parse");
         assert_eq!(
             cli.command,
             Some(Command::Logs(LogsArgs {
@@ -657,7 +849,7 @@ mod tests {
 
     #[test]
     fn cli_logs_accepts_modes() {
-        let cli = Cli::try_parse_from(["claude-rs", "logs", "--tail", "200"]).expect("parse");
+        let cli = Cli::parse_from_args(["claude-rs", "logs", "--tail", "200"]).expect("parse");
         assert_eq!(
             cli.command,
             Some(Command::Logs(LogsArgs {
@@ -671,7 +863,7 @@ mod tests {
         );
 
         let cli =
-            Cli::try_parse_from(["claude-rs", "logs", "--bundle", "--yes", "--output", "out.zip"])
+            Cli::parse_from_args(["claude-rs", "logs", "--bundle", "--yes", "--output", "out.zip"])
                 .expect("parse");
         assert_eq!(
             cli.command,
@@ -688,13 +880,13 @@ mod tests {
 
     #[test]
     fn cli_logs_rejects_conflicting_modes() {
-        assert!(Cli::try_parse_from(["claude-rs", "logs", "--path", "--latest"]).is_err());
-        assert!(Cli::try_parse_from(["claude-rs", "logs", "--output", "out.zip"]).is_err());
+        assert!(Cli::parse_from_args(["claude-rs", "logs", "--path", "--latest"]).is_err());
+        assert!(Cli::parse_from_args(["claude-rs", "logs", "--output", "out.zip"]).is_err());
     }
 
     #[test]
     fn cli_config_accepts_path_modes() {
-        let cli = Cli::try_parse_from(["claude-rs", "config", "path"]).expect("parse");
+        let cli = Cli::parse_from_args(["claude-rs", "config", "path"]).expect("parse");
         assert_eq!(
             cli.command,
             Some(Command::Config(ConfigArgs {
@@ -702,7 +894,7 @@ mod tests {
             }))
         );
 
-        let cli = Cli::try_parse_from([
+        let cli = Cli::parse_from_args([
             "claude-rs",
             "config",
             "path",
@@ -724,13 +916,13 @@ mod tests {
 
     #[test]
     fn cli_config_defaults_to_summary() {
-        let cli = Cli::try_parse_from(["claude-rs", "config"]).expect("parse");
+        let cli = Cli::parse_from_args(["claude-rs", "config"]).expect("parse");
         assert_eq!(cli.command, Some(Command::Config(ConfigArgs { command: None })));
     }
 
     #[test]
     fn cli_config_accepts_show_and_export() {
-        let cli = Cli::try_parse_from(["claude-rs", "config", "show", "--json"]).expect("parse");
+        let cli = Cli::parse_from_args(["claude-rs", "config", "show", "--json"]).expect("parse");
         assert_eq!(
             cli.command,
             Some(Command::Config(ConfigArgs {
@@ -738,8 +930,9 @@ mod tests {
             }))
         );
 
-        let cli = Cli::try_parse_from(["claude-rs", "config", "export", "--output", "config.json"])
-            .expect("parse");
+        let cli =
+            Cli::parse_from_args(["claude-rs", "config", "export", "--output", "config.json"])
+                .expect("parse");
         assert_eq!(
             cli.command,
             Some(Command::Config(ConfigArgs {
@@ -755,7 +948,7 @@ mod tests {
         let project = tempfile::tempdir().expect("project");
         std::fs::write(project.path().join("notes.txt"), "").expect("file");
         for dir in ["missing", "notes.txt"] {
-            let cli = Cli::try_parse_from(["claude-rs", "--add-dir", dir]).expect("parse");
+            let cli = Cli::parse_from_args(["claude-rs", "--add-dir", dir]).expect("parse");
             let error = cli.session_config.resolve(project.path()).expect_err(dir);
             let path = project.path().join(dir);
             assert_eq!(
@@ -772,8 +965,9 @@ mod tests {
         std::fs::write(&file, "").expect("file");
         let missing = project.path().join("missing");
         for dir in [&missing, &file] {
-            let error = Cli::try_parse_from(["claude-rs".as_ref(), "-C".as_ref(), dir.as_os_str()])
-                .expect_err("not a directory");
+            let error =
+                Cli::parse_from_args(["claude-rs".as_ref(), "-C".as_ref(), dir.as_os_str()])
+                    .expect_err("not a directory");
             assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
             assert_eq!(error.exit_code(), 2);
             let message = error.to_string();
@@ -788,7 +982,7 @@ mod tests {
     fn a_missing_working_directory_is_blamed_before_added_directories() {
         let project = tempfile::tempdir().expect("project");
         let missing = project.path().join("missing");
-        let error = Cli::try_parse_from([
+        let error = Cli::parse_from_args([
             "claude-rs".as_ref(),
             "-C".as_ref(),
             missing.as_os_str(),
@@ -803,7 +997,7 @@ mod tests {
 
     #[test]
     fn relative_working_directory_is_made_absolute() {
-        let cli = Cli::try_parse_from(["claude-rs", "-C", "src"]).expect("parse");
+        let cli = Cli::parse_from_args(["claude-rs", "-C", "src"]).expect("parse");
         let expected = std::env::current_dir().expect("cwd").join("src");
         assert_eq!(cli.dir.as_deref(), Some(expected.as_path()));
         assert_eq!(cli.startup_cwd(), expected);
@@ -814,7 +1008,7 @@ mod tests {
         let project = tempfile::tempdir().expect("project");
         let missing = project.path().join("bridge.js");
         for script in [&missing, &project.path().to_path_buf()] {
-            let cli = Cli::try_parse_from([
+            let cli = Cli::parse_from_args([
                 "claude-rs".as_ref(),
                 "--bridge-script".as_ref(),
                 script.as_os_str(),
@@ -833,7 +1027,7 @@ mod tests {
             );
         }
         std::fs::write(&missing, "").expect("bridge script");
-        let cli = Cli::try_parse_from([
+        let cli = Cli::parse_from_args([
             "claude-rs".as_ref(),
             "--bridge-script".as_ref(),
             missing.as_os_str(),
@@ -845,7 +1039,7 @@ mod tests {
     #[test]
     fn unreadable_settings_file_is_a_cli_error() {
         let project = tempfile::tempdir().expect("project");
-        let cli = Cli::try_parse_from(["claude-rs", "--settings", "missing.json"]).expect("parse");
+        let cli = Cli::parse_from_args(["claude-rs", "--settings", "missing.json"]).expect("parse");
         let error = cli.session_config.resolve(project.path()).expect_err("missing file");
         let path = project.path().join("missing.json");
         assert!(
@@ -864,9 +1058,130 @@ mod tests {
             &["claude-rs", "resume", "session-1", "--fork-session"],
         ];
         for args in cases {
-            let cli = Cli::try_parse_from(args.iter().copied()).expect("parse");
+            let cli = Cli::parse_from_args(args.iter().copied()).expect("parse");
             cli.validate().expect("fork with a resume");
             assert!(cli.session_options.fork_session, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn session_flags_belong_to_interactive_launches_only() {
+        let command = Cli::command();
+        let longs = |command: &clap::Command| -> Vec<String> {
+            command.get_arguments().filter_map(|arg| arg.get_long().map(str::to_owned)).collect()
+        };
+        for flag in ["model", "fork-session", "add-dir", "append-system-prompt-file"] {
+            assert!(longs(&command).iter().any(|long| long == flag), "root lacks --{flag}");
+            let resume = command.find_subcommand("resume").expect("resume");
+            assert!(longs(resume).iter().any(|long| long == flag), "resume lacks --{flag}");
+            for name in ["doctor", "logs", "config", "completions", "man", "update-worker"] {
+                let subcommand = command.find_subcommand(name).expect(name);
+                assert!(!longs(subcommand).iter().any(|long| long == flag), "{name} has --{flag}");
+            }
+            let show = command
+                .find_subcommand("config")
+                .and_then(|config| config.find_subcommand("show"))
+                .expect("config show");
+            assert!(!longs(show).iter().any(|long| long == flag), "config show has --{flag}");
+        }
+        let error = Cli::parse_from_args(["claude-rs", "doctor", "--model", "opus"])
+            .expect_err("--model after doctor");
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn session_flags_before_and_after_resume_parse_to_the_same_launch() {
+        let after = Cli::parse_from_args([
+            "claude-rs",
+            "resume",
+            "session-1",
+            "--model",
+            "opus",
+            "--add-dir",
+            "src",
+            "--fork-session",
+        ])
+        .expect("after resume");
+        let before = Cli::parse_from_args([
+            "claude-rs",
+            "--model",
+            "opus",
+            "--add-dir",
+            "src",
+            "--fork-session",
+            "resume",
+            "session-1",
+        ])
+        .expect("before resume");
+        let split = Cli::parse_from_args([
+            "claude-rs",
+            "--model",
+            "opus",
+            "resume",
+            "session-1",
+            "--add-dir",
+            "src",
+            "--fork-session",
+        ])
+        .expect("split around resume");
+        for cli in [&after, &before, &split] {
+            cli.validate().expect("valid launch");
+            assert_eq!(cli.session_options.model.as_deref(), Some("opus"));
+            assert!(cli.session_options.fork_session);
+            assert_eq!(cli.session_config.add_dirs, [std::path::PathBuf::from("src")]);
+            assert_eq!(
+                cli.startup_launch(),
+                super::StartupLaunch::ResumeSession { session_id: "session-1".to_owned() }
+            );
+        }
+        assert_eq!(after.session_options, before.session_options);
+        assert_eq!(after.session_config, before.session_config);
+        assert_eq!(after.command, before.command);
+        assert_eq!(split.command, before.command);
+    }
+
+    #[test]
+    fn a_session_flag_given_before_and_after_resume_is_a_conflict() {
+        for (args, flag) in [
+            (&["claude-rs", "--model", "a", "resume", "s", "--model", "b"][..], "--model"),
+            (&["claude-rs", "--add-dir", "a", "resume", "--add-dir", "b"][..], "--add-dir"),
+            (&["claude-rs", "--fork-session", "resume", "--fork-session"][..], "--fork-session"),
+            (
+                &["claude-rs", "--system-prompt", "a", "resume", "--system-prompt-file", "f"][..],
+                "--system-prompt-file",
+            ),
+        ] {
+            let error = Cli::parse_from_args(args.iter().copied()).expect_err("conflict");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict, "{args:?}");
+            assert_eq!(error.exit_code(), 2);
+            assert!(error.to_string().contains(flag), "{error}");
+        }
+    }
+
+    #[test]
+    fn interactive_arguments_before_a_support_command_name_the_flag_and_the_command() {
+        for (args, message) in [
+            (
+                &["claude-rs", "--model", "opus", "doctor"][..],
+                "--model applies only to interactive launches, not `doctor`",
+            ),
+            (
+                &["claude-rs", "--add-dir", "src", "logs"][..],
+                "--add-dir applies only to interactive launches, not `logs`",
+            ),
+            (
+                &["claude-rs", "--continue", "config", "show"][..],
+                "--continue applies only to interactive launches, not `config`",
+            ),
+            (
+                &["claude-rs", "--resume", "session-1", "resume"][..],
+                "--resume cannot be combined with the `resume` command",
+            ),
+        ] {
+            let cli = Cli::parse_from_args(args.iter().copied()).expect("parse");
+            let error = cli.validate().expect_err("interactive argument on a support command");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+            assert!(error.to_string().contains(message), "{error}");
         }
     }
 
