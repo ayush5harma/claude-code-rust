@@ -328,7 +328,7 @@ pub(super) fn handle_session_resume_failed_event(
     message: &str,
 ) {
     let matches_pending_operation = app.pending_session_resume_id() == Some(session_id)
-        && app.pending_resume_at_operation_id() == Some(operation_id);
+        && app.pending_resume_operation_id() == Some(operation_id);
     if !matches_pending_operation {
         tracing::debug!(
             target: crate::logging::targets::APP_SESSION,

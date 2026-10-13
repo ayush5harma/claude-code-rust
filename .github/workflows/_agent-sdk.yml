@@ -8,8 +8,12 @@ permissions:
 
 jobs:
   check:
-    name: Check agent-sdk
-    runs-on: ubuntu-latest
+    name: Check agent-sdk (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     defaults:
       run:
         working-directory: agent-sdk

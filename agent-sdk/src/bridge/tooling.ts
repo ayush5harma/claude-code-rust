@@ -1314,6 +1314,34 @@ function buildShellDisplayOutput(record: Record<string, unknown>): string {
   return segments.join("\n");
 }
 
+// The SDK's Read result carries the file's own text and first line number next to the
+// numbered text the model sees; the numbered text is not parsed back apart here or in Rust.
+function fileTextReadContent(
+  rawResult: unknown,
+  rawContent: unknown,
+): ToolCall["content"] {
+  for (const candidate of resultRecordCandidates(rawResult, rawContent)) {
+    if (candidate.type !== "text") {
+      continue;
+    }
+    const file = asRecordOrNull(candidate.file);
+    const path = nonEmptyString(file?.filePath);
+    const text = typeof file?.content === "string" ? file.content : "";
+    const startLine = file?.startLine;
+    if (
+      !path ||
+      !text ||
+      typeof startLine !== "number" ||
+      !Number.isSafeInteger(startLine) ||
+      startLine < 1
+    ) {
+      continue;
+    }
+    return [{ type: "file_text", path, start_line: startLine, text }];
+  }
+  return [];
+}
+
 function fileUnchangedResultText(
   rawResult: unknown,
   rawContent: unknown,
@@ -2916,6 +2944,14 @@ export function buildToolResultFields(
     fields.content = [
       { type: "content", content: { type: "text", text: fileUnchangedText } },
     ];
+    return fields;
+  }
+  const fileTextContent =
+    !isError && toolName === "Read"
+      ? fileTextReadContent(rawResult, rawContent)
+      : [];
+  if (fileTextContent.length > 0) {
+    fields.content = fileTextContent;
     return fields;
   }
   const agentTitle =

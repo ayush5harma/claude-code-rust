@@ -296,7 +296,7 @@ chk_fork_export() {
   rm -f "$f"
   settle fkflags || true
   submit fkflags "/export fk-export.md"
-  if ! wait_for fkflags 'Exported the conversation to ' 15; then
+  if ! wait_for fkflags 'Exported the conversation to' 15; then
     shot
     res FAIL "no 'Exported the conversation to' notice"
     return

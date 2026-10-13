@@ -104,14 +104,19 @@ chk_input_bang() {
   clear_draft main
   submit main "!echo PARITY_BANG_7" || { res FAIL "could not submit"; return; }
   wait_for main '^ +PARITY_BANG_7|PARITY_BANG_7\.' 60 || true
-  wait_idle main 60 || true
-  local transcript sid
+  local completed="" transcript sid
+  wait_idle main 60 && completed=1
   sid=$(jq -r .sessionId <<<"$(registry_entry "$(cwd_of main)")")
   transcript=$(transcript_of main "$sid")
   if [[ -f $transcript ]] && grep -q 'bash-stdout>PARITY_BANG_7' "$transcript"; then
     res PASS "ran locally: transcript has <bash-stdout>PARITY_BANG_7"
   elif [[ -f $transcript ]] && grep -q '"name":"Bash".*echo PARITY_BANG_7' "$transcript"; then
     res GAP "sent to the model as a prompt; the model then ran Bash itself (transcript tool_use Bash 'echo PARITY_BANG_7'); README: shell input remains unimplemented"
+  elif [[ -n $completed ]] && grep -Fq '!echo PARITY_BANG_7' <<<"$SCREEN" &&
+    grep -Eq '^Elapsed [0-9.]+s' <<<"$SCREEN"; then
+    # Measured 2026-10-13: the model can answer without choosing Bash. The
+    # missing local shell path is the same gap regardless of that choice.
+    res GAP "the chat turn completed without local shell output or a model Bash call; native ! shell input remains unimplemented"
   else
     SCREEN=$(screen main)
     shot

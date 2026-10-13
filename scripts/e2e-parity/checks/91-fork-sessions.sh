@@ -11,7 +11,7 @@
 fk_title_sessions() {
   [[ -n $FK_TITLE_DONE ]] && return 0
   [[ -z $FK_TITLE_FAILED ]] || return 1
-  local stamp which title id
+  local stamp which title id registry
   stamp=$(date +%H%M%S)
   FK_TITLE_DUP=FK_DUP_$stamp
   FK_TITLE_UNIQ=FK_UNIQ_$stamp
@@ -22,7 +22,17 @@ fk_title_sessions() {
     rs_start fktitle --model "$MODEL" --permission-mode bypassPermissions || { FK_TITLE_FAILED=1; return 1; }
     id=$(jq -r .sessionId <<<"$REG")
     submit fktitle "/rename $title" || { FK_TITLE_FAILED=1; return 1; }
-    wait_registry "$(cwd_of fktitle)" ".name == \"$title\"" 15 || { FK_TITLE_FAILED=1; return 1; }
+    if ! wait_for fktitle "Session renamed to: $title" 20; then
+      FK_TITLE_FAILURE="$which session $id did not show its /rename completion"
+      FK_TITLE_FAILED=1
+      return 1
+    fi
+    if ! wait_registry "$(cwd_of fktitle)" ".sessionId == \"$id\" and .name == \"$title\"" 30; then
+      registry=$(agents_json | jq -c --arg cwd "$(cwd_of fktitle)" '[.[] | select(.kind == "interactive" and .cwd == $cwd)]')
+      FK_TITLE_FAILURE="$which session $id showed its /rename completion, but claude agents reported ${registry:-no matching interactive session}"
+      FK_TITLE_FAILED=1
+      return 1
+    fi
     printf -v "FK_TITLE_$which" '%s' "$id"
     [[ $which == C ]] || rs_stop fktitle
   done
@@ -31,7 +41,7 @@ fk_title_sessions() {
 
 def fork.picker_current fork "/resume picker: current session" "Active session listed and marked"
 chk_fork_picker_current() {
-  fk_title_sessions || { res FAIL "could not create the three titled sessions"; return; }
+  fk_title_sessions || { res FAIL "could not create the three titled sessions${FK_TITLE_FAILURE:+: $FK_TITLE_FAILURE}"; return; }
   open_view fktitle /resume 'Select a session to resume' || { shot; res FAIL "no session picker"; return; }
   if wait_for fktitle '\[current\]' 8; then
     shot
@@ -48,7 +58,7 @@ chk_fork_picker_current() {
 
 def fork.resume_title_ambiguous fork "/resume <ambiguous title>" "Reports the ambiguity and the session ids"
 chk_fork_resume_title_ambiguous() {
-  fk_title_sessions || { res FAIL "could not create the three titled sessions"; return; }
+  fk_title_sessions || { res FAIL "could not create the three titled sessions${FK_TITLE_FAILURE:+: $FK_TITLE_FAILURE}"; return; }
   settle fktitle || true
   enter_cmd fktitle "/resume $FK_TITLE_DUP"
   if wait_for fktitle 'ambiguous session title' 12; then
@@ -71,7 +81,7 @@ chk_fork_resume_title_ambiguous() {
 
 def fork.resume_title fork "-r <exact title>" "Resumes the one session with that title"
 chk_fork_resume_title() {
-  fk_title_sessions || { res FAIL "could not create the three titled sessions"; return; }
+  fk_title_sessions || { res FAIL "could not create the three titled sessions${FK_TITLE_FAILURE:+: $FK_TITLE_FAILURE}"; return; }
   session_exists fktitle && rs_stop fktitle
   if ! rs_start fktitle --model "$MODEL" -r "$FK_TITLE_UNIQ"; then
     shot
@@ -90,7 +100,7 @@ chk_fork_resume_title() {
 # The previous check leaves C running; the fork starts from it.
 def fork.flag_fork_session fork "--fork-session" "Resumes into a new session id; the original is untouched"
 chk_fork_flag_fork_session() {
-  fk_title_sessions || { res FAIL "could not create the sessions to resume"; return; }
+  fk_title_sessions || { res FAIL "could not create the sessions to resume${FK_TITLE_FAILURE:+: $FK_TITLE_FAILURE}"; return; }
   local orig=$FK_TITLE_C file before after id
   file=$(transcript_of fktitle "$orig")
   # A session writes to its transcript when it ends, so measure after that.
@@ -165,7 +175,7 @@ fk_picker_open() {
 
 def fork.session_tag_paste fork "Session tag: pasted text" "A paste lands in the tag field"
 chk_fork_session_tag_paste() {
-  fk_title_sessions || { res FAIL "could not create the sessions"; return; }
+  fk_title_sessions || { res FAIL "could not create the sessions${FK_TITLE_FAILURE:+: $FK_TITLE_FAILURE}"; return; }
   session_exists fktitle && ! pane_dead fktitle || rs_start fktitle --model "$MODEL" -r "$FK_TITLE_C" --fork-session || { res FAIL "no session"; return; }
   fk_picker_open fktitle || { shot; res FAIL "no session picker"; return; }
   wait_for fktitle 'ago - |just now - ' 8 || true
@@ -202,7 +212,7 @@ chk_fork_session_tag_paste() {
 
 def fork.session_tag fork "Session tag" "Tag saved through the SDK and shown in the picker"
 chk_fork_session_tag() {
-  fk_title_sessions || { res FAIL "could not create the sessions"; return; }
+  fk_title_sessions || { res FAIL "could not create the sessions${FK_TITLE_FAILURE:+: $FK_TITLE_FAILURE}"; return; }
   session_exists fktitle && ! pane_dead fktitle || rs_start fktitle --model "$MODEL" -r "$FK_TITLE_C" --fork-session || { res FAIL "no session"; return; }
   fk_picker_open fktitle || { shot; res FAIL "no session picker"; return; }
   wait_for fktitle 'ago - |just now - ' 8 || true
@@ -228,7 +238,7 @@ chk_fork_session_tag() {
 
 def fork.session_delete fork "Session deletion" "Confirmation, active-session protection, file removed"
 chk_fork_session_delete() {
-  fk_title_sessions || { res FAIL "could not create the sessions"; return; }
+  fk_title_sessions || { res FAIL "could not create the sessions${FK_TITLE_FAILURE:+: $FK_TITLE_FAILURE}"; return; }
   session_exists fktitle && ! pane_dead fktitle || rs_start fktitle --model "$MODEL" -r "$FK_TITLE_C" --fork-session || { res FAIL "no session"; return; }
   fk_picker_open fktitle || { shot; res FAIL "no session picker"; return; }
   wait_for fktitle 'ago - |just now - ' 8 || true
@@ -330,8 +340,19 @@ fk_accent_rgb() {
 
 # fk_prompt_rgb <sess>: the colour of the composer's prompt row, as R,G,B.
 fk_prompt_rgb() {
-  screen_e "$1" | LC_ALL=C grep -a 'Type a message' | head -1 |
+  screen_e "$1" | LC_ALL=C grep -a 'Type a message' | tail -1 |
     LC_ALL=C sed -nE 's/.*\x1b\[38;2;([0-9]+);([0-9]+);([0-9]+)m.*/\1,\2,\3/p'
+}
+
+fk_wait_prompt_rgb() {
+  local s=$1 expected=$2 t=${3:-10} end got
+  end=$(($(now) + t))
+  while :; do
+    got=$(fk_prompt_rgb "$s")
+    [[ $got == "$expected" ]] && return 0
+    (($(now) >= end)) && return 1
+    sleep 0.25
+  done
 }
 
 def fork.accent fork "Session accent and /color" "Stable colour per session; /color changes it"
@@ -351,11 +372,11 @@ chk_fork_accent() {
   fi
   submit fkaccent "/color blue"
   wait_for fkaccent 'Session color set to: blue' 10 || true
-  sleep 0.5
+  fk_wait_prompt_rgb fkaccent 120,175,245 10 || true
   blue=$(fk_prompt_rgb fkaccent)
   submit fkaccent "/color default"
   wait_for fkaccent 'Session color reset to default' 10 || true
-  sleep 0.5
+  fk_wait_prompt_rgb fkaccent "$want" 10 || true
   back=$(fk_prompt_rgb fkaccent)
   rs_stop fkaccent
   if [[ $blue == 120,175,245 && $back == "$want" ]]; then

@@ -185,6 +185,14 @@ export type ToolCallContent =
       repository?: string;
     }
   | {
+      // A successful text Read: the file's own lines without line-number prefixes and the
+      // 1-based number of the first one, so the renderer never re-parses `cat -n` text.
+      type: "file_text";
+      path: string;
+      start_line: number;
+      text: string;
+    }
+  | {
       type: "mcp_resource";
       uri: string;
       mime_type?: string;
@@ -890,6 +898,7 @@ export interface SettingsResult {
 }
 
 export type BridgeCommand =
+  | { command: "list_sessions" }
   | { command: "get_working_diff"; session_id: string }
   | { command: "inspect_settings"; session_id: string; app_settings_path?: string }
   | { command: "mutate_setting"; session_id: string; app_settings_path?: string; mutation: SettingsMutation }
@@ -1285,6 +1294,7 @@ export type BridgeEvent =
     }
   | { event: "initialized"; result: InitializeResult }
   | { event: "sessions_listed"; sessions: SessionListEntry[] }
+  | { event: "sessions_list_failed"; message: string }
   | { event: "session_mutation_result"; session_id: string; operation: "tag" | "delete"; error?: string; refresh_error?: string; sessions?: SessionListEntry[] }
   | { event: "status_snapshot"; session_id: string; account: AccountInfo }
   | {

@@ -199,6 +199,69 @@ test("unblocking commands remain admitted while shutdown is queued", async () =>
   );
 });
 
+test("list_sessions runs at once without waiting for or delaying session commands", async () => {
+  const scheduler = new BridgeCommandScheduler();
+  const slow = deferred();
+  const order: string[] = [];
+
+  const title = scheduler.schedule(command("generate_session_title"), async () => {
+    order.push("title:start");
+    await slow.promise;
+    order.push("title:end");
+  });
+  const listing = scheduler.schedule({ command: "list_sessions" }, async () => {
+    order.push("list");
+  });
+  const prompt = scheduler.schedule(command("prompt"), async () => {
+    order.push("prompt");
+  });
+
+  await listing;
+  // The listing was answered while the title task was in flight.
+  assert.deepEqual(order, ["title:start", "list"]);
+  slow.resolve();
+  await Promise.all([title, prompt]);
+  // And it left no tail behind for the prompt to wait on beyond the session's own task.
+  assert.deepEqual(order, ["title:start", "list", "title:end", "prompt"]);
+});
+
+test("skills reload runs while startup session data is blocked", async () => {
+  const scheduler = new BridgeCommandScheduler();
+  const context = deferred();
+  const order: string[] = [];
+
+  const refresh = scheduler.schedule(command("get_context_usage"), async () => {
+    order.push("context:start");
+    await context.promise;
+    order.push("context:end");
+  });
+  const inspection = scheduler.schedule(command("inspect_settings"), async () => {
+    order.push("settings");
+  });
+  const reload = scheduler.schedule(command("reload_skills_and_styles"), async () => {
+    order.push("reload");
+  });
+
+  await reload;
+  assert.deepEqual(order, ["context:start", "reload"]);
+  context.resolve();
+  await Promise.all([refresh, inspection]);
+  assert.deepEqual(order, ["context:start", "reload", "context:end", "settings"]);
+});
+
+test("list_sessions is refused once shutdown is queued", async () => {
+  const scheduler = new BridgeCommandScheduler();
+  const first = deferred();
+  const running = scheduler.schedule(command("set_model"), async () => first.promise);
+  const shutdown = scheduler.schedule(command("shutdown"), async () => undefined);
+  assert.equal(
+    scheduler.schedule({ command: "list_sessions" }, async () => undefined),
+    undefined,
+  );
+  first.resolve();
+  await Promise.all([running, shutdown]);
+});
+
 test("a failed operation does not poison its scheduling lane", async () => {
   const scheduler = new BridgeCommandScheduler();
   const order: string[] = [];

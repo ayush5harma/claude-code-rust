@@ -339,9 +339,11 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
         }
         SurfaceMode::Fullscreen(FullscreenView::Config) => super::config::handle_paste(app, text),
         SurfaceMode::Fullscreen(FullscreenView::Search) => super::search::handle_paste(app, text),
+        SurfaceMode::Fullscreen(FullscreenView::SessionPicker) => {
+            super::session_picker::handle_paste(app, text)
+        }
         SurfaceMode::Fullscreen(
             FullscreenView::Trusted
-            | FullscreenView::SessionPicker
             | FullscreenView::Update
             | FullscreenView::Copy
             | FullscreenView::Rewind
@@ -547,6 +549,14 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             );
         }
         model::SessionUpdate::SessionTitleUpdate(title) => {
+            // An acknowledged clear must survive a failed list refresh (2026-10-13).
+            // Keep the existing snapshot consistent with the authoritative update.
+            if let Some(id) = app.session_runtime.session_id.as_ref()
+                && let Some(listed) =
+                    app.recent_sessions.iter_mut().find(|session| session.session_id == id.as_str())
+            {
+                listed.custom_title.clone_from(&title);
+            }
             app.session_runtime.session_title = title;
         }
         model::SessionUpdate::SessionColorUpdate(color) => {

@@ -244,3 +244,43 @@ test("late, mismatched and replaced-session color results cannot overwrite a new
   });
   assert.deepEqual(colors, ["blue", "cyan", "orange"]);
 });
+
+// Measured against the pinned SDK (0.3.288) with a live foreground subagent
+// stopped through query.stopTask: it sends task_updated {status: "killed"}
+// first, then task_notification {status: "stopped"}, then the Agent tool
+// result as an interrupted error. The task row must end as the stop the SDK
+// confirmed, not as the "killed" patch that preceded it.
+test("a stopped subagent keeps the SDK's stopped status after the killed patch", () => {
+  const session = makeSession();
+  const send = (subtype: string, fields: Record<string, unknown>) =>
+    handleSdkMessage(session, {
+      type: "system",
+      subtype,
+      task_id: "agent-1",
+      uuid: crypto.randomUUID(),
+      session_id: session.sessionId,
+      ...fields,
+    } as unknown as SDKMessage);
+  const writes: string[] = [];
+  const restore = replaceProtocolEventWriter((line) => {
+    writes.push(line);
+  });
+  try {
+    send("task_started", { tool_use_id: "tool-1", task_type: "local_agent", description: "Run sleep" });
+    send("task_progress", { tool_use_id: "tool-1", description: "Run sleep", usage: { total_tokens: 1, tool_uses: 0, duration_ms: 1 } });
+    send("task_updated", { patch: { status: "killed", end_time: 1791875201893 } });
+    send("task_notification", { tool_use_id: "tool-1", status: "stopped", summary: "Run sleep", output_file: "" });
+  } finally {
+    restore();
+  }
+  // What the Rust side renders from is the last task_state_update for the task.
+  const rows = writes
+    .map((line) => (JSON.parse(line) as { update?: { type?: string; tasks?: Array<Record<string, unknown>> } }).update)
+    .filter((update) => update?.type === "task_state_update")
+    .flatMap((update) => update?.tasks ?? [])
+    .filter((task) => task.task_id === "agent-1");
+  const last = rows.at(-1);
+  assert.ok(last, "the task was emitted");
+  assert.equal(last.status, "completed");
+  assert.equal((last.metadata as Record<string, unknown>).terminal_status, "stopped");
+});

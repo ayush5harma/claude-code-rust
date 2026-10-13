@@ -21,6 +21,10 @@ function managedSessions() {
     { session_id: SESSION, summary: 'Current conversation', last_modified_ms: 1, file_size_bytes: 1, cwd, git_branch: null, custom_title: 'Current conversation', first_prompt: null, tag: null },
   ];
 }
+const RESUME_FAILURES = {
+  'Shared title': 'ambiguous session title: Shared title; use a session ID (first-id, second-id)',
+  'Missing title': 'unknown session: Missing title',
+};
 const resizeCodeScenario = SCENARIO === 'resize-code';
 const activityScenario = SCENARIO.startsWith('hold-activity');
 const RELEASE_FILE = process.env.FAKE_BRIDGE_RELEASE_FILE;
@@ -247,6 +251,16 @@ function streamReply(messageUuid) {
     alert({ ...proactive, tool_use_id: `upstream-${replyNumber}`, local_sent: true });
     send({ event: 'session_update', session_id: SESSION, update: { type: 'notification_update', notification: { ...proactive, tool_use_id: `replay-${replyNumber}` }, replay: true } });
   }
+  if (SCENARIO === 'verbose-bash') {
+    // A finished Bash call as the real bridge sends it: the result text rides in
+    // both the update's content and its raw output.
+    const output = 'FIXTURE_BASH_OUTPUT';
+    send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call', tool_call: { tool_call_id: 'bash-verbose', title: 'echo fixture', kind: 'execute', status: 'in_progress', content: [], raw_input: { command: 'echo fixture' }, locations: [], meta: { claudeCode: { toolName: 'Bash' } } } } });
+    send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call_update', tool_call_update: { tool_call_id: 'bash-verbose', fields: { status: 'completed', raw_output: output, content: [{ type: 'content', content: { type: 'text', text: output } }] } } } });
+    send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text: 'bash finished\n' }, source_message_uuid: null } });
+    send({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'completed', queued_turn_count: 0 });
+    return;
+  }
   if (SCENARIO === 'resize-replay') {
     const text = Array.from({ length: LINES }, (_, index) => `${index + 1}. streamed line ${index + 1}\n`).join('');
     send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text }, source_message_uuid: null } });
@@ -404,6 +418,12 @@ readline
       case 'create_session':
       case 'new_session':
       case 'resume_session':
+        if (SCENARIO === 'resume-failure' && message.command === 'resume_session' && RESUME_FAILURES[message.session_id]) {
+          // The real bridge answers a title it cannot resolve under the requested id and the
+          // command's request id; no session is created, so no connect event follows.
+          send({ event: 'session_resume_failed', session_id: message.session_id, request_id: message.request_id, message: RESUME_FAILURES[message.session_id] });
+          break;
+        }
         if (message.command === 'new_session') SESSION = 'fake-session-after-login';
         // Like the SDK's forkSession, a forked resume continues under a new session ID.
         if (message.command === 'resume_session') SESSION = message.launch_settings?.fork_session ? `${message.session_id}-fork` : message.session_id;
@@ -434,6 +454,8 @@ readline
             cwd, git_branch: 'main', custom_title: 'Large saved conversation',
           }] });
         }
+        // The listing sent around connect predates the active session's transcript.
+        if (SCENARIO === 'session-refresh') send({ event: 'sessions_listed', sessions: managedSessions().filter(session => session.session_id !== SESSION) });
         if (SCENARIO === 'session-management') send({ event: 'sessions_listed', sessions: managedSessions() });
         if (SCENARIO.startsWith('resize-') || SCENARIO.startsWith('background-')) send({ event: 'status_snapshot', session_id: SESSION, account: { subscription_type: 'Fixture subscription' } });
         if (SCENARIO === 'session-accent') {
@@ -467,6 +489,22 @@ readline
             raw_input: { file_path: 'session-only.txt' }, locations: [], meta: { claudeCode: { toolName: 'Edit' } },
           } } });
         }
+        if (SCENARIO === 'read-result') {
+          // What the bridge sends for a successful text Read: the file's own lines and the
+          // number of the first, never the numbered text the model sees.
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call', tool_call: {
+            tool_call_id: 'read-notes', title: 'Read NOTES.md', kind: 'read', status: 'completed',
+            content: [{ type: 'file_text', path: '/fixture/NOTES.md', start_line: 1, text: '# Fixture heading\n\n- first item\n1. numbered item' }],
+            raw_input: { file_path: '/fixture/NOTES.md' }, locations: [], meta: { claudeCode: { toolName: 'Read' } },
+          } } });
+        }
+        if (SCENARIO === 'bash-colour') {
+          // Coloured output plus a hyperlink, a title and a cursor-up the app must not obey.
+          const call = { tool_call_id: 'bash-colour', title: './colour.sh', kind: 'execute', status: 'in_progress', content: [], raw_input: { command: './colour.sh' }, locations: [], meta: { claudeCode: { toolName: 'Bash' } } };
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call', tool_call: call } });
+          const output = '\x1b[31mFIXTURE_RED\x1b[0m plain \x1b[1;38;5;208mFIXTURE_ORANGE\x1b[0m\n\x1b]8;;https://example.com\x1b\\FIXTURE_LINK\x1b]8;;\x1b\\\x1b]0;hijacked\x07\x1b[2A end';
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call_update', tool_call_update: { tool_call_id: 'bash-colour', fields: { status: 'completed', raw_output: output } } } });
+        }
         if (SCENARIO === 'hook-activity') startupHooks();
         if (SCENARIO === 'disconnect-during-auth' && message.command === 'create_session') {
           const timer = setInterval(() => {
@@ -478,6 +516,23 @@ readline
           }, INTERVAL_MS);
         }
         break;
+      case 'list_sessions': {
+        // The listing as the SDK knows it now, which includes the active session. The
+        // `session-refresh` scenario holds the answer until the release file appears, so the
+        // picker's loading state can be observed.
+        const answer = () => send({ event: 'sessions_listed', request_id: message.request_id, sessions: managedSessions() });
+        if (SCENARIO !== 'session-refresh') {
+          answer();
+          break;
+        }
+        record({ type: 'barrier', name: 'list-held' });
+        const timer = setInterval(() => {
+          if (!fs.existsSync(RELEASE_FILE)) return;
+          clearInterval(timer);
+          answer();
+        }, INTERVAL_MS);
+        break;
+      }
       case 'list_session_agents':
         send({ event: 'session_agents_result', session_id: SESSION, request_id: message.request_id, action: message.command,
           agent_ids: ['agent-running', 'agent-completed'], messages: [] });

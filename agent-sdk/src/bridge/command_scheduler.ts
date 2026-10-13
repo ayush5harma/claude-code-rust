@@ -5,7 +5,8 @@ type CommandTask = () => Promise<void>;
 type CommandLane =
   | { kind: "lifecycle" }
   | { kind: "session"; sessionId: string }
-  | { kind: "unblocking" };
+  | { kind: "unblocking" }
+  | { kind: "read" };
 
 const LIFECYCLE_COMMANDS = new Set<BridgeCommand["command"]>([
   "initialize",
@@ -29,9 +30,21 @@ const UNBLOCKING_COMMANDS = new Set<BridgeCommand["command"]>([
   "mcp_oauth_callback_url",
 ]);
 
+// Commands that either read SDK state or issue isolated control requests. They run at once and
+// neither wait for nor delay anything: measured 2026-10-13 with the owner's profile, a stalled
+// startup context read queued /reload behind settings inspection indefinitely. Unlike unblocking
+// commands they are refused once shutdown is queued.
+const CONCURRENT_COMMANDS = new Set<BridgeCommand["command"]>([
+  "list_sessions",
+  "reload_skills_and_styles",
+]);
+
 function commandLane(command: BridgeCommand): CommandLane {
   if (UNBLOCKING_COMMANDS.has(command.command)) {
     return { kind: "unblocking" };
+  }
+  if (CONCURRENT_COMMANDS.has(command.command)) {
+    return { kind: "read" };
   }
   if (LIFECYCLE_COMMANDS.has(command.command)) {
     return { kind: "lifecycle" };
@@ -109,6 +122,7 @@ export class BridgeCommandScheduler {
   private scheduleInLane(lane: CommandLane, task: CommandTask): Promise<void> {
     switch (lane.kind) {
       case "unblocking":
+      case "read":
         return this.start(task);
       case "lifecycle":
         return this.scheduleLifecycle(task);

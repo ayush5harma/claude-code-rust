@@ -607,10 +607,25 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
       return sdkResolveSettings({ ...options, ...(managedSettings ? { serverManagedSettings: JSON.parse(managedSettings) } : {}) });
     }
     function record(value) { if (process.env.STARTUP_JOURNAL) appendFileSync(process.env.STARTUP_JOURNAL, JSON.stringify(value) + "\\n"); }
+    const saved = new Map();
+    function sessionEntries() {
+      const seeded = JSON.parse(process.env.STARTUP_SESSIONS_FIXTURE ?? "[]");
+      const entries = new Map(seeded.map(entry => [entry.sessionId, entry]));
+      for (const [sessionId, state] of saved) {
+        const entry = entries.get(sessionId) ?? { sessionId, cwd: state.cwd, lastModified: 1 };
+        entries.set(sessionId, { ...entry, ...(Object.hasOwn(state, "title") ? { customTitle: state.title } : {}) });
+      }
+      return [...entries.values()];
+    }
     export async function listSessions(options) {
       record({ type: "list", options });
-      const seeded = JSON.parse(process.env.STARTUP_SESSIONS_FIXTURE ?? "[]");
-      return [...seeded, ...[...saved.keys()].map((sessionId, index) => ({ sessionId, cwd: saved.get(sessionId).cwd, lastModified: index + 1 }))].filter(entry => !options?.dir || entry.cwd === options.dir);
+      if (process.env.LIST_SESSIONS_FAILURE === "1") throw new Error("fixture list failed");
+      return sessionEntries().filter(entry => !options?.dir || entry.cwd === options.dir);
+    }
+    export async function getSessionInfo(sessionId, options) {
+      const entry = sessionEntries().find(candidate => candidate.sessionId === sessionId);
+      if (!entry || (options?.dir && entry.cwd !== options.dir)) return undefined;
+      return entry;
     }
     export async function listSubagents(sessionId, options) {
       record({ type: "listSubagents", sessionId, options });
@@ -629,12 +644,14 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
     export async function renameSession(sessionId, title, options) {
       record({ type: "rename", sessionId, title, options });
       if (process.env.RENAME_FAILURE_FIXTURE === "1") throw new Error("fixture rename failed");
+      const existing = saved.get(sessionId) ?? {};
+      saved.set(sessionId, { ...existing, cwd: existing.cwd ?? options?.dir, title });
     }
-    const saved = new Map();
     export function query({ prompt, options }) {
       record({ type: "query", cwd: options.cwd, resume: options.resume, model: options.model, effort: options.effort, permissionMode: options.permissionMode, agent: options.agent });
       record({ type: "launch", resume: options.resume, sessionId: options.sessionId, forkSession: options.forkSession, title: options.title, additionalDirectories: options.additionalDirectories, settings: options.settings, mcpServers: options.mcpServers, strictMcpConfig: options.strictMcpConfig, systemPrompt: options.systemPrompt });
       const state = saved.get(options.resume) ?? { requested: false, effort: "high", cwd: options.cwd };
+      if (options.title !== undefined) state.title = options.title;
       saved.set(options.sessionId ?? options.resume, state);
       let model = options.model ?? "opus";
       let effective = {};
@@ -938,11 +955,120 @@ test("launch name titles a new session and renames a resumed one before it conne
     assert.deepEqual(resumed.map(entry => entry.type), ["rename", "launch"]);
     assert.deepEqual(resumed[0], { type: "rename", sessionId: "saved-session", title: "Resumed name", options: { dir: cwd } });
     assert.equal(resumed[1]?.resume, "saved-session");
-    assert.equal(resumed[1]?.title, undefined);
+    // The resumed process names itself from `title` (measured on the pinned SDK: it sets the
+    // process name other clients read from the session registry and leaves the transcript alone).
+    assert.equal(resumed[1]?.title, "Resumed name");
   } finally {
     await cleanup();
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("resume by custom title renames the resolved session ID", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-title-rename-"));
+  const journal = join(directory, "journal.jsonl");
+  const cwd = process.cwd();
+  const { bridge, cleanup } = ultracodeFixtureBridge({
+    STARTUP_JOURNAL: journal,
+    STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId: "saved-session", cwd, lastModified: 1, customTitle: "Old title" }]),
+  });
+  try {
+    bridge.writeCommand({ command: "resume_session", session_id: "Old title", launch_settings: { name: "New title" } });
+    const connected = await nextMatching(bridge, event => event.event === "connected");
+    assert.equal(connected.session_id, "saved-session");
+    const entries = readJournal(journal);
+    assert.deepEqual(entries.find(entry => entry.type === "rename"), {
+      type: "rename", sessionId: "saved-session", title: "New title", options: { dir: cwd },
+    });
+    assert.equal(entries.find(entry => entry.type === "launch")?.resume, "saved-session");
+    bridge.writeCommand({ command: "list_sessions", request_id: "after-rename" });
+    const listed = await nextMatching(bridge, event => event.event === "sessions_listed" && event.request_id === "after-rename");
+    const saved = (listed.sessions as BridgeEnvelope[]).find(entry => entry.session_id === "saved-session");
+    assert.equal(saved?.custom_title, "New title");
+  } finally {
+    await cleanup();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("invalid resume configuration leaves the persisted title unchanged and never queries", async () => {
+  for (const [flag, launchSettings] of [
+    ["--settings", { name: "Changed", settings: '{"model":' }],
+    ["--mcp-config", { name: "Changed", mcp_configs: ['{"mcpServers":'] }],
+  ] as const) {
+    const directory = mkdtempSync(join(tmpdir(), "claude-rs-invalid-resume-"));
+    const journal = join(directory, "journal.jsonl");
+    const cwd = process.cwd();
+    const { bridge, cleanup } = ultracodeFixtureBridge({
+      STARTUP_JOURNAL: journal,
+      STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId: "saved-session", cwd, lastModified: 1, customTitle: "Original" }]),
+    });
+    try {
+      bridge.writeCommand({ command: "resume_session", session_id: "saved-session", launch_settings: launchSettings });
+      const failed = await nextMatching(bridge, event => event.event === "session_resume_failed");
+      assert.match(String(failed.message), new RegExp(flag));
+      assert.equal(readJournal(journal).some(entry => entry.type === "rename" || entry.type === "query"), false);
+      bridge.writeCommand({ command: "list_sessions", request_id: "after-failure" });
+      const listed = await nextMatching(bridge, event => event.event === "sessions_listed" && event.request_id === "after-failure");
+      const saved = (listed.sessions as BridgeEnvelope[]).find(entry => entry.session_id === "saved-session");
+      assert.equal(saved?.custom_title, "Original");
+    } finally {
+      await cleanup();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test("resume without a launch name carries the saved custom title into the query options", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-resume-title-"));
+  const journal = join(directory, "query-options.jsonl");
+  const cwd = process.cwd();
+  const { bridge, cleanup } = ultracodeFixtureBridge({
+    STARTUP_JOURNAL: journal,
+    STARTUP_SESSIONS_FIXTURE: JSON.stringify([
+      { sessionId: "saved-session", cwd, lastModified: 1, customTitle: "Saved title" },
+      { sessionId: "untitled-session", cwd, lastModified: 2 },
+    ]),
+  });
+  try {
+    bridge.writeCommand({ command: "resume_session", session_id: "saved-session", launch_settings: {} });
+    await nextMatching(bridge, event => event.event === "connected");
+    const titled = readJournal(journal).find(entry => entry.type === "launch");
+    assert.equal(titled?.resume, "saved-session");
+    assert.equal(titled?.title, "Saved title");
+
+    rmSync(journal);
+    bridge.writeCommand({ command: "resume_session", session_id: "untitled-session", launch_settings: {} });
+    await nextMatching(bridge, event => event.event === "session_replaced");
+    const untitled = readJournal(journal).find(entry => entry.type === "launch");
+    assert.equal(untitled?.resume, "untitled-session");
+    assert.equal(untitled?.title, undefined);
+  } finally {
+    await cleanup();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("clearing a seeded session title remains cleared in the fixture listing", async () => {
+  const cwd = process.cwd();
+  const { bridge, cleanup } = ultracodeFixtureBridge({
+    STARTUP_SESSIONS_FIXTURE: JSON.stringify([
+      { sessionId: "saved-session", cwd, lastModified: 1, customTitle: "Saved title" },
+    ]),
+  });
+  try {
+    bridge.writeCommand({ command: "resume_session", session_id: "saved-session", launch_settings: {} });
+    await nextMatching(bridge, event => event.event === "connected");
+    const restoredTitle = await nextMatching(bridge, event => event.event === "session_update" && (event.update as BridgeEnvelope).type === "session_title_update");
+    assert.equal((restoredTitle.update as BridgeEnvelope).title, "Saved title");
+    bridge.writeCommand({ command: "rename_session", session_id: "saved-session", title: "", request_id: "clear-title" });
+    const titleUpdate = await nextMatching(bridge, event => event.event === "session_update" && (event.update as BridgeEnvelope).type === "session_title_update");
+    assert.equal((titleUpdate.update as BridgeEnvelope).title, "");
+    bridge.writeCommand({ command: "list_sessions", request_id: "after-clear" });
+    const listed = await nextMatching(bridge, event => event.event === "sessions_listed" && event.request_id === "after-clear");
+    const saved = (listed.sessions as BridgeEnvelope[]).find(session => session.session_id === "saved-session");
+    assert.equal(saved?.custom_title, undefined);
+  } finally { await cleanup(); }
 });
 
 test("fork-session resumes under a new id that takes the launch name", async () => {
@@ -1014,7 +1140,7 @@ for (const [flag, launchSettings] of [
     });
     try {
       bridge.writeCommand({ command: "resume_session", session_id: "saved-session", launch_settings: launchSettings });
-      const failed = await nextMatching(bridge, event => event.event === "slash_error");
+      const failed = await nextMatching(bridge, event => event.event === "session_resume_failed");
       assert.match(String(failed.message), new RegExp(flag));
       const entries = readJournal(journal);
       assert.equal(entries.some(entry => entry.type === "rename"), false);
@@ -1105,6 +1231,34 @@ test("continue with no previous session starts a new session", async () => {
   } finally { await cleanup(); }
 });
 
+test("list_sessions answers with a fresh SDK listing under its request id", async () => {
+  const cwd = process.cwd();
+  const { bridge, cleanup } = ultracodeFixtureBridge({
+    STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId: "older", cwd, lastModified: 1 }]),
+  });
+  try {
+    bridge.writeCommand({ command: "create_session", cwd, launch_settings: {} });
+    const connected = await nextMatching(bridge, event => event.event === "connected");
+    // The listing sent around connect says nothing about a session the SDK learns of later; the
+    // app asks again when its session picker opens.
+    bridge.writeCommand({ command: "list_sessions", request_id: "picker-open" });
+    const listed = await nextMatching(bridge, event => event.event === "sessions_listed" && event.request_id === "picker-open");
+    const ids = (listed.sessions as BridgeEnvelope[]).map(session => session.session_id);
+    assert.ok(ids.includes("older"));
+    assert.ok(ids.includes(connected.session_id as string));
+  } finally { await cleanup(); }
+});
+
+test("list_sessions reports a correlated failure instead of an empty listing", async () => {
+  const { bridge, cleanup } = ultracodeFixtureBridge({ LIST_SESSIONS_FAILURE: "1" });
+  try {
+    bridge.writeCommand({ command: "list_sessions", request_id: "picker-open" });
+    const failed = await nextMatching(bridge, event => event.event === "sessions_list_failed");
+    assert.equal(failed.request_id, "picker-open");
+    assert.match(String(failed.message), /fixture list failed/);
+  } finally { await cleanup(); }
+});
+
 test("resume resolves exact SDK title while an exact ID wins over another title", async () => {
   const cwd = process.cwd();
   const sessions = [
@@ -1132,10 +1286,26 @@ test("resume refuses ambiguous SDK titles and lists candidate IDs", async () => 
   const { bridge, cleanup } = ultracodeFixtureBridge({ STARTUP_SESSIONS_FIXTURE: JSON.stringify(sessions) });
   try {
     bridge.writeCommand({ command: "resume_session", session_id: "Shared title", launch_settings: {}, request_id: "ambiguous-title" });
-    const failure = await nextMatching(bridge, event => event.event === "slash_error");
+    // A resume failure is reported under the id that was asked for (a title is not a session id,
+    // so a slash_error would be dropped as belonging to another session).
+    const failure = await nextMatching(bridge, event => event.event === "session_resume_failed");
     assert.equal(failure.request_id, "ambiguous-title");
+    assert.equal(failure.session_id, "Shared title");
     assert.match(String(failure.message), /first-id/);
     assert.match(String(failure.message), /second-id/);
+  } finally { await cleanup(); }
+});
+
+test("resume of an unknown title or id reports the failure under the requested id", async () => {
+  const cwd = process.cwd();
+  const sessions = [{ sessionId: "first-id", summary: "Known title", cwd, lastModified: 1 }];
+  const { bridge, cleanup } = ultracodeFixtureBridge({ STARTUP_SESSIONS_FIXTURE: JSON.stringify(sessions) });
+  try {
+    bridge.writeCommand({ command: "resume_session", session_id: "No such title", launch_settings: {}, request_id: "unknown-title" });
+    const failure = await nextMatching(bridge, event => event.event === "session_resume_failed");
+    assert.equal(failure.request_id, "unknown-title");
+    assert.equal(failure.session_id, "No such title");
+    assert.match(String(failure.message), /No such title/);
   } finally { await cleanup(); }
 });
 

@@ -337,7 +337,8 @@ fn optional_resume_opens_the_picker_without_selecting_a_suggested_session() {
         enter(&mut app);
 
         assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
-        assert!(commands(&mut rx).is_empty());
+        // Only the refresh of the session list goes out; no session is resumed.
+        assert!(matches!(commands(&mut rx).as_slice(), [BridgeCommand::ListSessions]));
     }
 
     let (mut app, mut rx) = app_with_bridge_connection();
@@ -682,7 +683,7 @@ fn optional_resume_completion_opens_picker_and_explicit_tab_can_resume_a_suggest
             );
         } else {
             assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
-            assert!(commands(&mut rx).is_empty());
+            assert!(matches!(commands(&mut rx).as_slice(), [BridgeCommand::ListSessions]));
         }
     }
 }

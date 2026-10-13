@@ -30,7 +30,8 @@ function exportFromSavedSession(limits: { chunkBytes: number; maxBytes: number }
   try {
     const cwd = join(directory, "project");
     const configDir = join(directory, "config");
-    const projectDir = join(configDir, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+    const projectKey = "history-export-fixture";
+    const projectDir = join(configDir, "projects", projectKey);
     mkdirSync(cwd, { recursive: true });
     mkdirSync(projectDir, { recursive: true });
     const records: Record<string, unknown>[] = [];
@@ -51,10 +52,18 @@ function exportFromSavedSession(limits: { chunkBytes: number; maxBytes: number }
       import { exportSessionHistory } from ${JSON.stringify(new URL("./history_export.js", import.meta.url).href)};
       await exportSessionHistory(${JSON.stringify(SESSION_ID)}, ${JSON.stringify(cwd)}, "req-export", ${JSON.stringify(limits)});
     `;
+    const childEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: configDir,
+      // Measured 2026-10-13 on windows-latest: manually mirroring the SDK's derived
+      // project key left this fixture unreadable. Its supported fixed key avoids that
+      // duplicated path normalization across Windows and POSIX paths.
+      CLAUDE_CODE_PROJECT_DIR_NAME: projectKey,
+    };
     const child = spawnSync(process.execPath, ["--input-type=module", "-"], {
       input: script,
       encoding: "utf8",
-      env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, CLAUDE_CODE_PROJECT_DIR_NAME: undefined },
+      env: childEnv,
       windowsHide: true,
     });
     assert.equal(child.status, 0, child.stderr);
@@ -77,7 +86,7 @@ test("export streams the whole saved history in chunks and marks only the last",
   // A chunk budget of one byte puts every update in its own event.
   const events = exportFromSavedSession({ chunkBytes: 1, maxBytes: 64 * 1024 * 1024 });
 
-  assert.ok(events.length > 3, "history spans several chunks");
+  assert.ok(events.length > 3, `history spans several chunks: ${JSON.stringify(events)}`);
   assert.ok(events.every(event => event.event === "session_history_export" && event.request_id === "req-export" && event.session_id === SESSION_ID));
   assert.deepEqual(events.map(event => event.last), events.map((_, index) => index === events.length - 1));
   assert.ok(events.every(event => event.omitted_updates === 0 && event.error === undefined));
@@ -93,6 +102,7 @@ test("export streams the whole saved history in chunks and marks only the last",
 test("export keeps the beginning and counts what a very large session leaves out", () => {
   const full = exportFromSavedSession({ chunkBytes: 1024 * 1024, maxBytes: 64 * 1024 * 1024 });
   assert.equal(full.length, 1, "a small history is one chunk");
+  assert.ok(full[0].updates?.length, `history export did not produce updates: ${JSON.stringify(full)}`);
   const total = full[0].updates?.length ?? 0;
 
   // Room for the first two updates only.

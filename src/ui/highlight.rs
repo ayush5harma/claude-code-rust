@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
-use super::diff;
-use ansi_to_tui::IntoText as _;
+use super::{ansi, diff};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::path::Path;
@@ -16,64 +15,25 @@ use two_face::theme::EmbeddedThemeName;
 static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_newlines);
 static THEME_SET: LazyLock<two_face::theme::EmbeddedLazyThemeSet> =
     LazyLock::new(two_face::theme::extra);
+
+/// `text` without escape sequences or control characters (see [`ansi`]).
 pub(crate) fn strip_ansi(text: &str) -> String {
-    enum State {
-        Normal,
-        Escape,
-        Csi,
-        Osc,
-        OscEscape,
-    }
-
-    let mut out = String::with_capacity(text.len());
-    let mut state = State::Normal;
-
-    for ch in text.chars() {
-        state = match state {
-            State::Normal => {
-                if ch == '\u{1b}' {
-                    State::Escape
-                } else {
-                    out.push(ch);
-                    State::Normal
-                }
-            }
-            State::Escape => match ch {
-                '[' => State::Csi,
-                ']' => State::Osc,
-                _ => State::Normal,
-            },
-            State::Csi => {
-                if ('\u{40}'..='\u{7e}').contains(&ch) {
-                    State::Normal
-                } else {
-                    State::Csi
-                }
-            }
-            State::Osc => match ch {
-                '\u{07}' => State::Normal,
-                '\u{1b}' => State::OscEscape,
-                _ => State::Osc,
-            },
-            State::OscEscape => {
-                if ch == '\\' {
-                    State::Normal
-                } else {
-                    State::Osc
-                }
-            }
-        };
-    }
-
-    out
+    ansi::strip(text)
 }
 
+/// Terminal output as rows: SGR colour and style survive, every other control sequence is
+/// dropped. Output that carries no styling of its own and looks like a unified diff gets the
+/// diff colours instead. Unstyled cells keep `Style::default()`.
 pub(crate) fn render_terminal_output(text: &str) -> Vec<Line<'static>> {
-    let stripped = strip_ansi(text);
-    if diff::looks_like_unified_diff(&stripped) {
-        return diff::render_raw_unified_diff(&stripped);
+    let lines = ansi::styled_lines(text);
+    if lines.iter().flat_map(|line| &line.spans).any(|span| span.style != Style::default()) {
+        return lines;
     }
-    ansi_text_lines(text).unwrap_or_else(|| plain_text_lines(&stripped))
+    let plain = strip_ansi(text);
+    if diff::looks_like_unified_diff(&plain) {
+        return diff::render_raw_unified_diff(&plain);
+    }
+    lines
 }
 
 pub(crate) fn highlight_code(text: &str, language: Option<&str>) -> Vec<Line<'static>> {
@@ -171,11 +131,6 @@ pub(crate) fn plain_text_lines(text: &str) -> Vec<Line<'static>> {
     lines
 }
 
-fn ansi_text_lines(text: &str) -> Option<Vec<Line<'static>>> {
-    let rendered = text.as_bytes().into_text().ok()?.clone();
-    Some(rendered.lines)
-}
-
 fn find_syntax(language: &str) -> Option<&'static SyntaxReference> {
     let token = language.trim();
     if token.is_empty() {
@@ -202,6 +157,12 @@ fn find_syntax_for_path(path: &Path) -> Option<&'static SyntaxReference> {
             None
         }
     }
+}
+
+/// The background `highlight_code`'s theme picks its colours for. Code blocks are drawn on
+/// it so the syntax colours stay legible whatever the terminal's own background is.
+pub(crate) fn code_background() -> Option<Color> {
+    highlight_theme().settings.background.map(|color| Color::Rgb(color.r, color.g, color.b))
 }
 
 fn highlight_theme() -> &'static Theme {

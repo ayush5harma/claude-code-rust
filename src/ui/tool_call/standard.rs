@@ -23,8 +23,9 @@ use super::errors::{
 };
 use super::interactions::{render_permission_lines, render_question_lines};
 use super::{
-    TOOL_BODY_MAX_LINES, ToolCallRenderContext, execute, markdown_inline_spans, status_icon, tasks,
-    tool_display_title, tool_output_badge_spans, truncate_spans_to_width, typed,
+    TOOL_BODY_MAX_LINES, ToolCallRenderContext, execute, markdown_inline_spans, read_file,
+    status_icon, tasks, tool_display_title, tool_output_badge_spans, truncate_spans_to_width,
+    typed,
 };
 
 pub(super) const WRITE_DIFF_MAX_LINES: usize = TOOL_BODY_MAX_LINES;
@@ -38,7 +39,7 @@ const STANDARD_BODY_PREFIX_WIDTH: u16 = 5;
 const EXECUTE_BODY_INDENT: &str = "      ";
 const EXECUTE_BODY_INDENT_WIDTH: u16 = 6;
 const ASK_USER_QUESTION_RESULT_TEXT_INDENT: &str = "      ";
-const READ_SYNTAX_THEME: EmbeddedThemeName = EmbeddedThemeName::MonokaiExtendedBright;
+pub(super) const READ_SYNTAX_THEME: EmbeddedThemeName = EmbeddedThemeName::MonokaiExtendedBright;
 const VIEWED_IMAGE_RESULT_PREFIX: &str = "Viewed Image ";
 
 /// Render just the title line for a tool call (the line containing the spinner icon).
@@ -259,6 +260,13 @@ pub(super) fn content_summary(tc: &ToolCallInfo) -> String {
                 );
                 return name;
             }
+            model::ToolCallContent::FileText(file) => {
+                let first = file.text.lines().find(|line| !line.trim().is_empty()).unwrap_or("");
+                return truncate_summary_line(
+                    &highlight::strip_ansi(first),
+                    text_summary_limit(tc),
+                );
+            }
             model::ToolCallContent::McpResource(resource) => {
                 if let Some(path) = &resource.blob_saved_to {
                     return path.file_name().map_or_else(
@@ -351,6 +359,11 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
                     let raw = cap_write_diff_lines(raw);
                     lines.extend(indent_rendered_lines(raw, DIFF_BODY_INDENT));
                 }
+            }
+            model::ToolCallContent::FileText(file) => {
+                // Already capped and wrapped by source line: a second row-level cap would
+                // count wrapped rows as source lines.
+                return read_file::render_file_text(tc, file, width);
             }
             model::ToolCallContent::McpResource(resource) => {
                 lines.extend(render_mcp_resource_content(tc, resource));
@@ -562,6 +575,7 @@ fn renders_only_plan_file_content(tc: &ToolCallInfo) -> bool {
             }
             model::ToolCallContent::Terminal(_) => {}
             model::ToolCallContent::Diff(_)
+            | model::ToolCallContent::FileText(_)
             | model::ToolCallContent::McpResource(_)
             | model::ToolCallContent::ResourceLink(_)
             | model::ToolCallContent::Content(_) => return false,
@@ -592,22 +606,32 @@ fn protected_content_source_lines(tc: &ToolCallInfo, lines: &[Line<'static>]) ->
 }
 
 fn cap_read_content_lines(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
-    let visible_content_lines = READ_BODY_HEAD_LINES.saturating_add(READ_BODY_TAIL_LINES);
-    let capped_line_count = visible_content_lines.saturating_add(1);
-    if lines.len() <= capped_line_count {
-        return lines;
+    cap_read_items(lines, read_hidden_marker)
+}
+
+/// Keep the first and last few items of a Read body and put `marker(omitted)` between them.
+pub(super) fn cap_read_items<T>(items: Vec<T>, marker: impl FnOnce(usize) -> T) -> Vec<T> {
+    let visible_items = READ_BODY_HEAD_LINES.saturating_add(READ_BODY_TAIL_LINES);
+    let capped_count = visible_items.saturating_add(1);
+    if items.len() <= capped_count {
+        return items;
     }
 
-    let omitted = lines.len().saturating_sub(visible_content_lines);
-    let tail_start = lines.len().saturating_sub(READ_BODY_TAIL_LINES);
-    let mut out = Vec::with_capacity(capped_line_count);
-    out.extend(lines.iter().take(READ_BODY_HEAD_LINES).cloned());
-    out.push(Line::from(Span::styled(
+    let omitted = items.len().saturating_sub(visible_items);
+    let tail_start = items.len().saturating_sub(READ_BODY_TAIL_LINES);
+    let mut out = Vec::with_capacity(capped_count);
+    let mut remaining = items.into_iter();
+    out.extend(remaining.by_ref().take(READ_BODY_HEAD_LINES));
+    out.push(marker(omitted));
+    out.extend(remaining.skip(tail_start.saturating_sub(READ_BODY_HEAD_LINES)));
+    out
+}
+
+pub(super) fn read_hidden_marker(omitted: usize) -> Line<'static> {
+    Line::from(Span::styled(
         format!("... {omitted} lines hidden ..."),
         Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
-    )));
-    out.extend(lines.into_iter().skip(tail_start));
-    out
+    ))
 }
 
 fn render_plan_content(text: &str) -> Vec<Line<'static>> {
@@ -653,16 +677,6 @@ fn render_read_text_content(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<
     let title_lang = lang_from_title(&tc.title);
     if let Some(path) = read_syntax_path(tc) {
         let language_fallback = (!title_lang.is_empty()).then_some(title_lang.as_str());
-        if let Some(numbered_lines) = parse_numbered_read_lines(&clean) {
-            let highlighted = highlight::highlight_code_for_path_with_theme(
-                &numbered_read_source(&numbered_lines),
-                path,
-                language_fallback,
-                READ_SYNTAX_THEME,
-            );
-            lines.extend(render_numbered_read_lines(numbered_lines, &highlighted));
-            return;
-        }
         lines.extend(highlight::highlight_code_for_path_with_theme(
             &clean,
             path,
@@ -696,77 +710,6 @@ fn render_viewed_image_content(tc: &ToolCallInfo, text: &str) -> Option<Line<'st
         Span::raw(" "),
         Span::styled(file_name.to_owned(), Style::default().fg(ratatui::style::Color::White)),
     ]))
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NumberedReadLine {
-    number: String,
-    source: String,
-}
-
-fn parse_numbered_read_lines(text: &str) -> Option<Vec<NumberedReadLine>> {
-    let parsed = text.lines().map(parse_numbered_read_line).collect::<Option<Vec<_>>>()?;
-    if parsed.len() < 2 || !line_numbers_are_monotonic(&parsed) {
-        return None;
-    }
-    Some(parsed)
-}
-
-fn parse_numbered_read_line(line: &str) -> Option<NumberedReadLine> {
-    let trimmed = line.trim_start();
-    let digit_end = trimmed.find(|ch: char| !ch.is_ascii_digit()).unwrap_or(trimmed.len());
-    if digit_end == 0 {
-        return None;
-    }
-    let (number, rest) = trimmed.split_at(digit_end);
-    let source = rest.strip_prefix('\t').unwrap_or(rest).to_owned();
-    Some(NumberedReadLine { number: number.to_owned(), source })
-}
-
-fn line_numbers_are_monotonic(lines: &[NumberedReadLine]) -> bool {
-    let mut previous = None;
-    for line in lines {
-        let Ok(number) = line.number.parse::<u32>() else {
-            return false;
-        };
-        if let Some(previous) = previous
-            && number != previous + 1
-        {
-            return false;
-        }
-        previous = Some(number);
-    }
-    true
-}
-
-fn numbered_read_source(lines: &[NumberedReadLine]) -> String {
-    lines.iter().map(|line| line.source.as_str()).collect::<Vec<_>>().join("\n")
-}
-
-fn render_numbered_read_lines(
-    numbered_lines: Vec<NumberedReadLine>,
-    highlighted_lines: &[Line<'static>],
-) -> Vec<Line<'static>> {
-    let gutter_width = numbered_lines.iter().map(|line| line.number.len()).max().unwrap_or(1);
-    numbered_lines
-        .into_iter()
-        .enumerate()
-        .map(|(idx, numbered)| {
-            let mut spans = vec![
-                Span::styled(
-                    format!("{:>gutter_width$}", numbered.number),
-                    Style::default().fg(theme::DIM),
-                ),
-                Span::styled("  ".to_owned(), Style::default().fg(theme::DIM)),
-            ];
-            if let Some(highlighted) = highlighted_lines.get(idx) {
-                spans.extend(highlighted.spans.clone());
-            } else if !numbered.source.is_empty() {
-                spans.push(Span::raw(numbered.source));
-            }
-            Line::from(spans)
-        })
-        .collect()
 }
 
 fn render_generic_text_content(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<'static>>) {

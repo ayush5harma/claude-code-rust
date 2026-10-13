@@ -221,7 +221,7 @@ impl TerminalTest {
         command.env("FAKE_BRIDGE_INTERVAL_MS", "15");
         command.env("FAKE_BRIDGE_FOLLOW_UP_LINES", "3");
         command.env("FAKE_BRIDGE_SCENARIO", scenario);
-        if scenario == "session-accent" {
+        if scenario == "session-accent" || scenario == "bash-colour" {
             command.env_remove("NO_COLOR");
             command.env("TERM", "xterm-256color");
             command.env("COLORTERM", "truecolor");
@@ -266,6 +266,8 @@ impl TerminalTest {
         test.send(b"y");
         if scenario.starts_with("resume-large") {
             test.wait_screen("Large saved conversation");
+        } else if scenario == "resume-failure" && args.contains(&"-r") {
+            // The launch cannot resume, so the app exits instead of reaching the composer.
         } else if has_initial_prompt {
             test.wait_until("initial prompt", |test| !test.prompts().is_empty());
         } else {
@@ -2429,6 +2431,54 @@ fn status_tab_shows_the_session_name_after_rename() {
 }
 
 #[test]
+fn resume_picker_loads_a_fresh_list_and_marks_the_active_session() {
+    let mut test = TerminalTest::start("session-refresh", 3);
+    test.submit("/resume", "/resume");
+    test.wait_journal("list-held");
+    // The list from connect names only the saved session; it is not shown as the answer.
+    let loading = test.wait_screen_with("Loading recent sessions", &["Resume Session"]);
+    assert!(!loading.contains("Saved project work"), "{loading}");
+
+    test.release();
+    let screen = test.wait_screen_with("[current]", &["Saved project work"]);
+    assert!(screen.contains("Current conversation"), "{screen}");
+    assert!(
+        screen.lines().any(|line| line.contains("> ") && line.contains("[current]")),
+        "the active session is selected:\n{screen}"
+    );
+    assert_eq!(test.commands("list_sessions").len(), 1);
+    test.shutdown();
+}
+
+#[test]
+fn resume_by_an_ambiguous_or_unknown_title_reports_why_and_returns_the_composer() {
+    let mut test = TerminalTest::start("resume-failure", 3);
+    test.submit_command("/resume Shared title");
+    let screen =
+        test.wait_screen_with("ambiguous session title", &["first-id", "second-id", "[READY]"]);
+    assert!(!screen.contains("Resuming session"), "{screen}");
+
+    test.submit_command("/resume Missing title");
+    test.wait_screen_with("unknown session: Missing title", &["[READY]"]);
+
+    // The composer works again: the next prompt reaches the bridge.
+    test.submit("after the failed resumes", "after the failed resumes");
+    test.wait_journal("turn_complete");
+    test.assert_prompts(&["after the failed resumes"]);
+    test.shutdown();
+}
+
+#[test]
+fn launch_resume_by_an_ambiguous_title_exits_with_the_candidates() {
+    let mut test =
+        TerminalTest::start_with_options("resume-failure", 3, None, &["-r", "Shared title"], false);
+    let status = test.child.wait_for_exit(Duration::from_secs(15)).expect("bounded failure exit");
+    assert!(!status.success(), "a launch that cannot resume must fail");
+    let raw = test.wait_final_output("ambiguous session title: Shared title");
+    assert!(raw.contains("first-id") && raw.contains("second-id"), "{}", tail(&raw, 600));
+}
+
+#[test]
 fn session_picker_confirms_exact_id_before_delete_and_shows_acknowledged_tag() {
     let mut test = TerminalTest::start("session-management", 0);
     test.submit("/resume", "/resume");
@@ -2479,6 +2529,58 @@ fn session_picker_confirms_exact_id_before_delete_and_shows_acknowledged_tag() {
     test.shutdown();
 }
 
+// Measured 2026-10-13 on windows-latest: crossterm's Windows input backend does not
+// parse bracketed-paste CSI, so a raw pasted LF submits the tag. The portable unit
+// regression in `session_picker` owns multiline `Event::Paste` normalization.
+#[cfg(not(windows))]
+#[test]
+fn session_picker_tag_field_takes_a_bracketed_paste_appended_on_one_line() {
+    let mut test = TerminalTest::start("session-management", 0);
+    test.submit("/resume", "/resume");
+    test.wait_screen_with("Resume Session", &["Saved project work"]);
+    test.send(b"\x1b[A");
+    test.wait_until("saved session selected", |test| {
+        test.screen().contains("> just now - Saved project work")
+    });
+
+    // Seed an existing tag so the field opens pre-filled, as it does for a tagged session.
+    test.send(b"t");
+    test.wait_screen("Tag:");
+    test.send(b"work");
+    test.wait_screen("Tag: work");
+    test.send(b"\r");
+    test.wait_until("first tag saved", |test| {
+        test.commands("tag_session").len() == 1 && test.screen().contains("[tag: work]")
+    });
+
+    test.send(b"t");
+    test.wait_screen("Tag: work");
+    test.paste("-a\nb\r\nc");
+    test.wait_screen("Tag: work-a b c");
+    test.send(b"\r");
+    test.wait_until("pasted tag saved", |test| test.commands("tag_session").len() == 2);
+    assert_eq!(test.commands("tag_session")[1]["tag"], "work-a b c");
+    test.shutdown();
+}
+
+#[test]
+fn detailed_transcript_shows_a_bash_result_once() {
+    let mut test = TerminalTest::start("verbose-bash", 3);
+    test.submit("run it", "run it");
+    test.wait_screen("bash finished");
+    test.send(b"\x0f");
+    test.wait_screen_with("Detailed transcript", &["Tool: echo fixture"]);
+    let screen = test.screen();
+    assert_eq!(
+        rows_with(&screen, "FIXTURE_BASH_OUTPUT").len(),
+        1,
+        "the Bash result must appear once in the detailed view:\n{screen}"
+    );
+    test.send(b"\x0f");
+    test.wait_screen("Type a message");
+    test.shutdown();
+}
+
 #[test]
 fn native_diff_browses_session_and_working_tree_files() {
     let mut test = TerminalTest::start("native-diff", 3);
@@ -2501,6 +2603,57 @@ fn native_diff_browses_session_and_working_tree_files() {
     test.wait_until("refresh command", |test| test.commands("get_working_diff").len() == 2);
     test.send(b"\x1b");
     test.wait_until("return to chat", |test| test.screen().contains("[READY]"));
+    test.shutdown();
+}
+
+#[test]
+fn read_result_shows_one_source_line_per_row_behind_a_gutter() {
+    let mut test = TerminalTest::start("read-result", 3);
+    let screen = test.wait_screen_with("# Fixture heading", &["numbered item"]);
+
+    // A file with markdown syntax is shown as written; the numbers stay out of the text.
+    let heading = rows_with(&screen, "# Fixture heading");
+    let item = rows_with(&screen, "- first item");
+    let numbered = rows_with(&screen, "1. numbered item");
+    assert_eq!((heading.len(), item.len(), numbered.len()), (1, 1, 1), "{screen}");
+    assert!(heading[0].contains("1  # Fixture heading"), "{screen}");
+    assert!(item[0].contains("3  - first item"), "{screen}");
+    assert!(numbered[0].contains("4  1. numbered item"), "{screen}");
+    assert!(!screen.contains("1# Fixture"), "{screen}");
+    test.shutdown();
+}
+
+/// Foreground colour and boldness of the cell where `needle` starts on the visible screen.
+fn style_at(test: &TerminalTest, needle: &str) -> Option<(vt100::Color, bool)> {
+    let captured = test.output.lock().ok()?;
+    let screen = captured.parser.screen();
+    let (rows, cols) = screen.size();
+    for row in 0..rows {
+        let glyphs: Vec<&str> =
+            (0..cols).map(|col| screen.cell(row, col).map_or("", |cell| cell.contents())).collect();
+        // Wide glyphs leave empty continuation cells, so search by cell, not by byte.
+        let start = (0..cols).find(|&col| glyphs[usize::from(col)..].concat().starts_with(needle));
+        if let Some(col) = start {
+            let cell = screen.cell(row, col)?;
+            return Some((cell.fgcolor(), cell.bold()));
+        }
+    }
+    None
+}
+
+#[test]
+fn bash_output_shows_sgr_colours_and_ignores_other_control_sequences() {
+    let mut test = TerminalTest::start("bash-colour", 3);
+    test.wait_for("coloured Bash output", |test| style_at(test, "FIXTURE_ORANGE"));
+
+    assert_eq!(style_at(&test, "FIXTURE_RED"), Some((vt100::Color::Idx(1), false)));
+    assert_eq!(style_at(&test, "FIXTURE_ORANGE"), Some((vt100::Color::Idx(208), true)));
+    // The hyperlink keeps its label, the cursor-up is not obeyed (" end" follows on the
+    // same row) and the title text is not printed.
+    let screen = test.screen();
+    assert_eq!(rows_with(&screen, "FIXTURE_LINK end").len(), 1, "{screen}");
+    assert!(!screen.contains("hijacked"), "{screen}");
+    assert!(!screen.contains("example.com"), "{screen}");
     test.shutdown();
 }
 
@@ -2681,6 +2834,7 @@ fn render_corpus_resumes_then_streams_into_scrollback_in_order() {
     test.wait_turn_finished("That is the full picture.");
     let expected = [
         "Transcript renderer overview",
+        "#!/usr/bin/env bash",
         "1992 lines hidden",
         "(+500)",
         "unresolved import `crate::ui::render_cache`",
@@ -2698,6 +2852,10 @@ fn render_corpus_resumes_then_streams_into_scrollback_in_order() {
             })
         })
     });
+    // Every fence in the corpus is top-level: its rows are the code, never the markers.
+    let fence_rows: Vec<String> =
+        test.transcript_rows().into_iter().filter(|row| row.contains("```")).collect();
+    assert!(fence_rows.is_empty(), "fence markers rendered as text: {fence_rows:?}");
     test.shutdown();
 }
 

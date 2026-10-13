@@ -143,6 +143,7 @@ function commandSessionId(command: BridgeCommand): string | undefined {
       return command.resume;
     case "initialize":
     case "new_session":
+    case "list_sessions":
     case "shutdown":
       return undefined;
   }
@@ -195,6 +196,7 @@ function commandToolCallId(command: BridgeCommand): string | undefined {
     case "mcp_authenticate":
     case "mcp_clear_auth":
     case "mcp_oauth_callback_url":
+    case "list_sessions":
     case "shutdown":
       return undefined;
   }
@@ -232,6 +234,7 @@ function eventToolCallId(event: BridgeEvent): string | undefined {
     case "session_replaced":
     case "initialized":
     case "sessions_listed":
+    case "sessions_list_failed":
     case "session_mutation_result":
     case "status_snapshot":
     case "settings_result":
@@ -274,6 +277,7 @@ function protocolEventLevel(event: BridgeEvent): LogLevel {
     case "turn_error":
     case "slash_error":
     case "session_resume_failed":
+    case "sessions_list_failed":
     case "runtime_reload_failed":
     case "runtime_reload_held":
       return "warn";

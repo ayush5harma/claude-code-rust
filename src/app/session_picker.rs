@@ -18,6 +18,59 @@ pub(crate) fn startup_picker_is_loading(app: &App) -> bool {
     app.startup.startup_picker_is_loading(app.session_runtime.conn.is_some())
 }
 
+/// Ask the bridge for the project's sessions as of now. The list held from connect cannot
+/// include the active session once it has a transcript, nor any session another process wrote.
+pub(crate) fn begin_refresh(app: &mut App, conn: &crate::agent::client::AgentConnection) {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    match conn.list_sessions(request_id.clone()) {
+        Ok(()) => app.session_picker.list_request = Some(request_id),
+        Err(error) => {
+            app.session_picker.list_request = None;
+            app.session_picker.error = Some(format!("Could not refresh the session list: {error}"));
+        }
+    }
+}
+
+pub(crate) fn refresh_is_pending(app: &App) -> bool {
+    app.session_picker.list_request.is_some()
+}
+
+/// Called after every session listing is applied: the listing that answers the picker's own
+/// request ends its loading state and puts the selection on the active session.
+pub(crate) fn finish_refresh(app: &mut App, request_id: Option<&str>) {
+    if request_id.is_none() || app.session_picker.list_request.as_deref() != request_id {
+        return;
+    }
+    app.session_picker.list_request = None;
+    let active =
+        app.session_runtime.session_id.as_ref().map(crate::agent::model::SessionId::as_str);
+    app.session_picker.selected = active
+        .and_then(|active| {
+            app.recent_sessions
+                .iter()
+                .take(MAX_PICKER_SESSIONS)
+                .position(|session| session.session_id == active)
+        })
+        .unwrap_or(0);
+    app.session_picker.scroll_offset = 0;
+}
+
+/// End the picker's own refresh without discarding the most recent successful listing.
+pub(crate) fn fail_refresh(app: &mut App, request_id: Option<&str>, message: &str) {
+    if request_id.is_none() || app.session_picker.list_request.as_deref() != request_id {
+        return;
+    }
+    app.session_picker.list_request = None;
+    app.session_picker.error = Some(format!("Could not refresh the session list: {message}"));
+}
+
+fn close_picker(app: &mut App) {
+    app.session_picker.list_request = None;
+    app.startup.resolve_session_picker();
+    app.startup.complete_launch();
+    view::set_chat_surface(app);
+}
+
 pub(crate) fn picker_turn_count(app: &App) -> usize {
     app.sdk_inventory.rewind_targets.len()
 }
@@ -29,6 +82,13 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     }
 
     if startup_picker_is_loading(app) {
+        return;
+    }
+
+    if refresh_is_pending(app) {
+        if matches!(key.code, KeyCode::Esc) {
+            close_picker(app);
+        }
         return;
     }
 
@@ -45,9 +105,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     let session_count = picker_session_count(app);
     if session_count == 0 {
         if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
-            app.startup.resolve_session_picker();
-            app.startup.complete_launch();
-            view::set_chat_surface(app);
+            close_picker(app);
         }
         return;
     }
@@ -67,11 +125,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         (KeyCode::Right, KeyModifiers::NONE) => open_turn_selection(app),
         (KeyCode::Char('t'), KeyModifiers::NONE) => open_mutation(app, false),
         (KeyCode::Char('d'), KeyModifiers::NONE) => open_mutation(app, true),
-        (KeyCode::Esc, KeyModifiers::NONE) => {
-            app.startup.resolve_session_picker();
-            app.startup.complete_launch();
-            view::set_chat_surface(app);
-        }
+        (KeyCode::Esc, KeyModifiers::NONE) => close_picker(app),
         _ => {}
     }
 }
@@ -143,6 +197,24 @@ fn handle_mutation_key(app: &mut App, key: KeyEvent) {
         }
         _ => {}
     }
+}
+
+/// A bracketed paste into the tag field lands where typed characters land (the
+/// draft has no cursor, so the end). A tag is one line: line breaks become
+/// spaces and other control characters are dropped, because a pasted newline
+/// cannot be typed here (Enter submits). The field has no length bound for
+/// typed input, so a paste has none either. Pastes are swallowed while a
+/// delete confirmation or a pending save owns the keys.
+pub(crate) fn handle_paste(app: &mut App, text: &str) -> bool {
+    let Some(mutation) = app.session_picker.mutation.as_deref_mut() else { return false };
+    if let SessionPickerMutation::Tag { draft, request_id: None, .. } = mutation {
+        draft.extend(text.replace("\r\n", "\n").chars().filter_map(|pasted| match pasted {
+            '\n' | '\r' => Some(' '),
+            control if control.is_control() => None,
+            printable => Some(printable),
+        }));
+    }
+    true
 }
 
 fn submit_mutation(app: &mut App) {
@@ -408,7 +480,7 @@ fn is_ctrl(key: KeyEvent, ch: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_mutation_result, handle_key};
+    use super::{apply_mutation_result, handle_key, handle_paste};
     use crate::agent::client::AgentConnection;
     use crate::agent::wire::BridgeCommand;
     use crate::app::{
@@ -455,6 +527,48 @@ mod tests {
 
     fn key(app: &mut App, code: KeyCode) {
         handle_key(app, KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    fn tag_draft(app: &App) -> Option<&str> {
+        match app.session_picker.mutation.as_deref() {
+            Some(SessionPickerMutation::Tag { draft, .. }) => Some(draft),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn paste_extends_the_tag_draft_on_one_line_and_is_ignored_elsewhere() {
+        let mut app = picker_app();
+        assert!(!handle_paste(&mut app, "ignored"), "no mutation open: not consumed");
+
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('a'));
+        assert!(handle_paste(&mut app, "b\r\nc\nd\x1b[31me\u{7}\u{e9}"));
+        assert_eq!(tag_draft(&app), Some("ab c d[31me\u{e9}"));
+
+        // Enter after a paste submits the pasted tag, not a second line.
+        let (connection, mut rx) = AgentConnection::test_channel();
+        app.session_runtime.conn = Some(Rc::new(connection));
+        key(&mut app, KeyCode::Enter);
+        let sent = rx.try_recv().expect("tag command");
+        assert!(matches!(
+            sent.command,
+            BridgeCommand::TagSession { tag: Some(ref tag), .. } if tag == "ab c d[31me\u{e9}"
+        ));
+        // While the save is pending the field is read-only, as for typed keys.
+        assert!(handle_paste(&mut app, "late"));
+        assert_eq!(tag_draft(&app), Some("ab c d[31me\u{e9}"));
+    }
+
+    #[test]
+    fn paste_does_not_touch_a_delete_confirmation() {
+        let mut app = picker_app();
+        key(&mut app, KeyCode::Char('d'));
+        assert!(handle_paste(&mut app, "y"));
+        assert!(matches!(
+            app.session_picker.mutation.as_deref(),
+            Some(SessionPickerMutation::Delete { request_id: None, .. })
+        ));
     }
 
     #[test]
@@ -601,6 +715,9 @@ mod tests {
         assert!(matches!(app.status, AppStatus::CommandPending));
         assert_eq!(app.pending_session_resume_id(), Some("session-1"));
         let envelope = rx.try_recv().expect("resume command");
+        // A failed lookup comes back under this id, which must be the one the app waits on.
+        assert_eq!(envelope.request_id.as_deref(), app.pending_resume_operation_id());
+        assert!(envelope.request_id.is_some());
         assert!(matches!(
             envelope.command,
             BridgeCommand::ResumeSession {
@@ -671,8 +788,7 @@ mod tests {
 
         assert_eq!(app.surface_mode, SurfaceMode::Chat);
         assert_eq!(app.pending_session_resume_id(), Some("session-1"));
-        let operation_id =
-            app.pending_resume_at_operation_id().expect("pending resume-at operation");
+        let operation_id = app.pending_resume_operation_id().expect("pending resume-at operation");
         let envelope = rx.try_recv().expect("resume-at command");
         assert_eq!(envelope.request_id.as_deref(), Some(operation_id));
         assert!(matches!(

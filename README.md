@@ -21,13 +21,13 @@ This is [Ayush's fork](https://github.com/ayush5harma/claude-code-rust) of [Simo
 
 The two SDK behavior fixes incorporate upstream pull requests [#444](https://github.com/srothgan/claude-code-rust/pull/444) and [#445](https://github.com/srothgan/claude-code-rust/pull/445). See the [fork changelog](CHANGELOG.md) and [v0.15.2-fork.2 release](https://github.com/ayush5harma/claude-code-rust/releases/tag/v0.15.2-fork.2).
 
-### Merged on main, awaiting the next fork release
+### Added in v0.15.2-fork.3
 
 | Change | What it adds |
 | --- | --- |
 | Bridge test discovery and fixtures ([#7](https://github.com/ayush5harma/claude-code-rust/pull/7)) | Portable test discovery and a corrected TypeScript fixture loader so local and CI checks exercise the intended bridge tests. |
 | Local CI runner and development shell ([#8](https://github.com/ayush5harma/claude-code-rust/pull/8)) | A single local check runner and a Nix development shell for the repository's Rust, bridge, and repository checks. |
-| Live end-to-end harness ([#10](https://github.com/ayush5harma/claude-code-rust/pull/10)) | Repeatable real-SDK terminal scenarios with recorded pass, failure, gap, and skip outcomes. The initial baseline was **59 pass, 5 fail, 13 gap, 9 skip**; adding the harness does not mean all scenarios pass. |
+| Live end-to-end harness ([#10](https://github.com/ayush5harma/claude-code-rust/pull/10)) | Repeatable real-SDK terminal scenarios with recorded pass, failure, gap, and skip outcomes. Reports distinguish verified behavior from SDK gaps and skipped scenarios; the original baseline remains documented for comparison. |
 | Render corpus and benchmark comparison ([#9](https://github.com/ayush5harma/claude-code-rust/pull/9)) | Representative rendering workloads and repeated baseline/candidate measurements, with noise checks, invalid-result rejection, and temporary-worktree cleanup on interruption. These compare revisions of this application; they are not a benchmark against Anthropic's stock interface. |
 | Launch and session flags ([#11](https://github.com/ayush5harma/claude-code-rust/pull/11)) | `--name`, `--fork-session`, repeatable `--add-dir`, file or inline `--settings` and `--mcp-config`, `--strict-mcp-config`, and replacement/appended system prompts from text or files. Session names and forks apply to the initial session; directory and configuration overrides persist for sessions started within the process. |
 | Skill reload and conversation export ([#13](https://github.com/ayush5harma/claude-code-rust/pull/13)) | `/reload` refreshes available skills and completion without restarting the session. `/export` writes saved conversation history as Markdown and refuses to overwrite an existing file. |

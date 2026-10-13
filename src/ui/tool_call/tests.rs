@@ -910,20 +910,106 @@ fn read_body_does_not_style_unrelated_text_as_an_image_result() {
     assert!(!body[0].spans.iter().any(|span| span.content.as_ref() == "Viewed image"));
 }
 
-#[test]
-fn read_body_renders_sdk_line_numbers_as_dim_gutter() {
-    let tc = read_tool_call("Cargo.toml", "1[package]\n2name = \"demo\"\n3version = \"0.1.0\"");
-    let body = standard::render_tool_call_body(&tc, 120);
-    let rendered = rendered_line_texts(&body);
+fn read_file_text_call(path: &str, start_line: u32, text: &str) -> ToolCallInfo {
+    let mut tc = test_tool_call("Read opaque-title", "Read", model::ToolCallStatus::Completed);
+    tc.content =
+        vec![model::ToolCallContent::FileText(model::FileText::new(path, start_line, text))];
+    tc
+}
 
-    assert!(rendered[0].contains("1  [package]"));
-    assert!(rendered[1].contains("2  name = \"demo\""));
-    assert!(
-        body[0]
-            .spans
-            .iter()
-            .any(|span| span.content.contains('1') && span.style.fg == Some(theme::DIM))
+#[test]
+fn read_file_text_renders_one_row_per_source_line_behind_a_dim_gutter() {
+    // A markdown file: its source lines are shown as written, not rendered as markdown.
+    let tc = read_file_text_call("/work/NOTES.md", 9, "# Title\n\n**bold** text\n- item");
+    let body = standard::render_tool_call_body(&tc, 80);
+
+    assert_eq!(
+        rendered_line_texts_trimmed(&body),
+        vec![
+            "  \u{2502}   9  # Title",
+            "  \u{2502}  10",
+            "  \u{2502}  11  **bold** text",
+            "  \u{2514}\u{2500} 12  - item",
+        ]
     );
+    // The right-aligned number and its separator are one dim cell run after the tree prefix.
+    for (row, gutter) in body.iter().zip([" 9  ", "10  ", "11  ", "12  "]) {
+        assert_eq!(row.spans[1].content.as_ref(), gutter);
+        assert_eq!(row.spans[1].style.fg, Some(theme::DIM));
+    }
+}
+
+#[test]
+fn read_file_text_wraps_long_lines_under_the_text_column() {
+    let tc = read_file_text_call("/work/data.txt", 1, "abcdefghijklmnopqrstuvwxyz0123456789\nend");
+    // Body width 24 leaves 19 columns after the tree prefix: 1 for the number, 2 for the
+    // separator and 16 for text.
+    let body = standard::render_tool_call_body(&tc, 24);
+
+    assert_eq!(
+        rendered_line_texts_trimmed(&body),
+        vec![
+            "  \u{2502}  1  abcdefghijklmnop",
+            "  \u{2502}     qrstuvwxyz012345",
+            "  \u{2502}     6789",
+            "  \u{2514}\u{2500} 2  end",
+        ]
+    );
+}
+
+#[test]
+fn read_file_text_keeps_the_head_tail_cap_by_source_line() {
+    let text = (1..=12).map(|n| format!("row{n}")).collect::<Vec<_>>().join("\n");
+    let tc = read_file_text_call("/work/data.txt", 1, &text);
+    let body = standard::render_tool_call_body(&tc, 80);
+
+    assert_eq!(
+        rendered_line_texts_trimmed(&body),
+        vec![
+            "  \u{2502}   1  row1",
+            "  \u{2502}   2  row2",
+            "  \u{2502}   3  row3",
+            "  \u{2502}  ... 5 lines hidden ...",
+            "  \u{2502}   9  row9",
+            "  \u{2502}  10  row10",
+            "  \u{2502}  11  row11",
+            "  \u{2514}\u{2500} 12  row12",
+        ]
+    );
+}
+
+#[test]
+fn read_file_text_shows_a_single_line_file_with_its_number() {
+    let tc = read_file_text_call("/work/one.txt", 1, "only line");
+    let body = standard::render_tool_call_body(&tc, 80);
+
+    assert_eq!(rendered_line_texts_trimmed(&body), vec!["  \u{2514}\u{2500} 1  only line"]);
+}
+
+#[test]
+fn read_file_text_expands_tabs_and_strips_control_sequences() {
+    let tc = read_file_text_call(
+        "/work/main.go",
+        1,
+        "\tindented\n\u{1b}]8;;https://evil.example\u{7}link\u{1b}]8;;\u{7}\n\u{1b}[31mred\u{1b}[0m",
+    );
+    let body = standard::render_tool_call_body(&tc, 80);
+
+    assert_eq!(
+        rendered_line_texts_trimmed(&body),
+        vec!["  \u{2502}  1      indented", "  \u{2502}  2  link", "  \u{2514}\u{2500} 3  red",]
+    );
+    assert!(
+        body.iter().flat_map(|row| &row.spans).all(|span| span.style.fg != Some(Color::Red)),
+        "file bytes must not colour the transcript"
+    );
+}
+
+#[test]
+fn read_file_text_summary_is_the_first_non_blank_source_line() {
+    let tc = read_file_text_call("/work/a.txt", 1, "\n  \nfirst real line\nsecond");
+
+    assert_eq!(standard::content_summary(&tc), "first real line");
 }
 
 #[test]
@@ -1920,6 +2006,118 @@ fn content_summary_keeps_normal_limit_for_completed_agent() {
     let summary = content_summary(&tc);
     assert_eq!(summary.chars().count(), 60);
     assert!(summary.ends_with("..."));
+}
+
+fn bash_call_with_output(output: &str) -> ToolCallInfo {
+    let mut tc = test_tool_call("tc-colour", "Bash", model::ToolCallStatus::Completed);
+    tc.terminal_id = Some("term-colour".into());
+    tc.terminal_output = Some(output.to_owned());
+    tc
+}
+
+type RenderedCell = (String, Option<Color>, Option<Color>, Modifier);
+
+fn styled_cells(lines: &[Line<'static>]) -> Vec<Vec<RenderedCell>> {
+    lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| {
+                    (
+                        span.content.to_string(),
+                        span.style.fg,
+                        span.style.bg,
+                        span.style.add_modifier,
+                    )
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn cell(text: &str, fg: Color, bg: Option<Color>, modifiers: Modifier) -> RenderedCell {
+    (text.to_owned(), Some(fg), bg, modifiers)
+}
+
+#[test]
+fn bash_output_keeps_the_sgr_colours_the_program_asked_for() {
+    let tc = bash_call_with_output(
+        "\u{1b}[31mRED\u{1b}[0m plain\n\
+         \u{1b}[1;32mBOLD_GREEN\u{1b}[0m \u{1b}[38;5;208mORANGE\u{1b}[0m \
+         \u{1b}[38;2;0;200;255;48;5;4;4mTRUE\u{1b}[0m\n\
+         plain again",
+    );
+    let none = Modifier::empty();
+
+    assert_eq!(
+        styled_cells(&execute::render_execute_content(&tc)),
+        vec![
+            vec![cell("RED", Color::Red, None, none), cell(" plain", theme::DIM, None, none)],
+            vec![
+                cell("BOLD_GREEN", Color::Green, None, Modifier::BOLD),
+                cell(" ", theme::DIM, None, none),
+                cell("ORANGE", Color::Indexed(208), None, none),
+                cell(" ", theme::DIM, None, none),
+                cell(
+                    "TRUE",
+                    Color::Rgb(0, 200, 255),
+                    Some(Color::Indexed(4)),
+                    Modifier::UNDERLINED
+                ),
+            ],
+            vec![cell("plain again", theme::DIM, None, none)],
+        ]
+    );
+}
+
+#[test]
+fn bash_output_never_passes_other_control_sequences_through() {
+    // Hyperlink, title, cursor movement, erase, mode change, DCS and C1 CSI, plus one SGR
+    // colour that must survive all of it.
+    let tc = bash_call_with_output(
+        "\u{1b}]8;;https://evil.example\u{1b}\\LINK\u{1b}]8;;\u{1b}\\ \
+         \u{1b}]0;retitled\u{7}\u{1b}[2J\u{1b}[3A\u{1b}[H\u{1b}[?1049h\u{1b}P1$r\u{1b}\\\
+         \u{1b}[32mGREEN\u{1b}[0m\u{9b}2J\u{8}\r\u{7} end",
+    );
+    let lines = execute::render_execute_content(&tc);
+
+    assert_eq!(
+        styled_cells(&lines),
+        vec![vec![
+            cell("LINK ", theme::DIM, None, Modifier::empty()),
+            cell("GREEN", Color::Green, None, Modifier::empty()),
+            cell(" end", theme::DIM, None, Modifier::empty()),
+        ]]
+    );
+    for span in lines.iter().flat_map(|line| &line.spans) {
+        assert!(
+            !span.content.chars().any(char::is_control),
+            "control character reached a cell: {:?}",
+            span.content
+        );
+    }
+}
+
+#[test]
+fn bash_output_drops_unsupported_sgr_instead_of_printing_it() {
+    // Reverse video and a truncated 256-colour sequence: not mapped, never shown as text.
+    let tc = bash_call_with_output("\u{1b}[7mA\u{1b}[0m \u{1b}[38;5mB");
+    let none = Modifier::empty();
+
+    assert_eq!(
+        styled_cells(&execute::render_execute_content(&tc)),
+        vec![vec![cell("A B", theme::DIM, None, none)]]
+    );
+}
+
+#[test]
+fn uncoloured_diff_output_still_gets_diff_colours() {
+    let tc = bash_call_with_output("--- a/f\n+++ b/f\n@@ -1 +1 @@\n-old\n+new");
+    let lines = execute::render_execute_content(&tc);
+
+    assert_eq!(lines[3].spans[0].style.fg, Some(Color::Red));
+    assert_eq!(lines[4].spans[0].style.fg, Some(Color::Green));
 }
 
 #[test]

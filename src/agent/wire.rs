@@ -284,6 +284,8 @@ pub enum BridgeCommand {
         server_name: String,
         callback_url: String,
     },
+    /// Ask for a fresh listing of the project's sessions; answered by `sessions_listed`.
+    ListSessions,
     Shutdown,
 }
 
@@ -336,6 +338,7 @@ impl BridgeCommand {
             Self::McpAuthenticate { .. } => "mcp_authenticate",
             Self::McpClearAuth { .. } => "mcp_clear_auth",
             Self::McpOauthCallbackUrl { .. } => "mcp_oauth_callback_url",
+            Self::ListSessions => "list_sessions",
             Self::Shutdown => "shutdown",
         }
     }
@@ -386,7 +389,10 @@ impl BridgeCommand {
             | Self::McpClearAuth { session_id, .. }
             | Self::McpOauthCallbackUrl { session_id, .. } => Some(session_id.as_str()),
             Self::CreateSession { resume, .. } => resume.as_deref(),
-            Self::Initialize { .. } | Self::NewSession { .. } | Self::Shutdown => None,
+            Self::Initialize { .. }
+            | Self::NewSession { .. }
+            | Self::ListSessions
+            | Self::Shutdown => None,
         }
     }
 
@@ -438,6 +444,7 @@ impl BridgeCommand {
             | Self::McpAuthenticate { .. }
             | Self::McpClearAuth { .. }
             | Self::McpOauthCallbackUrl { .. }
+            | Self::ListSessions
             | Self::Shutdown => None,
         }
     }
@@ -600,6 +607,9 @@ pub enum BridgeEvent {
         session_id: String,
         message: String,
     },
+    SessionsListFailed {
+        message: String,
+    },
     RuntimeReloadCompleted {
         session_id: String,
     },
@@ -727,6 +737,7 @@ impl BridgeEvent {
             Self::TurnError { .. } => "turn_error",
             Self::SlashError { .. } => "slash_error",
             Self::SessionResumeFailed { .. } => "session_resume_failed",
+            Self::SessionsListFailed { .. } => "sessions_list_failed",
             Self::RuntimeReloadCompleted { .. } => "runtime_reload_completed",
             Self::RuntimeReloadHeld { .. } => "runtime_reload_held",
             Self::RuntimeReloadFailed { .. } => "runtime_reload_failed",
@@ -790,7 +801,8 @@ impl BridgeEvent {
             Self::AuthRequired { .. }
             | Self::ConnectionFailed { .. }
             | Self::Initialized { .. }
-            | Self::SessionsListed { .. } => None,
+            | Self::SessionsListed { .. }
+            | Self::SessionsListFailed { .. } => None,
         }
     }
 
@@ -823,6 +835,7 @@ impl BridgeEvent {
             | Self::TurnError { .. }
             | Self::SlashError { .. }
             | Self::SessionResumeFailed { .. }
+            | Self::SessionsListFailed { .. }
             | Self::RuntimeReloadCompleted { .. }
             | Self::RuntimeReloadHeld { .. }
             | Self::RuntimeReloadFailed { .. }

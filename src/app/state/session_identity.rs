@@ -4,6 +4,17 @@
 use super::prelude::*;
 
 impl App {
+    pub(crate) fn active_session_custom_title(&self) -> Option<&str> {
+        self.session_runtime.session_title.as_deref().or_else(|| {
+            let id = self.session_runtime.session_id.as_ref()?;
+            self.recent_sessions
+                .iter()
+                .find(|session| session.session_id == id.as_str())?
+                .custom_title
+                .as_deref()
+        })
+    }
+
     #[must_use]
     pub fn active_turn_assistant_idx(&self) -> Option<usize> {
         self.turn.assistant_message_idx.filter(|&idx| {

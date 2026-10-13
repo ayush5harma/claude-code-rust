@@ -59,8 +59,7 @@ function writeSdkFixture(fixturePath: string, cwd: string): void {
       return [{ sessionId: ${JSON.stringify(SESSION_ID)}, cwd, lastModified: 1, customTitle: titles.get(${JSON.stringify(SESSION_ID)}) }];
     }
     export function query({ prompt, options }) {
-      if (process.env.DROP_TITLE_ON_RESUME === "1" && options.resume) titles.delete(options.resume);
-      appendFileSync(process.env.QUERY_JOURNAL, JSON.stringify({ resume: options.resume }) + "\\n");
+      appendFileSync(process.env.QUERY_JOURNAL, JSON.stringify({ resume: options.resume, title: options.title }) + "\\n");
       const input = prompt[Symbol.asyncIterator]();
       const pending = [];
       let sessionId = options.resume;
@@ -150,7 +149,6 @@ test("the bridge sends the session API's title through resume, turns, renames, r
         CLAUDE_CODE_PROJECT_DIR_NAME: undefined,
         CLAUDE_RS_BRIDGE_DIAGNOSTICS: "1",
         QUERY_JOURNAL: journal,
-        DROP_TITLE_ON_RESUME: command === "resume_session" ? "1" : undefined,
         CLAUDE_CODE_EXECUTABLE: "",
       },
       stdio: "pipe",
@@ -186,7 +184,11 @@ test("the bridge sends the session API's title through resume, turns, renames, r
         : { command, cwd, resume: SESSION_ID, request_id: "title-resume", launch_settings: {} });
       await readUntil(titleUpdate(SESSION_ID, "Saved name"));
       assert.ok(events.some((event) => event.event === "connected"), `${command}: ${JSON.stringify(events)}`);
-      assert.equal((JSON.parse(readFileSync(journal, "utf8").trim()) as Envelope).resume, SESSION_ID);
+      const launched = JSON.parse(readFileSync(journal, "utf8").trim()) as Envelope;
+      assert.equal(launched.resume, SESSION_ID);
+      // The title the SDK already holds goes back to it as the process title, so the session
+      // registry other clients read shows the saved name after a resume.
+      if (command === "resume_session") assert.equal(launched.title, "Saved name");
 
       // A failed read is logged, and nothing is sent for it.
       const beforeFailure = events.length;
