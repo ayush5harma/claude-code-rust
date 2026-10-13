@@ -164,26 +164,41 @@ fn after_separator(args: &[std::ffi::OsString], value: &str) -> bool {
 }
 
 /// The visible command a one-word prompt is a likely typo of. clap takes an unknown word
-/// as the prompt, so `claude-rs doctr` would send "doctr" to Claude. Names of four
-/// characters or fewer allow one edit, longer ones two, so short words such as "go" stay
-/// prompts.
+/// as the prompt, so `claude-rs doctr` would send "doctr" to Claude.
 fn mistyped_command(prompt: &str) -> Option<String> {
     use clap::CommandFactory;
-    if prompt.is_empty() || prompt.chars().any(char::is_whitespace) {
+    let word: Vec<char> = prompt.to_lowercase().chars().collect();
+    if word.len() < 4 || word.iter().any(|ch| ch.is_whitespace()) {
         return None;
     }
-    let word = prompt.to_lowercase();
-    let command = Cli::command();
-    command
+    Cli::command()
         .get_subcommands()
         .filter(|subcommand| !subcommand.is_hide_set())
-        .map(|subcommand| {
-            let name = subcommand.get_name();
-            (strsim::damerau_levenshtein(&word, name), name)
-        })
-        .filter(|(distance, name)| *distance <= if name.len() <= 4 { 1 } else { 2 })
-        .min_by_key(|(distance, _)| *distance)
-        .map(|(_, name)| name.to_owned())
+        .map(clap::Command::get_name)
+        .find(|name| is_typo_of(&word, &name.chars().collect::<Vec<_>>()))
+        .map(str::to_owned)
+}
+
+/// One slip of the fingers away from `name`: a different case, two adjacent characters
+/// swapped, or one character dropped or doubled, never the first or the last. A real word
+/// is usually a substitution ("logo", "lots" for `logs`) or a changed ending ("doctors",
+/// "completion"), and those are left as prompts; so are words one edit away with a
+/// different first letter ("dogs", "actor").
+fn is_typo_of(word: &[char], name: &[char]) -> bool {
+    if word == name {
+        return true;
+    }
+    if word.first() != name.first() {
+        return false;
+    }
+    if word.len() == name.len() {
+        let differing: Vec<usize> = (0..word.len()).filter(|&i| word[i] != name[i]).collect();
+        return matches!(differing[..], [i, j] if j == i + 1 && word[i] == name[j] && word[j] == name[i]);
+    }
+    let (longer, shorter) = if word.len() > name.len() { (word, name) } else { (name, word) };
+    longer.len() == shorter.len() + 1
+        && (1..shorter.len())
+            .any(|i| longer[..i] == shorter[..i] && longer[i + 1..] == shorter[i..])
 }
 
 /// Checked while parsing, so a bad filter is a usage error quoting the user's own text,
@@ -1157,6 +1172,8 @@ mod tests {
             (&["claude-rs", "lgos"][..], "lgos", "logs"),
             (&["claude-rs", "Config"][..], "Config", "config"),
             (&["claude-rs", "-c", "resme"][..], "resme", "resume"),
+            (&["claude-rs", "doctro"][..], "doctro", "doctor"),
+            (&["claude-rs", "logss"][..], "logss", "logs"),
         ] {
             let error = Cli::parse_from_args(args.iter().copied()).expect_err("typo");
             assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand, "{args:?}");
@@ -1184,6 +1201,31 @@ mod tests {
             cli.validate().expect("valid launch");
             assert_eq!(cli.initial_prompt(), Some(prompt), "{args:?}");
             assert!(cli.command.is_none());
+        }
+        // Ordinary words within a typo or two of a command name. An earlier rule (two
+        // edits for longer names, one for short ones) refused every one of them.
+        for word in [
+            "rename",
+            "result",
+            "reuse",
+            "assume",
+            "docker",
+            "factor",
+            "actor",
+            "confirm",
+            "log",
+            "logo",
+            "lots",
+            "dogs",
+            "completion",
+            "doctors",
+            "configs",
+            "resumes",
+        ] {
+            let cli = Cli::parse_from_args(["claude-rs", word]).unwrap_or_else(|error| {
+                panic!("{word} was refused: {error}");
+            });
+            assert_eq!(cli.initial_prompt(), Some(word));
         }
         let cli = Cli::parse_from_args(["claude-rs", "resume"]).expect("resume");
         assert_eq!(cli.command.as_ref().map(Command::name), Some("resume"));

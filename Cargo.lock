@@ -604,7 +604,6 @@ dependencies = [
  "serde_json",
  "shell-words",
  "similar",
- "strsim",
  "syntect",
  "sys-locale",
  "tempfile",
