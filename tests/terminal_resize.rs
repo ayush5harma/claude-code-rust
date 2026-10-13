@@ -2529,6 +2529,10 @@ fn session_picker_confirms_exact_id_before_delete_and_shows_acknowledged_tag() {
     test.shutdown();
 }
 
+// Measured 2026-10-13 on windows-latest: crossterm's Windows input backend does not
+// parse bracketed-paste CSI, so a raw pasted LF submits the tag. The portable unit
+// regression in `session_picker` owns multiline `Event::Paste` normalization.
+#[cfg(not(windows))]
 #[test]
 fn session_picker_tag_field_takes_a_bracketed_paste_appended_on_one_line() {
     let mut test = TerminalTest::start("session-management", 0);
