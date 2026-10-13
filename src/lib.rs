@@ -45,6 +45,39 @@ impl DiagnosticsPreset {
     }
 }
 
+/// The examples closing `-h`, repeated at the head of `--help`'s longer epilogue.
+macro_rules! help_examples {
+    () => {
+        "Examples:\n  claude-rs --diagnostics-preset session\n  claude-rs --diagnostics-preset render"
+    };
+}
+
+/// Exit statuses and environment variables, closing `--help`. `docs/src/usage.md` has the
+/// same two lists; `tests/docs_cli_contract.rs` checks both against `AppError`.
+macro_rules! help_exit_status_and_environment {
+    () => {
+        "Exit status:
+  0   Success, including --help and --version
+  1   Any other failure, such as `doctor --strict` finding a hard failure
+  2   Invalid command line
+  20  Bridge runtime not found
+  21  Bridge process failed to start or crashed
+  22  Bridge initialization, protocol or connection failure
+  23  The requested session could not be resumed
+  24  Authentication required
+  25  Interactive launch without a terminal (stdin and stdout must be a TTY)
+
+Environment:
+  CLAUDE_RS_AGENT_BRIDGE          Agent bridge script to run
+  CLAUDE_RS_AGENT_BRIDGE_RUNTIME  Runtime for the bridge script (debug builds only)
+  CLAUDE_RUST_NO_UPDATE_CHECK     1, true or yes disables update checks, as --no-update-check does
+  CLAUDE_CONFIG_DIR               Claude profile directory to use instead of ~/.claude
+  RUST_LOG                        Tracing filter used without --log-filter or --diagnostics-preset;
+                                  setting it turns on detailed logging
+  NO_COLOR                        Disables colour in support command output"
+    };
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "claude-rs",
@@ -54,7 +87,8 @@ impl DiagnosticsPreset {
     override_usage = "claude-rs [OPTIONS] [PROMPT]\n       claude-rs [OPTIONS] <COMMAND>"
 )]
 #[command(
-    after_help = "Examples:\n  claude-rs --diagnostics-preset session\n  claude-rs --diagnostics-preset render"
+    after_help = help_examples!(),
+    after_long_help = concat!(help_examples!(), "\n\n", help_exit_status_and_environment!())
 )]
 #[allow(clippy::struct_excessive_bools)]
 pub struct Cli {
@@ -71,7 +105,7 @@ pub struct Cli {
     #[arg(long, short = 'r', num_args = 0..=1, value_name = "ID", conflicts_with = "continue_session")]
     pub resume: Option<Option<String>>,
 
-    /// Continue the most recent session in the working directory (including git worktrees).
+    /// Continue the most recent session in the working directory (including git worktrees), or start a new one if there is none.
     #[arg(long = "continue", short = 'c')]
     pub continue_session: bool,
 

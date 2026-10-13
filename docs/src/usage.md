@@ -124,7 +124,7 @@ The installed `claude-rs --help` command exposes these options; the session and 
 
 | Option | Purpose |
 | --- | --- |
-| `-r, --resume [ID_OR_TITLE]` | Resume by exact ID or displayed title, or open the picker without a value. |
+| `-r, --resume [<ID>]` | Resume by exact ID or displayed title, or open the picker without a value. |
 | `-c, --continue` | Continue the latest session for the working directory and its git worktrees; start new if none exists. |
 | `--no-update-check` | Disable startup update checks. |
 | `-C, --dir <DIR>` | Run in a specific working directory, which must exist. |
@@ -149,6 +149,37 @@ The installed `claude-rs --help` command exposes these options; the session and 
 | `--log-append` | Append to the `--log-file` file instead of truncating it; requires `--log-file`. |
 
 See [Diagnostics](diagnostics.md) before enabling verbose logs.
+
+`claude-rs --help` ends with the exit statuses and environment variables below; `-h` leaves them out.
+
+## Exit Status
+
+| Status | Meaning |
+| --- | --- |
+| `0` | Success, including `--help` and `--version`. |
+| `1` | Any other failure, such as `doctor --strict` finding a hard failure or `config show` reading an invalid file. |
+| `2` | Invalid command line: an unknown or misspelled command or flag, a missing value, conflicting options, or a path that does not exist. |
+| `20` | The bridge runtime was not found. |
+| `21` | The bridge process failed to start or crashed. |
+| `22` | Bridge initialization, protocol, SDK or connection failure, including a timeout. |
+| `23` | The requested session could not be resumed. |
+| `24` | Authentication is required. |
+| `25` | An interactive launch had no terminal: stdin and stdout must both be a TTY. |
+
+Statuses 20 to 24 come with a failure report on stderr naming a next step; see [Diagnostics](diagnostics.md).
+
+## Environment
+
+| Variable | Effect |
+| --- | --- |
+| `CLAUDE_RS_AGENT_BRIDGE` | Agent bridge script to run. The npm launcher sets it to the bundled script. |
+| `CLAUDE_RS_AGENT_BRIDGE_RUNTIME` | Runtime that runs the bridge script; debug builds only. |
+| `CLAUDE_RUST_NO_UPDATE_CHECK` | `1`, `true` or `yes` disables update checks, as `--no-update-check` does. |
+| `CLAUDE_CONFIG_DIR` | Claude profile directory to use instead of `~/.claude`; see [Settings](settings.md). |
+| `RUST_LOG` | Tracing filter used without `--log-filter` or `--diagnostics-preset`; setting it turns on detailed logging. |
+| `NO_COLOR` | Disables colour in support command output. |
+
+The installer scripts read their own `CLAUDE_RS_*` variables; see [Installation](installation.md).
 
 ## Shell Completions
 
