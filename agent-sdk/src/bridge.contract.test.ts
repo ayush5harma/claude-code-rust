@@ -933,6 +933,31 @@ test("launch name titles a new session and renames a resumed one before it conne
   }
 });
 
+test("invalid resume configuration cannot rename the saved session or launch a query", async () => {
+  for (const [flag, launchSettings] of [
+    ["--settings", { name: "Changed", settings: '{"model":' }],
+    ["--mcp-config", { name: "Changed", mcp_configs: ['{"mcpServers":'] }],
+  ] as const) {
+    const directory = mkdtempSync(join(tmpdir(), "claude-rs-invalid-resume-"));
+    const journal = join(directory, "journal.jsonl");
+    const cwd = process.cwd();
+    const { bridge, cleanup } = ultracodeFixtureBridge({
+      STARTUP_JOURNAL: journal,
+      STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId: "saved-session", cwd, lastModified: 1 }]),
+    });
+    try {
+      bridge.writeCommand({ command: "resume_session", session_id: "saved-session", launch_settings: launchSettings });
+      const failed = await nextMatching(bridge, event => event.event === "slash_error");
+      assert.match(String(failed.message), new RegExp(flag));
+      const entries = readJournal(journal);
+      assert.equal(entries.some(entry => entry.type === "rename" || entry.type === "query"), false);
+    } finally {
+      await cleanup();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+});
+
 test("fork-session resumes under a new id that takes the launch name", async () => {
   const directory = mkdtempSync(join(tmpdir(), "claude-rs-fork-"));
   const journal = join(directory, "query-options.jsonl");

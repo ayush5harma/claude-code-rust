@@ -14,6 +14,7 @@ import {
   writeEvent,
 } from "./events.js";
 import { getSessionTranscriptMessages, mapSessionMessagesToUpdates } from "./history.js";
+import { parseLaunchConfig } from "./launch_config.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import {
   awaitSessionInitialization,
@@ -287,6 +288,7 @@ async function resume(
       return;
     }
     setSessionListingDir(matched.cwd ?? process.cwd());
+    const launchConfig = parseLaunchConfig(command.launch_settings);
     const renameError = await renameResumedSession(command, matched.cwd, requestId);
     const historyMessages = await getSessionTranscriptMessages(
       command.session_id,
@@ -315,6 +317,7 @@ async function resume(
       resume: command.session_id,
       ...(command.launch_settings.fork_session ? { forkSession: true } : {}),
       launchSettings: command.launch_settings,
+      launchConfig,
       ...(resumeUpdates.length > 0 ? { resumeUpdates } : {}),
       connectEvent: hadActiveSession ? "session_replaced" : "connected",
       requestId,
