@@ -15,7 +15,6 @@ import {
   writeEvent,
 } from "./events.js";
 import { getSessionTranscriptMessages, mapSdkSessionInfo, mapSessionMessagesToUpdates } from "./history.js";
-import { restoreSessionTitleAfterResume } from "./session_title.js";
 import { parseLaunchConfig } from "./launch_config.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import {
@@ -331,6 +330,7 @@ async function resume(
       ...(command.launch_settings.fork_session ? { forkSession: true } : {}),
       launchSettings: command.launch_settings,
       launchConfig,
+      ...(matched.customTitle ? { resumedTitle: matched.customTitle } : {}),
       ...(resumeUpdates.length > 0 ? { resumeUpdates } : {}),
       connectEvent: hadActiveSession ? "session_replaced" : "connected",
       requestId,
@@ -353,9 +353,6 @@ async function resume(
       ];
     }
     await awaitSessionInitialization(session);
-    if (!command.launch_settings.fork_session) {
-      await restoreSessionTitleAfterResume(session, command.launch_settings.name ?? matched.customTitle);
-    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     bridgeLogger.error({

@@ -938,7 +938,39 @@ test("launch name titles a new session and renames a resumed one before it conne
     assert.deepEqual(resumed.map(entry => entry.type), ["rename", "launch"]);
     assert.deepEqual(resumed[0], { type: "rename", sessionId: "saved-session", title: "Resumed name", options: { dir: cwd } });
     assert.equal(resumed[1]?.resume, "saved-session");
-    assert.equal(resumed[1]?.title, undefined);
+    // The resumed process names itself from `title` (measured on the pinned SDK: it sets the
+    // process name other clients read from the session registry and leaves the transcript alone).
+    assert.equal(resumed[1]?.title, "Resumed name");
+  } finally {
+    await cleanup();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("resume without a launch name carries the saved custom title into the query options", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-resume-title-"));
+  const journal = join(directory, "query-options.jsonl");
+  const cwd = process.cwd();
+  const { bridge, cleanup } = ultracodeFixtureBridge({
+    STARTUP_JOURNAL: journal,
+    STARTUP_SESSIONS_FIXTURE: JSON.stringify([
+      { sessionId: "saved-session", cwd, lastModified: 1, customTitle: "Saved title" },
+      { sessionId: "untitled-session", cwd, lastModified: 2 },
+    ]),
+  });
+  try {
+    bridge.writeCommand({ command: "resume_session", session_id: "saved-session", launch_settings: {} });
+    await nextMatching(bridge, event => event.event === "connected");
+    const titled = readJournal(journal).find(entry => entry.type === "launch");
+    assert.equal(titled?.resume, "saved-session");
+    assert.equal(titled?.title, "Saved title");
+
+    rmSync(journal);
+    bridge.writeCommand({ command: "resume_session", session_id: "untitled-session", launch_settings: {} });
+    await nextMatching(bridge, event => event.event === "session_replaced");
+    const untitled = readJournal(journal).find(entry => entry.type === "launch");
+    assert.equal(untitled?.resume, "untitled-session");
+    assert.equal(untitled?.title, undefined);
   } finally {
     await cleanup();
     rmSync(directory, { recursive: true, force: true });
