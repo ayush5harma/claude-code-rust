@@ -777,6 +777,9 @@ fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
             .unwrap_or(0);
         app.session_picker = SessionPickerState { selected, ..SessionPickerState::default() };
         view::set_fullscreen_view(app, FullscreenView::SessionPicker);
+        if let Some(conn) = app.session_runtime.conn.clone() {
+            crate::app::session_picker::begin_refresh(app, &conn);
+        }
         return true;
     }
     let session_id = args.join(" ");

@@ -111,7 +111,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         );
     } else if selecting_turn {
         render_turn_list(frame, chunks[2], app);
-    } else if crate::app::session_picker::startup_picker_is_loading(app) {
+    } else if crate::app::session_picker::startup_picker_is_loading(app)
+        || crate::app::session_picker::refresh_is_pending(app)
+    {
         frame.render_widget(
             Paragraph::new("Loading recent sessions...")
                 .style(Style::default().fg(theme::DIM))
@@ -266,6 +268,8 @@ fn session_line(width: u16, left: &str, base_style: Style, selected: bool) -> Li
 fn footer_text(app: &App) -> &'static str {
     if crate::app::session_picker::startup_picker_is_loading(app) {
         "Preparing session picker | Ctrl+Q to quit"
+    } else if crate::app::session_picker::refresh_is_pending(app) {
+        "Loading sessions | Esc to close | Ctrl+Q to quit"
     } else if app.session_picker.mutation.as_deref().is_some_and(|mutation| match mutation {
         crate::app::SessionPickerMutation::Tag { request_id, .. }
         | crate::app::SessionPickerMutation::Delete { request_id, .. } => request_id.is_some(),

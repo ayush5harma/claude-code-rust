@@ -85,6 +85,9 @@ pub struct SessionPickerState {
     /// Scroll offset for the turn list.
     pub turn_scroll_offset: usize,
     pub list_revision: u64,
+    /// Request id of the session listing asked for when the picker opened; the list is not
+    /// shown while it is pending, because the one held from connect predates later sessions.
+    pub list_request: Option<String>,
     pub mutation: Option<Box<SessionPickerMutation>>,
     pub error: Option<String>,
 }

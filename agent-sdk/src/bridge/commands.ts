@@ -762,6 +762,8 @@ export function parseCommandEnvelope(line: string): {
             "mcp_oauth_callback_url",
           ),
         };
+      case "list_sessions":
+        return { command: "list_sessions" };
       case "shutdown":
         return { command: "shutdown" };
       default:

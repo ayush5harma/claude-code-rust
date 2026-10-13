@@ -279,7 +279,7 @@ pub(super) async fn handle_bridge_event(
                 .await;
         }
         crate::agent::wire::BridgeEvent::SessionsListed { sessions } => {
-            let _ = event_tx.send(ClientEvent::SessionsListed { sessions }).await;
+            let _ = event_tx.send(ClientEvent::SessionsListed { sessions, request_id }).await;
         }
         crate::agent::wire::BridgeEvent::SessionMutationResult {
             session_id,

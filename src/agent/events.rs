@@ -178,7 +178,11 @@ pub enum ClientEvent {
         restored_input: Option<String>,
     },
     /// Recent sessions discovered via SDK session listing.
-    SessionsListed { sessions: Vec<crate::agent::types::SessionListEntry> },
+    SessionsListed {
+        sessions: Vec<crate::agent::types::SessionListEntry>,
+        /// Present when the listing answers a `list_sessions` request.
+        request_id: Option<String>,
+    },
     SessionMutationResult {
         session_id: String,
         request_id: Option<String>,

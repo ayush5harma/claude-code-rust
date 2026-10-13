@@ -1228,9 +1228,14 @@ fn new_session_command_is_rendered_as_user_message() {
 #[test]
 fn resume_without_id_opens_fullscreen_picker() {
     let mut app = App::test_default();
-    let _receiver = attach_test_connection(&mut app);
+    let mut receiver = attach_test_connection(&mut app);
     let consumed = try_handle_submit(&mut app, "/resume");
     assert!(consumed);
+    // The list held from connect is stale, so the picker waits for a fresh one.
+    let request = receiver.try_recv().expect("session listing request");
+    assert!(matches!(request.command, crate::agent::wire::BridgeCommand::ListSessions));
+    assert_eq!(request.request_id.as_deref(), app.session_picker.list_request.as_deref());
+    assert!(request.request_id.is_some());
     assert!(matches!(
         app.surface_mode,
         crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::SessionPicker)
