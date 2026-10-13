@@ -2168,7 +2168,6 @@ fn session_picker_confirms_exact_id_before_delete_and_shows_acknowledged_tag() {
     test.shutdown();
 }
 
-
 /// A terminal outside Windows sends Ctrl+V as one press byte and no release.
 /// Without a display server the clipboard cannot be opened, and the app has to
 /// say so: silence means the key never reached the clipboard path.

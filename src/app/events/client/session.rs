@@ -65,8 +65,9 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
             );
             refresh_session_snapshots(app);
         }
-        ClientEvent::SessionsListed { sessions } => {
+        ClientEvent::SessionsListed { sessions, request_id } => {
             session::handle_sessions_listed_event(app, sessions);
+            crate::app::session_picker::finish_refresh(app, request_id.as_deref());
         }
         ClientEvent::SessionMutationResult {
             session_id,
