@@ -559,6 +559,11 @@ pub enum ToolCallContent {
         new: String,
         repository: Option<String>,
     },
+    FileText {
+        path: String,
+        start_line: u32,
+        text: String,
+    },
     McpResource {
         uri: String,
         mime_type: Option<String>,

@@ -467,6 +467,15 @@ readline
             raw_input: { file_path: 'session-only.txt' }, locations: [], meta: { claudeCode: { toolName: 'Edit' } },
           } } });
         }
+        if (SCENARIO === 'read-result') {
+          // What the bridge sends for a successful text Read: the file's own lines and the
+          // number of the first, never the numbered text the model sees.
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call', tool_call: {
+            tool_call_id: 'read-notes', title: 'Read NOTES.md', kind: 'read', status: 'completed',
+            content: [{ type: 'file_text', path: '/fixture/NOTES.md', start_line: 1, text: '# Fixture heading\n\n- first item\n1. numbered item' }],
+            raw_input: { file_path: '/fixture/NOTES.md' }, locations: [], meta: { claudeCode: { toolName: 'Read' } },
+          } } });
+        }
         if (SCENARIO === 'hook-activity') startupHooks();
         if (SCENARIO === 'disconnect-during-auth' && message.command === 'create_session') {
           const timer = setInterval(() => {

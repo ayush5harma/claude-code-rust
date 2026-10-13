@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::{App, FullscreenView, MessageBlock, MessageRole, SurfaceMode, view};
-use crate::agent::model::{ContentBlock, ToolCallContent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 const MAX_ROWS: usize = 5000;
@@ -31,10 +30,8 @@ pub(crate) fn open(app: &mut App) -> bool {
                     let tool = tool.display();
                     push_row(&mut rows, &mut truncated, &format!("  Tool: {}", tool.title));
                     for content in &tool.content {
-                        if let ToolCallContent::Content(content) = content
-                            && let ContentBlock::Text(text) = &content.content
-                        {
-                            push_text(&mut rows, &mut truncated, &text.text);
+                        if let Some(text) = content.plain_text() {
+                            push_text(&mut rows, &mut truncated, text);
                         }
                     }
                     if let Some(output) = &tool.terminal_output {

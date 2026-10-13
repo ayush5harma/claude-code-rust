@@ -2504,6 +2504,23 @@ fn native_diff_browses_session_and_working_tree_files() {
     test.shutdown();
 }
 
+#[test]
+fn read_result_shows_one_source_line_per_row_behind_a_gutter() {
+    let mut test = TerminalTest::start("read-result", 3);
+    let screen = test.wait_screen_with("# Fixture heading", &["numbered item"]);
+
+    // A file with markdown syntax is shown as written; the numbers stay out of the text.
+    let heading = rows_with(&screen, "# Fixture heading");
+    let item = rows_with(&screen, "- first item");
+    let numbered = rows_with(&screen, "1. numbered item");
+    assert_eq!((heading.len(), item.len(), numbered.len()), (1, 1, 1), "{screen}");
+    assert!(heading[0].contains("1  # Fixture heading"), "{screen}");
+    assert!(item[0].contains("3  - first item"), "{screen}");
+    assert!(numbered[0].contains("4  1. numbered item"), "{screen}");
+    assert!(!screen.contains("1# Fixture"), "{screen}");
+    test.shutdown();
+}
+
 /// The rows of `screen` that mention `needle`.
 fn rows_with<'a>(screen: &'a str, needle: &str) -> Vec<&'a str> {
     screen.lines().filter(|line| line.contains(needle)).collect()

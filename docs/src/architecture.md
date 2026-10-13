@@ -79,6 +79,8 @@ Automatic updates uses the same catalog and writer for the User-only `updates.au
 
 ### Presentation and timing
 
+A successful text Read reaches Rust as `file_text` tool content: the file's own lines and the number of the first one, taken by the bridge from the SDK's structured result rather than from the line-numbered text the model sees. Rust shows one source line per row behind a dim line-number gutter, wraps long lines under the text column, applies the head/tail cap to source lines before wrapping, and never parses line numbers back out of text. Markdown files are shown as source. Search, the verbose view and export read the same text.
+
 Tool titles share a one-line display projection and a source-keyed inline cache in the existing block cache. Shell command titles render literally; other tool titles retain Markdown styling. Full titles and command inputs remain canonical data. Spinner/status chrome, metadata badges and width clipping stay live, while unchanged title content survives body updates and resize. Inline cache bytes participate in the existing render budget and eviction workflow.
 
 | Concern | Owner | Location |

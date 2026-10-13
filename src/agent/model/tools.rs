@@ -99,13 +99,47 @@ impl Diff {
     }
 }
 
+/// A text file's own lines (no line-number prefixes) as a Read returned them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileText {
+    pub path: PathBuf,
+    /// 1-based number of the first line in `text`.
+    pub start_line: u32,
+    pub text: String,
+}
+
+impl FileText {
+    #[must_use]
+    pub fn new(path: impl Into<PathBuf>, start_line: u32, text: impl Into<String>) -> Self {
+        Self { path: path.into(), start_line, text: text.into() }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolCallContent {
     Content(Content),
     Diff(Diff),
+    FileText(FileText),
     McpResource(McpResource),
     ResourceLink(McpResourceLink),
     Terminal(TerminalToolCallContent),
+}
+
+impl ToolCallContent {
+    /// The plain text this entry carries, for search, export and the verbose view.
+    #[must_use]
+    pub fn plain_text(&self) -> Option<&str> {
+        match self {
+            Self::Content(content) => match &content.content {
+                ContentBlock::Text(text) => Some(text.text.as_str()),
+                ContentBlock::Image(_) => None,
+            },
+            Self::FileText(file) => Some(file.text.as_str()),
+            Self::Diff(_) | Self::McpResource(_) | Self::ResourceLink(_) | Self::Terminal(_) => {
+                None
+            }
+        }
+    }
 }
 
 impl From<&str> for ToolCallContent {
