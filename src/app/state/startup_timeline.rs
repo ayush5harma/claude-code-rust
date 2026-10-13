@@ -63,6 +63,19 @@ impl StartupTimeline {
         self.connected.get_or_insert_with(|| now.saturating_duration_since(self.origin));
     }
 
+    /// The instant the app started; the welcome crab's connecting loop is
+    /// timed from it.
+    #[must_use]
+    pub fn origin(&self) -> Instant {
+        self.origin
+    }
+
+    /// The instant the first session of the process connected, if it has.
+    #[must_use]
+    pub fn connected_at(&self) -> Option<Instant> {
+        self.connected.and_then(|connected| self.origin.checked_add(connected))
+    }
+
     /// Whether the first connected session has not yet been shown ready.
     #[must_use]
     pub fn awaiting_ready(&self) -> bool {
