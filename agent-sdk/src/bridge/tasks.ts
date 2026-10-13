@@ -1120,6 +1120,11 @@ export function taskLifecyclePatch(
   if (!taskId) return undefined;
   const patch = asRecordOrNull(msg.patch);
   const status = lifecycleTaskStatus(subtype, msg);
+  // Progress and updates can be queued behind the outcome. Only a new start
+  // or another outcome may change a settled row.
+  if (existing?.status === "completed" && status !== "completed" && subtype !== "task_started") {
+    return undefined;
+  }
   const description =
     nonEmptyString(patch?.description) ??
     nonEmptyString(msg.description) ??

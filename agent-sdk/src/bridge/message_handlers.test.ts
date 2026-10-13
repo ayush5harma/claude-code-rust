@@ -155,6 +155,60 @@ test("a non-streaming fallback after a partial stream is shown in full", () => {
   assert.deepEqual(texts, ["partial", "the full reply"]);
 });
 
+/** The last `task_state_update` row the bridge wrote for `taskId` while `run` ran. */
+function lastTaskRow(taskId: string, run: () => void): Record<string, unknown> | undefined {
+  const writes: string[] = [];
+  const restore = replaceProtocolEventWriter((line) => {
+    writes.push(line);
+  });
+  try {
+    run();
+  } finally {
+    restore();
+  }
+  return writes
+    .map((line) => (JSON.parse(line) as { update?: { type?: string; tasks?: Array<Record<string, unknown>> } }).update)
+    .filter((update) => update?.type === "task_state_update")
+    .flatMap((update) => update?.tasks ?? [])
+    .filter((task) => task.task_id === taskId)
+    .at(-1);
+}
+
+// A foreground Agent call can finish through its tool result before the task
+// notification arrives. The finished tool call then rejects the notification,
+// which must still settle the separate task row the footer and /agents count.
+test("a subagent task row settles when its notification follows the finished tool call", () => {
+  for (const outcome of ["completed", "failed", "stopped"]) {
+    const session = makeSession();
+    const emit = (message: Record<string, unknown>) =>
+      handleSdkMessage(session, {
+        session_id: "session-1",
+        parent_tool_use_id: null,
+        uuid: crypto.randomUUID(),
+        ...message,
+      } as unknown as SDKMessage);
+    const system = (subtype: string, fields: Record<string, unknown>) =>
+      emit({ type: "system", subtype, task_id: "agent-1", ...fields });
+
+    const row = lastTaskRow("agent-1", () => {
+      emit({ type: "assistant", message: { id: "response-1", role: "assistant", content: [{ type: "tool_use", id: "tool-1", name: "Agent", input: { description: "Sleep", prompt: "Sleep" } }] } });
+      system("task_started", { tool_use_id: "tool-1", task_type: "local_agent", subagent_type: "general-purpose", description: "Sleep" });
+      if (outcome === "stopped") system("task_updated", { patch: { status: "killed", end_time: 1 } });
+      else emit({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tool-1", content: "ok" }] } });
+      system("task_notification", { tool_use_id: "tool-1", status: outcome, summary: "Slept", output_file: "" });
+      // A queued progress frame must not revive the settled row.
+      system("task_progress", { tool_use_id: "tool-1", description: "Stale progress", usage: { total_tokens: 1, tool_uses: 1, duration_ms: 1 } });
+    });
+
+    assert.ok(row, `${outcome}: the task row was emitted`);
+    assert.equal(row.status, "completed", `${outcome}: the row is settled`);
+    const metadata = row.metadata as Record<string, unknown>;
+    assert.equal(metadata.terminal_status, outcome, `${outcome}: the notification's outcome is kept`);
+    assert.equal(metadata.summary, "Slept");
+    assert.notEqual(row.description, "Stale progress", `${outcome}: stale progress does not rewrite the row`);
+  }
+});
+
 test("SDK context usage Markdown is shown even without a response ID", () => {
   const session = makeSession();
   const texts = replyChunks(() => {
