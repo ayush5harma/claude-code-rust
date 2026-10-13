@@ -596,6 +596,11 @@ test("production bridge source stays on the public main SDK export", () => {
 function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedBridge; cleanup: () => Promise<void> } {
   const directory = mkdtempSync(join(tmpdir(), "claude-rs-ultracode-"));
   const sdkPath = import.meta.resolve("@anthropic-ai/claude-agent-sdk");
+  const sdkPackage = join(dirname(fileURLToPath(sdkPath)), "package.json");
+  writeFileSync(
+    join(directory, "package.json"),
+    JSON.stringify({ version: JSON.parse(readFileSync(sdkPackage, "utf8")).version }),
+  );
   const fixturePath = join(directory, "sdk-fixture.mjs");
   writeFileSync(fixturePath, `
     export * from ${JSON.stringify(sdkPath)};
