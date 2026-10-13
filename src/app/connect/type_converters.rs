@@ -1521,7 +1521,7 @@ mod tests {
         }
         assert!(!notice.contains('\n'));
         assert!(!notice.contains('\u{001b}'));
-        let retained = app.session_runtime.hook_runs.summary().slowest[0];
+        let retained = app.session_runtime.hook_runs.summary().slowest[0].expect("slowest hook");
         assert!(!retained.output.as_deref().unwrap_or_default().contains("sk-ant-private"));
         assert_eq!(retained.name, "Run Hook[31m");
         assert_eq!(retained.event, "PreToolUse");

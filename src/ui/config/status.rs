@@ -135,7 +135,7 @@ fn hook_lines(app: &App) -> Vec<Line<'static>> {
     }
     parts.push(format!("{} in total", format_elapsed(summary.total)));
     lines.push(detail_kv("Runs", &parts.join(", "), Color::White));
-    for (rank, run) in summary.slowest.iter().enumerate() {
+    for (rank, run) in summary.slowest.iter().flatten().enumerate() {
         let took = run.duration().map_or_else(String::new, format_elapsed);
         lines.push(detail_kv(
             &format!("Slowest {}", rank + 1),
