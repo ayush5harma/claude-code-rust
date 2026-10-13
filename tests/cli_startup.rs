@@ -187,6 +187,32 @@ fn executable_rejects_a_bad_working_directory_or_bridge_script_as_usage_errors()
 }
 
 #[test]
+fn executable_refuses_a_mistyped_command_but_sends_it_after_a_separator() {
+    let home = tempfile::tempdir().expect("home");
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_claude-rs"))
+            .args(args)
+            .env("HOME", home.path())
+            .env("CLAUDE_CONFIG_DIR", home.path().join("profile"))
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run claude-rs")
+    };
+
+    let typo = run(&["doctr"]);
+    assert_eq!(typo.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&typo.stderr).contains("did you mean `doctor`?"),
+        "{}",
+        String::from_utf8_lossy(&typo.stderr)
+    );
+
+    // Past argument checks, the prompt launch stops only at the missing terminal.
+    let escaped = run(&["--", "doctr"]);
+    assert_eq!(escaped.status.code(), Some(25), "{}", String::from_utf8_lossy(&escaped.stderr));
+}
+
+#[test]
 fn interactive_launch_without_a_terminal_exits_before_terminal_setup_and_logging() {
     let home = tempfile::tempdir().expect("home");
     let project = home.path().join("project");

@@ -122,6 +122,34 @@ pub struct Cli {
     pub log_append: bool,
 }
 
+/// Whether `value` came after a `--` in the raw arguments, where only positionals follow.
+fn after_separator(args: &[std::ffi::OsString], value: &str) -> bool {
+    args.iter().skip(1).skip_while(|arg| *arg != "--").skip(1).any(|arg| arg == value)
+}
+
+/// The visible command a one-word prompt is a likely typo of. clap takes an unknown word
+/// as the prompt, so `claude-rs doctr` would send "doctr" to Claude. Names of four
+/// characters or fewer allow one edit, longer ones two, so short words such as "go" stay
+/// prompts.
+fn mistyped_command(prompt: &str) -> Option<String> {
+    use clap::CommandFactory;
+    if prompt.is_empty() || prompt.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let word = prompt.to_lowercase();
+    let command = Cli::command();
+    command
+        .get_subcommands()
+        .filter(|subcommand| !subcommand.is_hide_set())
+        .map(|subcommand| {
+            let name = subcommand.get_name();
+            (strsim::damerau_levenshtein(&word, name), name)
+        })
+        .filter(|(distance, name)| *distance <= if name.len() <= 4 { 1 } else { 2 })
+        .min_by_key(|(distance, _)| *distance)
+        .map(|(_, name)| name.to_owned())
+}
+
 /// Checked while parsing, so a bad filter is a usage error quoting the user's own text,
 /// not a startup failure quoting the directives logging appends to it.
 fn parse_log_filter(value: &str) -> Result<String, String> {
@@ -458,10 +486,23 @@ impl Cli {
     pub fn parse_from_args<I, T>(args: I) -> Result<Self, clap::Error>
     where
         I: IntoIterator<Item = T>,
-        T: Into<std::ffi::OsString> + Clone,
+        T: Into<std::ffi::OsString>,
     {
         use clap::CommandFactory;
-        let mut cli = <Self as Parser>::try_parse_from(args)?;
+        let args: Vec<std::ffi::OsString> = args.into_iter().map(Into::into).collect();
+        let mut cli = <Self as Parser>::try_parse_from(&args)?;
+        if cli.command.is_none()
+            && let Some(prompt) = cli.prompt.as_deref()
+            && !after_separator(&args, prompt)
+            && let Some(command) = mistyped_command(prompt)
+        {
+            return Err(Self::command().error(
+                clap::error::ErrorKind::InvalidSubcommand,
+                format!(
+                    "unknown command `{prompt}`; did you mean `{command}`? To send it as a prompt, run `claude-rs -- {prompt}`"
+                ),
+            ));
+        }
         if let Some(Command::Resume { session_options, session_config, .. }) = &mut cli.command {
             let options = std::mem::take(session_options);
             let config = std::mem::take(session_config);
@@ -1071,6 +1112,50 @@ mod tests {
             cli.validate().expect("fork with a resume");
             assert!(cli.session_options.fork_session, "{args:?}");
         }
+    }
+
+    #[test]
+    fn a_mistyped_command_is_refused_instead_of_sent_as_a_prompt() {
+        for (args, typo, command) in [
+            (&["claude-rs", "doctr"][..], "doctr", "doctor"),
+            (&["claude-rs", "lgos"][..], "lgos", "logs"),
+            (&["claude-rs", "Config"][..], "Config", "config"),
+            (&["claude-rs", "-c", "resme"][..], "resme", "resume"),
+        ] {
+            let error = Cli::parse_from_args(args.iter().copied()).expect_err("typo");
+            assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand, "{args:?}");
+            assert_eq!(error.exit_code(), 2);
+            assert!(
+                error.to_string().contains(&format!(
+                    "unknown command `{typo}`; did you mean `{command}`? To send it as a prompt, run `claude-rs -- {typo}`"
+                )),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn words_that_are_not_command_typos_stay_prompts() {
+        for (args, prompt) in [
+            (&["claude-rs", "--", "doctr"][..], "doctr"),
+            (&["claude-rs", "--", "doctor"][..], "doctor"),
+            (&["claude-rs", "--resume", "--", "doctr"][..], "doctr"),
+            (&["claude-rs", "hello"][..], "hello"),
+            (&["claude-rs", "go"][..], "go"),
+            (&["claude-rs", "doctr the tests"][..], "doctr the tests"),
+        ] {
+            let cli = Cli::parse_from_args(args.iter().copied()).expect("prompt");
+            cli.validate().expect("valid launch");
+            assert_eq!(cli.initial_prompt(), Some(prompt), "{args:?}");
+            assert!(cli.command.is_none());
+        }
+        let cli = Cli::parse_from_args(["claude-rs", "resume"]).expect("resume");
+        assert_eq!(cli.command.as_ref().map(Command::name), Some("resume"));
+        let cli = Cli::parse_from_args(["claude-rs", "--resume", "doctr"]).expect("resume by id");
+        assert_eq!(
+            cli.startup_launch(),
+            super::StartupLaunch::ResumeSession { session_id: "doctr".to_owned() }
+        );
     }
 
     #[test]
