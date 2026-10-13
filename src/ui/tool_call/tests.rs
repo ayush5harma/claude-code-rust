@@ -2008,6 +2008,118 @@ fn content_summary_keeps_normal_limit_for_completed_agent() {
     assert!(summary.ends_with("..."));
 }
 
+fn bash_call_with_output(output: &str) -> ToolCallInfo {
+    let mut tc = test_tool_call("tc-colour", "Bash", model::ToolCallStatus::Completed);
+    tc.terminal_id = Some("term-colour".into());
+    tc.terminal_output = Some(output.to_owned());
+    tc
+}
+
+type RenderedCell = (String, Option<Color>, Option<Color>, Modifier);
+
+fn styled_cells(lines: &[Line<'static>]) -> Vec<Vec<RenderedCell>> {
+    lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| {
+                    (
+                        span.content.to_string(),
+                        span.style.fg,
+                        span.style.bg,
+                        span.style.add_modifier,
+                    )
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn cell(text: &str, fg: Color, bg: Option<Color>, modifiers: Modifier) -> RenderedCell {
+    (text.to_owned(), Some(fg), bg, modifiers)
+}
+
+#[test]
+fn bash_output_keeps_the_sgr_colours_the_program_asked_for() {
+    let tc = bash_call_with_output(
+        "\u{1b}[31mRED\u{1b}[0m plain\n\
+         \u{1b}[1;32mBOLD_GREEN\u{1b}[0m \u{1b}[38;5;208mORANGE\u{1b}[0m \
+         \u{1b}[38;2;0;200;255;48;5;4;4mTRUE\u{1b}[0m\n\
+         plain again",
+    );
+    let none = Modifier::empty();
+
+    assert_eq!(
+        styled_cells(&execute::render_execute_content(&tc)),
+        vec![
+            vec![cell("RED", Color::Red, None, none), cell(" plain", theme::DIM, None, none)],
+            vec![
+                cell("BOLD_GREEN", Color::Green, None, Modifier::BOLD),
+                cell(" ", theme::DIM, None, none),
+                cell("ORANGE", Color::Indexed(208), None, none),
+                cell(" ", theme::DIM, None, none),
+                cell(
+                    "TRUE",
+                    Color::Rgb(0, 200, 255),
+                    Some(Color::Indexed(4)),
+                    Modifier::UNDERLINED
+                ),
+            ],
+            vec![cell("plain again", theme::DIM, None, none)],
+        ]
+    );
+}
+
+#[test]
+fn bash_output_never_passes_other_control_sequences_through() {
+    // Hyperlink, title, cursor movement, erase, mode change, DCS and a bare C1 CSI around
+    // text that must stay, and one SGR colour that must survive all of it.
+    let tc = bash_call_with_output(
+        "\u{1b}]8;;https://evil.example\u{1b}\\LINK\u{1b}]8;;\u{1b}\\ \
+         \u{1b}]0;retitled\u{7}\u{1b}[2J\u{1b}[3A\u{1b}[H\u{1b}[?1049h\u{1b}P1$r\u{1b}\\\
+         \u{1b}[32mGREEN\u{1b}[0m\u{9b}2J\u{8}\r\u{7} end",
+    );
+    let lines = execute::render_execute_content(&tc);
+
+    assert_eq!(
+        styled_cells(&lines),
+        vec![vec![
+            cell("LINK ", theme::DIM, None, Modifier::empty()),
+            cell("GREEN", Color::Green, None, Modifier::empty()),
+            cell("2J end", theme::DIM, None, Modifier::empty()),
+        ]]
+    );
+    for span in lines.iter().flat_map(|line| &line.spans) {
+        assert!(
+            !span.content.chars().any(char::is_control),
+            "control character reached a cell: {:?}",
+            span.content
+        );
+    }
+}
+
+#[test]
+fn bash_output_drops_unsupported_sgr_instead_of_printing_it() {
+    // Reverse video and a truncated 256-colour sequence: not mapped, never shown as text.
+    let tc = bash_call_with_output("\u{1b}[7mA\u{1b}[0m \u{1b}[38;5mB");
+    let none = Modifier::empty();
+
+    assert_eq!(
+        styled_cells(&execute::render_execute_content(&tc)),
+        vec![vec![cell("A B", theme::DIM, None, none)]]
+    );
+}
+
+#[test]
+fn uncoloured_diff_output_still_gets_diff_colours() {
+    let tc = bash_call_with_output("--- a/f\n+++ b/f\n@@ -1 +1 @@\n-old\n+new");
+    let lines = execute::render_execute_content(&tc);
+
+    assert_eq!(lines[3].spans[0].style.fg, Some(Color::Red));
+    assert_eq!(lines[4].spans[0].style.fg, Some(Color::Green));
+}
+
 #[test]
 fn render_execute_content_keeps_tail_output() {
     let tc = ToolCallInfo {
