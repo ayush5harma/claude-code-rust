@@ -955,6 +955,7 @@ export type BridgeCommand =
     }
   | { command: "tag_session"; session_id: string; tag: string | null }
   | { command: "delete_session"; session_id: string }
+  | { command: "list_sessions" }
   | {
       command: "new_session";
       cwd: string;
