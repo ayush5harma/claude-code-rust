@@ -49,6 +49,7 @@ function writeSdkFixture(fixturePath: string, cwd: string): void {
       return title === undefined ? undefined : { sessionId, summary: title, lastModified: 1, customTitle: title, cwd };
     }
     export async function renameSession(sessionId, title) {
+      appendFileSync(process.env.QUERY_JOURNAL, JSON.stringify({ rename: { sessionId, title } }) + "\\n");
       titles.set(sessionId, title);
     }
     export async function importSessionToStore() {}
@@ -56,9 +57,10 @@ function writeSdkFixture(fixturePath: string, cwd: string): void {
       return [];
     }
     export async function listSessions() {
-      return [{ sessionId: ${JSON.stringify(SESSION_ID)}, cwd, lastModified: 1 }];
+      return [{ sessionId: ${JSON.stringify(SESSION_ID)}, cwd, lastModified: 1, customTitle: titles.get(${JSON.stringify(SESSION_ID)}) }];
     }
     export function query({ prompt, options }) {
+      if (process.env.DROP_TITLE_ON_RESUME === "1" && options.resume) titles.delete(options.resume);
       appendFileSync(process.env.QUERY_JOURNAL, JSON.stringify({ resume: options.resume }) + "\\n");
       const input = prompt[Symbol.asyncIterator]();
       const pending = [];
@@ -142,15 +144,17 @@ test("the bridge sends the session API's title through resume, turns, renames, r
       } });
     `);
     const bridgePath = join(dirname(fileURLToPath(import.meta.url)), "../bridge.js");
+    const childEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: join(directory, "config"),
+      CLAUDE_RS_BRIDGE_DIAGNOSTICS: "1",
+      QUERY_JOURNAL: journal,
+      CLAUDE_CODE_EXECUTABLE: "",
+      ...(command === "resume_session" ? { DROP_TITLE_ON_RESUME: "1" } : {}),
+    };
+    delete childEnv.CLAUDE_CODE_PROJECT_DIR_NAME;
     const child = spawn(process.execPath, ["--import", pathToFileURL(loaderPath).href, bridgePath], {
-      env: {
-        ...process.env,
-        CLAUDE_CONFIG_DIR: join(directory, "config"),
-        CLAUDE_CODE_PROJECT_DIR_NAME: undefined,
-        CLAUDE_RS_BRIDGE_DIAGNOSTICS: "1",
-        QUERY_JOURNAL: journal,
-        CLAUDE_CODE_EXECUTABLE: "",
-      },
+      env: childEnv,
       stdio: "pipe",
     });
     const output = readline.createInterface({ input: child.stdout });
@@ -184,7 +188,15 @@ test("the bridge sends the session API's title through resume, turns, renames, r
         : { command, cwd, resume: SESSION_ID, request_id: "title-resume", launch_settings: {} });
       await readUntil(titleUpdate(SESSION_ID, "Saved name"));
       assert.ok(events.some((event) => event.event === "connected"), `${command}: ${JSON.stringify(events)}`);
-      assert.equal((JSON.parse(readFileSync(journal, "utf8").trim()) as Envelope).resume, SESSION_ID);
+      const journalEntries = readFileSync(journal, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Envelope);
+      assert.equal(journalEntries.find((entry) => entry.resume === SESSION_ID)?.resume, SESSION_ID);
+      assert.deepEqual(
+        journalEntries.find((entry) => entry.rename)?.rename,
+        command === "resume_session" ? { sessionId: SESSION_ID, title: "Saved name" } : undefined,
+      );
 
       // A failed read is logged, and nothing is sent for it.
       const beforeFailure = events.length;

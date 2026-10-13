@@ -19,6 +19,7 @@ import {
   mapSessionMessagesToUpdates,
 } from "./history.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
+import { restoreSessionTitleAfterResume } from "./session_title.js";
 import {
   awaitSessionInitialization,
   closeAllSessions,
@@ -346,7 +347,7 @@ async function resume(
         stale_session_count: staleSessions.length,
       },
     });
-    await createSession({
+    const candidate = await createSession({
       cwd: matched.cwd ?? process.cwd(),
       resume: matched.sessionId,
       launchSettings: command.launch_settings,
@@ -357,6 +358,8 @@ async function resume(
         ? { sessionsToCloseAfterConnect: staleSessions }
         : {}),
     });
+    await awaitSessionInitialization(candidate);
+    await restoreSessionTitleAfterResume(candidate, matched.customTitle);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     bridgeLogger.error({
