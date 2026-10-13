@@ -388,6 +388,30 @@ mod tests {
     }
 
     #[test]
+    fn slash_prefix_query_shows_resume_in_the_first_visible_row() {
+        let mut app = App::test_default();
+        // Inventory order is alphabetical; these sort ahead of /resume.
+        app.sdk_inventory.available_commands = [
+            "/ai-regression-testing",
+            "/deep-research",
+            "/ecc:deep-research",
+            "/ecc:market-research",
+            "/ecc:resume-session",
+        ]
+        .into_iter()
+        .map(|name| crate::agent::model::AvailableCommand::new(name, "fixture"))
+        .collect();
+        app.input.set_text("/res");
+        let _ = app.input.set_cursor(0, 4);
+        slash::sync_with_cursor(&mut app);
+
+        let rows = composer_hint_rows(&app);
+
+        assert_eq!(rows.len(), AUTOCOMPLETE_VISIBLE_ROWS);
+        assert!(line_text(&rows[0]).contains("/resume"), "{}", line_text(&rows[0]));
+    }
+
+    #[test]
     fn slash_empty_state_renders_command_placeholder() {
         let mut app = App::test_default();
         let (connection, _rx) = crate::agent::client::AgentConnection::test_channel();

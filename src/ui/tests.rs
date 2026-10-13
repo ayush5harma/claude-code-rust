@@ -38,7 +38,8 @@ fn render_fullscreen_surface_draws_trusted_view() {
     terminal.draw(|frame| render_fullscreen_surface(frame, &mut app)).expect("draw");
 
     let rendered = buffer_text(&terminal);
-    assert!(rendered.contains("Unknown Project"));
+    assert!(rendered.contains("Trust project"));
+    assert!(rendered.contains("/test"));
 }
 
 #[test]
