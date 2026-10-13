@@ -1,9 +1,35 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
+use super::highlight;
+use super::theme;
+use super::wrap::{hard_wrap_line, line_display_width};
 use crate::failure;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+
+const CODE_BLOCK_INDENT: &str = "  ";
+/// Starts every code row, so no code line can read as a list item or a fence to the
+/// row wrapper, and marks where the block runs.
+const CODE_BLOCK_RAIL: &str = "\u{258e}";
+const CODE_BLOCK_GUTTER: &str = " ";
+const CODE_BLOCK_PREFIX_WIDTH: usize = 4;
+const CODE_TAB: &str = "    ";
+
+/// claude-rs's Markdown styles. Headings are rendered by the Markdown parser, so a `#`
+/// inside a code block or any other non-heading context keeps its text.
+#[derive(Clone, Copy)]
+struct ClaudeRsStyleSheet;
+
+impl tui_markdown::StyleSheet for ClaudeRsStyleSheet {
+    fn heading(&self, _level: u8) -> Style {
+        Style::new().add_modifier(Modifier::BOLD)
+    }
+
+    fn heading_marker(&self, _level: u8) -> &'static str {
+        ""
+    }
+}
 
 pub(super) fn render_markdown_safe(text: &str, bg: Option<Color>) -> Vec<Line<'static>> {
     render_markdown_safe_with(text, bg, render_with_tui_markdown)
@@ -27,7 +53,8 @@ where
 }
 
 fn render_with_tui_markdown(text: &str, bg: Option<Color>) -> Vec<Line<'static>> {
-    let rendered = tui_markdown::from_str(text);
+    let rendered =
+        tui_markdown::from_str_with_options(text, &tui_markdown::Options::new(ClaudeRsStyleSheet));
     let lines = rendered
         .lines
         .into_iter()
@@ -110,6 +137,50 @@ fn line_is_blank(line: &Line<'_>) -> bool {
 
 fn line_text(line: &Line<'_>) -> String {
     line.spans.iter().map(|span| span.content.as_ref()).collect()
+}
+
+/// Renders a code block as indented rows on the highlight theme's background, behind a dim
+/// rail, with the fence's language as a label row. The code itself is shown exactly as
+/// written (tabs expanded) and wrapped at the cell, never at a word.
+pub(super) fn render_code_block(
+    code: &str,
+    language: Option<&str>,
+    width: u16,
+    bg: Option<Color>,
+) -> Vec<Line<'static>> {
+    let outer = bg.map_or_else(Style::default, |color| Style::default().bg(color));
+    let fill = highlight::code_background()
+        .map_or_else(Style::default, |color| Style::default().bg(color));
+    let code_width = usize::from(width).saturating_sub(CODE_BLOCK_PREFIX_WIDTH).max(1);
+    let row = |body: Line<'static>| {
+        let padding = code_width.saturating_sub(line_display_width(&body));
+        let mut spans = Vec::with_capacity(body.spans.len() + 4);
+        spans.push(Span::styled(CODE_BLOCK_INDENT, outer));
+        spans.push(Span::styled(CODE_BLOCK_RAIL, fill.fg(theme::DIM)));
+        spans.push(Span::styled(CODE_BLOCK_GUTTER, fill));
+        spans.extend(body.spans.into_iter().map(|span| {
+            let style = fill.patch(span.style);
+            Span::styled(span.content, style)
+        }));
+        if padding > 0 {
+            spans.push(Span::styled(" ".repeat(padding), fill));
+        }
+        Line::from(spans)
+    };
+
+    let mut rows = Vec::new();
+    if let Some(language) = language {
+        let label = Span::styled(
+            language.to_owned(),
+            Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+        );
+        rows.extend(hard_wrap_line(&Line::from(label), code_width).into_iter().map(row));
+    }
+    let code = code.strip_suffix('\n').unwrap_or(code).replace('\t', CODE_TAB);
+    for line in highlight::highlight_code(&code, language) {
+        rows.extend(hard_wrap_line(&line, code_width).into_iter().map(row));
+    }
+    rows
 }
 
 fn plain_text_fallback(text: &str, bg: Option<Color>) -> Vec<Line<'static>> {

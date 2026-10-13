@@ -182,6 +182,27 @@ pub(crate) fn wrap_styled_chunks(chunks: &[StyledChunk], width: usize) -> Vec<Li
     lines
 }
 
+/// Splits a line into rows of at most `width` cells at grapheme boundaries and keeps every
+/// character, spaces included: the wrap for preformatted text such as code.
+#[must_use]
+pub(crate) fn hard_wrap_line(line: &Line<'_>, width: usize) -> Vec<Line<'static>> {
+    let mut rows = Vec::new();
+    let mut spans = Vec::new();
+    let mut row_width = 0usize;
+    for span in &line.spans {
+        for grapheme in UnicodeSegmentation::graphemes(span.content.as_ref(), true) {
+            let grapheme_width = display_width(grapheme);
+            if row_width > 0 && row_width + grapheme_width > width {
+                finish_wrapped_line(&mut rows, &mut spans, &mut row_width);
+            }
+            push_styled_text(&mut spans, grapheme, span.style);
+            row_width += grapheme_width;
+        }
+    }
+    finish_wrapped_line(&mut rows, &mut spans, &mut row_width);
+    rows
+}
+
 #[must_use]
 pub(crate) fn wrap_styled_chunks_with_hanging_prefix(
     prefix: &[StyledChunk],
