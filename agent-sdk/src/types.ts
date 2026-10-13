@@ -1286,6 +1286,7 @@ export type BridgeEvent =
     }
   | { event: "initialized"; result: InitializeResult }
   | { event: "sessions_listed"; sessions: SessionListEntry[] }
+  | { event: "sessions_list_failed"; message: string }
   | { event: "session_mutation_result"; session_id: string; operation: "tag" | "delete"; error?: string; refresh_error?: string; sessions?: SessionListEntry[] }
   | { event: "status_snapshot"; session_id: string; account: AccountInfo }
   | {

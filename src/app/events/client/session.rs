@@ -41,6 +41,9 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
             session::handle_sessions_listed_event(app, sessions);
             crate::app::session_picker::finish_refresh(app, request_id.as_deref());
         }
+        ClientEvent::SessionsListFailed { request_id, message } => {
+            crate::app::session_picker::fail_refresh(app, request_id.as_deref(), &message);
+        }
         ClientEvent::AuthRequired { method_name, method_description } => {
             session::handle_auth_required_event(app, method_name, method_description);
         }

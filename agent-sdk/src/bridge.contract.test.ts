@@ -607,10 +607,25 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
       return sdkResolveSettings({ ...options, ...(managedSettings ? { serverManagedSettings: JSON.parse(managedSettings) } : {}) });
     }
     function record(value) { if (process.env.STARTUP_JOURNAL) appendFileSync(process.env.STARTUP_JOURNAL, JSON.stringify(value) + "\\n"); }
+    const saved = new Map();
+    function sessionEntries() {
+      const seeded = JSON.parse(process.env.STARTUP_SESSIONS_FIXTURE ?? "[]");
+      const entries = new Map(seeded.map(entry => [entry.sessionId, entry]));
+      for (const [sessionId, state] of saved) {
+        const entry = entries.get(sessionId) ?? { sessionId, cwd: state.cwd, lastModified: 1 };
+        entries.set(sessionId, { ...entry, ...(Object.hasOwn(state, "title") ? { customTitle: state.title } : {}) });
+      }
+      return [...entries.values()];
+    }
     export async function listSessions(options) {
       record({ type: "list", options });
-      const seeded = JSON.parse(process.env.STARTUP_SESSIONS_FIXTURE ?? "[]");
-      return [...seeded, ...[...saved.keys()].map((sessionId, index) => ({ sessionId, cwd: saved.get(sessionId).cwd, lastModified: index + 1 }))].filter(entry => !options?.dir || entry.cwd === options.dir);
+      if (process.env.LIST_SESSIONS_FAILURE === "1") throw new Error("fixture list failed");
+      return sessionEntries().filter(entry => !options?.dir || entry.cwd === options.dir);
+    }
+    export async function getSessionInfo(sessionId, options) {
+      const entry = sessionEntries().find(candidate => candidate.sessionId === sessionId);
+      if (!entry || (options?.dir && entry.cwd !== options.dir)) return undefined;
+      return entry;
     }
     export async function listSubagents(sessionId, options) {
       record({ type: "listSubagents", sessionId, options });
@@ -629,12 +644,14 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
     export async function renameSession(sessionId, title, options) {
       record({ type: "rename", sessionId, title, options });
       if (process.env.RENAME_FAILURE_FIXTURE === "1") throw new Error("fixture rename failed");
+      const existing = saved.get(sessionId) ?? {};
+      saved.set(sessionId, { ...existing, cwd: existing.cwd ?? options?.dir, title });
     }
-    const saved = new Map();
     export function query({ prompt, options }) {
       record({ type: "query", cwd: options.cwd, resume: options.resume, model: options.model, effort: options.effort, permissionMode: options.permissionMode, agent: options.agent });
       record({ type: "launch", resume: options.resume, sessionId: options.sessionId, forkSession: options.forkSession, title: options.title, additionalDirectories: options.additionalDirectories, settings: options.settings, mcpServers: options.mcpServers, strictMcpConfig: options.strictMcpConfig, systemPrompt: options.systemPrompt });
       const state = saved.get(options.resume) ?? { requested: false, effort: "high", cwd: options.cwd };
+      if (options.title !== undefined) state.title = options.title;
       saved.set(options.sessionId ?? options.resume, state);
       let model = options.model ?? "opus";
       let effective = {};
@@ -977,6 +994,28 @@ test("resume without a launch name carries the saved custom title into the query
   }
 });
 
+test("clearing a seeded session title remains cleared in the fixture listing", async () => {
+  const cwd = process.cwd();
+  const { bridge, cleanup } = ultracodeFixtureBridge({
+    STARTUP_SESSIONS_FIXTURE: JSON.stringify([
+      { sessionId: "saved-session", cwd, lastModified: 1, customTitle: "Saved title" },
+    ]),
+  });
+  try {
+    bridge.writeCommand({ command: "resume_session", session_id: "saved-session", launch_settings: {} });
+    await nextMatching(bridge, event => event.event === "connected");
+    const restoredTitle = await nextMatching(bridge, event => event.event === "session_update" && (event.update as BridgeEnvelope).type === "session_title_update");
+    assert.equal((restoredTitle.update as BridgeEnvelope).title, "Saved title");
+    bridge.writeCommand({ command: "rename_session", session_id: "saved-session", title: "", request_id: "clear-title" });
+    const titleUpdate = await nextMatching(bridge, event => event.event === "session_update" && (event.update as BridgeEnvelope).type === "session_title_update");
+    assert.equal((titleUpdate.update as BridgeEnvelope).title, "");
+    bridge.writeCommand({ command: "list_sessions", request_id: "after-clear" });
+    const listed = await nextMatching(bridge, event => event.event === "sessions_listed" && event.request_id === "after-clear");
+    const saved = (listed.sessions as BridgeEnvelope[]).find(session => session.session_id === "saved-session");
+    assert.equal(saved?.custom_title, undefined);
+  } finally { await cleanup(); }
+});
+
 test("fork-session resumes under a new id that takes the launch name", async () => {
   const directory = mkdtempSync(join(tmpdir(), "claude-rs-fork-"));
   const journal = join(directory, "query-options.jsonl");
@@ -1152,6 +1191,16 @@ test("list_sessions answers with a fresh SDK listing under its request id", asyn
     const ids = (listed.sessions as BridgeEnvelope[]).map(session => session.session_id);
     assert.ok(ids.includes("older"));
     assert.ok(ids.includes(connected.session_id as string));
+  } finally { await cleanup(); }
+});
+
+test("list_sessions reports a correlated failure instead of an empty listing", async () => {
+  const { bridge, cleanup } = ultracodeFixtureBridge({ LIST_SESSIONS_FAILURE: "1" });
+  try {
+    bridge.writeCommand({ command: "list_sessions", request_id: "picker-open" });
+    const failed = await nextMatching(bridge, event => event.event === "sessions_list_failed");
+    assert.equal(failed.request_id, "picker-open");
+    assert.match(String(failed.message), /fixture list failed/);
   } finally { await cleanup(); }
 });
 

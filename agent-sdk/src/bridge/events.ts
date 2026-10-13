@@ -474,7 +474,9 @@ export async function emitSessionsList(requestId?: string): Promise<void> {
       ...(requestId ? { requestId } : {}),
       fields: { error_message: message },
     });
-    writeEvent({ event: "sessions_listed", sessions: [] }, requestId);
+    // A refresh is advisory: retain the app's last successful listing so the picker remains
+    // usable, while its correlated failure tells the picker to stop showing a spinner.
+    writeEvent({ event: "sessions_list_failed", message }, requestId);
   }
 }
 

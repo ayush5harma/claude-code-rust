@@ -125,3 +125,17 @@ impl AppError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::AppError;
+
+    #[test]
+    fn failed_session_resume_exits_with_the_documented_code() {
+        assert_eq!(
+            AppError::SessionResumeFailed("unknown session".to_owned()).exit_code(),
+            AppError::SESSION_NOT_FOUND_EXIT_CODE
+        );
+        assert_eq!(AppError::SESSION_NOT_FOUND_EXIT_CODE, 23);
+    }
+}

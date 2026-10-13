@@ -89,6 +89,7 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         | ClientEvent::SessionResumeFailed { .. }
         | ClientEvent::SessionReplaced { .. }
         | ClientEvent::SessionsListed { .. }
+        | ClientEvent::SessionsListFailed { .. }
         | ClientEvent::SessionMutationResult { .. }
         | ClientEvent::ServiceStatus { .. }
         | ClientEvent::AuthCompleted { .. }

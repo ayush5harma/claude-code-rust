@@ -55,6 +55,15 @@ pub(crate) fn finish_refresh(app: &mut App, request_id: Option<&str>) {
     app.session_picker.scroll_offset = 0;
 }
 
+/// End the picker's own refresh without discarding the most recent successful listing.
+pub(crate) fn fail_refresh(app: &mut App, request_id: Option<&str>, message: &str) {
+    if request_id.is_none() || app.session_picker.list_request.as_deref() != request_id {
+        return;
+    }
+    app.session_picker.list_request = None;
+    app.session_picker.error = Some(format!("Could not refresh the session list: {message}"));
+}
+
 fn close_picker(app: &mut App) {
     app.session_picker.list_request = None;
     app.startup.resolve_session_picker();

@@ -1699,6 +1699,39 @@ fn the_listing_that_answers_the_picker_ends_loading_and_selects_the_active_sessi
 }
 
 #[test]
+fn failed_picker_refresh_keeps_cached_sessions_and_surfaces_the_error() {
+    let mut app = make_test_app();
+    app.recent_sessions = vec![crate::app::RecentSessionInfo {
+        session_id: "cached-session".to_owned(),
+        summary: "Cached".to_owned(),
+        last_modified_ms: 1,
+        file_size_bytes: 1,
+        cwd: Some("/test".to_owned()),
+        git_branch: None,
+        custom_title: None,
+        first_prompt: None,
+        tag: None,
+    }];
+    app.session_picker.list_request = Some("picker-1".to_owned());
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionsListFailed {
+            request_id: Some("picker-1".to_owned()),
+            message: "SDK unavailable".to_owned(),
+        },
+    );
+
+    assert!(!crate::app::session_picker::refresh_is_pending(&app));
+    assert_eq!(app.recent_sessions.len(), 1);
+    assert_eq!(app.recent_sessions[0].session_id, "cached-session");
+    assert_eq!(
+        app.session_picker.error.as_deref(),
+        Some("Could not refresh the session list: SDK unavailable")
+    );
+}
+
+#[test]
 fn current_model_update_updates_state_and_clears_pending_when_expected() {
     let mut app = make_test_app();
     app.status = AppStatus::CommandPending;

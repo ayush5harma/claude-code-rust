@@ -607,6 +607,9 @@ pub enum BridgeEvent {
         session_id: String,
         message: String,
     },
+    SessionsListFailed {
+        message: String,
+    },
     RuntimeReloadCompleted {
         session_id: String,
     },
@@ -734,6 +737,7 @@ impl BridgeEvent {
             Self::TurnError { .. } => "turn_error",
             Self::SlashError { .. } => "slash_error",
             Self::SessionResumeFailed { .. } => "session_resume_failed",
+            Self::SessionsListFailed { .. } => "sessions_list_failed",
             Self::RuntimeReloadCompleted { .. } => "runtime_reload_completed",
             Self::RuntimeReloadHeld { .. } => "runtime_reload_held",
             Self::RuntimeReloadFailed { .. } => "runtime_reload_failed",
@@ -797,7 +801,8 @@ impl BridgeEvent {
             Self::AuthRequired { .. }
             | Self::ConnectionFailed { .. }
             | Self::Initialized { .. }
-            | Self::SessionsListed { .. } => None,
+            | Self::SessionsListed { .. }
+            | Self::SessionsListFailed { .. } => None,
         }
     }
 
@@ -830,6 +835,7 @@ impl BridgeEvent {
             | Self::TurnError { .. }
             | Self::SlashError { .. }
             | Self::SessionResumeFailed { .. }
+            | Self::SessionsListFailed { .. }
             | Self::RuntimeReloadCompleted { .. }
             | Self::RuntimeReloadHeld { .. }
             | Self::RuntimeReloadFailed { .. }
