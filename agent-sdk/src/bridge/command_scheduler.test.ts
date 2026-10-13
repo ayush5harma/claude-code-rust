@@ -216,3 +216,27 @@ test("a failed operation does not poison its scheduling lane", async () => {
   await next;
   assert.deepEqual(order, ["failed", "next"]);
 });
+
+test("skills reload runs while startup session data is blocked", async () => {
+  const scheduler = new BridgeCommandScheduler();
+  const context = deferred();
+  const order: string[] = [];
+
+  const refresh = scheduler.schedule(command("get_context_usage"), async () => {
+    order.push("context:start");
+    await context.promise;
+    order.push("context:end");
+  });
+  const inspection = scheduler.schedule(command("inspect_settings"), async () => {
+    order.push("settings");
+  });
+  const reload = scheduler.schedule(command("reload_skills_and_styles"), async () => {
+    order.push("reload");
+  });
+
+  await reload;
+  assert.deepEqual(order, ["context:start", "reload"]);
+  context.resolve();
+  await Promise.all([refresh, inspection]);
+  assert.deepEqual(order, ["context:start", "reload", "context:end", "settings"]);
+});

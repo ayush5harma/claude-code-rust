@@ -5,7 +5,8 @@ type CommandTask = () => Promise<void>;
 type CommandLane =
   | { kind: "lifecycle" }
   | { kind: "session"; sessionId: string }
-  | { kind: "unblocking" };
+  | { kind: "unblocking" }
+  | { kind: "concurrent" };
 
 const LIFECYCLE_COMMANDS = new Set<BridgeCommand["command"]>([
   "initialize",
@@ -29,9 +30,19 @@ const UNBLOCKING_COMMANDS = new Set<BridgeCommand["command"]>([
   "mcp_oauth_callback_url",
 ]);
 
+// The SDK's startup context request can remain pending while a reload is
+// applied. Measured 2026-10-13: making reload wait behind it left the
+// composer disabled even after the SDK announced changed commands.
+const CONCURRENT_COMMANDS = new Set<BridgeCommand["command"]>([
+  "reload_skills_and_styles",
+]);
+
 function commandLane(command: BridgeCommand): CommandLane {
   if (UNBLOCKING_COMMANDS.has(command.command)) {
     return { kind: "unblocking" };
+  }
+  if (CONCURRENT_COMMANDS.has(command.command)) {
+    return { kind: "concurrent" };
   }
   if (LIFECYCLE_COMMANDS.has(command.command)) {
     return { kind: "lifecycle" };
@@ -109,6 +120,7 @@ export class BridgeCommandScheduler {
   private scheduleInLane(lane: CommandLane, task: CommandTask): Promise<void> {
     switch (lane.kind) {
       case "unblocking":
+      case "concurrent":
         return this.start(task);
       case "lifecycle":
         return this.scheduleLifecycle(task);
