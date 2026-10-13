@@ -37,11 +37,12 @@ class SpawnedBridge {
   #exitCode: number | null | undefined;
 
   constructor(env: NodeJS.ProcessEnv = {}, nodeArgs: string[] = []) {
+    const childEnv = { ...process.env, ...env };
+    delete childEnv.CLAUDE_CODE_PROJECT_DIR_NAME;
     this.child = spawn(process.execPath, [...nodeArgs, bridgePath], {
       env: {
-        ...process.env,
+        ...childEnv,
         CLAUDE_RS_BRIDGE_DIAGNOSTICS: "1",
-        ...env,
       },
       stdio: "pipe",
       windowsHide: true,
@@ -342,7 +343,7 @@ test("resume restores background acknowledgements and routes task-only outcomes 
   writeFileSync(transcriptPath, transcript);
   const completion = { type: "system", subtype: "task_notification", task_id: "saved-agent", status: "stopped", summary: "Saved agent stopped", output_file: "saved.output" };
   const { bridge, cleanup } = ultracodeFixtureBridge({
-    CLAUDE_CONFIG_DIR: configDir, CLAUDE_CODE_PROJECT_DIR_NAME: undefined, RESUME_TRANSCRIPT_FIXTURE: "1",
+    CLAUDE_CONFIG_DIR: configDir, RESUME_TRANSCRIPT_FIXTURE: "1",
     STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId, cwd, lastModified: 1 }]),
     BACKGROUND_TASK_FIXTURE: JSON.stringify({ finish: [completion, completion,
       { type: "system", subtype: "task_progress", task_id: "saved-agent", description: "Stale resumed progress" },
@@ -596,6 +597,11 @@ test("production bridge source stays on the public main SDK export", () => {
 function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedBridge; cleanup: () => Promise<void> } {
   const directory = mkdtempSync(join(tmpdir(), "claude-rs-ultracode-"));
   const sdkPath = import.meta.resolve("@anthropic-ai/claude-agent-sdk");
+  const sdkPackage = join(dirname(fileURLToPath(sdkPath)), "package.json");
+  writeFileSync(
+    join(directory, "package.json"),
+    JSON.stringify({ version: JSON.parse(readFileSync(sdkPackage, "utf8")).version }),
+  );
   const fixturePath = join(directory, "sdk-fixture.mjs");
   writeFileSync(fixturePath, `
     export * from ${JSON.stringify(sdkPath)};
@@ -798,7 +804,6 @@ test("resume command restores the screenshot conversation without internal task 
   writeFileSync(transcriptPath, transcript);
   const { bridge, cleanup } = ultracodeFixtureBridge({
     CLAUDE_CONFIG_DIR: configDir,
-    CLAUDE_CODE_PROJECT_DIR_NAME: undefined,
     RESUME_TRANSCRIPT_FIXTURE: "1",
     STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId, cwd, lastModified: 1 }]),
   });

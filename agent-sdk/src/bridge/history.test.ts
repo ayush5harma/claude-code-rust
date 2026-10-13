@@ -47,10 +47,12 @@ test("resume display restores compaction segments once and preserves SDK branch 
         uuids: messages.map(message => message.uuid), updates
       }));
     `;
+    const childEnv: NodeJS.ProcessEnv = { ...process.env, CLAUDE_CONFIG_DIR: configDir };
+    delete childEnv.CLAUDE_CODE_PROJECT_DIR_NAME;
     const child = spawnSync(process.execPath, ["--input-type=module", "-"], {
       input: script,
       encoding: "utf8",
-      env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, CLAUDE_CODE_PROJECT_DIR_NAME: undefined },
+      env: childEnv,
       windowsHide: true,
     });
     assert.equal(child.status, 0, child.stderr);

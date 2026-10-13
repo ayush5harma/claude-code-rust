@@ -142,15 +142,16 @@ test("the bridge sends the session API's title through resume, turns, renames, r
       } });
     `);
     const bridgePath = join(dirname(fileURLToPath(import.meta.url)), "../bridge.js");
-    const child = spawn(process.execPath, ["--import", pathToFileURL(loaderPath).href, bridgePath], {
-      env: {
+    const childEnv: NodeJS.ProcessEnv = {
         ...process.env,
         CLAUDE_CONFIG_DIR: join(directory, "config"),
-        CLAUDE_CODE_PROJECT_DIR_NAME: undefined,
         CLAUDE_RS_BRIDGE_DIAGNOSTICS: "1",
         QUERY_JOURNAL: journal,
         CLAUDE_CODE_EXECUTABLE: "",
-      },
+      };
+    delete childEnv.CLAUDE_CODE_PROJECT_DIR_NAME;
+    const child = spawn(process.execPath, ["--import", pathToFileURL(loaderPath).href, bridgePath], {
+      env: childEnv,
       stdio: "pipe",
     });
     const output = readline.createInterface({ input: child.stdout });
