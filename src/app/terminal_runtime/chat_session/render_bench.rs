@@ -250,9 +250,7 @@ mod tests {
         assert!(rows[tail + 1].starts_with("Reading output"), "{:?}", rows[tail + 1]);
         assert!(rows[tail + 2].contains(&prompt_prefix_text()), "{:?}", rows[tail + 2]);
         assert!(
-            rows.last().is_some_and(|row| row.contains("Fake")
-                || row.contains("test-model")
-                || row.contains("Github")),
+            rows.last().is_some_and(|row| row.starts_with("fixture") && row.ends_with("/test")),
             "{:?}",
             rows.last()
         );
