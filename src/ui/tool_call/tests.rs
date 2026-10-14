@@ -884,9 +884,8 @@ fn read_image_body_distinguishes_status_from_filename() {
     assert_eq!(body.len(), 1);
     // The file name takes the terminal's own label color, so it may share a
     // span with the space before it; find each part by its text.
-    let span_with = |text: &str| {
-        body[0].spans.iter().find(|span| span.content.contains(text)).expect(text)
-    };
+    let span_with =
+        |text: &str| body[0].spans.iter().find(|span| span.content.contains(text)).expect(text);
 
     let status = span_with("Viewed image");
     assert_eq!(status.content.as_ref(), "Viewed image");

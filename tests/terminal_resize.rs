@@ -215,6 +215,9 @@ impl TerminalTest {
         }
         command.cwd(&project);
         command.env("CLAUDE_CONFIG_DIR", &profile);
+        // The PTY answers no terminal queries; pin the palette instead of waiting
+        // out the background query.
+        command.env("CLAUDE_RS_APPEARANCE", "dark");
         command.env("CLAUDE_RS_AGENT_BRIDGE", &bridge);
         command.env("CLAUDE_RS_AGENT_BRIDGE_RUNTIME", runtime);
         command.env("FAKE_BRIDGE_LINES", lines.to_string());
@@ -2369,14 +2372,14 @@ fn session_accent_colors_the_composer_edge_and_glyph_then_resets_on_replacement(
     let mut test = TerminalTest::start("session-accent", 3);
     let initial = test.wait_for("session-ID accent", |test| {
         let accent = composer_accent(test)?;
-        (accent == (vt100::Color::Rgb(120, 175, 245), vt100::Color::Rgb(120, 175, 245)))
+        (accent == (vt100::Color::Rgb(92, 184, 255), vt100::Color::Rgb(92, 184, 255)))
             .then_some(accent)
     });
 
     test.submit_command("/color purple");
     test.wait_for("confirmed purple composer accent", |test| {
         (composer_accent(test)
-            == Some((vt100::Color::Rgb(190, 155, 240), vt100::Color::Rgb(190, 155, 240))))
+            == Some((vt100::Color::Rgb(234, 141, 255), vt100::Color::Rgb(234, 141, 255))))
         .then_some(())
     });
     test.submit_command("/color default");
@@ -2386,13 +2389,13 @@ fn session_accent_colors_the_composer_edge_and_glyph_then_resets_on_replacement(
     test.submit_command("/color purple");
     test.wait_for("purple before session replacement", |test| {
         (composer_accent(test)
-            == Some((vt100::Color::Rgb(190, 155, 240), vt100::Color::Rgb(190, 155, 240))))
+            == Some((vt100::Color::Rgb(234, 141, 255), vt100::Color::Rgb(234, 141, 255))))
         .then_some(())
     });
     test.submit_command("/new-session");
     test.wait_for("replacement session accent", |test| {
         (composer_accent(test)
-            == Some((vt100::Color::Rgb(220, 195, 85), vt100::Color::Rgb(220, 195, 85))))
+            == Some((vt100::Color::Rgb(255, 214, 0), vt100::Color::Rgb(255, 214, 0))))
         .then_some(())
     });
     assert_eq!(test.commands("new_session").len(), 1);

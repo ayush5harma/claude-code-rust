@@ -75,6 +75,9 @@ const fn rgb(value: (u8, u8, u8)) -> Color {
 
 /// `color` laid over `base` at `percent` opacity, rounded per channel.
 const fn tint(color: (u8, u8, u8), base: (u8, u8, u8), percent: u16) -> (u8, u8, u8) {
+    // A weighted mean of two u8 channels never exceeds 255; `u8::try_from`
+    // is not usable in a const fn.
+    #[allow(clippy::cast_possible_truncation)]
     const fn channel(color: u8, base: u8, percent: u16) -> u8 {
         let mixed = (color as u16 * percent + base as u16 * (100 - percent) + 50) / 100;
         mixed as u8

@@ -39,7 +39,14 @@ const STANDARD_BODY_PREFIX_WIDTH: u16 = 5;
 const EXECUTE_BODY_INDENT: &str = "      ";
 const EXECUTE_BODY_INDENT_WIDTH: u16 = 6;
 const ASK_USER_QUESTION_RESULT_TEXT_INDENT: &str = "      ";
-pub(super) const READ_SYNTAX_THEME: EmbeddedThemeName = EmbeddedThemeName::MonokaiExtendedBright;
+/// File contents are drawn on the terminal's own background, so the syntax
+/// colors follow its appearance: Monokai's bright set is unreadable on white.
+pub(super) fn read_syntax_theme() -> EmbeddedThemeName {
+    match theme::appearance() {
+        theme::Appearance::Dark => EmbeddedThemeName::MonokaiExtendedBright,
+        theme::Appearance::Light => EmbeddedThemeName::MonokaiExtendedLight,
+    }
+}
 const VIEWED_IMAGE_RESULT_PREFIX: &str = "Viewed Image ";
 
 /// Render just the title line for a tool call (the line containing the spinner icon).
@@ -684,13 +691,13 @@ fn render_read_text_content(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<
             &clean,
             path,
             language_fallback,
-            READ_SYNTAX_THEME,
+            read_syntax_theme(),
         ));
         return;
     }
 
     let fallback_lang = (!title_lang.is_empty()).then_some(title_lang.as_str()).or(fenced_language);
-    lines.extend(highlight::highlight_code_with_theme(&clean, fallback_lang, READ_SYNTAX_THEME));
+    lines.extend(highlight::highlight_code_with_theme(&clean, fallback_lang, read_syntax_theme()));
 }
 
 fn render_viewed_image_content(tc: &ToolCallInfo, text: &str) -> Option<Line<'static>> {

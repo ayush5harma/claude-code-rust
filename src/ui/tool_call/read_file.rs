@@ -12,7 +12,7 @@ use crate::ui::wrap::wrap_lines_to_physical_rows;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use super::standard::{READ_SYNTAX_THEME, cap_read_items, read_hidden_marker};
+use super::standard::{cap_read_items, read_hidden_marker, read_syntax_theme};
 
 const GUTTER_SEPARATOR: &str = "  ";
 /// A terminal cell grid has no tab stops; without this a tab would take no width at all.
@@ -38,7 +38,7 @@ pub(super) fn render_file_text(
         &clean,
         &file.path,
         (!title_lang.is_empty()).then_some(title_lang.as_str()),
-        READ_SYNTAX_THEME,
+        read_syntax_theme(),
     );
 
     let source_count = clean.lines().count();
