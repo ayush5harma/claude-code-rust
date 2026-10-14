@@ -46,27 +46,8 @@ pub(crate) fn named(name: &str, session_id: &str) -> Option<Color> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::theme::contrast::contrast;
     use crate::ui::theme::{DARK, LIGHT};
-
-    fn luminance(color: Color) -> f64 {
-        let Color::Rgb(red, green, blue) = color else {
-            panic!("palette contains a non-RGB color");
-        };
-        let channel = |value: u8| {
-            let normalized = f64::from(value) / 255.0;
-            if normalized <= 0.04045 {
-                normalized / 12.92
-            } else {
-                ((normalized + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        0.2126 * channel(red) + 0.7152 * channel(green) + 0.0722 * channel(blue)
-    }
-
-    fn contrast(a: Color, b: Color) -> f64 {
-        let (la, lb) = (luminance(a), luminance(b));
-        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
-    }
 
     #[test]
     fn named_colors_and_default_are_readable_on_the_composer_surface() {

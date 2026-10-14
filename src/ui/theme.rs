@@ -374,11 +374,11 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
     }
 }
 
+/// WCAG contrast arithmetic for the palette's tests and any other test that
+/// checks a color against it.
 #[cfg(test)]
-mod tests {
-    use super::{DARK, LIGHT, Palette, Tone, tool_name_label};
+pub(crate) mod contrast {
     use ratatui::style::Color;
-    use unicode_width::UnicodeWidthStr;
 
     /// WCAG 2.x relative luminance of an sRGB color.
     pub(crate) fn luminance(color: Color) -> f64 {
@@ -400,6 +400,14 @@ mod tests {
         let (la, lb) = (luminance(a), luminance(b));
         (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::contrast::contrast;
+    use super::{DARK, LIGHT, Palette, Tone, tool_name_label};
+    use ratatui::style::Color;
+    use unicode_width::UnicodeWidthStr;
 
     /// The text floor from Apple's accessibility guidance (WCAG AA, body text).
     const TEXT_FLOOR: f64 = 4.5;
