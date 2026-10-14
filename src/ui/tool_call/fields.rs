@@ -40,7 +40,7 @@ pub(super) fn render_dynamic_field<'a>(
 ) -> Line<'static> {
     let value_label = value_label.into();
     Line::from(vec![
-        Span::styled(format!("{value_label}: "), Style::default().fg(theme::DIM)),
+        Span::styled(format!("{value_label}: "), Style::default().fg(theme::tertiary())),
         Span::raw(value.into().into_owned()),
     ])
 }
@@ -59,7 +59,7 @@ pub(super) fn render_multiline_field<'a>(
     let mut lines = vec![render_field(value_label, first.to_owned())];
     lines.extend(value_lines.map(|line| {
         Line::from(vec![
-            Span::styled(continuation_prefix.clone(), Style::default().fg(theme::DIM)),
+            Span::styled(continuation_prefix.clone(), Style::default().fg(theme::tertiary())),
             Span::raw(line.to_owned()),
         ])
     }));
@@ -68,7 +68,7 @@ pub(super) fn render_multiline_field<'a>(
 
 fn render_field_line(field: ToolField<'_>) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("{}: ", field.label), Style::default().fg(theme::DIM)),
+        Span::styled(format!("{}: ", field.label), Style::default().fg(theme::tertiary())),
         Span::raw(field.value.into_owned()),
     ])
 }

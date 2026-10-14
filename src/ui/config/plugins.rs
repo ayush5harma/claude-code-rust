@@ -5,9 +5,9 @@ use crate::app::plugins::{
     InstalledPluginEntry, PluginsViewTab, display_label, filtered_marketplace_plugins,
     ordered_installed, search_enabled, visible_marketplaces,
 };
+use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::Color;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -131,13 +131,13 @@ fn installed_content(app: &App) -> Vec<Vec<Line<'static>>> {
                     Span::raw("  "),
                     installed_plugin_badge(entry),
                 ]),
-                common::detail_kv("Plugin", &entry.id, Color::White),
+                common::detail_kv("Plugin", &entry.id, theme::label()),
                 common::detail_kv(
                     "Status",
                     if entry.enabled { "enabled" } else { "disabled" },
-                    Color::White,
+                    theme::label(),
                 ),
-                common::detail_kv("Scope", &entry.scope, Color::White),
+                common::detail_kv("Scope", &entry.scope, theme::label()),
             ];
             if let Some(description) = app
                 .plugins
@@ -146,25 +146,25 @@ fn installed_content(app: &App) -> Vec<Vec<Line<'static>>> {
                 .find(|plugin| plugin.plugin_id == entry.id)
                 .and_then(|plugin| plugin.description.as_ref())
             {
-                lines.push(common::detail_kv("Description", description, Color::White));
+                lines.push(common::detail_kv("Description", description, theme::label()));
             }
             if let Some(version) = &entry.version {
-                lines.push(common::detail_kv("Version", version, Color::White));
+                lines.push(common::detail_kv("Version", version, theme::label()));
             }
             if let Some(path) = &entry.project_path {
-                lines.push(common::detail_kv("Project", path, Color::White));
+                lines.push(common::detail_kv("Project", path, theme::label()));
             }
             if let Some(installed_at) = &entry.installed_at {
-                lines.push(common::detail_kv("Installed", installed_at, Color::White));
+                lines.push(common::detail_kv("Installed", installed_at, theme::label()));
             }
             if let Some(last_updated) = &entry.last_updated {
-                lines.push(common::detail_kv("Updated", last_updated, Color::White));
+                lines.push(common::detail_kv("Updated", last_updated, theme::label()));
             }
             if !entry.mcp_server_names.is_empty() {
                 lines.push(common::detail_kv(
                     "MCP servers",
                     &entry.mcp_server_names.join(", "),
-                    Color::White,
+                    theme::label(),
                 ));
             }
             lines
@@ -178,23 +178,23 @@ fn plugins_content(app: &App) -> Vec<Vec<Line<'static>>> {
         .map(|entry| {
             let mut lines = vec![
                 Line::styled(display_label(&entry.name), common::title_style()),
-                common::detail_kv("Plugin", &entry.plugin_id, Color::White),
+                common::detail_kv("Plugin", &entry.plugin_id, theme::label()),
             ];
             if let Some(description) = &entry.description {
-                lines.push(common::detail_kv("Description", description, Color::White));
+                lines.push(common::detail_kv("Description", description, theme::label()));
             }
             if let Some(marketplace) = &entry.marketplace_name {
-                lines.push(common::detail_kv("Marketplace", marketplace, Color::White));
+                lines.push(common::detail_kv("Marketplace", marketplace, theme::label()));
             }
             if let Some(version) = &entry.version {
-                lines.push(common::detail_kv("Version", version, Color::White));
+                lines.push(common::detail_kv("Version", version, theme::label()));
             }
             if let Some(count) = entry.install_count {
-                lines.push(common::detail_kv("Installs", &count.to_string(), Color::White));
+                lines.push(common::detail_kv("Installs", &count.to_string(), theme::label()));
             }
             if let Some(source) = &entry.source {
                 let source = source.as_str().map_or_else(|| source.to_string(), str::to_owned);
-                lines.push(common::detail_kv("Source", &source, Color::White));
+                lines.push(common::detail_kv("Source", &source, theme::label()));
             }
             lines
         })
@@ -211,13 +211,13 @@ fn marketplace_content(app: &App) -> Vec<Vec<Line<'static>>> {
         .map(|entry| {
             let mut lines = vec![
                 Line::styled(display_label(&entry.name), common::title_style()),
-                common::detail_kv("Marketplace", &entry.name, Color::White),
+                common::detail_kv("Marketplace", &entry.name, theme::label()),
             ];
             if let Some(source) = &entry.source {
-                lines.push(common::detail_kv("Source", source, Color::White));
+                lines.push(common::detail_kv("Source", source, theme::label()));
             }
             if let Some(repo) = &entry.repo {
-                lines.push(common::detail_kv("Repo", repo, Color::White));
+                lines.push(common::detail_kv("Repo", repo, theme::label()));
             }
             lines
         })
@@ -231,9 +231,9 @@ fn marketplace_content(app: &App) -> Vec<Vec<Line<'static>>> {
 
 fn installed_plugin_badge(entry: &InstalledPluginEntry) -> Span<'static> {
     if entry.mcp_server_names.is_empty() {
-        common::badge_span("SKILL", Color::White, Color::Rgb(64, 64, 64))
+        common::badge_span("SKILL", theme::Tone::Neutral)
     } else {
-        common::badge_span("MCP", Color::White, Color::Rgb(34, 92, 124))
+        common::badge_span("MCP", theme::Tone::Info)
     }
 }
 

@@ -108,13 +108,13 @@ pub(crate) fn prompt_prefix_text() -> String {
 pub(crate) fn configure_input_textarea(app: &mut App) {
     let needs_highlight_update = app.input.highlight_version != app.input.content_version;
     let background =
-        if app.config.composer_rules_effective() { Color::Reset } else { theme::USER_MSG_BG };
+        if app.config.composer_rules_effective() { Color::Reset } else { theme::fill() };
 
     {
         let textarea = app.input.editor_mut();
         textarea.set_style(Style::default().bg(background));
         textarea.set_placeholder_text("Type a message...");
-        textarea.set_placeholder_style(Style::default().fg(theme::DIM).bg(background));
+        textarea.set_placeholder_style(Style::default().fg(theme::tertiary()).bg(background));
         textarea.set_cursor_line_style(Style::default());
         textarea.set_cursor_render_mode(CursorRenderMode::Hidden);
         textarea.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
@@ -150,11 +150,11 @@ fn apply_textarea_highlights(
     active_mention: Option<&mention::MentionState>,
     committed_mentions: &[mention::CommittedMentionSpan],
 ) {
-    let slash_style = Style::default().fg(theme::SLASH_COMMAND);
-    let mention_style = Style::default().fg(Color::Cyan);
-    let subagent_style = Style::default().fg(theme::SUBAGENT_TOKEN);
-    let paste_style = Style::default().fg(Color::Green);
-    let image_badge_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let slash_style = Style::default().fg(theme::slash_command());
+    let mention_style = Style::default().fg(theme::cyan());
+    let subagent_style = Style::default().fg(theme::subagent_token());
+    let paste_style = Style::default().fg(theme::success());
+    let image_badge_style = Style::default().fg(theme::cyan()).add_modifier(Modifier::BOLD);
 
     for (row, line) in lines.iter().enumerate() {
         if let Some((start, end)) = slash_command_range(line) {
@@ -240,9 +240,10 @@ mod tests {
     use crate::app::mention::CommittedMentionSpan;
     use crate::app::subagent::find_subagent_spans;
     use crate::app::{App, FocusTarget, LoginHint};
+    use crate::ui::theme;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
-    use ratatui::style::{Color, Modifier};
+    use ratatui::style::Modifier;
     use ratatui::widgets::Widget;
     use tui_textarea::CursorRenderMode;
 
@@ -390,10 +391,10 @@ mod tests {
         configure_input_textarea(&mut app);
 
         let editor = app.input.editor();
-        assert_eq!(editor.style().bg, Some(crate::ui::theme::USER_MSG_BG));
+        assert_eq!(editor.style().bg, Some(crate::ui::theme::fill()));
         assert_eq!(
             editor.placeholder_style().and_then(|style| style.bg),
-            Some(crate::ui::theme::USER_MSG_BG)
+            Some(crate::ui::theme::fill())
         );
     }
 
@@ -433,7 +434,7 @@ mod tests {
 
         let cell = buffer.cell((1, 0)).expect("mention cell");
         assert_eq!(cell.symbol(), "d");
-        assert_eq!(cell.style().fg, Some(Color::Cyan));
+        assert_eq!(cell.style().fg, Some(theme::cyan()));
     }
 
     #[test]

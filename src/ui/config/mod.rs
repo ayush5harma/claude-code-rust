@@ -19,7 +19,6 @@ mod usage;
 use crate::app::{App, ConfigTab};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
-use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
@@ -97,7 +96,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             message,
-            Style::default().fg(if is_error { theme::STATUS_ERROR } else { theme::DIM }),
+            Style::default().fg(if is_error { theme::danger() } else { theme::tertiary() }),
         )))
         .wrap(Wrap { trim: false }),
         chunks[3],
@@ -218,7 +217,7 @@ fn render_confirmation_overlay(frame: &mut Frame, area: Rect, app: &App) {
     );
     debug_assert!(rendered.rect.width > 0);
     let body_lines = vec![
-        Line::from(Span::styled(overlay.body.clone(), Style::default().fg(Color::White))),
+        Line::from(Span::styled(overlay.body.clone(), Style::default().fg(theme::label()))),
         Line::default(),
     ];
     let body_height =
@@ -487,11 +486,11 @@ mod tests {
         let value_column = (0..buffer.area.width)
             .find(|x| buffer[(*x, thinking_row)].symbol() == "O")
             .expect("On value");
-        assert_eq!(buffer[(value_column, thinking_row)].fg, super::theme::BTW_ACCENT);
+        assert_eq!(buffer[(value_column, thinking_row)].fg, super::theme::btw_accent());
         assert!(buffer[(value_column, thinking_row)].modifier.contains(Modifier::BOLD));
         assert_eq!(buffer[(value_column, language_row)].symbol(), "D");
-        assert_eq!(buffer[(value_column, language_row)].fg, super::theme::DIM);
-        assert_eq!(buffer[(value_column, thinking_row)].bg, super::theme::USER_MSG_BG);
+        assert_eq!(buffer[(value_column, language_row)].fg, super::theme::tertiary());
+        assert_eq!(buffer[(value_column, thinking_row)].bg, super::theme::fill());
         assert!(lines.iter().any(|line| line.contains("1/2")));
         crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         terminal.draw(|frame| super::render(frame, &mut app)).expect("selected language");
@@ -560,7 +559,7 @@ mod tests {
             assert_eq!(
                 buffer[(u16::try_from(column).expect("column"), u16::try_from(row).expect("row"))]
                     .fg,
-                theme::DIM
+                theme::tertiary()
             );
         }
         let warning_row = lines
@@ -1268,8 +1267,8 @@ mod tests {
                         .iter()
                         .find(|cell| cell.symbol() == "\u{203a}")
                         .expect("selected row marker");
-                    assert_eq!(marker.fg, theme::RUST_ORANGE);
-                    assert_eq!(marker.bg, theme::USER_MSG_BG);
+                    assert_eq!(marker.fg, theme::accent());
+                    assert_eq!(marker.bg, theme::fill());
                 }
                 match tab {
                     ConfigTab::Settings => assert!(text.contains("Language"), "{text}"),

@@ -4,9 +4,9 @@
 use super::common::{detail_kv, section_heading};
 use crate::app::App;
 use crate::app::format_elapsed;
+use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Wrap};
 
@@ -20,20 +20,20 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
 
     // ---- Session ----
     lines.push(section_heading("Session"));
-    lines.push(detail_kv("Version", env!("CARGO_PKG_VERSION"), Color::White));
-    lines.push(detail_kv("Session name", &derive_session_name(app), Color::White));
+    lines.push(detail_kv("Version", env!("CARGO_PKG_VERSION"), theme::label()));
+    lines.push(detail_kv("Session name", &derive_session_name(app), theme::label()));
 
     let session_id_str = app
         .session_runtime
         .session_id
         .as_ref()
         .map_or_else(|| "(none)".to_owned(), std::string::ToString::to_string);
-    lines.push(detail_kv("Session ID", &session_id_str, Color::White));
+    lines.push(detail_kv("Session ID", &session_id_str, theme::label()));
 
-    lines.push(detail_kv("cwd", &app.cwd, Color::White));
+    lines.push(detail_kv("cwd", &app.cwd, theme::label()));
 
     if let Some(branch) = app.git_branch() {
-        lines.push(detail_kv("Git branch", branch, Color::White));
+        lines.push(detail_kv("Git branch", branch, theme::label()));
     }
 
     lines.push(Line::default());
@@ -41,42 +41,42 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
     // ---- Account ----
     if let Some(ref account) = app.session_runtime.account_info {
         lines.push(section_heading("Account"));
-        lines.push(detail_kv("Login method", &login_method_label(account), Color::White));
+        lines.push(detail_kv("Login method", &login_method_label(account), theme::label()));
         if let Some(ref provider) = account.api_provider {
-            lines.push(detail_kv("API provider", provider.label(), Color::White));
+            lines.push(detail_kv("API provider", provider.label(), theme::label()));
         }
         if let Some(ref org) = account.organization
             && !org.is_empty()
         {
-            lines.push(detail_kv("Organization", org, Color::White));
+            lines.push(detail_kv("Organization", org, theme::label()));
         }
         if let Some(ref email) = account.email
             && !email.is_empty()
         {
-            lines.push(detail_kv("Email", email, Color::White));
+            lines.push(detail_kv("Email", email, theme::label()));
         }
         if let Some(ref sub) = account.subscription_type
             && !sub.is_empty()
         {
-            lines.push(detail_kv("Subscription", sub, Color::White));
+            lines.push(detail_kv("Subscription", sub, theme::label()));
         }
         lines.push(Line::default());
     }
 
     // ---- Model ----
     lines.push(section_heading("Model"));
-    lines.push(detail_kv("Model", &model_display(app), Color::White));
+    lines.push(detail_kv("Model", &model_display(app), theme::label()));
     if let Some(current_model) = app.session_runtime.current_model.as_ref() {
-        lines.push(detail_kv("Resolved model ID", &current_model.resolved_id, Color::White));
+        lines.push(detail_kv("Resolved model ID", &current_model.resolved_id, theme::label()));
         if let Some(requested_id) = current_model.requested_id.as_deref()
             && requested_id != current_model.resolved_id
         {
-            lines.push(detail_kv("Requested model", requested_id, Color::White));
+            lines.push(detail_kv("Requested model", requested_id, theme::label()));
         }
     }
 
     if let Some(ref mode) = app.session_runtime.mode {
-        lines.push(detail_kv("Mode", &mode.current_mode_name, Color::White));
+        lines.push(detail_kv("Mode", &mode.current_mode_name, theme::label()));
     }
 
     lines.push(Line::default());
@@ -85,10 +85,10 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
     lines.push(section_heading("Settings"));
 
     let memory_path = resolve_memory_path(app);
-    lines.push(detail_kv("Memory", &memory_path, Color::White));
+    lines.push(detail_kv("Memory", &memory_path, theme::label()));
 
     let sources = setting_sources(app);
-    lines.push(detail_kv("Setting sources", &sources, Color::White));
+    lines.push(detail_kv("Setting sources", &sources, theme::label()));
 
     lines.push(Line::default());
     lines.extend(startup_lines(app));
@@ -103,12 +103,12 @@ fn startup_lines(app: &App) -> Vec<Line<'static>> {
     let mut lines = vec![section_heading("Startup")];
     let milestones = app.startup.timeline.milestones();
     if milestones.is_empty() {
-        lines.push(detail_kv("Measured", "nothing yet", Color::White));
+        lines.push(detail_kv("Measured", "nothing yet", theme::label()));
     }
     for milestone in milestones {
         let note = milestone.note.map_or_else(String::new, |note| format!(" ({note})"));
         let value = format!("+{}{note}", format_elapsed(milestone.at));
-        lines.push(detail_kv(milestone.label, &value, Color::White));
+        lines.push(detail_kv(milestone.label, &value, theme::label()));
     }
     lines
 }
@@ -118,7 +118,7 @@ fn hook_lines(app: &App) -> Vec<Line<'static>> {
     let mut lines = vec![section_heading("Hooks this session")];
     let summary = app.session_runtime.hook_runs.summary();
     if summary.runs == 0 {
-        lines.push(detail_kv("Runs", "none reported", Color::White));
+        lines.push(detail_kv("Runs", "none reported", theme::label()));
         return lines;
     }
     let mut count = if summary.dropped == 0 {
@@ -134,13 +134,13 @@ fn hook_lines(app: &App) -> Vec<Line<'static>> {
         parts.push(format!("{} still running", summary.runs - summary.finished));
     }
     parts.push(format!("{} in total", format_elapsed(summary.total)));
-    lines.push(detail_kv("Runs", &parts.join(", "), Color::White));
+    lines.push(detail_kv("Runs", &parts.join(", "), theme::label()));
     for (rank, run) in summary.slowest.iter().flatten().enumerate() {
         let took = run.duration().map_or_else(String::new, format_elapsed);
         lines.push(detail_kv(
             &format!("Slowest {}", rank + 1),
             &format!("{} {took}", run.label()),
-            Color::White,
+            theme::label(),
         ));
     }
     lines

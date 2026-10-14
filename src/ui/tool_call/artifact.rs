@@ -3,7 +3,8 @@
 //! Rendering helpers for SDK `Artifact` tool calls.
 
 use crate::app::ToolCallInfo;
-use ratatui::style::{Color, Modifier, Style};
+use crate::ui::theme;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::{Map, Value};
 
@@ -112,12 +113,15 @@ fn render_input_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     let mut lines = fields::render_fields(artifact_fields);
     if let Some(force) = input.and_then(|input| typed::json_bool(input, "force")) {
         let style = if force {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default().fg(theme::warning()).add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
         lines.push(Line::from(vec![
-            Span::styled("Overwrite conflicts: ", Style::default().fg(crate::ui::theme::DIM)),
+            Span::styled(
+                "Overwrite conflicts: ",
+                Style::default().fg(crate::ui::theme::tertiary()),
+            ),
             Span::styled(typed::bool_label(force), style),
         ]));
     }

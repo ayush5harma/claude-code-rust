@@ -57,7 +57,7 @@ pub(super) fn render_file_text(
         .collect::<Vec<_>>();
     let entries = cap_read_items(entries, |omitted| ReadEntry::Marker(read_hidden_marker(omitted)));
 
-    let gutter_style = Style::default().fg(theme::DIM);
+    let gutter_style = Style::default().fg(theme::tertiary());
     let continuation = " ".repeat(prefix_width);
     let mut rows = Vec::new();
     for entry in entries {

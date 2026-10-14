@@ -66,7 +66,7 @@ fn append_user_blocks(msg: &mut ChatMessage, width: u16, rows: &mut MessageRows)
         match block {
             MessageBlock::Text(block) => {
                 let trailing_gap = block.trailing_blank_lines();
-                rows.push_lines(text_block_lines(block, width, Some(theme::USER_MSG_BG), true));
+                rows.push_lines(text_block_lines(block, width, Some(theme::fill()), true));
                 for _ in 0..trailing_gap {
                     rows.push_blank();
                 }
@@ -79,7 +79,7 @@ fn append_user_blocks(msg: &mut ChatMessage, width: u16, rows: &mut MessageRows)
                 };
                 rows.push_lines(vec![Line::from(Span::styled(
                     label,
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
+                    Style::default().fg(theme::cyan()).add_modifier(Modifier::DIM),
                 ))]);
             }
             _ => {}
@@ -137,9 +137,9 @@ pub(super) fn render_btw_exchange_lines(
     }
     let card_width = width;
     let inner_width = card_width.saturating_sub(4).max(1);
-    let accent = Style::default().fg(theme::BTW_ACCENT);
+    let accent = Style::default().fg(theme::btw_accent());
     let label =
-        Style::default().fg(theme::BTW_ACCENT).add_modifier(Modifier::BOLD | Modifier::ITALIC);
+        Style::default().fg(theme::btw_accent()).add_modifier(Modifier::BOLD | Modifier::ITALIC);
     let mut content = crate::ui::wrap::wrap_lines_to_physical_rows(
         &[Line::from(Span::styled("Question:", label))],
         inner_width,
@@ -214,7 +214,7 @@ fn render_user_dialog_lines(dialog: &UserDialogBlock) -> Vec<Line<'static>> {
     };
     lines.push(Line::from(Span::styled(
         title,
-        Style::default().fg(theme::STATUS_WARNING).add_modifier(Modifier::BOLD),
+        Style::default().fg(theme::warning()).add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::default());
 
@@ -229,7 +229,7 @@ fn render_user_dialog_lines(dialog: &UserDialogBlock) -> Vec<Line<'static>> {
         };
         lines.push(Line::from(Span::styled(
             format!("  Resolved: {resolved}"),
-            Style::default().fg(theme::DIM),
+            Style::default().fg(theme::tertiary()),
         )));
         return lines;
     }
@@ -240,15 +240,15 @@ fn render_user_dialog_lines(dialog: &UserDialogBlock) -> Vec<Line<'static>> {
         if is_selected {
             spans.push(Span::styled(
                 "\u{25b8} ",
-                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD),
             ));
         } else {
             spans.push(Span::raw("  "));
         }
         let label_style = if is_selected {
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
+            Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Gray)
+            Style::default().fg(theme::secondary())
         };
         spans.push(Span::styled(option.label.clone(), label_style));
         lines.push(Line::from(spans));
@@ -260,7 +260,7 @@ fn render_user_dialog_lines(dialog: &UserDialogBlock) -> Vec<Line<'static>> {
     } else {
         "\u{25cb} Waiting for input... (Tab to focus)"
     };
-    lines.push(Line::from(Span::styled(help, Style::default().fg(theme::DIM))));
+    lines.push(Line::from(Span::styled(help, Style::default().fg(theme::tertiary()))));
     lines
 }
 
@@ -289,7 +289,7 @@ fn role_label_line(role: &MessageRole) -> Line<'static> {
     match role {
         MessageRole::User => Line::from(Span::styled(
             "User",
-            Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::tertiary()).add_modifier(Modifier::BOLD),
         )),
         MessageRole::System(_) => system_role_label_line(system_severity_from_role(role)),
         MessageRole::Assistant | MessageRole::Welcome => Line::default(),
@@ -298,18 +298,18 @@ fn role_label_line(role: &MessageRole) -> Line<'static> {
 
 fn system_role_label_line(severity: SystemSeverity) -> Line<'static> {
     let (label, color) = match severity {
-        SystemSeverity::Info => ("Info", theme::DIM),
-        SystemSeverity::Warning => ("Warning", theme::STATUS_WARNING),
-        SystemSeverity::Error => ("Error", theme::STATUS_ERROR),
+        SystemSeverity::Info => ("Info", theme::tertiary()),
+        SystemSeverity::Warning => ("Warning", theme::warning()),
+        SystemSeverity::Error => ("Error", theme::danger()),
     };
     Line::from(Span::styled(label, Style::default().fg(color).add_modifier(Modifier::BOLD)))
 }
 
 fn system_severity_color(severity: SystemSeverity) -> Color {
     match severity {
-        SystemSeverity::Info => theme::DIM,
-        SystemSeverity::Warning => theme::STATUS_WARNING,
-        SystemSeverity::Error => theme::STATUS_ERROR,
+        SystemSeverity::Info => theme::tertiary(),
+        SystemSeverity::Warning => theme::warning(),
+        SystemSeverity::Error => theme::danger(),
     }
 }
 
@@ -428,7 +428,7 @@ mod tests {
                 .spans
                 .iter()
                 .filter(|span| !span.content.is_empty())
-                .all(|span| span.style.fg == Some(crate::ui::theme::STATUS_WARNING))
+                .all(|span| span.style.fg == Some(crate::ui::theme::warning()))
         );
     }
 

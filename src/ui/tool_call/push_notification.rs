@@ -102,7 +102,7 @@ mod tests {
         let lines = render_tool_content(&tc);
 
         assert_eq!(rendered_line_texts(&lines), vec!["Message: Build finished"]);
-        assert_eq!(lines[0].spans[0].style.fg, Some(theme::DIM));
+        assert_eq!(lines[0].spans[0].style.fg, Some(theme::tertiary()));
     }
 
     #[test]

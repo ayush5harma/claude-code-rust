@@ -53,7 +53,7 @@ impl Default for SessionRuntimeState {
     fn default() -> Self {
         Self {
             session_id: None,
-            accent: crate::ui::theme::RUST_ORANGE,
+            accent: crate::ui::theme::accent(),
             conversation_id: None,
             last_resumable_session_id: None,
             conn: None,
@@ -112,7 +112,7 @@ impl SessionRuntimeState {
     }
 
     pub fn clear_identity(&mut self) {
-        self.accent = crate::ui::theme::RUST_ORANGE;
+        self.accent = crate::ui::theme::accent();
         self.ultracode = None;
         self.session_title = None;
         self.hook_runs.clear();

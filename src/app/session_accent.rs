@@ -61,7 +61,7 @@ mod tests {
         assert_eq!(named("default", "session-1"), Some(for_session_id("session-1")));
         assert_eq!(named("BLUE", "session-1"), None);
 
-        let background = luminance(crate::ui::theme::USER_MSG_BG);
+        let background = luminance(crate::ui::theme::fill());
         for color in PALETTE {
             let ratio = (luminance(color) + 0.05) / (background + 0.05);
             assert!(ratio >= 4.5, "{color:?} has contrast ratio {ratio:.2}");

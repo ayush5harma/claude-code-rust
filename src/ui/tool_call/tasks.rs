@@ -6,7 +6,7 @@
 use crate::agent::model;
 use crate::app::ToolCallInfo;
 use crate::ui::theme;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::fields::{self, ToolField};
@@ -176,7 +176,7 @@ fn render_text_line(tc: &ToolCallInfo, line: &str) -> Line<'static> {
         return deleted_task_line(line);
     }
     if matches!(line, "Task not found" | "No tasks") {
-        return Line::from(Span::styled(line.to_owned(), Style::default().fg(theme::DIM)));
+        return Line::from(Span::styled(line.to_owned(), Style::default().fg(theme::tertiary())));
     }
     if let Some((label, value)) = line.split_once(':') {
         let label = match label {
@@ -233,20 +233,20 @@ fn strip_task_marker_prefix<'a>(line: &'a str, marker: &str) -> Option<&'a str> 
 }
 
 fn deleted_task_line(text: &str) -> Line<'static> {
-    Line::from(Span::styled(text.to_owned(), Style::default().fg(theme::DIM)))
+    Line::from(Span::styled(text.to_owned(), Style::default().fg(theme::tertiary())))
 }
 
 fn render_task_line(subject: &str, active_form: &str, status: model::TaskStatus) -> Line<'static> {
     let (marker, marker_style) = task_marker(status);
     let (text, text_style) = match status {
         model::TaskStatus::Completed => {
-            (subject, Style::default().fg(theme::DIM).add_modifier(Modifier::DIM))
+            (subject, Style::default().fg(theme::tertiary()).add_modifier(Modifier::DIM))
         }
         model::TaskStatus::InProgress => (
             if active_form.is_empty() { subject } else { active_form },
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD),
         ),
-        model::TaskStatus::Pending => (subject, Style::default().fg(Color::Gray)),
+        model::TaskStatus::Pending => (subject, Style::default().fg(theme::secondary())),
     };
 
     Line::from(vec![
@@ -258,19 +258,21 @@ fn render_task_line(subject: &str, active_form: &str, status: model::TaskStatus)
 
 fn task_marker(status: model::TaskStatus) -> (&'static str, Style) {
     match status {
-        model::TaskStatus::Completed => (TASK_MARKER_COMPLETED, Style::default().fg(theme::DIM)),
+        model::TaskStatus::Completed => {
+            (TASK_MARKER_COMPLETED, Style::default().fg(theme::tertiary()))
+        }
         model::TaskStatus::InProgress => (
             TASK_MARKER_IN_PROGRESS,
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD),
         ),
-        model::TaskStatus::Pending => (TASK_MARKER_PENDING, Style::default().fg(theme::DIM)),
+        model::TaskStatus::Pending => (TASK_MARKER_PENDING, Style::default().fg(theme::tertiary())),
     }
 }
 
 fn omission_line() -> Line<'static> {
     Line::from(Span::styled(
         TASK_OMISSION_MARKER,
-        Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+        Style::default().fg(theme::tertiary()).add_modifier(Modifier::ITALIC),
     ))
 }
 
@@ -323,7 +325,7 @@ mod tests {
         let text: String = title.spans.iter().map(|span| span.content.as_ref()).collect();
 
         assert_eq!(marker.content.as_ref(), format!("{TASK_MARKER_PENDING} "));
-        assert_eq!(marker.style.fg, Some(theme::DIM));
+        assert_eq!(marker.style.fg, Some(theme::tertiary()));
         assert!(!text.contains('\u{25cc}'));
     }
 
@@ -340,7 +342,7 @@ mod tests {
         let marker = task_title_marker_span(&title);
 
         assert_eq!(marker.content.as_ref(), format!("{TASK_MARKER_IN_PROGRESS} "));
-        assert_eq!(marker.style.fg, Some(theme::RUST_ORANGE));
+        assert_eq!(marker.style.fg, Some(theme::accent()));
         assert_eq!(marker.style.add_modifier, Modifier::BOLD);
     }
 
@@ -357,7 +359,7 @@ mod tests {
         let marker = task_title_marker_span(&title);
 
         assert_eq!(marker.content.as_ref(), format!("{TASK_MARKER_COMPLETED} "));
-        assert_eq!(marker.style.fg, Some(theme::DIM));
+        assert_eq!(marker.style.fg, Some(theme::tertiary()));
     }
 
     #[test]
@@ -450,7 +452,7 @@ mod tests {
         );
         let marker = task_title_marker_span(&title);
         assert_eq!(marker.content.as_ref(), format!("{TASK_MARKER_PENDING} "));
-        assert_eq!(marker.style.fg, Some(theme::DIM));
+        assert_eq!(marker.style.fg, Some(theme::tertiary()));
 
         let body = super::super::standard::render_tool_call_body(&tc, 80);
         assert!(rendered_line_texts(&body).iter().any(|line| line.contains("Deleted task")));
@@ -459,7 +461,7 @@ mod tests {
             .find(|line| line.spans.iter().any(|span| span.content.contains("Deleted task")));
         assert_eq!(
             deleted.and_then(|line| line.spans.first()).and_then(|span| span.style.fg),
-            Some(theme::DIM)
+            Some(theme::tertiary())
         );
     }
 

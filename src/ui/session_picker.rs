@@ -28,7 +28,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         } else {
             "Resume Session"
         })
-        .border_style(Style::default().fg(theme::DIM));
+        .border_style(Style::default().fg(theme::tertiary()));
     frame.render_widget(outer, area);
 
     let inner = area.inner(Margin { vertical: 1, horizontal: 2 });
@@ -59,13 +59,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             } else {
                 "Select a session to resume"
             },
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD),
         ))),
         chunks[0],
     );
     frame.render_widget(
         Paragraph::new(description)
-            .style(Style::default().fg(theme::DIM))
+            .style(Style::default().fg(theme::tertiary()))
             .wrap(Wrap { trim: false }),
         chunks[1],
     );
@@ -91,21 +91,21 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     } else if selecting_turn && app.sdk_inventory.rewind_targets_in_flight {
         frame.render_widget(
             Paragraph::new("Loading session messages...")
-                .style(Style::default().fg(theme::DIM))
+                .style(Style::default().fg(theme::tertiary()))
                 .wrap(Wrap { trim: false }),
             chunks[2],
         );
     } else if selecting_turn && app.sdk_inventory.rewind_targets_error.is_some() {
         frame.render_widget(
             Paragraph::new(app.sdk_inventory.rewind_targets_error.as_deref().unwrap_or_default())
-                .style(Style::default().fg(theme::STATUS_ERROR))
+                .style(Style::default().fg(theme::danger()))
                 .wrap(Wrap { trim: false }),
             chunks[2],
         );
     } else if selecting_turn && crate::app::session_picker::picker_turn_count(app) == 0 {
         frame.render_widget(
             Paragraph::new("No resumable user messages found in this session.")
-                .style(Style::default().fg(theme::DIM))
+                .style(Style::default().fg(theme::tertiary()))
                 .wrap(Wrap { trim: false }),
             chunks[2],
         );
@@ -116,14 +116,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     {
         frame.render_widget(
             Paragraph::new("Loading recent sessions...")
-                .style(Style::default().fg(theme::DIM))
+                .style(Style::default().fg(theme::tertiary()))
                 .wrap(Wrap { trim: false }),
             chunks[2],
         );
     } else if crate::app::session_picker::picker_session_count(app) == 0 {
         frame.render_widget(
             Paragraph::new("No recent sessions found for this directory.")
-                .style(Style::default().fg(theme::DIM))
+                .style(Style::default().fg(theme::tertiary()))
                 .wrap(Wrap { trim: false }),
             chunks[2],
         );
@@ -132,12 +132,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 
     frame.render_widget(
-        Paragraph::new(footer_text(app)).style(Style::default().fg(theme::DIM)),
+        Paragraph::new(footer_text(app)).style(Style::default().fg(theme::tertiary())),
         chunks[3],
     );
     if let Some(error) = app.session_picker.error.as_deref() {
         frame.render_widget(
-            Paragraph::new(error).style(Style::default().fg(theme::STATUS_ERROR)),
+            Paragraph::new(error).style(Style::default().fg(theme::danger())),
             chunks[1],
         );
     }
@@ -170,7 +170,7 @@ fn render_turn_list(frame: &mut Frame, area: Rect, app: &mut App) {
         .map(|(idx, target)| {
             let selected = start + idx == app.session_picker.turn_selected;
             let style = if selected {
-                Style::default().fg(ratatui::style::Color::White).bg(theme::RUST_ORANGE)
+                Style::default().fg(theme::on_accent()).bg(theme::accent())
             } else {
                 Style::default()
             };
@@ -207,7 +207,7 @@ fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
     for (idx, session) in app.recent_sessions[start..end].iter().enumerate() {
         let selected = start + idx == app.session_picker.selected;
         let base_style = if selected {
-            Style::default().fg(ratatui::style::Color::White).bg(theme::RUST_ORANGE)
+            Style::default().fg(theme::on_accent()).bg(theme::accent())
         } else {
             Style::default()
         };
@@ -255,7 +255,7 @@ fn session_line(width: u16, left: &str, base_style: Style, selected: bool) -> Li
     let action_style = if selected {
         base_style.add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD)
+        Style::default().fg(theme::tertiary()).add_modifier(Modifier::BOLD)
     };
 
     Line::from(vec![

@@ -179,9 +179,9 @@ pub(crate) fn overview_lines(
         if subscription_missing { loading.to_owned() } else { block.subscription.clone() };
     let session_value = if session_missing { loading.to_owned() } else { block.session_id.clone() };
     let subscription_style = if subscription_missing {
-        Style::default().fg(theme::DIM)
+        Style::default().fg(theme::tertiary())
     } else {
-        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
+        Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD)
     };
 
     let ferris_width = ferris_column_width();
@@ -211,7 +211,7 @@ fn overview_text_rows(
     session_value: &str,
     width: usize,
 ) -> Vec<Line<'static>> {
-    let dim = Style::default().fg(theme::DIM);
+    let dim = Style::default().fg(theme::tertiary());
     let mut rows = Vec::new();
     rows.extend(welcome_field_lines("Version", &block.version, dim, width));
     rows.extend(welcome_field_lines("Subscription", subscription_value, subscription_style, width));
@@ -228,8 +228,10 @@ fn welcome_field_lines(
     value_style: Style,
     width: usize,
 ) -> Vec<Line<'static>> {
-    let prefix =
-        vec![StyledChunk { text: format!("{label}: "), style: Style::default().fg(theme::DIM) }];
+    let prefix = vec![StyledChunk {
+        text: format!("{label}: "),
+        style: Style::default().fg(theme::tertiary()),
+    }];
     let body = vec![StyledChunk { text: value.to_owned(), style: value_style }];
     let prefix_width = prefix.iter().map(|chunk| display_width(&chunk.text)).sum::<usize>();
     if width.saturating_sub(prefix_width) < MIN_INLINE_FIELD_VALUE_WIDTH {
@@ -259,7 +261,7 @@ fn ferris_rows(ferris: &FerrisFrame) -> Vec<Line<'static>> {
         .map(|art| {
             Line::from(Span::styled(
                 format!("{FERRIS_LEFT_PADDING}{art}"),
-                Style::default().fg(theme::RUST_ORANGE),
+                Style::default().fg(theme::accent()),
             ))
         })
         .collect()

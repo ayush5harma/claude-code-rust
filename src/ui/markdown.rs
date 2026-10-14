@@ -25,10 +25,10 @@ impl tui_markdown::StyleSheet for ClaudeRsStyleSheet {
     fn heading(&self, level: u8) -> Style {
         match level {
             1 => Style::new()
-                .fg(theme::ROLE_ASSISTANT)
+                .fg(theme::role_assistant())
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
             2 => Style::new().add_modifier(Modifier::BOLD),
-            _ => Style::new().fg(theme::DIM).add_modifier(Modifier::BOLD),
+            _ => Style::new().fg(theme::tertiary()).add_modifier(Modifier::BOLD),
         }
     }
 
@@ -153,7 +153,7 @@ fn shorten_link_destinations(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>
             if content.starts_with("http://") || content.starts_with("https://") {
                 let shortened = shorten_link_destination(content, MAX_LINK_DESTINATION_WIDTH);
                 span.content = shortened.into();
-                span.style = span.style.fg(theme::DIM).remove_modifier(Modifier::UNDERLINED);
+                span.style = span.style.fg(theme::tertiary()).remove_modifier(Modifier::UNDERLINED);
             }
         }
     }
@@ -205,7 +205,7 @@ pub(super) fn render_code_block(
         let padding = code_width.saturating_sub(line_display_width(&body));
         let mut spans = Vec::with_capacity(body.spans.len() + 4);
         spans.push(Span::styled(CODE_BLOCK_INDENT, outer));
-        spans.push(Span::styled(CODE_BLOCK_RAIL, fill.fg(theme::DIM)));
+        spans.push(Span::styled(CODE_BLOCK_RAIL, fill.fg(theme::tertiary())));
         spans.push(Span::styled(CODE_BLOCK_GUTTER, fill));
         spans.extend(body.spans.into_iter().map(|span| {
             let style = fill.patch(span.style);
@@ -221,7 +221,7 @@ pub(super) fn render_code_block(
     if let Some(language) = language {
         let label = Span::styled(
             language.to_owned(),
-            Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+            Style::default().fg(theme::tertiary()).add_modifier(Modifier::ITALIC),
         );
         rows.extend(hard_wrap_line(Line::from(label), code_width).into_iter().map(row));
     }
@@ -357,7 +357,7 @@ mod tests {
         assert!(styles[0].add_modifier.contains(Modifier::UNDERLINED));
         assert!(styles[1].add_modifier.contains(Modifier::BOLD));
         assert!(!styles[1].add_modifier.contains(Modifier::UNDERLINED));
-        assert_eq!(styles[2].fg, Some(theme::DIM));
+        assert_eq!(styles[2].fg, Some(theme::tertiary()));
     }
 
     #[test]
@@ -373,7 +373,7 @@ mod tests {
             .find(|span| span.content.starts_with("https://"))
             .expect("rendered link destination");
         assert!(destination.content.ends_with('…'));
-        assert_eq!(destination.style.fg, Some(theme::DIM));
+        assert_eq!(destination.style.fg, Some(theme::tertiary()));
         assert!(!destination.style.add_modifier.contains(Modifier::UNDERLINED));
     }
 

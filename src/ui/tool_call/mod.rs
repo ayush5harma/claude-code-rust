@@ -62,15 +62,15 @@ pub fn status_icon(
     spinner: crate::ui::SpinnerState,
 ) -> (&'static str, Color) {
     match status {
-        model::ToolCallStatus::Pending => ("\u{25CB}", theme::RUST_ORANGE),
-        model::ToolCallStatus::Detached => (theme::ICON_DETACHED, Color::LightBlue),
+        model::ToolCallStatus::Pending => ("\u{25CB}", theme::accent()),
+        model::ToolCallStatus::Detached => (theme::ICON_DETACHED, theme::info()),
         model::ToolCallStatus::InProgress => {
             let s = spinner.icon();
-            (s, theme::RUST_ORANGE)
+            (s, theme::accent())
         }
-        model::ToolCallStatus::Completed => (theme::ICON_COMPLETED, theme::RUST_ORANGE),
+        model::ToolCallStatus::Completed => (theme::ICON_COMPLETED, theme::accent()),
         model::ToolCallStatus::Failed | model::ToolCallStatus::Killed => {
-            (theme::ICON_FAILED, theme::STATUS_ERROR)
+            (theme::ICON_FAILED, theme::danger())
         }
     }
 }
@@ -162,7 +162,7 @@ fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<S
             out.push(Span::styled(chunk, span.style));
         }
     }
-    out.push(Span::styled("\u{2026}", Style::default().fg(theme::DIM)));
+    out.push(Span::styled("\u{2026}", Style::default().fg(theme::tertiary())));
     out
 }
 
@@ -170,23 +170,29 @@ fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
     let mut badges = Vec::new();
 
     if tc.output_metadata.as_ref().is_some_and(|metadata| metadata.structured_content_omitted) {
-        badges.push(Span::styled("  [structured output omitted]", Style::default().fg(theme::DIM)));
+        badges.push(Span::styled(
+            "  [structured output omitted]",
+            Style::default().fg(theme::tertiary()),
+        ));
     }
 
     if let Some(timeout_ms) = tc.timed_out_after_ms() {
         badges.push(Span::styled(
             format!("  [auto-backgrounded after {} ms]", format_u64_grouped(timeout_ms)),
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::warning()).add_modifier(Modifier::BOLD),
         ));
     } else if tc.assistant_auto_backgrounded() {
         badges.push(Span::styled(
             "  [assistant backgrounded]",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::warning()).add_modifier(Modifier::BOLD),
         ));
     }
 
     if tc.background_ends_with_final_response() {
-        badges.push(Span::styled("  [ends with final response]", Style::default().fg(theme::DIM)));
+        badges.push(Span::styled(
+            "  [ends with final response]",
+            Style::default().fg(theme::tertiary()),
+        ));
     }
 
     if tc.task_metadata.as_ref().and_then(|metadata| metadata.terminal_reason.as_deref())
@@ -194,7 +200,7 @@ fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
     {
         badges.push(Span::styled(
             "  [worker restarted]",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::warning()).add_modifier(Modifier::BOLD),
         ));
     }
 
@@ -202,30 +208,30 @@ fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
         if let Some(depth) = tc.task_spawn_depth() {
             badges.push(Span::styled(
                 format!("  [depth: {depth}]"),
-                Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::info()).add_modifier(Modifier::BOLD),
             ));
         }
         if let Some(retry) = subagent_retry_badge(tc) {
             badges.push(Span::styled(
                 format!("  [{retry}]"),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::warning()).add_modifier(Modifier::BOLD),
             ));
         }
         if let Some(agent_type) = agent_requested_type_badge(tc) {
             badges.push(Span::styled(
                 format!("  [type: {agent_type}]"),
-                Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::info()).add_modifier(Modifier::BOLD),
             ));
         }
         if let Some(models) = agent_model_route_badge(tc) {
             badges.push(Span::styled(
                 format!("  [models: {}]", models.join(" -> ")),
-                Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::info()).add_modifier(Modifier::BOLD),
             ));
         } else if let Some(model) = agent_display_model_badge(tc) {
             badges.push(Span::styled(
                 format!("  [model: {model}]"),
-                Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::info()).add_modifier(Modifier::BOLD),
             ));
         }
     }
@@ -233,7 +239,7 @@ fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
     if tc.task_is_backgrounded() || tc.skill_is_backgrounded() {
         badges.push(Span::styled(
             "  [backgrounded]",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::warning()).add_modifier(Modifier::BOLD),
         ));
     }
 

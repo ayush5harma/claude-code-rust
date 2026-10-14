@@ -15,7 +15,9 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 const FOOTER_COLUMN_GAP: u16 = 1;
 const MIN_CONTEXT_LOCATION_WIDTH: usize = 10;
 const MIN_CONTEXT_BRANCH_WIDTH: usize = 4;
-const FOOTER_CONTEXT_VALUE: Color = Color::Gray;
+fn footer_context_value() -> Color {
+    theme::secondary()
+}
 
 type FooterItem = Option<(String, Color)>;
 
@@ -34,7 +36,7 @@ pub(crate) fn serialize_footer_rows(app: &App, total_width: u16) -> SerializedFo
         rows.push(compose_footer_row(
             Line::from(Span::styled(
                 status_line.clone(),
-                Style::default().fg(FOOTER_CONTEXT_VALUE),
+                Style::default().fg(footer_context_value()),
             )),
             None,
             total_width,
@@ -75,24 +77,27 @@ fn build_agent_shelf(app: &App, width: u16) -> Vec<Line<'static>> {
         })
         .count();
     let mut header = vec![
-        Span::styled("agents  ", Style::default().fg(theme::DIM)),
+        Span::styled("agents  ", Style::default().fg(theme::tertiary())),
         Span::styled(format!("{running} running"), Style::default().fg(app.session_runtime.accent)),
     ];
     if done > 0 {
-        header.push(Span::styled(format!(" · {done} done"), Style::default().fg(Color::Green)));
+        header.push(Span::styled(format!(" · {done} done"), Style::default().fg(theme::success())));
     }
     if failed > 0 {
-        header.push(Span::styled(format!(" · {failed} failed"), Style::default().fg(Color::Red)));
+        header.push(Span::styled(
+            format!(" · {failed} failed"),
+            Style::default().fg(theme::danger()),
+        ));
     }
     if listed < agents.len() {
         header.push(Span::styled(
             format!("  +{} more", agents.len() - listed),
-            Style::default().fg(theme::DIM),
+            Style::default().fg(theme::tertiary()),
         ));
     }
     let mut rows = vec![compose_footer_row(
         Line::from(header),
-        Some(("ctrl+t inspect".to_owned(), theme::DIM)),
+        Some(("ctrl+t inspect".to_owned(), theme::tertiary())),
         width,
         20,
     )];
@@ -103,11 +108,11 @@ fn build_agent_shelf(app: &App, width: u16) -> Vec<Line<'static>> {
 
 fn gauge_color(percent: f64) -> Color {
     if percent >= 90.0 {
-        Color::Red
+        theme::danger()
     } else if percent >= 70.0 {
-        Color::Yellow
+        theme::warning()
     } else {
-        FOOTER_CONTEXT_VALUE
+        footer_context_value()
     }
 }
 
@@ -116,7 +121,7 @@ fn gauges(app: &App) -> Vec<Line<'static>> {
     if let Some(percent) = app.session_runtime.session_usage.context_usage_percent {
         let filled = (usize::from(percent.min(100)) * 8).div_ceil(100).min(8);
         result.push(Line::from(vec![
-            Span::styled("ctx ", Style::default().fg(theme::DIM)),
+            Span::styled("ctx ", Style::default().fg(theme::tertiary())),
             Span::styled(
                 format!("{}{} {percent}%", "▓".repeat(filled), "░".repeat(8 - filled)),
                 Style::default().fg(gauge_color(f64::from(percent))),
@@ -152,11 +157,15 @@ fn gauges(app: &App) -> Vec<Line<'static>> {
         .collect();
     if !agents.is_empty() && !agents.iter().any(|t| t.status == model::TaskStatus::InProgress) {
         let failed = agents.iter().filter(|t| task_status(t) == "failed").count();
-        let mut spans =
-            vec![Span::styled(format!("{} agents", agents.len()), Style::default().fg(theme::DIM))];
+        let mut spans = vec![Span::styled(
+            format!("{} agents", agents.len()),
+            Style::default().fg(theme::tertiary()),
+        )];
         if failed > 0 {
-            spans
-                .push(Span::styled(format!(" · {failed} failed"), Style::default().fg(Color::Red)));
+            spans.push(Span::styled(
+                format!(" · {failed} failed"),
+                Style::default().fg(theme::danger()),
+            ));
         }
         result.push(Line::from(spans));
     }
@@ -165,7 +174,7 @@ fn gauges(app: &App) -> Vec<Line<'static>> {
 
 fn rate_gauge(label: &str, percent: f64) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("{label} "), Style::default().fg(theme::DIM)),
+        Span::styled(format!("{label} "), Style::default().fg(theme::tertiary())),
         Span::styled(format!("{percent:.0}%"), Style::default().fg(gauge_color(percent))),
     ])
 }
@@ -184,7 +193,7 @@ fn alerts(app: &App, short: bool) -> Line<'static> {
                     if permissions == 1 { "" } else { "s" }
                 )
             },
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(theme::warning()),
         )));
     }
     if auth > 0 {
@@ -194,7 +203,7 @@ fn alerts(app: &App, short: bool) -> Line<'static> {
             } else {
                 format!("{auth} MCP server{} need auth", if auth == 1 { "" } else { "s" })
             },
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(theme::warning()),
         )));
     }
     join_items(items)
@@ -244,7 +253,7 @@ fn base_rows(app: &App, width: u16) -> Vec<Line<'static>> {
         }
         gauge_items.retain(|item| {
             !item.spans.first().is_some_and(|s| s.content.starts_with(label))
-                || item.spans.iter().any(|s| s.style.fg == Some(Color::Red))
+                || item.spans.iter().any(|s| s.style.fg == Some(theme::danger()))
         });
     }
     if join_items(gauge_items.clone()).width() + alerts.width() + 3 > width {
@@ -426,7 +435,7 @@ fn identity_line(app: &App, title_width: usize, effort: bool, compact: bool) -> 
             } else {
                 model.display_name_short.clone()
             },
-            Style::default().fg(FOOTER_CONTEXT_VALUE),
+            Style::default().fg(footer_context_value()),
         )];
         if effort
             && model.supports_effort
@@ -434,7 +443,7 @@ fn identity_line(app: &App, title_width: usize, effort: bool, compact: bool) -> 
         {
             spans.push(Span::styled(
                 format!(" {}", footer_effort_label(level)),
-                Style::default().fg(theme::DIM),
+                Style::default().fg(theme::tertiary()),
             ));
         }
         items.push(Line::from(spans));
@@ -442,7 +451,7 @@ fn identity_line(app: &App, title_width: usize, effort: bool, compact: bool) -> 
     if app.session_runtime.ultracode.is_some_and(model::UltracodeState::effective) {
         items.push(Line::from(Span::styled(
             if compact { "Ultra" } else { "Ultracode" },
-            Style::default().fg(theme::ULTRACODE_ACCENT),
+            Style::default().fg(theme::ultracode_accent()),
         )));
     }
     if let Some(mode) = app.session_runtime.mode.as_ref().filter(|m| m.current_mode_id != "default")
@@ -466,11 +475,11 @@ fn identity_line(app: &App, title_width: usize, effort: bool, compact: bool) -> 
     }
     match app.session_runtime.fast_mode_state {
         model::FastModeState::On => {
-            items.push(Line::from(Span::styled("fast", Style::default().fg(theme::RUST_ORANGE))));
+            items.push(Line::from(Span::styled("fast", Style::default().fg(theme::accent()))));
         }
         model::FastModeState::Cooldown => items.push(Line::from(Span::styled(
             if compact { "cooldown" } else { "fast cooldown" },
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(theme::warning()),
         ))),
         _ => {}
     }
@@ -491,10 +500,10 @@ fn build_context_line(app: &App, max_width: usize) -> Line<'static> {
     let Some((location, branch)) = context_values(app, max_width) else {
         return Line::default();
     };
-    let mut spans = vec![Span::styled(location, Style::default().fg(FOOTER_CONTEXT_VALUE))];
+    let mut spans = vec![Span::styled(location, Style::default().fg(footer_context_value()))];
     if let Some(branch) = branch {
-        spans.push(Span::styled(" · ", Style::default().fg(theme::DIM)));
-        spans.push(Span::styled(branch, Style::default().fg(FOOTER_CONTEXT_VALUE)));
+        spans.push(Span::styled(" · ", Style::default().fg(theme::tertiary())));
+        spans.push(Span::styled(branch, Style::default().fg(footer_context_value())));
     }
     Line::from(spans)
 }
@@ -658,11 +667,11 @@ fn mcp_needs_auth_count(app: &App) -> usize {
 
 fn mode_color(mode_id: &str) -> Color {
     match mode_id {
-        "default" => theme::DIM,
-        "auto" | "acceptEdits" => Color::Yellow,
-        "plan" => Color::Blue,
-        "bypassPermissions" | "dontAsk" => Color::Red,
-        _ => Color::Magenta,
+        "default" => theme::tertiary(),
+        "auto" | "acceptEdits" => theme::warning(),
+        "plan" => theme::info(),
+        "bypassPermissions" | "dontAsk" => theme::danger(),
+        _ => theme::purple(),
     }
 }
 
@@ -838,12 +847,12 @@ mod tests {
             rows[1]
                 .spans
                 .iter()
-                .any(|s| s.content.contains("90%") && s.style.fg == Some(Color::Red))
+                .any(|s| s.content.contains("90%") && s.style.fg == Some(theme::danger()))
         );
-        assert_eq!(gauge_color(69.0), FOOTER_CONTEXT_VALUE);
-        assert_eq!(gauge_color(70.0), Color::Yellow);
-        assert_eq!(gauge_color(89.0), Color::Yellow);
-        assert_eq!(gauge_color(90.0), Color::Red);
+        assert_eq!(gauge_color(69.0), footer_context_value());
+        assert_eq!(gauge_color(70.0), theme::warning());
+        assert_eq!(gauge_color(89.0), theme::warning());
+        assert_eq!(gauge_color(90.0), theme::danger());
     }
     #[test]
     fn defaults_hidden_effective_states_and_effort_shown() {

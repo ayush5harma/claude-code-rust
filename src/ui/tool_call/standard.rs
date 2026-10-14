@@ -57,7 +57,7 @@ pub(super) fn render_tool_call_title(
     } else {
         Span::styled(
             format!("{} ", kind_label.icon),
-            Style::default().fg(ratatui::style::Color::White).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::label()).add_modifier(Modifier::BOLD),
         )
     };
 
@@ -66,7 +66,7 @@ pub(super) fn render_tool_call_title(
     if tc.is_execute_tool() {
         title_spans.push(Span::styled(
             format!("{} ", kind_label.label.as_ref()),
-            Style::default().fg(ratatui::style::Color::White).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::label()).add_modifier(Modifier::BOLD),
         ));
     }
 
@@ -93,7 +93,10 @@ fn hidden_subagent_permission_title_prefix(tc: &ToolCallInfo) -> Option<Span<'st
         .as_ref()
         .is_some_and(|permission| permission.subagent_context.is_some());
     (tc.hidden && has_subagent_permission).then(|| {
-        Span::styled("Subagent · ", Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD))
+        Span::styled(
+            "Subagent · ",
+            Style::default().fg(theme::tertiary()).add_modifier(Modifier::BOLD),
+        )
     })
 }
 
@@ -133,7 +136,7 @@ pub(super) fn tool_call_has_body(tc: &ToolCallInfo) -> bool {
 
 /// Render the body (everything after the title line) of a tool call.
 fn render_standard_body(tc: &ToolCallInfo, width: u16, lines: &mut Vec<Line<'static>>) {
-    let pipe_style = Style::default().fg(theme::DIM);
+    let pipe_style = Style::default().fg(theme::tertiary());
 
     if !tool_call_has_body(tc) {
         return;
@@ -344,7 +347,7 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
         return if summary.is_empty() {
             Vec::new()
         } else {
-            vec![Line::from(Span::styled(summary, Style::default().fg(theme::DIM)))]
+            vec![Line::from(Span::styled(summary, Style::default().fg(theme::tertiary())))]
         };
     }
 
@@ -435,7 +438,7 @@ fn render_ask_user_question_result_entry(result: &Value, lines: &mut Vec<Line<'s
     );
 
     lines.push(Line::from(vec![
-        Span::styled("? ", Style::default().fg(theme::RUST_ORANGE)),
+        Span::styled("? ", Style::default().fg(theme::accent())),
         Span::styled(title, Style::default().add_modifier(Modifier::BOLD)),
     ]));
 
@@ -443,7 +446,7 @@ fn render_ask_user_question_result_entry(result: &Value, lines: &mut Vec<Line<'s
         for row in question.lines() {
             lines.push(Line::from(Span::styled(
                 format!("  {row}"),
-                Style::default().fg(theme::DIM),
+                Style::default().fg(theme::tertiary()),
             )));
         }
     }
@@ -477,13 +480,13 @@ fn render_selected_question_option(option: &Value, lines: &mut Vec<Line<'static>
         return;
     };
     let mut spans = vec![
-        Span::styled("  [x] ", Style::default().fg(theme::DIM)),
+        Span::styled("  [x] ", Style::default().fg(theme::tertiary())),
         Span::styled(label.to_owned(), Style::default().add_modifier(Modifier::BOLD)),
     ];
 
     if let Some(description) = json_str(option, "description").map(single_line_text) {
-        spans.push(Span::styled(" - ", Style::default().fg(theme::DIM)));
-        spans.push(Span::styled(description, Style::default().fg(theme::DIM)));
+        spans.push(Span::styled(" - ", Style::default().fg(theme::tertiary())));
+        spans.push(Span::styled(description, Style::default().fg(theme::tertiary())));
     }
     lines.push(Line::from(spans));
 }
@@ -506,7 +509,7 @@ fn render_question_annotation_section(
                 format!("{ASK_USER_QUESTION_RESULT_TEXT_INDENT}{title}: "),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::styled(single_line_text(text), Style::default().fg(theme::DIM)),
+            Span::styled(single_line_text(text), Style::default().fg(theme::tertiary())),
         ]));
     } else {
         lines.push(Line::from(Span::styled(
@@ -516,7 +519,7 @@ fn render_question_annotation_section(
         for row in text.lines() {
             lines.push(Line::from(Span::styled(
                 format!("{ASK_USER_QUESTION_RESULT_TEXT_INDENT}  {row}"),
-                Style::default().fg(theme::DIM),
+                Style::default().fg(theme::tertiary()),
             )));
         }
     }
@@ -630,7 +633,7 @@ pub(super) fn cap_read_items<T>(items: Vec<T>, marker: impl FnOnce(usize) -> T) 
 pub(super) fn read_hidden_marker(omitted: usize) -> Line<'static> {
     Line::from(Span::styled(
         format!("... {omitted} lines hidden ..."),
-        Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+        Style::default().fg(theme::tertiary()).add_modifier(Modifier::ITALIC),
     ))
 }
 
@@ -705,10 +708,10 @@ fn render_viewed_image_content(tc: &ToolCallInfo, text: &str) -> Option<Line<'st
     Some(Line::from(vec![
         Span::styled(
             "Viewed image",
-            Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+            Style::default().fg(theme::tertiary()).add_modifier(Modifier::ITALIC),
         ),
         Span::raw(" "),
-        Span::styled(file_name.to_owned(), Style::default().fg(ratatui::style::Color::White)),
+        Span::styled(file_name.to_owned(), Style::default().fg(theme::label())),
     ]))
 }
 
@@ -802,45 +805,57 @@ fn render_mcp_resource_content(
             lines.push(Line::from(vec![
                 Span::styled(
                     "Saved to: ",
-                    Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+                    Style::default().fg(theme::tertiary()).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(saved_path, Style::default().fg(theme::DIM)),
+                Span::styled(saved_path, Style::default().fg(theme::tertiary())),
             ]));
         }
     }
     if lines.is_empty() {
-        lines.push(Line::from(Span::styled(resource.uri.clone(), Style::default().fg(theme::DIM))));
+        lines.push(Line::from(Span::styled(
+            resource.uri.clone(),
+            Style::default().fg(theme::tertiary()),
+        )));
     }
     lines
 }
 
 fn render_mcp_resource_link_content(link: &model::McpResourceLink) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(vec![
-        Span::styled("Resource: ", Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "Resource: ",
+            Style::default().fg(theme::tertiary()).add_modifier(Modifier::BOLD),
+        ),
         Span::raw(link.title.as_deref().unwrap_or(&link.name).to_owned()),
     ])];
     lines.push(Line::from(vec![
-        Span::styled("URI: ", Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD)),
+        Span::styled("URI: ", Style::default().fg(theme::tertiary()).add_modifier(Modifier::BOLD)),
         Span::raw(link.uri.clone()),
     ]));
     if let Some(description) = &link.description {
         lines.push(Line::from(vec![
             Span::styled(
                 "Description: ",
-                Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::tertiary()).add_modifier(Modifier::BOLD),
             ),
             Span::raw(description.clone()),
         ]));
     }
     if let Some(mime_type) = &link.mime_type {
         lines.push(Line::from(vec![
-            Span::styled("Type: ", Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Type: ",
+                Style::default().fg(theme::tertiary()).add_modifier(Modifier::BOLD),
+            ),
             Span::raw(mime_type.clone()),
         ]));
     }
     if let Some(size) = link.size {
         lines.push(Line::from(vec![
-            Span::styled("Size: ", Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Size: ",
+                Style::default().fg(theme::tertiary()).add_modifier(Modifier::BOLD),
+            ),
             Span::raw(format!("{size} bytes")),
         ]));
     }
@@ -850,7 +865,7 @@ fn render_mcp_resource_link_content(link: &model::McpResourceLink) -> Vec<Line<'
         lines.push(Line::from(vec![
             Span::styled(
                 "Annotations: ",
-                Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::tertiary()).add_modifier(Modifier::BOLD),
             ),
             Span::raw(value),
         ]));
@@ -889,7 +904,7 @@ pub(super) fn cap_write_diff_lines(lines: Vec<Line<'static>>) -> Vec<Line<'stati
     out.extend(lines.iter().take(protected).cloned());
     out.push(Line::from(Span::styled(
         format!("... {omitted} diff lines omitted ..."),
-        Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+        Style::default().fg(theme::tertiary()).add_modifier(Modifier::ITALIC),
     )));
     out.extend(lines.into_iter().skip(protected + omitted));
     out
@@ -943,7 +958,7 @@ fn cap_tool_content_lines(
         if omitted_rows > 0 {
             out.push(Line::from(Span::styled(
                 format!("... {omitted_rows} wrapped rows hidden ..."),
-                Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+                Style::default().fg(theme::tertiary()).add_modifier(Modifier::ITALIC),
             )));
         }
         return out;
@@ -965,7 +980,7 @@ fn cap_tool_content_lines(
     out.extend(wrapped.iter().take(protected_rows).map(|wrapped| wrapped.row.clone()));
     out.push(Line::from(Span::styled(
         omitted,
-        Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+        Style::default().fg(theme::tertiary()).add_modifier(Modifier::ITALIC),
     )));
     out.extend(wrapped.into_iter().skip(tail_start).map(|wrapped| wrapped.row));
     out
