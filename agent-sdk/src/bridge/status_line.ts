@@ -83,7 +83,7 @@ async function refresh(session: SessionState, current: () => boolean, abort: Abo
       session_id: sessionId,
       cwd: session.cwd,
       workspace: { current_dir: session.cwd, project_dir: session.cwd },
-      ...(session.currentModel ? { model: { id: session.currentModel.resolved_id, display_name: session.currentModel.display_name_long } } : {}),
+      ...(session.currentModel ? { model: { id: session.currentModel.resolved_id, display_name: session.currentModel.display_name_short } } : {}),
       ...(context ? { context_window: { used_percentage: context.percentage, remaining_percentage: Math.max(0, 100 - context.percentage), context_window_size: context.maxTokens } } : {}),
       ...(session.statusRate ? { rate_limits: session.statusRate } : {}),
     };

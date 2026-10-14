@@ -12,6 +12,8 @@ pub(crate) struct SessionAgentsState {
     pub session_id: Option<String>,
     pub agent_ids: Vec<String>,
     pub selected: usize,
+    pub overlay_selected_id: Option<String>,
+    sdk_agent_ids: Vec<String>,
     pub messages: Vec<SubagentMessage>,
     pub message_scroll: u16,
     pub error: Option<String>,
@@ -26,6 +28,90 @@ impl SessionAgentsState {
 
     pub fn selected_id(&self) -> Option<&str> {
         self.agent_ids.get(self.selected).map(String::as_str)
+    }
+}
+
+pub(crate) fn sync_live(app: &mut App) {
+    let previous = app.session_agents.selected_id().map(str::to_owned);
+    let mut ids = app.session_agents.sdk_agent_ids.clone();
+    for task in app.sdk_inventory.tasks.iter().filter(|task| is_session_agent_task(task)) {
+        if !ids.contains(&task.task_id) {
+            ids.push(task.task_id.clone());
+        }
+    }
+    app.session_agents.agent_ids = ids;
+    app.session_agents.selected = previous
+        .as_ref()
+        .and_then(|id| app.session_agents.agent_ids.iter().position(|candidate| candidate == id))
+        .unwrap_or(0);
+    if previous.as_deref() != app.session_agents.selected_id() {
+        app.session_agents.messages.clear();
+        app.session_agents.message_scroll = 0;
+    }
+}
+
+fn select_agent(app: &mut App, selected: usize) {
+    if app.session_agents.selected != selected {
+        app.session_agents.messages.clear();
+        app.session_agents.message_scroll = 0;
+        app.session_agents.error = None;
+    }
+    app.session_agents.selected = selected;
+}
+
+pub(crate) fn handle_tasks_key(app: &mut App, key: KeyEvent) {
+    if key.code == KeyCode::Esc
+        || app.keymap.resolve_event(crate::app::keymap::KeyContext::ChatInput, key).is_some_and(
+            |binding| {
+                binding.action
+                    == crate::app::keymap::KeyAction::App(
+                        crate::app::keymap::AppAction::ToggleTasks,
+                    )
+            },
+        )
+    {
+        crate::app::view::set_chat_surface(app);
+        return;
+    }
+    if !key.modifiers.is_empty() {
+        return;
+    }
+    let ids: Vec<String> = crate::ui::agent_rows::session_agent_rows(app)
+        .iter()
+        .map(|row| row.task.task_id.clone())
+        .collect();
+    let current = app
+        .session_agents
+        .overlay_selected_id
+        .as_ref()
+        .and_then(|id| ids.iter().position(|candidate| candidate == id))
+        .unwrap_or(0);
+    match key.code {
+        KeyCode::Up | KeyCode::Down => {
+            let selected = if key.code == KeyCode::Up {
+                current.saturating_sub(1)
+            } else {
+                (current + 1).min(ids.len().saturating_sub(1))
+            };
+            app.session_agents.overlay_selected_id = ids.get(selected).cloned();
+        }
+        KeyCode::Enter => {
+            if let Some(id) = ids.get(current) {
+                sync_live(app);
+                let selected = app
+                    .session_agents
+                    .agent_ids
+                    .iter()
+                    .position(|candidate| candidate == id)
+                    .unwrap_or(0);
+                select_agent(app, selected);
+                if let Err(error) = crate::app::config::open_tab(app, crate::app::ConfigTab::Agents)
+                {
+                    app.session_agents.error = Some(error);
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -45,9 +131,10 @@ fn next_request(
 
 pub(crate) fn refresh(app: &mut App) {
     if app.session_runtime.conn.is_none() {
-        app.session_agents.clear();
+        sync_live(app);
         return;
     }
+    sync_live(app);
     let Some((sid, request_id)) = next_request(app, SessionAgentsAction::ListSessionAgents, None)
     else {
         app.session_agents.clear();
@@ -139,13 +226,14 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     }
     match key.code {
         KeyCode::Up => {
-            app.session_agents.selected = app.session_agents.selected.saturating_sub(1);
+            select_agent(app, app.session_agents.selected.saturating_sub(1));
             inspect_selected(app);
             true
         }
         KeyCode::Down => {
-            app.session_agents.selected = (app.session_agents.selected + 1)
+            let selected = (app.session_agents.selected + 1)
                 .min(app.session_agents.agent_ids.len().saturating_sub(1));
+            select_agent(app, selected);
             inspect_selected(app);
             true
         }
@@ -205,16 +293,15 @@ pub(crate) fn apply_result(app: &mut App, event: ClientEvent) {
     }
     match action {
         SessionAgentsAction::ListSessionAgents => {
-            let previous = app.session_agents.selected_id().map(str::to_owned);
-            app.session_agents.agent_ids = agent_ids;
-            app.session_agents.selected = previous
-                .and_then(|id| {
-                    app.session_agents.agent_ids.iter().position(|candidate| *candidate == id)
-                })
-                .unwrap_or(0);
+            app.session_agents.sdk_agent_ids = agent_ids;
+            sync_live(app);
             inspect_selected(app);
         }
-        SessionAgentsAction::GetSubagentMessages => app.session_agents.messages = messages,
+        SessionAgentsAction::GetSubagentMessages => {
+            if agent_id.as_deref() == app.session_agents.selected_id() {
+                app.session_agents.messages = messages;
+            }
+        }
         SessionAgentsAction::StopSubagentTask => {
             app.config.status_message = Some("Stop requested for the selected agent.".to_owned());
         }
@@ -228,6 +315,53 @@ mod tests {
     use crate::agent::model::{SessionId, TaskItem, TaskStatus};
     use crate::agent::wire::BridgeCommand;
     use std::rc::Rc;
+
+    #[test]
+    fn live_inventory_merges_sdk_ids_and_preserves_selection_by_identity() {
+        let mut app = App::test_default();
+        app.session_agents.sdk_agent_ids = vec!["recorded".to_owned()];
+        let mut task = TaskItem::new("live", "Build", TaskStatus::InProgress);
+        task.metadata = Some(serde_json::json!({"task_type": "local_agent"}));
+        app.sdk_inventory.tasks.push(task);
+        sync_live(&mut app);
+        assert_eq!(app.session_agents.agent_ids, ["recorded", "live"]);
+        app.session_agents.selected = 1;
+        app.session_agents.sdk_agent_ids = vec!["live".to_owned(), "recorded".to_owned()];
+        sync_live(&mut app);
+        assert_eq!(app.session_agents.selected_id(), Some("live"));
+        assert_eq!(app.session_agents.agent_ids.len(), 2);
+        app.session_agents.sdk_agent_ids = vec!["recorded".to_owned()];
+        app.sdk_inventory.tasks.clear();
+        sync_live(&mut app);
+        assert_eq!(app.session_agents.selected_id(), Some("recorded"));
+    }
+
+    #[test]
+    fn opening_another_overlay_agent_clears_previous_messages_before_sdk_reply() {
+        let mut app = App::test_default();
+        let (conn, _commands) = AgentConnection::test_channel();
+        app.session_runtime.conn = Some(Rc::new(conn));
+        app.session_runtime.session_id = Some(SessionId::new("session-1"));
+        for id in ["first", "second"] {
+            let mut task = TaskItem::new(id, id, TaskStatus::InProgress);
+            task.metadata = Some(serde_json::json!({"task_type": "local_agent"}));
+            app.sdk_inventory.tasks.push(task);
+        }
+        sync_live(&mut app);
+        app.session_agents.messages = vec![SubagentMessage {
+            role: "assistant".to_owned(),
+            text: "First agent private context".to_owned(),
+        }];
+        app.session_agents.message_scroll = 8;
+        app.session_agents.error = Some("first agent error".to_owned());
+        app.session_agents.overlay_selected_id = Some("second".to_owned());
+        handle_tasks_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.session_agents.selected_id(), Some("second"));
+        assert!(app.session_agents.messages.is_empty());
+        assert_eq!(app.session_agents.message_scroll, 0);
+        assert!(app.session_agents.error.is_none());
+        assert!(app.session_agents.loading);
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn list_and_inspect_ignore_stale_requests_and_stop_only_the_matching_running_task() {

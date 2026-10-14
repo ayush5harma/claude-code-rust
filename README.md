@@ -43,6 +43,10 @@ The two SDK behavior fixes incorporate upstream pull requests [#444](https://git
 | Input ergonomics ([#24](https://github.com/ayush5harma/claude-code-rust/pull/24)) | Backslash-Enter newline, Ctrl+G with VISUAL or EDITOR, Esc Esc rewind, empty Ctrl+D and `/exit`, Ctrl+O retained-transcript detail view, Ctrl+T tasks, remappable shortcuts, and paste-safe input handling. |
 | Composer and footer ([#25](https://github.com/ayush5harma/claude-code-rust/pull/25)) | Configurable `filled` or `rules` composer style; session-accent rules and prompt glyph; dynamic footer with context, session name, available SDK rate information, current-session agent counts, and permissions; the latest confirmed Task or TodoWrite plan; and a user-level configured `statusLine` command. Project and local settings cannot select an executable command; the user command receives documented JSON on stdin after the SDK session connects. Unavailable SDK rate and token fields are omitted rather than estimated. |
 
+### Added in v0.15.2-fork.5
+
+The footer adapts to terminal width and keeps session facts in one place. During delegation, a bounded shelf shows agent models, activity, usage and elapsed time. Use Ctrl+T to select an agent and Enter to inspect its model choice, recent tools, prompt and saved messages. Agent telemetry survives SDK inventory updates arriving before or after completion.
+
 ### Added in v0.15.2-fork.4
 
 | Change | What it adds |

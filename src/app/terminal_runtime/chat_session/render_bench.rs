@@ -117,6 +117,27 @@ fn full_redraw_warm(corpus: &RenderCorpus, (width, height): (u16, u16)) -> Vec<u
     samples
 }
 
+fn agent_shelf_warm(corpus: &RenderCorpus, (width, height): (u16, u16)) -> Vec<u128> {
+    let mut app = corpus.finished_app();
+    let tasks = ["Explore", "implementer", "verifier"].into_iter().enumerate().map(|(index, name)| {
+        let mut task = crate::agent::model::TaskItem::new(format!("bench-agent-{index}"), "Inspect rendering behavior", crate::agent::model::TaskStatus::InProgress);
+        task.metadata = Some(serde_json::json!({ "task_type": "local_agent", "subagent_type": name, "model_display": "Sonnet 5.5", "summary": "Reading footer render functions", "usage": { "total_tokens": 34000, "tool_uses": 12, "duration_ms": 62000 } }));
+        task
+    }).collect();
+    crate::app::tasks::apply_task_state_update(
+        &mut app,
+        crate::agent::model::TaskStateUpdate::new(crate::agent::model::TaskUpdateSource::Lifecycle)
+            .tasks(tasks),
+    );
+    let mut bench = FrameBench::new(&mut app, width, height);
+    bench.draw(&mut app);
+    let mut samples = Vec::with_capacity(WARM_FRAMES);
+    for _ in 0..WARM_FRAMES {
+        bench.timed_draw(&mut app, &mut samples);
+    }
+    samples
+}
+
 fn full_redraw_cold(corpus: &RenderCorpus, (width, height): (u16, u16)) -> Vec<u128> {
     let mut samples = Vec::with_capacity(COLD_FRAMES);
     for _ in 0..COLD_FRAMES {
@@ -188,6 +209,9 @@ fn render_bench() {
     for size in SIZES {
         report(size, "full_redraw_warm", full_redraw_warm(&corpus, size));
         report(size, "full_redraw_cold", full_redraw_cold(&corpus, size));
+        if std::env::var_os("CLAUDE_RS_BENCH_AGENTS").is_some() {
+            report(size, "agent_shelf_warm", agent_shelf_warm(&corpus, size));
+        }
         report(size, "streaming", streaming(&corpus, size));
         report(size, "scroll", scroll_through_history(&corpus, size, SCROLL_STEP_ROWS));
     }
@@ -225,7 +249,11 @@ mod tests {
             .expect("the last line of the reply is on screen");
         assert!(rows[tail + 1].starts_with("Reading output"), "{:?}", rows[tail + 1]);
         assert!(rows[tail + 2].contains(&prompt_prefix_text()), "{:?}", rows[tail + 2]);
-        assert!(rows.last().is_some_and(|row| row.starts_with("Loc:")), "{:?}", rows.last());
+        assert!(
+            rows.last().is_some_and(|row| row.starts_with("fixture") && row.ends_with("/test")),
+            "{:?}",
+            rows.last()
+        );
     }
 
     #[test]

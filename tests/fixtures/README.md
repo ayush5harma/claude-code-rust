@@ -52,3 +52,7 @@ Each test owns its temporary project, configuration directory, fake CLI, journal
 `generate-render-corpus.js` is the authority and the JSON is its committed output: edit the generator and rerun `node tests/fixtures/generate-render-corpus.js`. The test `render_corpus_fixture_matches_its_generator` runs it with `--check`, so a stale JSON fails `cargo test`. Changing the corpus changes every benchmark baseline, so compare refs that share one corpus.
 
 The `session-agents` scenario exposes two current-session subagents, their saved messages, and a running task. It records list, inspect, and stop commands; Stop produces a task update so the panel displays the canonical stopped state.
+
+- `agents-inspector`: two live agents with factual model choice, usage, prompt and a child Read. The SDK listing omits the second agent, proving Ctrl+T selection opens and retains its live inspector.
+
+- `footer-agents`: three delegated agents (two running, one done), resolved models, usage and progress summaries, and a child Read. The release-file barrier finishes all agents; the PTY test checks 200/100/50-column layouts and the idle count after the shelf closes. Existing scenarios use lifecycle-ordered fixture statusLine output `[READY]` as a completion barrier; this is test data, not product footer chrome.

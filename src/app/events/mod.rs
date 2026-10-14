@@ -262,16 +262,7 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> Termi
             TerminalEventOutcome::handled(true)
         }
         SurfaceMode::Fullscreen(FullscreenView::Tasks) => {
-            if matches!(key.code, crossterm::event::KeyCode::Esc)
-                || app.keymap.resolve_event(super::keymap::KeyContext::ChatInput, key).is_some_and(
-                    |binding| {
-                        binding.action
-                            == super::keymap::KeyAction::App(super::keymap::AppAction::ToggleTasks)
-                    },
-                )
-            {
-                super::view::set_chat_surface(app);
-            }
+            super::session_agents::handle_tasks_key(app, key);
             TerminalEventOutcome::handled(true)
         }
         SurfaceMode::Fullscreen(FullscreenView::Verbose) => {

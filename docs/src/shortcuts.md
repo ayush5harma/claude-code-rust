@@ -37,7 +37,7 @@ The fullscreen settings surface has its own keys for tabs, panes, search and edi
 | `Ctrl+D` | Delete after the cursor, or quit when the draft is empty. |
 | `Ctrl+G` | Edit the draft in `$VISUAL` or `$EDITOR`. A failed editor preserves the draft. |
 | `Ctrl+O` | Show a snapshot of retained user, assistant and visible tool text; press again or `Esc` to close. Reopen to refresh. |
-| `Ctrl+T` | Show SDK tasks; press again or `Esc` to close. |
+| `Ctrl+T` | Show Plan, Agents and Other tasks. Up/Down selects an agent; Enter opens its inspector. Press again or `Esc` to close. |
 | `Alt+R` | Open the rewind picker directly. |
 | `Ctrl+F` | Search retained transcript text. |
 | `Tab` | Focus prompts or accept suggestions. |

@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.15.2-fork.5] - 2026-10-15
+
+### Features
+
+- Responsive footer groups session identity, location, context and rate windows without repeating default states.
+- A bounded agent shelf shows each running agent's model, current activity, usage and elapsed time.
+- Ctrl+T groups plan steps, agents and other tasks; Enter opens the selected agent's inspector with model choice, recent tools, prompt and saved messages.
+
+### Fixes
+
+- Preserve resolved child models and usage across out-of-order background inventory and completion events.
+- Feed status-line commands the resolved human model name instead of a catalog option label.
+- Keep agent selection and message content associated while live inventory changes.
+
 ## [0.15.2-fork.4] - 2026-10-14
 
 ### Features

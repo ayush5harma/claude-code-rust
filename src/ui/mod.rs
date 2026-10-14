@@ -2,6 +2,7 @@
 // Copyright 2025 Simon Peter Rothgang
 
 pub(crate) mod activity_rows;
+pub(crate) mod agent_rows;
 mod ansi;
 mod autocomplete;
 mod config;

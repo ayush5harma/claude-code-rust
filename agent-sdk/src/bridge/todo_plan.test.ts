@@ -9,7 +9,7 @@ function session(): SessionState {
   return {
     sessionId: "session-1", connected: true, closing: false,
     toolCalls: new Map(), tasksById: new Map(), taskOrder: [], taskToolUseIds: new Map(),
-    taskIdsByToolUseId: new Map(), informationalDedupKeys: new Set(),
+    taskIdsByToolUseId: new Map(), childModelsByToolUseId: new Map(), informationalDedupKeys: new Set(),
   } as unknown as SessionState;
 }
 

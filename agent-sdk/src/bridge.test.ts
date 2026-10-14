@@ -263,6 +263,7 @@ function makeSessionState(): SessionState {
     taskOrder: [],
     taskToolUseIds: new Map(),
     taskIdsByToolUseId: new Map(),
+    childModelsByToolUseId: new Map(),
     pendingPermissions: new Map(),
     pendingQuestions: new Map(),
     pendingUserDialogs: new Map(),
@@ -5075,6 +5076,7 @@ test("TaskStop renders structured output and marks the task terminal", () => {
     status: "in_progress",
     blocks: [],
     blocked_by: [],
+    metadata: { sdk_background_task: true },
   });
   session.taskOrder.push("task-1");
   linkTaskToolUse(session, "task-1", "tool-agent");
@@ -5131,6 +5133,7 @@ test("TaskStop renders structured output and marks the task terminal", () => {
           blocks: [],
           blocked_by: [],
           metadata: {
+            sdk_lifecycle_task: true,
             terminal_status: "stopped",
             task_type: "bash",
             command: "npm run watch",
@@ -5481,6 +5484,7 @@ test("handleTaskSystemMessage emits task state for unlinked task_updated message
             task_id: "task-missing",
             subject: "This should not be emitted",
             description: "This should not be emitted",
+            metadata: { sdk_lifecycle_task: true },
             status: "in_progress",
             blocks: [],
             blocked_by: [],
@@ -5529,6 +5533,7 @@ test("handleTaskSystemMessage maps stopped notifications to terminal task state"
             blocks: [],
             blocked_by: [],
             metadata: {
+              sdk_lifecycle_task: true,
               output_file: "C:/tmp/task-1.txt",
               summary: "Stopped background watch",
               terminal_status: "stopped",
@@ -7874,6 +7879,7 @@ test("handleTaskSystemMessage preserves task correlation metadata", () => {
             blocks: [],
             blocked_by: [],
             metadata: {
+              sdk_lifecycle_task: true,
               request_id: "request-1",
               subagent_type: "tester",
               task_description: "Validate the branch",
@@ -7944,7 +7950,7 @@ test("ambient task lifecycle stays in inventory without creating a visible tool 
             status: "in_progress",
             blocks: [],
             blocked_by: [],
-            metadata: { task_type: "artifact_watch", ambient: true },
+            metadata: { sdk_lifecycle_task: true, task_type: "artifact_watch", ambient: true },
           },
         ],
         removed_task_ids: [],
@@ -9397,6 +9403,7 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
         blocks: [],
         blocked_by: [],
         metadata: {
+          sdk_lifecycle_task: true,
           subagent_type: "general-purpose",
           is_backgrounded: true,
           spawn_depth: 2,
@@ -9419,6 +9426,7 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
         blocks: [],
         blocked_by: [],
         metadata: {
+          sdk_lifecycle_task: true,
           task_description: "Remote agent smoke",
           task_type: "remote_agent",
           prompt: "Continue remotely",
@@ -9440,6 +9448,7 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
         blocks: [],
         blocked_by: [],
         metadata: {
+          sdk_lifecycle_task: true,
           task_type: "mcp",
           workflow_name: "docs",
           prompt: "Read resource",

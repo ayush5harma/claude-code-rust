@@ -349,7 +349,7 @@ async fn rule_item_editor_preserves_draft_across_resize_conflict_and_acknowledge
 
 #[tokio::test(flavor = "current_thread")]
 async fn structured_editor_reports_parse_error_and_saves_corrected_json_without_flattening() {
-    tokio::task::LocalSet::new().run_until(async {
+    Box::pin(tokio::task::LocalSet::new().run_until(async {
         let mut app = App::test_default();
         let (connection, mut commands) = AgentConnection::test_channel();
         app.session_runtime.conn = Some(Rc::new(connection));
@@ -372,7 +372,7 @@ async fn structured_editor_reports_parse_error_and_saves_corrected_json_without_
         let envelope = commands.recv_envelope().await.expect("save");
         let BridgeCommand::MutateSetting { mutation, .. } = envelope.command else { panic!("mutation"); };
         assert_eq!(mutation.value, Some(json!({"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"echo checked"}]}]})));
-    }).await;
+    })).await;
 }
 
 #[tokio::test(flavor = "current_thread")]

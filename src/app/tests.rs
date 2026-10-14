@@ -696,3 +696,28 @@ fn reduced_motion_schedules_no_welcome_redraws() {
     app.status = AppStatus::Connecting;
     assert!(!frame_is_animating(&app, connected + Duration::from_millis(100)));
 }
+
+#[test]
+fn agent_shelf_clock_schedules_only_visible_running_rows_once_per_second() {
+    let mut app = App::test_default();
+    app.chat_render.observe_terminal_size(100, 40);
+    let mut task = model::TaskItem::new("agent", "Clock", model::TaskStatus::InProgress);
+    task.metadata = Some(serde_json::json!({"task_type":"local_agent"}));
+    app.sdk_inventory.tasks.push(task);
+    let now = Instant::now();
+    app.surface_dirty.chat.take_repaint();
+    schedule_agent_shelf_frame(&mut app, now);
+    assert!(app.surface_dirty.chat.take_repaint());
+    schedule_agent_shelf_frame(&mut app, now + Duration::from_millis(999));
+    assert!(!app.surface_dirty.chat.take_repaint());
+    schedule_agent_shelf_frame(&mut app, now + Duration::from_secs(1));
+    assert!(app.surface_dirty.chat.take_repaint());
+    app.sdk_inventory.tasks[0].status = model::TaskStatus::Completed;
+    schedule_agent_shelf_frame(&mut app, now + Duration::from_secs(2));
+    assert!(!app.surface_dirty.chat.take_repaint());
+    assert!(app.agent_shelf_last_redraw.is_none());
+    app.sdk_inventory.tasks[0].status = model::TaskStatus::InProgress;
+    app.chat_render.terminal_height = 23;
+    schedule_agent_shelf_frame(&mut app, now + Duration::from_secs(3));
+    assert!(!app.surface_dirty.chat.take_repaint());
+}

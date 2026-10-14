@@ -274,7 +274,7 @@ impl TerminalTest {
             test.wait_screen("Type a message");
             // The composer is editable during Connecting, but Enter cannot submit
             // until the connected event has been applied and painted.
-            test.wait_screen("[READY]");
+            test.wait_screen(if scenario == "footer-agents" { "Fake" } else { "[READY]" });
         }
         test
     }
@@ -2937,7 +2937,7 @@ fn ctrl_v_attaches_the_system_clipboard_image_and_sends_it_with_the_prompt() {
 fn agents_panel_shows_current_session_messages_and_stops_only_the_selected_running_agent() {
     let mut test = TerminalTest::start("session-agents", 3);
     test.submit_command("/agents");
-    test.wait_screen_with("Review parser", &["Session agents", "Running"]);
+    test.wait_screen_with("Session agents", &["Review parser", "Running"]);
     test.wait_screen("Parser path checked");
     assert_eq!(test.commands("list_session_agents").len(), 1);
     assert_eq!(test.commands("get_subagent_messages").len(), 1);
@@ -2952,5 +2952,73 @@ fn agents_panel_shows_current_session_messages_and_stops_only_the_selected_runni
     test.send(b"s");
     test.wait_screen("no running task to stop");
     assert_eq!(test.commands("stop_subagent_task").len(), 1);
+    test.shutdown();
+}
+
+#[test]
+fn tasks_overlay_opens_the_selected_live_agent_inspector() {
+    let mut test = TerminalTest::start("agents-inspector", 3);
+    test.send(b"\x14");
+    test.wait_screen_with("Agents", &["mapper", "Sonnet 5.5", "builder", "Opus 5.5"]);
+    test.send(b"\x1b[B");
+    test.wait_screen("> ● builder");
+    test.send(b"\r");
+    test.wait_screen_with(
+        "Build agent inspector",
+        &["Opus 5.5", "asked for opus", "Recent", "Read agents.rs"],
+    );
+    test.wait_until("selected live agent messages requested", |test| {
+        test.commands("get_subagent_messages")
+            .iter()
+            .any(|command| command["agent_id"] == "agent-second")
+    });
+    assert_eq!(test.commands("list_session_agents").len(), 1);
+    test.assert_prompts(&[]);
+    test.shutdown();
+}
+
+#[test]
+fn footer_agents_resize_and_finish_follow_task_inventory() {
+    let mut test = TerminalTest::start("footer-agents", 3);
+    test.resize_and_wait_for_draw(40, 200);
+    test.submit("delegate fixture", "delegate fixture");
+    test.wait_screen("2 running · 1 done");
+    test.wait_screen("Read footer_rows.rs");
+    let wide = test.screen();
+    for (name, model) in
+        [("Explore", "Sonnet 5.5"), ("implementer", "Opus 5.5"), ("verifier", "Sonnet 5.5")]
+    {
+        let rows: Vec<_> = wide.lines().filter(|r| r.contains(name) && r.contains(model)).collect();
+        assert_eq!(rows.len(), 1, "{wide}");
+    }
+    assert!(
+        wide.lines().any(|row| row.contains("system-config@main-2")
+            && row.contains("Fake")
+            && row.contains("ctx")),
+        "{wide}"
+    );
+    test.resize_and_wait_for_draw(40, 100);
+    let medium = test.screen();
+    let identity = medium
+        .lines()
+        .position(|row| row.contains("system-config@main-2") && row.contains("Fake"))
+        .expect("identity row");
+    assert!(medium.lines().nth(identity + 1).expect("gauge row").contains("ctx"), "{medium}");
+    test.resize_and_wait_for_draw(40, 50);
+    let narrow = test.screen();
+    assert!(
+        narrow.lines().any(|row| row.contains("Explore") && row.contains("Sonnet 5.5")),
+        "{narrow}"
+    );
+    assert!(
+        narrow.lines().any(|row| row.contains("implementer") && row.contains("Opus 5.5")),
+        "{narrow}"
+    );
+    test.signal("finish");
+    test.wait_journal("footer-agents-finished");
+    test.wait_until("finished agent summary replaces shelf", |test| {
+        let screen = test.screen();
+        screen.contains("3 agents") && !screen.contains("ctrl+t inspect")
+    });
     test.shutdown();
 }

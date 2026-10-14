@@ -40,6 +40,18 @@ const record = entry => {
 const send = event => {
   record({ type: 'event', ...event });
   process.stdout.write(`${JSON.stringify(event)}\n`);
+  // 2026-10-15: lifecycle-ordered fixture output preserves completion barriers
+  // after the product footer stops displaying its former default Ready badge.
+  if (SCENARIO !== 'footer-agents') {
+    let text;
+    if (['connected', 'session_replaced', 'turn_complete', 'turn_error', 'slash_command_error'].includes(event.event)) text = '[READY]';
+    if (event.event === 'user_message_started') text = null;
+    if (text !== undefined) {
+      const marker = { event: 'session_update', session_id: SESSION, update: { type: 'status_line_update', text } };
+      record({ type: 'event', ...marker });
+      process.stdout.write(`${JSON.stringify(marker)}\n`);
+    }
+  }
 };
 
 
@@ -431,7 +443,7 @@ readline
         send({
           event: message.command === 'new_session' ? 'session_replaced' : 'connected',
           session_id: SESSION,
-          cwd: message.cwd ?? cwd,
+          cwd: SCENARIO === 'footer-agents' ? '/fixture/workspaces/delegation/status-bar/system-config/project' : (message.cwd ?? cwd),
           current_model: model,
           available_models: [],
           mode: null,
@@ -469,6 +481,18 @@ readline
             { task_id: 'agent-completed', subject: 'Inspect docs', status: 'completed', owner: null, blocks: [], blocked_by: [], metadata: { subagent_type: 'general-purpose', terminal_status: 'completed' } },
           ] } });
         }
+        if (SCENARIO === 'agents-inspector') {
+          const update = update => send({ event: 'session_update', session_id: SESSION, update });
+          for (const [id, name, model] of [['agent-running', 'mapper', 'Sonnet 5.5'], ['agent-second', 'builder', 'Opus 5.5']]) {
+            update({ type: 'tool_call', tool_call: { tool_call_id: 'parent-' + id, title: name, kind: 'other', status: 'in_progress', content: [], locations: [],
+              raw_input: { name, subagent_type: 'general-purpose', model: id === 'agent-second' ? 'opus' : 'sonnet', isolation: 'worktree', prompt: 'Inspect the Rust UI and verify the selected agent.' }, meta: { claudeCode: { toolName: 'Agent' } } } });
+          }
+          update({ type: 'task_state_update', source: 'task_lifecycle', is_complete_snapshot: false, removed_task_ids: [], tasks: [
+            { task_id: 'agent-running', source_tool_call_id: 'parent-agent-running', subject: 'Map render paths', status: 'in_progress', blocks: [], blocked_by: [], metadata: { task_type: 'local_agent', model_display: 'Sonnet 5.5', usage: { total_tokens: 12000, tool_uses: 4, duration_ms: 62000 } } },
+            { task_id: 'agent-second', source_tool_call_id: 'parent-agent-second', subject: 'Build agent inspector', status: 'in_progress', blocks: [], blocked_by: [], metadata: { task_type: 'local_agent', model_display: 'Opus 5.5', usage: { total_tokens: 34200, tool_uses: 12, duration_ms: 40000 }, summary: 'Building the details pane' } },
+          ] });
+          update({ type: 'tool_call', tool_call: { tool_call_id: 'inspector-read', title: 'Read agents.rs', kind: 'read', status: 'completed', content: [], locations: [], raw_input: { file_path: '/fixture/src/ui/config/agents.rs' }, meta: { claudeCode: { toolName: 'Read', parentToolUseId: 'parent-agent-second' } } } });
+        }
         if (SCENARIO === 'session-name') {
           // As the real bridge does after connect: the SDK-advertised commands.
           send({ event: 'session_update', session_id: SESSION, update: { type: 'available_commands_update', commands: [
@@ -480,7 +504,7 @@ readline
             { content: 'Finished setup', status: 'completed' },
             { content: 'Verify footer plan', status: 'in_progress' },
           ] } });
-          send({ event: 'session_update', session_id: SESSION, update: { type: 'status_line_update', text: 'FIXTURE_STATUS_ROW' } });
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'status_line_update', text: 'FIXTURE_STATUS_ROW [READY]' } });
         }
         if (SCENARIO === 'native-diff') {
           send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call', tool_call: {
@@ -535,7 +559,7 @@ readline
       }
       case 'list_session_agents':
         send({ event: 'session_agents_result', session_id: SESSION, request_id: message.request_id, action: message.command,
-          agent_ids: ['agent-running', 'agent-completed'], messages: [] });
+          agent_ids: SCENARIO === 'agents-inspector' ? ['agent-running'] : ['agent-running', 'agent-completed'], messages: [] });
         break;
       case 'get_subagent_messages':
         send({ event: 'session_agents_result', session_id: SESSION, request_id: message.request_id, action: message.command,
@@ -552,6 +576,27 @@ readline
         ] } });
         break;
       case 'prompt':
+        if (SCENARIO === 'footer-agents') {
+          const update = update => send({ event: 'session_update', session_id: SESSION, update });
+          send({ event: 'user_message_started', session_id: SESSION, message_uuid: message.message_uuid, source: 'command_lifecycle' });
+          update({ type: 'agent_message_chunk', content: { type: 'text', text: 'Delegated footer fixture' } });
+          update({ type: 'session_title_update', title: 'system-config@main-2' });
+          send({ event: 'context_usage', session_id: SESSION, percentage: 6 });
+          const names = ['Explore', 'implementer', 'verifier'];
+          const models = ['Sonnet 5.5', 'Opus 5.5', 'Sonnet 5.5'];
+          const tasks = names.map((name, index) => ({ task_id: `footer-agent-${index}`, source_tool_call_id: `footer-parent-${index}`, subject: ['Map the footer code', 'Build the agent strip', 'Prove the strip renders'][index], status: index === 2 ? 'completed' : 'in_progress', blocks: [], blocked_by: [], metadata: { task_type: 'local_agent', subagent_type: name, model_display: models[index], summary: index === 2 ? 'done' : 'Analyzing render path', usage: { total_tokens: 34000 - index * 10000, tool_uses: 12 - index * 3, duration_ms: 62000 - index * 1000 } } }));
+          for (let index = 0; index < names.length; index++) update({ type: 'tool_call', tool_call: { tool_call_id: `footer-parent-${index}`, title: tasks[index].subject, kind: 'other', status: index === 2 ? 'completed' : 'detached', content: [], locations: [], raw_input: { name: names[index], subagent_type: 'general-purpose', model: 'sonnet', description: tasks[index].subject }, meta: { claudeCode: { toolName: 'Agent' } } } });
+          update({ type: 'task_state_update', source: 'task_lifecycle', is_complete_snapshot: false, removed_task_ids: [], tasks });
+          update({ type: 'tool_call', tool_call: { tool_call_id: 'footer-child-read', title: 'Read footer_rows.rs', kind: 'read', status: 'completed', content: [], locations: [], raw_input: { file_path: '/fixture/src/ui/footer_rows.rs' }, meta: { claudeCode: { toolName: 'Read', parentToolUseId: 'footer-parent-0' } } } });
+          send({ event: 'turn_complete', session_id: SESSION });
+          const timer = setInterval(() => {
+            if (!fs.existsSync(RELEASE_FILE)) return;
+            clearInterval(timer);
+            update({ type: 'task_state_update', source: 'task_lifecycle', is_complete_snapshot: false, removed_task_ids: [], tasks: tasks.map(task => ({ ...task, status: 'completed', metadata: { ...task.metadata, summary: 'done' } })) });
+            record({ type: 'barrier', name: 'footer-agents-finished' });
+          }, INTERVAL_MS);
+          break;
+        }
         if (SCENARIO.startsWith('resume-large') && message.chunks?.some(chunk => chunk.value === '/compact')) {
           send({ event: 'user_message_started', session_id: SESSION, message_uuid: message.message_uuid, source: 'command_lifecycle' });
           send({ event: 'session_update', session_id: SESSION, update: { type: 'compaction_update', phase: 'started' } });
