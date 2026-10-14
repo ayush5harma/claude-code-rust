@@ -405,6 +405,10 @@ impl super::App {
 
     fn rebuild_active_task_tracking_from_tool_scopes(&mut self) {
         self.tool_call_scopes.retain(|id, _| self.transcript.tool_call_index.contains_key(id));
+        self.recent_child_tool_ids.retain(|parent, ids| {
+            ids.retain(|id| self.tool_call_scopes.contains_key(id));
+            self.tool_call_scopes.contains_key(parent) && !ids.is_empty()
+        });
         let mut roots = Vec::new();
         for msg in &self.transcript.messages {
             for block in &msg.blocks {

@@ -1,3 +1,4 @@
+import { applyLinkedChildModel } from "./tasks.js";
 import type { SessionState } from "./session_lifecycle.js";
 
 export function linkTaskToolUse(
@@ -14,6 +15,7 @@ export function linkTaskToolUse(
     const reverseTaskId = session.taskIdsByToolUseId.get(previousToolUseId);
     if (reverseTaskId === taskId) {
       session.taskIdsByToolUseId.delete(previousToolUseId);
+      session.childModelsByToolUseId.delete(previousToolUseId);
     }
   }
 
@@ -27,6 +29,7 @@ export function linkTaskToolUse(
 
   session.taskToolUseIds.set(taskId, toolUseId);
   session.taskIdsByToolUseId.set(toolUseId, taskId);
+  applyLinkedChildModel(session, taskId, toolUseId);
 }
 
 export function unlinkTaskToolUse(session: SessionState, taskId: string): void {
@@ -37,6 +40,7 @@ export function unlinkTaskToolUse(session: SessionState, taskId: string): void {
   session.taskToolUseIds.delete(taskId);
   if (toolUseId && session.taskIdsByToolUseId.get(toolUseId) === taskId) {
     session.taskIdsByToolUseId.delete(toolUseId);
+    session.childModelsByToolUseId.delete(toolUseId);
   }
 }
 

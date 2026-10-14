@@ -20,7 +20,7 @@ mod hook_runs;
 mod paste;
 mod pending_messages;
 mod repaint;
-mod sdk_inventory;
+pub(crate) mod sdk_inventory;
 mod session_identity;
 mod session_runtime;
 mod startup;

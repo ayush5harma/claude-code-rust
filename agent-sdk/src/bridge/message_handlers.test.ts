@@ -24,6 +24,7 @@ function makeSession(): SessionState {
     taskOrder: [],
     taskToolUseIds: new Map(),
     taskIdsByToolUseId: new Map(),
+    childModelsByToolUseId: new Map(),
     pendingPermissions: new Map(),
     pendingQuestions: new Map(),
     pendingUserDialogs: new Map(),
@@ -284,3 +285,181 @@ test("a stopped subagent keeps the SDK's stopped status after the killed patch",
   assert.equal(last.status, "completed");
   assert.equal((last.metadata as Record<string, unknown>).terminal_status, "stopped");
 });
+
+function taskUpdates(run: () => void): Array<{ tasks: Array<{ task_id: string; metadata: Record<string, unknown> }> }> {
+  const lines: string[] = [];
+  const restore = replaceProtocolEventWriter(line => lines.push(line));
+  try { run(); } finally { restore(); }
+  return lines.map(line => JSON.parse(line).update).filter(update => update?.type === "task_state_update");
+}
+
+function childAssistant(parent: string, model: string): SDKMessage {
+  return {
+    type: "assistant", session_id: "session-1", uuid: "00000000-0000-0000-0000-000000000001", parent_tool_use_id: parent,
+    message: {
+      container: null, context_management: null, diagnostics: null, stop_details: null,
+      id: "child-response", type: "message", role: "assistant", model,
+      content: [{ type: "text", text: "Inspecting the source", citations: null }], stop_reason: "end_turn", stop_sequence: null,
+      usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0,
+        cache_creation: null, inference_geo: null, iterations: null, output_tokens_details: null, server_tool_use: null, service_tier: null, speed: null },
+    },
+  };
+}
+
+function startTask(session: SessionState): void {
+  handleSdkMessage(session, {
+    type: "system", subtype: "task_started", session_id: "session-1", uuid: "00000000-0000-0000-0000-000000000002",
+    task_id: "agent-1", tool_use_id: "tool-1", task_type: "local_agent", description: "Inspect the source",
+  });
+}
+
+test("SDK progress and final notification carry telemetry through task_state_update", () => {
+  const session = makeSession();
+  const updates = taskUpdates(() => {
+    startTask(session);
+    handleSdkMessage(session, {
+      type: "system", subtype: "task_progress", session_id: "session-1", uuid: "00000000-0000-0000-0000-000000000003",
+      task_id: "agent-1", tool_use_id: "tool-1", description: "Inspect the source",
+      summary: "Reading the renderer", last_tool_name: "Read",
+      usage: { total_tokens: 1200, tool_uses: 3, duration_ms: 2000 },
+    });
+    handleSdkMessage(session, {
+      type: "system", subtype: "task_notification", session_id: "session-1", uuid: "00000000-0000-0000-0000-000000000004",
+      task_id: "agent-1", tool_use_id: "tool-1", status: "completed", output_file: "", summary: "Inspected",
+      usage: { total_tokens: 1500, tool_uses: 4, duration_ms: 3000 },
+    });
+  });
+  assert.deepEqual(updates[1]?.tasks[0]?.metadata.usage, { total_tokens: 1200, tool_uses: 3, duration_ms: 2000 });
+  assert.equal(updates[1]?.tasks[0]?.metadata.last_tool_name, "Read");
+  assert.equal(updates[1]?.tasks[0]?.metadata.summary, "Reading the renderer");
+  assert.deepEqual(updates.at(-1)?.tasks[0]?.metadata.usage, { total_tokens: 1500, tool_uses: 4, duration_ms: 3000 });
+});
+
+test("child model changes update the linked task once without affecting the session model", () => {
+  const session = makeSession();
+  taskUpdates(() => startTask(session));
+  const updates = taskUpdates(() => {
+    handleSdkMessage(session, childAssistant("tool-1", "claude-sonnet-5-5"));
+    handleSdkMessage(session, childAssistant("tool-1", "claude-sonnet-5-5"));
+    handleSdkMessage(session, childAssistant("tool-1", "claude-opus-5-5"));
+    handleSdkMessage(session, childAssistant("unrelated-tool", "claude-haiku-4-5"));
+  });
+  assert.equal(updates.length, 2);
+  assert.equal(updates[0]?.tasks[0]?.metadata.model, "claude-sonnet-5-5");
+  assert.equal(updates[0]?.tasks[0]?.metadata.model_display, "Sonnet 5.5");
+  assert.equal(updates[1]?.tasks[0]?.metadata.model_display, "Opus 5.5");
+  assert.equal(session.currentModel, undefined);
+});
+
+test("a child model observed before linkage appears on the first emitted task", () => {
+  const session = makeSession();
+  const updates = taskUpdates(() => {
+    handleSdkMessage(session, childAssistant("tool-1", "claude-sonnet-5-5"));
+    handleSdkMessage(session, childAssistant("tool-1", "claude-opus-5-5"));
+    startTask(session);
+    handleSdkMessage(session, childAssistant("tool-1", "claude-opus-5-5"));
+  });
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0]?.tasks[0]?.metadata.model, "claude-opus-5-5");
+  assert.equal(updates[0]?.tasks[0]?.metadata.model_display, "Opus 5.5");
+});
+
+test("a remembered child model is applied when an existing task gains its tool link", () => {
+  const session = makeSession();
+  const updates = taskUpdates(() => {
+    handleSdkMessage(session, {
+      type: "system", subtype: "task_started", session_id: "session-1",
+      uuid: "00000000-0000-0000-0000-000000000002", task_id: "agent-1", description: "Inspect the source",
+    });
+    handleSdkMessage(session, childAssistant("tool-1", "claude-sonnet-5-5"));
+    handleSdkMessage(session, {
+      type: "system", subtype: "task_progress", session_id: "session-1",
+      uuid: "00000000-0000-0000-0000-000000000003", task_id: "agent-1", tool_use_id: "tool-1",
+      description: "Inspect the source", usage: { total_tokens: 100, tool_uses: 1, duration_ms: 10 },
+    });
+  });
+  assert.equal(updates.at(-1)?.tasks[0]?.metadata.model_display, "Sonnet 5.5");
+  assert.deepEqual(updates.at(-1)?.tasks[0]?.metadata.usage, { total_tokens: 100, tool_uses: 1, duration_ms: 10 });
+});
+
+test("final notifications without usage preserve the task's last progress metrics and model", () => {
+  const session = makeSession();
+  const updates = taskUpdates(() => {
+    startTask(session);
+    handleSdkMessage(session, childAssistant("tool-1", "claude-sonnet-5-5"));
+    handleSdkMessage(session, {
+      type: "system", subtype: "task_progress", session_id: "session-1",
+      uuid: "00000000-0000-0000-0000-000000000003", task_id: "agent-1", tool_use_id: "tool-1",
+      description: "Inspect the source", last_tool_name: "Read",
+      usage: { total_tokens: 100, tool_uses: 1, duration_ms: 10 },
+    });
+    handleSdkMessage(session, {
+      type: "system", subtype: "task_notification", session_id: "session-1",
+      uuid: "00000000-0000-0000-0000-000000000004", task_id: "agent-1", tool_use_id: "tool-1",
+      status: "completed", output_file: "", summary: "Finished",
+    });
+  });
+  const metadata = updates.at(-1)?.tasks[0]?.metadata;
+  assert.deepEqual(metadata?.usage, { total_tokens: 100, tool_uses: 1, duration_ms: 10 });
+  assert.equal(metadata?.model_display, "Sonnet 5.5");
+  assert.equal(metadata?.last_tool_name, "Read");
+});
+
+for (const completionFirst of [false, true]) {
+  test(`background membership preserves child telemetry with completion ${completionFirst ? "before" : "after"} removal`, () => {
+    const session = makeSession();
+    const updates = taskUpdates(() => {
+      const snapshot = (ids: string[]) => handleSdkMessage(session, {
+        type: "system", subtype: "background_tasks_changed", session_id: "session-1",
+        uuid: "00000000-0000-0000-0000-000000000005",
+        tasks: ids.map(task_id => ({ task_id, task_type: "local_agent", description: "Inspect the source" })),
+      });
+      snapshot(["agent-1"]);
+      startTask(session);
+      handleSdkMessage(session, childAssistant("tool-1", "claude-sonnet-5-5"));
+      handleSdkMessage(session, {
+        type: "system", subtype: "task_progress", session_id: "session-1",
+        uuid: "00000000-0000-0000-0000-000000000003", task_id: "agent-1", tool_use_id: "tool-1",
+        description: "Inspect the source", last_tool_name: "Read", summary: "Reading the renderer",
+        usage: { total_tokens: 100, tool_uses: 1, duration_ms: 10 },
+      });
+      snapshot(["agent-1", "agent-2"]);
+      if (!completionFirst) snapshot(["agent-2"]);
+      handleSdkMessage(session, {
+        type: "system", subtype: "task_notification", session_id: "session-1",
+        uuid: "00000000-0000-0000-0000-000000000004", task_id: "agent-1", tool_use_id: "tool-1",
+        status: "completed", output_file: "", summary: "Finished",
+      });
+      if (completionFirst) snapshot(["agent-2"]);
+    });
+    const snapshots = updates.filter(update => (update as { source?: string }).source === "background_tasks");
+    const live = snapshots[1]?.tasks.find(task => task.task_id === "agent-1");
+    assert.equal(live?.metadata.model_display, "Sonnet 5.5");
+    assert.deepEqual(live?.metadata.usage, { total_tokens: 100, tool_uses: 1, duration_ms: 10 });
+    assert.equal(live?.metadata.last_tool_name, "Read");
+    assert.equal(live?.metadata.summary, "Reading the renderer");
+    assert.equal(live?.metadata.sdk_background_task, undefined);
+    assert.ok(updates.every(update => !(update as { removed_task_ids?: string[] }).removed_task_ids?.includes("agent-1")));
+    const final = updates.flatMap(update => update.tasks).filter(task => task.task_id === "agent-1").at(-1);
+    assert.equal(final?.metadata.model_display, "Sonnet 5.5");
+    assert.deepEqual(final?.metadata.usage, { total_tokens: 100, tool_uses: 1, duration_ms: 10 });
+    assert.equal(final?.metadata.terminal_status, "completed");
+    assert.equal(session.tasksById.get("agent-1")?.status, "completed");
+  });
+}
+
+for (const lifecycle of [
+  { subtype: "task_started", description: "Background work" },
+  { subtype: "task_progress", description: "Background work", usage: { total_tokens: 0, tool_uses: 0, duration_ms: 1 } },
+  { subtype: "task_updated", patch: { status: "running" } },
+  { subtype: "task_notification", status: "completed", output_file: "", summary: "Finished" },
+] as const) {
+  test(`${lifecycle.subtype} identifies lifecycle ownership without an earlier start or task type`, () => {
+    const session = makeSession();
+    const updates = taskUpdates(() => handleSdkMessage(session, {
+      type: "system", ...lifecycle, task_id: "untyped-task", session_id: "session-1",
+      uuid: "00000000-0000-0000-0000-000000000006",
+    }));
+    assert.equal(updates.at(-1)?.tasks[0]?.metadata.sdk_lifecycle_task, true);
+  });
+}

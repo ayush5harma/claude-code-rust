@@ -8,6 +8,8 @@ use crate::agent::model;
 pub struct SdkInventoryState {
     /// Current SDK task state from `TaskCreate`/`TaskUpdate`/`TaskGet`/`TaskList`.
     pub tasks: Vec<model::TaskItem>,
+    pub(crate) agent_shelf_wave_started_at: Option<std::time::Instant>,
+    pub(crate) task_observations: std::collections::HashMap<String, TaskObservation>,
     /// Commands advertised by the agent via `AvailableCommandsUpdate`.
     pub available_commands: Vec<model::AvailableCommand>,
     /// Rewind candidates loaded from persisted SDK session history.
@@ -34,4 +36,12 @@ impl SdkInventoryState {
         self.rewind_targets_in_flight = false;
         self.rewind_targets_error = None;
     }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct TaskObservation {
+    pub started_at: std::time::Instant,
+    pub finished_at: Option<std::time::Instant>,
+    pub usage_reported_at: std::time::Instant,
+    pub duration_ms: Option<u64>,
 }

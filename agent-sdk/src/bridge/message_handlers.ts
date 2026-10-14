@@ -58,6 +58,7 @@ import {
 import {
   applyBackgroundTasksChanged,
   applyTaskLifecycleState,
+  observeTaskChildModel,
 } from "./tasks.js";
 import { linkTaskToolUse, unlinkTaskToolUse } from "./task_links.js";
 import {
@@ -1253,6 +1254,7 @@ export function handleAssistantMessage(
   session: SessionState,
   message: Record<string, unknown>,
 ): void {
+  observeTaskChildModel(session, message);
   const response = session.mainAgentResponse;
   const completed = asRecordOrNull(message.message);
   // The SDK also emits assistant frames for individual completed blocks with
