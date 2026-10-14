@@ -32,12 +32,13 @@ pub(super) fn input_style() -> Style {
     selection_style(true).fg(theme::label())
 }
 
+/// Key hints are supporting text: the tint stays on what is focused or selected.
 pub(super) fn help_style() -> Style {
-    Style::default().fg(theme::accent())
+    Style::default().fg(theme::tertiary())
 }
 
 pub(super) fn marker_span(selected: bool) -> Span<'static> {
-    Span::styled(selection_marker(selected), help_style())
+    Span::styled(selection_marker(selected), Style::default().fg(theme::accent()))
 }
 
 pub(super) fn overlay_line_style(selected: bool, focused: bool) -> Style {
