@@ -130,7 +130,7 @@ The bridge normalizes task progress into the existing task metadata: `usage` (`t
 
 Rust's task inventory remains the status authority. The Agents view merges SDK-listed saved agent IDs with live task IDs, preserving selection by identity. The footer, task overlay and inspector share the same agent-row projection and renderer. Requested model aliases and agent-definition defaults remain distinguishable from a model observed in a child response. A bounded index of the last eight child tool-call IDs per parent is maintained on tool events and pruned with transcript retention; rendering reads this index without scanning the transcript or performing I/O. Local observation times extend reported running durations, and the visible shelf requests at most one redraw per second when no other animation is active.
 
-The task inventory owns agent status and bridge-normalized model and usage facts. Rust stamps task report arrival and completion to advance elapsed time, keeps a bounded index of recent child tool IDs in tool-scope tracking, and clears or retains that index with the scopes. The footer shelf and inspectors share one agent-row projection and renderer; rendering performs no tool-history scan or external lookup. The shelf includes running agents and agents finished during the current continuous delegation wave. A once-per-second repaint advances visible running-agent clocks when other activity is still.
+The shelf includes running agents and agents finished during the current continuous delegation wave; the task overlay and inspector retain prior agent history.
 
 ### Session title
 

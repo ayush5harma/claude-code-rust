@@ -39,7 +39,7 @@ pub(crate) fn render(frame: &mut Frame, app: &App) {
             let glyph = match status {
                 TaskStatus::Completed => "✓",
                 TaskStatus::InProgress => "●",
-                _ => "○",
+                TaskStatus::Pending => "○",
             };
             rows.push(Line::from(format!("{glyph}  {title}")));
         }

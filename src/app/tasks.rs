@@ -5,6 +5,67 @@ use crate::agent::model;
 use std::collections::{BTreeSet, HashSet};
 
 pub(super) fn apply_task_state_update(app: &mut App, update: model::TaskStateUpdate) {
+    observe_task_update(app, &update);
+    let selects_plan = update.source != model::TaskUpdateSource::BackgroundTasks
+        && ((update.source == model::TaskUpdateSource::List && update.is_complete_snapshot)
+            || update.tasks.iter().any(is_user_plan_task)
+            || update.removed_task_ids.iter().any(|id| {
+                app.sdk_inventory
+                    .tasks
+                    .iter()
+                    .any(|task| task.task_id == *id && is_user_plan_task(task))
+            }));
+    if selects_plan {
+        app.footer.plan_source = super::state::PlanSource::Tasks;
+    }
+    let previous_tasks = app.sdk_inventory.tasks.clone();
+    let removed: HashSet<&str> =
+        update.removed_task_ids.iter().map(std::string::String::as_str).collect();
+
+    if update.is_complete_snapshot {
+        if update.source == model::TaskUpdateSource::BackgroundTasks {
+            app.sdk_inventory.tasks.retain(|task| {
+                !is_sdk_background_task(task)
+                    && !removed.contains(task.task_id.as_str())
+                    && !update.tasks.iter().any(|incoming| incoming.task_id == task.task_id)
+            });
+            for task in update.tasks {
+                if !removed.contains(task.task_id.as_str()) {
+                    app.sdk_inventory.tasks.push(task);
+                }
+            }
+            refresh_task_tool_displays_with_previous(app, &previous_tasks);
+            return;
+        }
+        app.sdk_inventory.tasks = update
+            .tasks
+            .into_iter()
+            .filter(|task| !removed.contains(task.task_id.as_str()))
+            .collect();
+        refresh_task_tool_displays_with_previous(app, &previous_tasks);
+        return;
+    }
+
+    if !removed.is_empty() {
+        app.sdk_inventory.tasks.retain(|task| !removed.contains(task.task_id.as_str()));
+    }
+
+    for task in update.tasks {
+        if removed.contains(task.task_id.as_str()) {
+            continue;
+        }
+        if let Some(existing) =
+            app.sdk_inventory.tasks.iter_mut().find(|existing| existing.task_id == task.task_id)
+        {
+            *existing = task;
+        } else {
+            app.sdk_inventory.tasks.push(task);
+        }
+    }
+    refresh_task_tool_displays_with_previous(app, &previous_tasks);
+}
+
+fn observe_task_update(app: &mut App, update: &model::TaskStateUpdate) {
     let now = std::time::Instant::now();
     for id in &update.removed_task_ids {
         app.sdk_inventory.task_observations.remove(id);
@@ -68,63 +129,6 @@ pub(super) fn apply_task_state_update(app: &mut App, update: model::TaskStateUpd
                         .any(|t| t.task_id == *id && !is_sdk_background_task(t)))
         });
     }
-    let selects_plan = update.source != model::TaskUpdateSource::BackgroundTasks
-        && ((update.source == model::TaskUpdateSource::List && update.is_complete_snapshot)
-            || update.tasks.iter().any(is_user_plan_task)
-            || update.removed_task_ids.iter().any(|id| {
-                app.sdk_inventory
-                    .tasks
-                    .iter()
-                    .any(|task| task.task_id == *id && is_user_plan_task(task))
-            }));
-    if selects_plan {
-        app.footer.plan_source = super::state::PlanSource::Tasks;
-    }
-    let previous_tasks = app.sdk_inventory.tasks.clone();
-    let removed: HashSet<&str> =
-        update.removed_task_ids.iter().map(std::string::String::as_str).collect();
-
-    if update.is_complete_snapshot {
-        if update.source == model::TaskUpdateSource::BackgroundTasks {
-            app.sdk_inventory.tasks.retain(|task| {
-                !is_sdk_background_task(task)
-                    && !removed.contains(task.task_id.as_str())
-                    && !update.tasks.iter().any(|incoming| incoming.task_id == task.task_id)
-            });
-            for task in update.tasks {
-                if !removed.contains(task.task_id.as_str()) {
-                    app.sdk_inventory.tasks.push(task);
-                }
-            }
-            refresh_task_tool_displays_with_previous(app, &previous_tasks);
-            return;
-        }
-        app.sdk_inventory.tasks = update
-            .tasks
-            .into_iter()
-            .filter(|task| !removed.contains(task.task_id.as_str()))
-            .collect();
-        refresh_task_tool_displays_with_previous(app, &previous_tasks);
-        return;
-    }
-
-    if !removed.is_empty() {
-        app.sdk_inventory.tasks.retain(|task| !removed.contains(task.task_id.as_str()));
-    }
-
-    for task in update.tasks {
-        if removed.contains(task.task_id.as_str()) {
-            continue;
-        }
-        if let Some(existing) =
-            app.sdk_inventory.tasks.iter_mut().find(|existing| existing.task_id == task.task_id)
-        {
-            *existing = task;
-        } else {
-            app.sdk_inventory.tasks.push(task);
-        }
-    }
-    refresh_task_tool_displays_with_previous(app, &previous_tasks);
 }
 
 pub(crate) fn is_sdk_background_task(task: &model::TaskItem) -> bool {
@@ -166,7 +170,7 @@ fn refresh_task_tool_displays_with_previous(
             .sdk_inventory
             .tasks
             .iter()
-            .filter(|t| is_running(t))
+            .filter(is_running)
             .filter_map(|t| {
                 app.sdk_inventory.task_observations.get(&t.task_id).map(|o| o.started_at)
             })
@@ -726,7 +730,9 @@ mod tests {
                 .tasks(vec![live.clone()]),
         );
         app.sdk_inventory.task_observations.get_mut("agent").expect("clock").usage_reported_at =
-            std::time::Instant::now() - std::time::Duration::from_secs(3);
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(3))
+                .expect("test clock permits subtraction");
         let row = crate::ui::agent_rows::agent_row(&app, &app.sdk_inventory.tasks[0]);
         assert!(row.elapsed_ms.is_some_and(|ms| (43000..44000).contains(&ms)));
         live.status = model::TaskStatus::Completed;
@@ -792,7 +798,9 @@ mod tests {
                 .tasks(vec![task.clone()]),
         );
         app.sdk_inventory.task_observations.get_mut("clock").expect("clock").started_at =
-            std::time::Instant::now() - std::time::Duration::from_secs(3);
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(3))
+                .expect("test clock permits subtraction");
         assert!(
             crate::ui::agent_rows::agent_row(&app, &app.sdk_inventory.tasks[0])
                 .elapsed_ms
@@ -805,7 +813,9 @@ mod tests {
         );
         let before = crate::ui::agent_rows::agent_row(&app, &app.sdk_inventory.tasks[0]).elapsed_ms;
         app.sdk_inventory.task_observations.get_mut("clock").expect("clock").usage_reported_at =
-            std::time::Instant::now() - std::time::Duration::from_secs(20);
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(20))
+                .expect("test clock permits subtraction");
         assert_eq!(
             crate::ui::agent_rows::agent_row(&app, &app.sdk_inventory.tasks[0]).elapsed_ms,
             before

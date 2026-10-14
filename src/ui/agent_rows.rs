@@ -176,7 +176,7 @@ pub(crate) fn status_glyph(row: &AgentRow<'_>) -> (&'static str, Color) {
     match row.task.status {
         TaskStatus::InProgress => ("●", row.accent),
         TaskStatus::Completed => ("✓", Color::Green),
-        _ => ("○", theme::DIM),
+        TaskStatus::Pending => ("○", theme::DIM),
     }
 }
 
@@ -196,7 +196,10 @@ pub(crate) fn elapsed_text(ms: Option<u64>) -> String {
 
 pub(crate) fn token_text(tokens: u64) -> String {
     if tokens >= 1000 {
-        format!("{:.1}k", tokens as f64 / 1000.0).replace(".0k", "k")
+        let rounded = tokens / 100 + u64::from(tokens % 100 >= 50);
+        let thousands = rounded / 10;
+        let tenths = rounded % 10;
+        if tenths == 0 { format!("{thousands}k") } else { format!("{thousands}.{tenths}k") }
     } else {
         tokens.to_string()
     }

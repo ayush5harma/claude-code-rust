@@ -3,6 +3,7 @@
 
 use crate::agent::model;
 use crate::app::{App, MessageBlock};
+use crate::ui::agent_rows::task_status;
 use crate::ui::theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
@@ -66,12 +67,11 @@ fn build_agent_shelf(app: &App, width: u16) -> Vec<Line<'static>> {
         return Vec::new();
     }
     let listed = agents.len().min(shelf_row_capacity(app.chat_render.terminal_height));
-    let failed = agents.iter().filter(|a| terminal_status(a.task) == Some("failed")).count();
+    let failed = agents.iter().filter(|a| task_status(a.task) == "failed").count();
     let done = agents
         .iter()
         .filter(|a| {
-            a.task.status == model::TaskStatus::Completed
-                && terminal_status(a.task) != Some("failed")
+            a.task.status == model::TaskStatus::Completed && task_status(a.task) != "failed"
         })
         .count();
     let mut header = vec![
@@ -99,10 +99,6 @@ fn build_agent_shelf(app: &App, width: u16) -> Vec<Line<'static>> {
     let columns = AgentColumns::for_rows(&agents[..listed]);
     rows.extend(agents[..listed].iter().map(|a| render_agent_row(a, width, &columns, false)));
     rows
-}
-
-fn terminal_status(task: &model::TaskItem) -> Option<&str> {
-    Some(crate::ui::agent_rows::task_status(task))
 }
 
 fn gauge_color(percent: f64) -> Color {
@@ -155,7 +151,7 @@ fn gauges(app: &App) -> Vec<Line<'static>> {
         .filter(|t| crate::app::session_agents::is_session_agent_task(t))
         .collect();
     if !agents.is_empty() && !agents.iter().any(|t| t.status == model::TaskStatus::InProgress) {
-        let failed = agents.iter().filter(|t| terminal_status(t) == Some("failed")).count();
+        let failed = agents.iter().filter(|t| task_status(t) == "failed").count();
         let mut spans =
             vec![Span::styled(format!("{} agents", agents.len()), Style::default().fg(theme::DIM))];
         if failed > 0 {
@@ -231,15 +227,14 @@ fn pair(left: Line<'static>, right: Line<'static>, width: usize) -> Line<'static
 
 fn base_rows(app: &App, width: u16) -> Vec<Line<'static>> {
     let width = usize::from(width);
-    let identity = identity_line(app, usize::MAX, true, false);
+    let mut identity = identity_line(app, usize::MAX, true, false);
     let location = build_context_line(app, usize::MAX);
-    let gauge_items = gauges(app);
+    let mut gauge_items = gauges(app);
     let right = join_items([alerts(app, false), location.clone(), join_items(gauge_items.clone())]);
     if identity.width() + right.width() + 3 <= width {
         return vec![pair(identity, right, width)];
     }
     let mut alerts = alerts(app, false);
-    let mut gauge_items = gauge_items;
     if join_items(gauge_items.clone()).width() + alerts.width() + 3 > width {
         alerts = self::alerts(app, true);
     }
@@ -248,8 +243,8 @@ fn base_rows(app: &App, width: u16) -> Vec<Line<'static>> {
             break;
         }
         gauge_items.retain(|item| {
-            !(item.spans.first().is_some_and(|s| s.content.starts_with(label))
-                && !item.spans.iter().any(|s| s.style.fg == Some(Color::Red)))
+            !item.spans.first().is_some_and(|s| s.content.starts_with(label))
+                || item.spans.iter().any(|s| s.style.fg == Some(Color::Red))
         });
     }
     if join_items(gauge_items.clone()).width() + alerts.width() + 3 > width {
@@ -288,7 +283,6 @@ fn base_rows(app: &App, width: u16) -> Vec<Line<'static>> {
     if location.width() < MIN_CONTEXT_LOCATION_WIDTH {
         location = Line::default();
     }
-    let mut identity = identity;
     if identity.width() + location.width() + 3 > width {
         location = Line::default();
     }
@@ -472,7 +466,7 @@ fn identity_line(app: &App, title_width: usize, effort: bool, compact: bool) -> 
     }
     match app.session_runtime.fast_mode_state {
         model::FastModeState::On => {
-            items.push(Line::from(Span::styled("fast", Style::default().fg(theme::RUST_ORANGE))))
+            items.push(Line::from(Span::styled("fast", Style::default().fg(theme::RUST_ORANGE))));
         }
         model::FastModeState::Cooldown => items.push(Line::from(Span::styled(
             if compact { "cooldown" } else { "fast cooldown" },
@@ -968,7 +962,7 @@ mod tests {
                     frame.render_widget(
                         Paragraph::new(serialize_footer_rows(&app, width).rows),
                         frame.area(),
-                    )
+                    );
                 })
                 .expect("draw");
             let buffer = terminal.backend().buffer();
@@ -1038,7 +1032,7 @@ mod tests {
         app.session_runtime.ultracode = model::UltracodeState::new(true, true, true);
         app.session_runtime.fast_mode_state = model::FastModeState::Cooldown;
         let rows = serialize_footer_rows(&app, 50).rows;
-        assert!(rows.iter().all(|row| row.width() <= 50), "{:?}", rows);
+        assert!(rows.iter().all(|row| row.width() <= 50), "{rows:?}");
         let mut terminal = Terminal::new(TestBackend::new(50, 2)).expect("terminal");
         terminal
             .draw(|frame| frame.render_widget(Paragraph::new(rows), frame.area()))
@@ -1065,8 +1059,11 @@ mod tests {
                 ),
             },
         );
-        app.sdk_inventory.task_observations.get_mut("old").expect("old").finished_at =
-            Some(std::time::Instant::now() - std::time::Duration::from_secs(5));
+        app.sdk_inventory.task_observations.get_mut("old").expect("old").finished_at = Some(
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(5))
+                .expect("test clock permits subtraction"),
+        );
         let running = agent("new", model::TaskStatus::InProgress, "new-worker", "Opus 5.5");
         crate::app::handle_client_event(
             &mut app,
@@ -1100,7 +1097,7 @@ mod tests {
             app.session_runtime.ultracode = model::UltracodeState::new(true, true, true);
             app.session_runtime.fast_mode_state = model::FastModeState::Cooldown;
             let rows = serialize_footer_rows(&app, 50).rows;
-            assert!(rows.iter().all(|row| row.width() <= 50), "{id}: {:?}", rows);
+            assert!(rows.iter().all(|row| row.width() <= 50), "{id}: {rows:?}");
             let identity = text(&rows[0]);
             assert!(identity.contains("Opus 5.5"));
             assert!(identity.contains(label), "{identity}");
