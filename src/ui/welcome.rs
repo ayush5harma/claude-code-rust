@@ -13,40 +13,41 @@ use ratatui::text::{Line, Span};
 use std::time::{Duration, Instant};
 
 /// One pose of the welcome crab: four rows, each as wide as the rest pose's,
-/// so the overview text beside it never shifts.
+/// so the overview text beside it never shifts. The art is drawn in block
+/// elements, two by two sub-pixels a cell, on a 32x8 grid: a solid silhouette
+/// with raised claws and square eyes cut out of the shell, which reads at a
+/// glance where ASCII punctuation read as noise. Terminals draw these glyphs
+/// themselves, so the pixels meet without gaps.
 pub(crate) type FerrisFrame = [&'static str; 4];
 
-const SHELL: &str = r"    _~^~^~_     ";
-const EYES: &str = r"\) /  o o  \ (/ ";
-const EYES_LEFT: &str = r"\) / o o   \ (/ ";
-const EYES_RIGHT: &str = r"\) /   o o \ (/ ";
-const EYES_BLINK: &str = r"\) /  - -  \ (/ ";
-const MOUTH: &str = r"  '_   -   _'   ";
-const SMILE: &str = r"  '_   u   _'   ";
-const LEGS_A: &str = r"  / '-----' \   ";
-const LEGS_B: &str = r"  \ '-----' /   ";
-const WAVE_SHELL: &str = r"\)  _~^~^~_  (/ ";
-const WAVE_EYES: &str = r" \ /  o o  \ /  ";
-const WAVE_BLINK: &str = r" \ /  - -  \ /  ";
+const CLAWS_OPEN: &str = " █▄█ ▄▄▄▄▄▄ █▄█ ";
+const CLAWS_SHUT: &str = " ▟█▙ ▄▄▄▄▄▄ ▟█▙ ";
+const FACE: &str = "  ▜▖▟█▄██▄█▙▗▛  ";
+const FACE_LEFT: &str = "  ▜▖▟▙▟█▙▟█▙▗▛  ";
+const FACE_RIGHT: &str = "  ▜▖▟█▙▟█▙▟▙▗▛  ";
+const FACE_BLINK: &str = "  ▜▖▟██████▙▗▛  ";
+const SHELL: &str = "   ▀████████▀   ";
+const LEGS_A: &str = "    ▞▐ ▌▐ ▌▚    ";
+const LEGS_B: &str = "    ▐▞▗▘▝▖▚▌    ";
 
-pub(crate) const FERRIS_REST: FerrisFrame = [SHELL, EYES, MOUTH, LEGS_A];
-const FERRIS_REST_BLINK: FerrisFrame = [SHELL, EYES_BLINK, MOUTH, LEGS_A];
-const FERRIS_WAVE: FerrisFrame = [WAVE_SHELL, WAVE_EYES, SMILE, LEGS_A];
-const FERRIS_WAVE_BLINK: FerrisFrame = [WAVE_SHELL, WAVE_BLINK, SMILE, LEGS_A];
+pub(crate) const FERRIS_REST: FerrisFrame = [CLAWS_OPEN, FACE, SHELL, LEGS_A];
+const FERRIS_REST_BLINK: FerrisFrame = [CLAWS_OPEN, FACE_BLINK, SHELL, LEGS_A];
+const FERRIS_SNAP: FerrisFrame = [CLAWS_SHUT, FACE, SHELL, LEGS_A];
 
 /// Scuttles in place and looks around while the session connects.
 const CONNECTING_FRAMES: [FerrisFrame; 4] = [
-    [SHELL, EYES_LEFT, MOUTH, LEGS_A],
-    [SHELL, EYES, MOUTH, LEGS_B],
-    [SHELL, EYES_RIGHT, MOUTH, LEGS_A],
-    [SHELL, EYES, MOUTH, LEGS_B],
+    [CLAWS_OPEN, FACE_LEFT, SHELL, LEGS_A],
+    [CLAWS_OPEN, FACE, SHELL, LEGS_B],
+    [CLAWS_OPEN, FACE_RIGHT, SHELL, LEGS_A],
+    [CLAWS_OPEN, FACE, SHELL, LEGS_B],
 ];
 const CONNECTING_FRAME_INTERVAL: Duration = Duration::from_millis(180);
 
-/// Played once, after the first session of the process connects. It ends on
-/// the rest pose, so the last frame drawn inside the window is already final.
+/// Played once, after the first session of the process connects: two claw
+/// snaps and a blink. It ends on the rest pose, so the last frame drawn inside
+/// the window is already final.
 const HELLO_FRAMES: [FerrisFrame; 5] =
-    [FERRIS_WAVE, FERRIS_WAVE_BLINK, FERRIS_WAVE, FERRIS_REST_BLINK, FERRIS_REST];
+    [FERRIS_SNAP, FERRIS_REST, FERRIS_SNAP, FERRIS_REST_BLINK, FERRIS_REST];
 const HELLO_BEAT: Duration = Duration::from_millis(240);
 const HELLO_WINDOW: Duration = Duration::from_millis(1_200);
 
@@ -300,13 +301,24 @@ mod tests {
     use crate::ui::wrap::{display_width, line_display_width};
     use std::time::Duration;
 
-    /// The static crab claude-rs drew before the animation, written out so
-    /// the rest pose cannot drift from it.
+    /// The rest pose, written out so the frame table cannot drift from it.
     const STATIC_CRAB: [&str; 4] =
-        [r"    _~^~^~_     ", r"\) /  o o  \ (/ ", r"  '_   -   _'   ", r"  / '-----' \   "];
+        [" █▄█ ▄▄▄▄▄▄ █▄█ ", "  ▜▖▟█▄██▄█▙▗▛  ", "   ▀████████▀   ", "    ▞▐ ▌▐ ▌▚    "];
+
+    /// Block elements and spaces only: one column each in every terminal,
+    /// and drawn by the terminal itself rather than taken from the font.
+    fn is_block_art(row: &str) -> bool {
+        row.chars().all(|ch| ch == ' ' || ('\u{2580}'..='\u{259f}').contains(&ch))
+    }
 
     fn line_text(line: &Line<'_>) -> String {
         line.spans.iter().map(|span| span.content.as_ref()).collect()
+    }
+
+    /// The terminal column `needle` starts at; the crab's block glyphs are
+    /// three bytes each, so a byte offset is not a column.
+    fn column_of(line: &str, needle: &str) -> Option<usize> {
+        line.find(needle).map(|index| display_width(&line[..index]))
     }
 
     #[test]
@@ -314,7 +326,7 @@ mod tests {
         assert_eq!(FERRIS_REST, STATIC_CRAB);
         for frame in CONNECTING_FRAMES.iter().chain(HELLO_FRAMES.iter()) {
             for (row, rest_row) in frame.iter().zip(STATIC_CRAB) {
-                assert!(row.is_ascii(), "{row:?}");
+                assert!(is_block_art(row), "{row:?}");
                 assert_eq!(display_width(row), 16, "{row:?}");
                 assert_eq!(display_width(row), display_width(rest_row), "{row:?}");
             }
@@ -328,14 +340,15 @@ mod tests {
         let connecting = |ms| ferris_frame(FerrisPhase::Connecting { elapsed: at(ms) });
         let hello = |ms| ferris_frame(FerrisPhase::Hello { elapsed: at(ms) });
 
-        assert_eq!(connecting(0)[1], r"\) / o o   \ (/ ");
-        assert_eq!(connecting(179)[1], r"\) / o o   \ (/ ");
-        assert_eq!(connecting(180)[3], r"  \ '-----' /   ");
-        assert_eq!(connecting(360)[1], r"\) /   o o \ (/ ");
+        assert_eq!(connecting(0)[1], "  ▜▖▟▙▟█▙▟█▙▗▛  ", "looking left");
+        assert_eq!(connecting(179)[1], "  ▜▖▟▙▟█▙▟█▙▗▛  ");
+        assert_eq!(connecting(180)[3], "    ▐▞▗▘▝▖▚▌    ", "legs mid-step");
+        assert_eq!(connecting(360)[1], "  ▜▖▟█▙▟█▙▟▙▗▛  ", "looking right");
         assert_eq!(connecting(720), connecting(0));
-        assert_eq!(hello(0)[0], r"\)  _~^~^~_  (/ ");
-        assert_eq!(hello(240)[1], r" \ /  - -  \ /  ");
-        assert_eq!(hello(720)[1], r"\) /  - -  \ (/ ");
+        assert_eq!(hello(0)[0], " ▟█▙ ▄▄▄▄▄▄ ▟█▙ ", "claws snapped shut");
+        assert_eq!(*hello(240), STATIC_CRAB);
+        assert_eq!(hello(480)[0], " ▟█▙ ▄▄▄▄▄▄ ▟█▙ ");
+        assert_eq!(hello(720)[1], "  ▜▖▟██████▙▗▛  ", "blinking");
         assert_eq!(*hello(960), STATIC_CRAB);
         assert_eq!(*hello(60_000), STATIC_CRAB);
         assert_eq!(*ferris_frame(FerrisPhase::Rest), STATIC_CRAB);
@@ -352,7 +365,7 @@ mod tests {
             .into_iter()
             .map(|line| line.spans.into_iter().map(|s| s.content).collect())
             .collect();
-        assert!(lines.iter().any(|line| line.contains("_~^~^~_")));
+        assert!(lines.iter().any(|line| line.contains("▀████████▀")));
         assert!(!lines.iter().any(|line| line.contains("Welcome back to Claude, in Rust!")));
         assert!(lines.iter().any(|line| line.contains("Version:")));
         assert!(lines.iter().any(|line| line.contains("Subscription: Loading")));
@@ -377,8 +390,8 @@ mod tests {
         let text = lines.iter().map(line_text).collect::<Vec<_>>();
         let tip_row = text.iter().position(|line| line.contains("Tips: Start")).expect("tip row");
 
-        assert_eq!(text[tip_row].find("Tips:"), Some(20));
-        assert_eq!(text[tip_row + 1].find("noise"), Some(26));
+        assert_eq!(column_of(&text[tip_row], "Tips:"), Some(20));
+        assert_eq!(column_of(&text[tip_row + 1], "noise"), Some(26));
         assert!(lines.iter().all(|line| line_display_width(line) <= 110));
     }
 
@@ -398,8 +411,8 @@ mod tests {
             overview_lines(block, None, &FERRIS_REST, 70).iter().map(line_text).collect::<Vec<_>>();
         let cwd_row = text.iter().position(|line| line.contains("Cwd: alpha")).expect("cwd row");
 
-        assert_eq!(text[cwd_row].find("Cwd:"), Some(20));
-        assert_eq!(text[cwd_row + 1].find("iota"), Some(25));
+        assert_eq!(column_of(&text[cwd_row], "Cwd:"), Some(20));
+        assert_eq!(column_of(&text[cwd_row + 1], "iota"), Some(25));
     }
 
     #[test]
@@ -415,7 +428,7 @@ mod tests {
         let tip_row =
             text.iter().position(|line| line.starts_with("Tips: Start")).expect("tip row");
 
-        assert!(!text.iter().any(|line| line.contains("_~^~^~_")));
+        assert!(!text.iter().any(|line| line.contains("▀████████▀")));
         assert_eq!(text[tip_row + 1].find(|ch: char| !ch.is_whitespace()), Some(6));
         assert!(lines.iter().all(|line| line_display_width(line) <= 36));
     }
