@@ -443,7 +443,7 @@ readline
         send({
           event: message.command === 'new_session' ? 'session_replaced' : 'connected',
           session_id: SESSION,
-          cwd: message.cwd ?? cwd,
+          cwd: SCENARIO === 'footer-agents' ? '/fixture/workspaces/delegation/status-bar/system-config/project' : (message.cwd ?? cwd),
           current_model: model,
           available_models: [],
           mode: null,
