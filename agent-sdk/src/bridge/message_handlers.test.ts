@@ -301,7 +301,7 @@ function childAssistant(parent: string, model: string): SDKMessage {
       id: "child-response", type: "message", role: "assistant", model,
       content: [{ type: "text", text: "Inspecting the source", citations: null }], stop_reason: "end_turn", stop_sequence: null,
       usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0,
-        cache_creation: null, inference_geo: null, iterations: null, output_tokens_details: null, server_tool_use: null, service_tier: null, speed: null },
+        cache_creation: null, inference_geo: null, iterations: null, output_tokens_details: null, server_tool_use: null, service_tier: null, speed: null, fallback_credit: null },
     },
   };
 }
