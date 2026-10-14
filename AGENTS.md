@@ -128,7 +128,7 @@ Project-specific restrictions may tighten these defaults.
 
 ### Toolchain
 
-- Rust crate `claude-code-rust` (binary `claude-rs`, edition 2024) built with Cargo. `rust-toolchain.toml` pins channel `1.89`; the MSRV in `Cargo.toml` is `1.88.0`.
+- Rust crate `claude-code-rust` (binary `claude-rs`, edition 2024) built with Cargo. `rust-toolchain.toml` pins channel `1.98`; the MSRV in `Cargo.toml` is `1.88.0`.
 - TypeScript bridge in `agent-sdk/` and the root npm package both use npm with Node `>=24`. Each has its own `package-lock.json`; install with `npm ci` (root) and `npm ci --prefix agent-sdk`.
 - Bun is only the bundled bridge runtime for source runs and release packaging. It is not the package manager.
 
