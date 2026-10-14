@@ -22,6 +22,6 @@ The build context is the repository root, so the current working tree is recorde
 
 ## Notes
 
-- The Rust stage pins `rust:1.88-bookworm` and ignores `rust-toolchain.toml`, so the recording builds at MSRV, not at the pinned 1.89.
+- The Rust stage pins `rust:1.88-bookworm` and ignores `rust-toolchain.toml`, so the recording builds at MSRV, not at the pinned 1.98.
 - `demo.tape` waits on the `Type a message` placeholder and on `Agent SDK workflow` from the scripted answer in `CLAUDE.md`; changing either text breaks the recording.
 - Check the result visually after UI changes — `Set Width`/`Set Height` in the tape may need adjusting.

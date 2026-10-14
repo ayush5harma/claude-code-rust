@@ -133,6 +133,8 @@ const STARTUP_REASONS = {
   worktree_unverified: true,
   cli_version_too_old: true,
   bypass_root: true,
+  org_config_required_unavailable: true,
+  org_config_refused: true,
 } satisfies Record<import("@anthropic-ai/claude-agent-sdk").SDKStartupFailureReason, boolean>;
 
 test("startup result reasons remain structured, correlated, and exclusive", () => {
@@ -8827,7 +8829,7 @@ test("cut-short message_stop does not duplicate text or complete the model turn"
 });
 
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.288");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.300");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 

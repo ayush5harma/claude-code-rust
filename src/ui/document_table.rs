@@ -171,10 +171,7 @@ fn split_markdown_blocks(text: &str) -> Vec<MarkdownBlock> {
     // stays with its container, whose layout the Markdown renderer owns.
     let mut depth = 0usize;
 
-    loop {
-        let Some((event, range)) = parser.next() else {
-            break;
-        };
+    while let Some((event, range)) = parser.next() {
         match event {
             Event::Start(Tag::Table(alignments)) => {
                 if text_start < range.start {

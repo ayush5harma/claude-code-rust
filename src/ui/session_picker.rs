@@ -341,10 +341,8 @@ fn fit_with_ellipsis(value: &str, max_width: usize) -> String {
 }
 
 fn format_relative_age(last_modified_ms: u64) -> String {
-    let now_secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0);
+    let now_secs =
+        SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_secs());
     let then_secs = last_modified_ms / 1_000;
     if then_secs == 0 || then_secs >= now_secs {
         return "just now".to_owned();

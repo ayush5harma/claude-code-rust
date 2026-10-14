@@ -89,12 +89,10 @@ pub(super) fn set_interaction_focused(app: &mut App, queue_index: usize, focused
                     invalidated = true;
                 }
             }
-            Some(MessageBlock::UserDialog(dialog)) => {
-                if dialog.focused != focused {
-                    dialog.focused = focused;
-                    dialog.cache.invalidate();
-                    invalidated = true;
-                }
+            Some(MessageBlock::UserDialog(dialog)) if dialog.focused != focused => {
+                dialog.focused = focused;
+                dialog.cache.invalidate();
+                invalidated = true;
             }
             _ => {}
         }
@@ -197,12 +195,10 @@ pub(super) fn clear_inline_interaction_focus(app: &mut App) {
                         tc.invalidate_render_cache();
                     }
                 }
-                Some(MessageBlock::UserDialog(dialog)) => {
-                    if dialog.focused {
-                        dialog.focused = false;
-                        dialog.cache.invalidate();
-                        interaction_changed = true;
-                    }
+                Some(MessageBlock::UserDialog(dialog)) if dialog.focused => {
+                    dialog.focused = false;
+                    dialog.cache.invalidate();
+                    interaction_changed = true;
                 }
                 _ => {}
             }

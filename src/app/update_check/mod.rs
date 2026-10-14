@@ -174,8 +174,7 @@ pub(crate) fn update_check_disabled(no_update_check_flag: bool) -> bool {
         return true;
     }
     std::env::var(UPDATE_CHECK_DISABLE_ENV)
-        .ok()
-        .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .is_ok_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
 }
 
 async fn resolve_latest_release(
