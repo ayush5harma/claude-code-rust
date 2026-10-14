@@ -1,6 +1,6 @@
 # Recordings
 
-Records `assets/demo.gif` for the README, using [VHS](https://github.com/charmbracelet/vhs) in Docker.
+Records `assets/demo.gif` with [VHS](https://github.com/charmbracelet/vhs) in Docker. The README screenshots come from `showcase.sh`, which runs locally against the fake bridge (see below).
 
 ## Usage
 
@@ -12,6 +12,12 @@ docker compose -f recordings/compose.yml run --rm demo
 ```
 
 The build context is the repository root, so the current working tree is recorded. The GIF is written straight to `assets/demo.gif` through the bind mount.
+
+## Screenshots
+
+`showcase.sh` writes `assets/screenshot-{dark,light}-{welcome,mcp}.png`. It builds the debug binary and runs it in VHS against `tests/fixtures/fake-bridge.js` in its `showcase` scenario, so the pictures carry neutral demo data and need neither Docker nor a login. It needs `vhs` (with `ttyd` and `ffmpeg`) and `node` on `PATH`; `nix shell nixpkgs#vhs -c recordings/showcase.sh` works on this repository's macOS setup. The light run sets no `CLAUDE_RS_APPEARANCE`, so it also shows the terminal background query choosing the light palette.
+
+`assets/mascot-{dark,light}.svg` draw the rest pose of the crab (`FERRIS_REST` in `src/ui/welcome.rs`) as one rectangle per run of quadrant sub-pixels; redraw them if the art changes.
 
 ## Files
 
