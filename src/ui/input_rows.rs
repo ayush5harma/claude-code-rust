@@ -30,7 +30,7 @@ pub(crate) fn reading_hint_rows(app: &App, width: u16) -> Vec<Line<'static>> {
         }
     }
     crate::ui::wrap::wrap_lines_to_physical_rows(
-        &[Line::from(Span::styled(parts.join(" · "), Style::default().fg(theme::DIM)))],
+        &[Line::from(Span::styled(parts.join(" · "), Style::default().fg(theme::tertiary())))],
         width,
     )
 }
@@ -41,11 +41,11 @@ pub(crate) fn build_composer_hint_rows(app: &App) -> Vec<Line<'static>> {
     if let Some(hint) = &app.session_runtime.login_hint {
         rows.push(Line::from(Span::styled(
             format!("Authentication required: {} -- {}", hint.method_name, hint.method_description),
-            Style::default().fg(ratatui::style::Color::Yellow),
+            Style::default().fg(theme::warning()),
         )));
         rows.push(Line::from(Span::styled(
             "Type /login to authenticate, or run `claude auth login` in another terminal",
-            Style::default().fg(theme::DIM),
+            Style::default().fg(theme::tertiary()),
         )));
     }
 
@@ -53,7 +53,7 @@ pub(crate) fn build_composer_hint_rows(app: &App) -> Vec<Line<'static>> {
         let count = app.pending_user_messages.len();
         rows.push(Line::from(Span::styled(
             format!("Queued Messages ({count}) · Esc interrupt & continue"),
-            Style::default().fg(theme::DIM),
+            Style::default().fg(theme::tertiary()),
         )));
         let hidden = count.saturating_sub(MAX_PENDING_MESSAGE_PREVIEW_ROWS);
         for (index, pending) in app
@@ -65,7 +65,7 @@ pub(crate) fn build_composer_hint_rows(app: &App) -> Vec<Line<'static>> {
         {
             rows.push(Line::from(Span::styled(
                 format!("  {}. {}", hidden + index + 1, pending.first_line()),
-                Style::default().fg(theme::DIM),
+                Style::default().fg(theme::tertiary()),
             )));
         }
     }
@@ -78,12 +78,9 @@ pub(crate) fn build_composer_hint_rows(app: &App) -> Vec<Line<'static>> {
         && !suggestion.trim().is_empty()
     {
         rows.push(Line::from(vec![
-            Span::styled("Suggestion: ", Style::default().fg(theme::DIM)),
-            Span::styled(
-                suggestion.trim().to_owned(),
-                Style::default().fg(ratatui::style::Color::White),
-            ),
-            Span::styled("    Tab to accept", Style::default().fg(theme::DIM)),
+            Span::styled("Suggestion: ", Style::default().fg(theme::tertiary())),
+            Span::styled(suggestion.trim().to_owned(), Style::default().fg(theme::label())),
+            Span::styled("    Tab to accept", Style::default().fg(theme::tertiary())),
         ]));
     }
 
@@ -102,25 +99,25 @@ pub(crate) fn build_btw_status_rows(app: &App, width: u16) -> Vec<Line<'static>>
         let (icon, icon_style, body, body_style) = match &item.state {
             BtwRequestState::Active => (
                 crate::ui::SpinnerState::for_app(app).icon().to_owned(),
-                Style::default().fg(theme::BTW_ACCENT),
+                Style::default().fg(theme::btw_accent()),
                 item.question.replace(['\r', '\n'], " "),
-                Style::default().fg(theme::DIM),
+                Style::default().fg(theme::tertiary()),
             ),
             BtwRequestState::Waiting => (
                 "·".to_owned(),
-                Style::default().fg(theme::DIM),
+                Style::default().fg(theme::tertiary()),
                 item.question.replace(['\r', '\n'], " "),
-                Style::default().fg(theme::DIM),
+                Style::default().fg(theme::tertiary()),
             ),
             BtwRequestState::Failed { reason, .. } => (
                 theme::ICON_FAILED.to_owned(),
-                Style::default().fg(theme::STATUS_ERROR),
+                Style::default().fg(theme::danger()),
                 format!(
                     "{} — {}",
                     item.question.replace(['\r', '\n'], " "),
                     reason.replace(['\r', '\n'], " ")
                 ),
-                Style::default().fg(theme::STATUS_ERROR),
+                Style::default().fg(theme::danger()),
             ),
         };
         let prefix = format!("{icon} BTW  ");
@@ -128,7 +125,7 @@ pub(crate) fn build_btw_status_rows(app: &App, width: u16) -> Vec<Line<'static>>
         let preview = fit_status_text(&body, available);
         rows.push(Line::from(vec![
             Span::styled(format!("{icon} "), icon_style),
-            Span::styled("BTW  ", Style::default().fg(theme::BTW_ACCENT)),
+            Span::styled("BTW  ", Style::default().fg(theme::btw_accent())),
             Span::styled(preview, body_style),
         ]));
     }
@@ -138,11 +135,11 @@ pub(crate) fn build_btw_status_rows(app: &App, width: u16) -> Vec<Line<'static>>
         let prefix = "· BTW ";
         let available = usize::from(width).saturating_sub(UnicodeWidthStr::width(prefix));
         rows.push(Line::from(vec![
-            Span::styled("· ", Style::default().fg(theme::DIM)),
-            Span::styled("BTW ", Style::default().fg(theme::BTW_ACCENT)),
+            Span::styled("· ", Style::default().fg(theme::tertiary())),
+            Span::styled("BTW ", Style::default().fg(theme::btw_accent())),
             Span::styled(
                 fit_status_text(&format!("+{hidden} more pending"), available),
-                Style::default().fg(theme::DIM),
+                Style::default().fg(theme::tertiary()),
             ),
         ]));
     }
@@ -195,25 +192,25 @@ pub(crate) fn blocked_input_lines(
             let label =
                 app.turn.pending_command_label.as_deref().unwrap_or("Processing command...");
             vec![Line::from(vec![
-                Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
-                Span::styled(label.to_owned(), Style::default().fg(theme::DIM)),
+                Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::tertiary())),
+                Span::styled(label.to_owned(), Style::default().fg(theme::tertiary())),
             ])]
         }
         ComposerBlockReason::Error => {
             let mut rows = vec![
                 Line::from(Span::styled(
                     "Input disabled due to error",
-                    Style::default().fg(theme::STATUS_ERROR),
+                    Style::default().fg(theme::danger()),
                 )),
                 Line::from(Span::styled(
                     "Press Ctrl+Q to quit and try again.",
-                    Style::default().fg(theme::DIM),
+                    Style::default().fg(theme::tertiary()),
                 )),
             ];
             if !app.input.is_empty() {
                 rows.push(Line::from(Span::styled(
                     "Unsent draft:",
-                    Style::default().fg(theme::DIM),
+                    Style::default().fg(theme::tertiary()),
                 )));
                 rows.extend(app.input.lines().iter().cloned().map(Line::from));
             }
@@ -221,7 +218,7 @@ pub(crate) fn blocked_input_lines(
         }
         ComposerBlockReason::Shutdown => vec![Line::from(Span::styled(
             "Shutting down... Press Ctrl+C again to force exit.",
-            Style::default().fg(theme::DIM),
+            Style::default().fg(theme::tertiary()),
         ))],
     }
 }
@@ -300,7 +297,7 @@ mod tests {
         assert!(
             rows.iter()
                 .flat_map(|row| row.spans.iter())
-                .all(|span| span.style.fg == Some(crate::ui::theme::DIM))
+                .all(|span| span.style.fg == Some(crate::ui::theme::tertiary()))
         );
     }
 
@@ -359,9 +356,7 @@ mod tests {
         assert!(text[2].contains("old failure"));
         assert!(text[3].contains("+1 more pending"));
         assert!(rows.iter().all(|row| row.width() <= 24));
-        assert!(
-            rows[1].spans.iter().any(|span| span.style.fg == Some(crate::ui::theme::STATUS_ERROR))
-        );
+        assert!(rows[1].spans.iter().any(|span| span.style.fg == Some(crate::ui::theme::danger())));
     }
 
     #[test]

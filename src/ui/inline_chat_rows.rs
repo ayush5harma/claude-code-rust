@@ -193,7 +193,9 @@ fn render_user_system_live_rows(
         && let Some(MessageRowSegment::Lines { lines }) = rendered.segments.first_mut()
         && let Some(label) = lines.first_mut()
     {
-        label.spans.push(Span::styled(format!(" · {timestamp}"), Style::default().fg(theme::DIM)));
+        label
+            .spans
+            .push(Span::styled(format!(" · {timestamp}"), Style::default().fg(theme::tertiary())));
     }
     RenderedMessageRows::message(
         segments_to_physical_rows(&rendered.segments, width, false),
@@ -296,7 +298,7 @@ fn render_assistant_live_rows(
                 commit_ready: !active_mutable,
             });
             rendered.rows.extend(wrap_lines_to_physical_rows(
-                &[Line::from(Span::styled(label, Style::default().fg(theme::DIM)))],
+                &[Line::from(Span::styled(label, Style::default().fg(theme::tertiary())))],
                 width,
             ));
         }
@@ -435,7 +437,7 @@ fn serialize_compact_welcome_entry(
 ) -> Vec<Line<'static>> {
     let heading = Line::from(Span::styled(
         "Overview",
-        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+        Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD),
     ));
     let mut lines = wrap_lines_to_physical_rows(&[heading], width);
     let ferris = welcome::ferris_frame(welcome::ferris_phase(app, entry, now));
@@ -1116,7 +1118,7 @@ fn finish_assistant_rows(
         rows.extend(wrap_lines_to_physical_rows(
             &[Line::from(Span::styled(
                 format!("{} Thinking…", meta.spinner.icon()),
-                Style::default().fg(theme::DIM),
+                Style::default().fg(theme::tertiary()),
             ))],
             meta.width,
         ));
@@ -1283,7 +1285,9 @@ fn append_assistant_label_rows(
             &app.transcript.messages[request.msg_idx],
         )
     {
-        label.spans.push(Span::styled(format!(" · {timestamp}"), Style::default().fg(theme::DIM)));
+        label
+            .spans
+            .push(Span::styled(format!(" · {timestamp}"), Style::default().fg(theme::tertiary())));
     }
     rows.extend(wrap_lines_to_physical_rows(&[label], request.width));
 }
@@ -1441,7 +1445,7 @@ fn render_canonical_tool_rows(
                     timing.duration_ms
                 ))
             ),
-            Style::default().fg(theme::DIM),
+            Style::default().fg(theme::tertiary()),
         )));
     }
     if interaction {
@@ -1455,15 +1459,15 @@ fn render_canonical_tool_rows(
 pub(crate) fn assistant_role_label_line() -> Line<'static> {
     Line::from(vec![ratatui::text::Span::styled(
         "Claude",
-        Style::default().fg(theme::ROLE_ASSISTANT).add_modifier(Modifier::BOLD),
+        Style::default().fg(theme::role_assistant()).add_modifier(Modifier::BOLD),
     )])
 }
 
 fn system_severity_color(severity: SystemSeverity) -> Color {
     match severity {
-        SystemSeverity::Info => theme::DIM,
-        SystemSeverity::Warning => theme::STATUS_WARNING,
-        SystemSeverity::Error => theme::STATUS_ERROR,
+        SystemSeverity::Info => theme::tertiary(),
+        SystemSeverity::Warning => theme::warning(),
+        SystemSeverity::Error => theme::danger(),
     }
 }
 
@@ -2878,7 +2882,7 @@ mod tests {
         let text = line_texts(&rows);
 
         assert_eq!(text.iter().filter(|line| line.as_str() == "Overview").count(), 1);
-        assert!(text.iter().any(|line| line.contains("_~^~^~_")));
+        assert!(text.iter().any(|line| line.contains("▀████████▀")));
         assert!(text.iter().any(|line| line.contains("Subscription: Connecting")));
         assert!(text.iter().any(|line| line.contains("Session ID: Connecting")));
     }
@@ -2911,16 +2915,17 @@ mod tests {
     // The crab fixtures are written out here rather than taken from
     // welcome.rs, so a changed frame table fails these tests.
     const REST_CRAB: [&str; 4] =
-        [r"    _~^~^~_     ", r"\) /  o o  \ (/ ", r"  '_   -   _'   ", r"  / '-----' \   "];
-    const EYES_LEFT_ROW: &str = r"\) / o o   \ (/ ";
-    const LEGS_B_ROW: &str = r"  \ '-----' /   ";
-    const WAVE_TOP_ROW: &str = r"\)  _~^~^~_  (/ ";
+        [" █▄█ ▄▄▄▄▄▄ █▄█ ", "  ▜▖▟█▄██▄█▙▗▛  ", "   ▀████████▀   ", "    ▞▐ ▌▐ ▌▚    "];
+    const EYES_LEFT_ROW: &str = "  ▜▖▟▙▟█▙▟█▙▗▛  ";
+    const LEGS_B_ROW: &str = "    ▐▞▗▘▝▖▚▌    ";
+    const SNAP_TOP_ROW: &str = " ▟█▙ ▄▄▄▄▄▄ ▟█▙ ";
 
     /// The four crab cells of the rendered welcome: the art sits after the
     /// two-column left padding, 16 columns wide.
     fn crab_rows(rows: &[Line<'_>]) -> Vec<String> {
         let text = line_texts(rows);
-        let Some(start) = text.iter().position(|line| line.contains("_~^~^~_")) else {
+        // The shell top is the same in every pose; the claws beside it are not.
+        let Some(start) = text.iter().position(|line| line.contains("▄▄▄▄▄▄")) else {
             return Vec::new();
         };
         text[start..]
@@ -3009,7 +3014,7 @@ mod tests {
 
         let serialized = rows_at(&mut app, clock.at(0));
 
-        assert_eq!(crab_rows(serialized.rows())[0], WAVE_TOP_ROW);
+        assert_eq!(crab_rows(serialized.rows())[0], SNAP_TOP_ROW);
         assert_eq!(serialized.stable_row_count(), 0);
         let last_instant = rows_at(&mut app, clock.at(1_199));
         assert_eq!(crab_rows(last_instant.rows()), REST_CRAB, "the hello ends at rest");

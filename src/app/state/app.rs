@@ -55,6 +55,8 @@ pub struct App {
     /// Tool scope keyed by tool call ID; used to distinguish main-agent, subagent roots,
     /// and explicitly owned subagent child tools.
     pub(crate) tool_call_scopes: HashMap<String, ToolCallScope>,
+    pub(crate) recent_child_tool_ids: HashMap<String, std::collections::VecDeque<String>>,
+    pub(crate) agent_shelf_last_redraw: Option<Instant>,
     /// Session-scoped tool interaction IDs, ordered by arrival; the first receives input.
     /// Background controls survive foreground turn exits and clear on session reset.
     pub pending_interaction_ids: Vec<String>,
@@ -259,6 +261,8 @@ impl App {
             spinner_frame: 0,
             spinner_last_advance_at: None,
             tool_call_scopes: HashMap::default(),
+            recent_child_tool_ids: HashMap::default(),
+            agent_shelf_last_redraw: None,
             pending_interaction_ids: Vec::new(),
             focus: FocusManager::default(),
             keymap: ResolvedKeymap::defaults(),

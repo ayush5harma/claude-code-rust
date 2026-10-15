@@ -17,10 +17,10 @@ pub(super) fn render_internal_failure_content(payload: &str) -> Vec<Line<'static
     let summary = summarize_internal_error(payload);
     let mut lines = vec![Line::from(Span::styled(
         "Internal Agent SDK error",
-        Style::default().fg(theme::STATUS_ERROR).add_modifier(Modifier::BOLD),
+        Style::default().fg(theme::danger()).add_modifier(Modifier::BOLD),
     ))];
     if !summary.is_empty() {
-        lines.push(Line::from(Span::styled(summary, Style::default().fg(theme::STATUS_ERROR))));
+        lines.push(Line::from(Span::styled(summary, Style::default().fg(theme::danger()))));
     }
     lines
 }
@@ -29,9 +29,7 @@ pub(super) fn render_tool_use_error_content(message: &str) -> Vec<Line<'static>>
     message
         .lines()
         .filter(|line| !line.trim().is_empty())
-        .map(|line| {
-            Line::from(Span::styled(line.to_owned(), Style::default().fg(theme::STATUS_ERROR)))
-        })
+        .map(|line| Line::from(Span::styled(line.to_owned(), Style::default().fg(theme::danger()))))
         .collect()
 }
 

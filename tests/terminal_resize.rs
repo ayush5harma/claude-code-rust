@@ -215,6 +215,9 @@ impl TerminalTest {
         }
         command.cwd(&project);
         command.env("CLAUDE_CONFIG_DIR", &profile);
+        // The PTY answers no terminal queries; pin the palette instead of waiting
+        // out the background query.
+        command.env("CLAUDE_RS_APPEARANCE", "dark");
         command.env("CLAUDE_RS_AGENT_BRIDGE", &bridge);
         command.env("CLAUDE_RS_AGENT_BRIDGE_RUNTIME", runtime);
         command.env("FAKE_BRIDGE_LINES", lines.to_string());
@@ -274,7 +277,7 @@ impl TerminalTest {
             test.wait_screen("Type a message");
             // The composer is editable during Connecting, but Enter cannot submit
             // until the connected event has been applied and painted.
-            test.wait_screen("[READY]");
+            test.wait_screen(if scenario == "footer-agents" { "Fake" } else { "[READY]" });
         }
         test
     }
@@ -2369,14 +2372,14 @@ fn session_accent_colors_the_composer_edge_and_glyph_then_resets_on_replacement(
     let mut test = TerminalTest::start("session-accent", 3);
     let initial = test.wait_for("session-ID accent", |test| {
         let accent = composer_accent(test)?;
-        (accent == (vt100::Color::Rgb(120, 175, 245), vt100::Color::Rgb(120, 175, 245)))
+        (accent == (vt100::Color::Rgb(92, 184, 255), vt100::Color::Rgb(92, 184, 255)))
             .then_some(accent)
     });
 
     test.submit_command("/color purple");
     test.wait_for("confirmed purple composer accent", |test| {
         (composer_accent(test)
-            == Some((vt100::Color::Rgb(190, 155, 240), vt100::Color::Rgb(190, 155, 240))))
+            == Some((vt100::Color::Rgb(234, 141, 255), vt100::Color::Rgb(234, 141, 255))))
         .then_some(())
     });
     test.submit_command("/color default");
@@ -2386,13 +2389,13 @@ fn session_accent_colors_the_composer_edge_and_glyph_then_resets_on_replacement(
     test.submit_command("/color purple");
     test.wait_for("purple before session replacement", |test| {
         (composer_accent(test)
-            == Some((vt100::Color::Rgb(190, 155, 240), vt100::Color::Rgb(190, 155, 240))))
+            == Some((vt100::Color::Rgb(234, 141, 255), vt100::Color::Rgb(234, 141, 255))))
         .then_some(())
     });
     test.submit_command("/new-session");
     test.wait_for("replacement session accent", |test| {
         (composer_accent(test)
-            == Some((vt100::Color::Rgb(220, 195, 85), vt100::Color::Rgb(220, 195, 85))))
+            == Some((vt100::Color::Rgb(255, 214, 0), vt100::Color::Rgb(255, 214, 0))))
         .then_some(())
     });
     assert_eq!(test.commands("new_session").len(), 1);
@@ -2980,5 +2983,73 @@ fn agents_view_opens_from_an_empty_composer_stops_a_running_subagent_and_returns
     test.submit("after agents", "after agents");
     test.wait_screen("reply 1 started");
     test.assert_prompts(&["after agents"]);
+    test.shutdown();
+}
+
+#[test]
+fn tasks_overlay_opens_the_selected_live_agent_inspector() {
+    let mut test = TerminalTest::start("agents-inspector", 3);
+    test.send(b"\x14");
+    test.wait_screen_with("Agents", &["mapper", "Sonnet 5.5", "builder", "Opus 5.5"]);
+    test.send(b"\x1b[B");
+    test.wait_screen("> ● builder");
+    test.send(b"\r");
+    test.wait_screen_with(
+        "Build agent inspector",
+        &["Opus 5.5", "asked for opus", "Recent", "Read agents.rs"],
+    );
+    test.wait_until("selected live agent messages requested", |test| {
+        test.commands("get_subagent_messages")
+            .iter()
+            .any(|command| command["agent_id"] == "agent-second")
+    });
+    assert_eq!(test.commands("list_session_agents").len(), 1);
+    test.assert_prompts(&[]);
+    test.shutdown();
+}
+
+#[test]
+fn footer_agents_resize_and_finish_follow_task_inventory() {
+    let mut test = TerminalTest::start("footer-agents", 3);
+    test.resize_and_wait_for_draw(40, 200);
+    test.submit("delegate fixture", "delegate fixture");
+    test.wait_screen("2 running · 1 done");
+    test.wait_screen("Read footer_rows.rs");
+    let wide = test.screen();
+    for (name, model) in
+        [("Explore", "Sonnet 5.5"), ("implementer", "Opus 5.5"), ("verifier", "Sonnet 5.5")]
+    {
+        let rows: Vec<_> = wide.lines().filter(|r| r.contains(name) && r.contains(model)).collect();
+        assert_eq!(rows.len(), 1, "{wide}");
+    }
+    assert!(
+        wide.lines().any(|row| row.contains("system-config@main-2")
+            && row.contains("Fake")
+            && row.contains("ctx")),
+        "{wide}"
+    );
+    test.resize_and_wait_for_draw(40, 100);
+    let medium = test.screen();
+    let identity = medium
+        .lines()
+        .position(|row| row.contains("system-config@main-2") && row.contains("Fake"))
+        .expect("identity row");
+    assert!(medium.lines().nth(identity + 1).expect("gauge row").contains("ctx"), "{medium}");
+    test.resize_and_wait_for_draw(40, 50);
+    let narrow = test.screen();
+    assert!(
+        narrow.lines().any(|row| row.contains("Explore") && row.contains("Sonnet 5.5")),
+        "{narrow}"
+    );
+    assert!(
+        narrow.lines().any(|row| row.contains("implementer") && row.contains("Opus 5.5")),
+        "{narrow}"
+    );
+    test.signal("finish");
+    test.wait_journal("footer-agents-finished");
+    test.wait_until("finished agent summary replaces shelf", |test| {
+        let screen = test.screen();
+        screen.contains("3 agents") && !screen.contains("ctrl+t inspect")
+    });
     test.shutdown();
 }

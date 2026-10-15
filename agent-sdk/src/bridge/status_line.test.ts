@@ -3,6 +3,7 @@ import test from "node:test";
 import { replaceProtocolEventWriter } from "./events.js";
 import { scheduleStatusLine, stopStatusLine, executeStatusLine, readConfiguredStatusLine } from "./status_line.js";
 import { updateSessionId, type SessionState } from "./session_lifecycle.js";
+import { resolveCurrentModel } from "./model_metadata.js";
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 function session(): SessionState {
@@ -91,4 +92,38 @@ test("replaced session and changed command discard stale output", async () => {
     stopStatusLine(state);
     restore();
   }
+});
+
+// The catalog entry that matches the running model is often "default", whose
+// display name is the picker label "Default (recommended)". The status line
+// command documents model.display_name as the model's name, so it must get the
+// humanised id the footer shows, never the picker label.
+test("status line model.display_name is the model name, not a catalog option label", async () => {
+  const state = session();
+  state.currentModel = resolveCurrentModel({
+    requestedModelId: "default",
+    resolvedRuntimeModelId: "claude-opus-5-5",
+    availableModels: [
+      { id: "default", resolved_model: "claude-opus-5-5", display_name: "Default (recommended)", supports_effort: true, supported_effort_levels: [] },
+      { id: "sonnet", resolved_model: "claude-sonnet-5-5", display_name: "Sonnet", supports_effort: true, supported_effort_levels: [] },
+    ],
+  });
+  assert.equal(state.currentModel.display_name_long, "Default (recommended)", "fixture must hit the default entry");
+  const inputs: Array<{ model?: { id: string; display_name: string } }> = [];
+  let observed: (() => void) | undefined;
+  const ready = new Promise<void>(resolve => { observed = resolve; });
+  try {
+    scheduleStatusLine(state, {
+      readConfig: async () => ({ command: "cmd" }),
+      run: async (_command, _cwd, input) => {
+        inputs.push(input as { model?: { id: string; display_name: string } });
+        observed?.();
+        return "ok";
+      },
+    });
+    await ready;
+  } finally {
+    stopStatusLine(state);
+  }
+  assert.deepEqual(inputs.map(input => input.model), [{ id: "claude-opus-5-5", display_name: "Opus 5.5" }]);
 });

@@ -76,7 +76,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, view: &ActionOverlayView<'_>
         frame,
         sections[1],
         view.description,
-        Style::default().fg(theme::DIM),
+        Style::default().fg(theme::tertiary()),
     );
     render_overlay_separator(frame, sections[2]);
     let action_scroll = action_overlay_scroll(view.selected_index, sections[3].height);

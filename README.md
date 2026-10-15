@@ -1,112 +1,136 @@
-# Claude Code Rust — Ayush's fork
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/mascot-dark.svg">
+    <img src="assets/mascot-light.svg" alt="The claude-rs crab: an orange pixel-art crab with raised claws" width="216">
+  </picture>
+</p>
 
-A native Rust terminal interface for Claude Code. Drop-in replacement for Anthropic's stock Node.js/React Ink TUI, built for performance and a better user experience.
+<h1 align="center">Claude Code Rust</h1>
 
-[![Version](https://img.shields.io/github/v/release/ayush5harma/claude-code-rust?label=version)](https://github.com/ayush5harma/claude-code-rust/releases/latest)
-[![CI](https://github.com/ayush5harma/claude-code-rust/actions/workflows/pr.yml/badge.svg)](https://github.com/ayush5harma/claude-code-rust/actions/workflows/pr.yml)
-[![Docs](https://img.shields.io/badge/upstream%20docs-GitHub%20Pages-blue)](https://srothgan.github.io/claude-code-rust/)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](https://www.apache.org/licenses/LICENSE-2.0)
+<p align="center">
+  A native Rust terminal interface for Claude Code.<br>
+  Ayush's fork of <a href="https://github.com/srothgan/claude-code-rust">srothgan/claude-code-rust</a>.
+</p>
+
+<p align="center">
+  <a href="https://github.com/ayush5harma/claude-code-rust/releases/latest"><img src="https://img.shields.io/github/v/release/ayush5harma/claude-code-rust?label=version" alt="Version"></a>
+  <a href="https://github.com/ayush5harma/claude-code-rust/actions/workflows/pr.yml"><img src="https://github.com/ayush5harma/claude-code-rust/actions/workflows/pr.yml/badge.svg" alt="CI"></a>
+  <a href="https://srothgan.github.io/claude-code-rust/"><img src="https://img.shields.io/badge/upstream%20docs-GitHub%20Pages-blue" alt="Upstream docs"></a>
+  <a href="https://www.apache.org/licenses/LICENSE-2.0"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License"></a>
+</p>
+
+> [!NOTE]
+> **This is a fork.** The original project is [Claude Code Rust by Simon Rothgang](https://github.com/srothgan/claude-code-rust). This fork keeps the upstream architecture, follows upstream releases, and adds the changes listed under [What this fork adds](#what-this-fork-adds). Fork releases come from [this repository's releases](https://github.com/ayush5harma/claude-code-rust/releases); `npm install -g claude-code-rust` and the upstream install scripts install the upstream build, not this fork. Report fork-specific problems [here](https://github.com/ayush5harma/claude-code-rust/issues) and upstream problems [upstream](https://github.com/srothgan/claude-code-rust/issues).
+
+## Screenshots
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/screenshot-dark-welcome.png">
+    <img src="assets/screenshot-light-welcome.png" alt="The welcome screen: the crab beside the session overview, and the message composer below" width="900">
+  </picture>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/screenshot-dark-mcp.png">
+    <img src="assets/screenshot-light-mcp.png" alt="The MCP settings tab: tinted status badges for connected, needs auth, pending, failed and disabled servers" width="900">
+  </picture>
+</p>
+
+<p align="center"><sub>GitHub shows the dark or the light pictures to match your own theme. They are made with demo data by <code>recordings/showcase.sh</code>.</sub></p>
+
+## What it is
+
+Claude Code Rust replaces the stock Claude Code terminal interface with a native Rust binary built on [Ratatui](https://ratatui.rs/). It talks to Claude through a local bridge to Anthropic's public [Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-sdk). The SDK owns session behavior; the Rust application owns everything you see. Tool calls, file edits, terminal commands and permissions work as they do in Claude Code, with your existing Claude account.
+
+The stock interface runs on Node.js with React Ink, which redraws whole frames over raw ANSI escape codes. Users widely report flicker, high idle CPU, a 200-400 MB memory baseline, garbled resizes, input lag as context grows, lost scrollback and freezes on large pastes. Claude Code Rust draws with diffed, direct terminal control through Crossterm and Ratatui, with no full-frame redraws and no React render loop. These improvements come from daily use, not from a benchmark against the stock interface; none exists yet.
 
 ## What this fork adds
 
-This is [Ayush's fork](https://github.com/ayush5harma/claude-code-rust) of [Simon Rothgang's Claude Code Rust](https://github.com/srothgan/claude-code-rust). It keeps the upstream architecture: the public Claude Agent SDK owns session behavior and the Rust application owns terminal presentation. The additions below are relative to upstream commit `26f9b12` (v0.15.2); ordinary upstream features are not fork additions.
+The additions below are measured against upstream commit `26f9b12` (v0.15.2); ordinary upstream features are not listed. The [changelog](CHANGELOG.md) has the details of each release.
 
-### Released in v0.15.2-fork.2
+### v0.15.2-fork.6
 
-| Change | Behavior |
+| Change | What it does |
 | --- | --- |
-| SDK local-command replies | Completed SDK replies such as `/rename`, `/color`, `/context`, and `/usage` appear in the transcript even when the SDK does not stream them. Streamed replies are not printed twice. This includes displaying `/color` replies, not applying a session accent color to the Rust UI. |
-| Live session names | The Status tab, rename dialog, and title-generation flow use the SDK's current session title. Names refresh when connecting, resuming, replacing or resetting a session, after turns, and after renaming. |
-| Fork release artifacts | GitHub releases publish platform archives, a release bundle, and SHA-256 checksums under fork version numbers, without publishing to the upstream npm package. |
+| Accessible palette ([#36](https://github.com/ayush5harma/claude-code-rust/issues/36)) | One semantic palette after Apple's [Human Interface Guidelines](https://developer.apple.com/design/human-interface-guidelines/color) replaces named ANSI colors, which terminal themes remap. Every text color reaches 4.5:1 contrast against the terminal background and the app's own fills, and tests enforce it. Status badges are tinted, with Apple's meanings for green, yellow, blue, gray and red. |
+| Light and dark appearance | The palette, code blocks and file previews follow the terminal's appearance. See [Appearance](#appearance). |
+| New crab | The welcome crab is pixel art drawn in block elements. It looks around and scuttles while connecting, and snaps its claws once when it connects. |
+| Dependencies | Agent SDK 0.3.300, Rust 1.98 toolchain, refreshed Cargo and npm lockfiles. |
 
-The two SDK behavior fixes incorporate upstream pull requests [#444](https://github.com/srothgan/claude-code-rust/pull/444) and [#445](https://github.com/srothgan/claude-code-rust/pull/445). See the [fork changelog](CHANGELOG.md) and [v0.15.2-fork.2 release](https://github.com/ayush5harma/claude-code-rust/releases/tag/v0.15.2-fork.2).
+### v0.15.2-fork.5
 
-### Added in v0.15.2-fork.3
+- **Responsive footer and agent shelf.** The footer adapts to the terminal width and keeps session facts in one place. While Claude delegates, a bounded shelf shows each agent's model, activity, usage and elapsed time.
+- **Agent inspector.** Ctrl+T selects an agent, and Enter opens its model choice, recent tools, prompt and saved messages.
 
-| Change | What it adds |
+### v0.15.2-fork.4
+
+| Change | What it does |
 | --- | --- |
-| Bridge test discovery and fixtures ([#7](https://github.com/ayush5harma/claude-code-rust/pull/7)) | Portable test discovery and a corrected TypeScript fixture loader so local and CI checks exercise the intended bridge tests. |
-| Local CI runner and development shell ([#8](https://github.com/ayush5harma/claude-code-rust/pull/8)) | A single local check runner and a Nix development shell for the repository's Rust, bridge, and repository checks. |
-| Live end-to-end harness ([#10](https://github.com/ayush5harma/claude-code-rust/pull/10)) | Repeatable real-SDK terminal scenarios with recorded pass, failure, gap, and skip outcomes. Reports distinguish verified behavior from SDK gaps and skipped scenarios; the original baseline remains documented for comparison. |
-| Render corpus and benchmark comparison ([#9](https://github.com/ayush5harma/claude-code-rust/pull/9)) | Representative rendering workloads and repeated baseline/candidate measurements, with noise checks, invalid-result rejection, and temporary-worktree cleanup on interruption. These compare revisions of this application; they are not a benchmark against Anthropic's stock interface. |
-| Launch and session flags ([#11](https://github.com/ayush5harma/claude-code-rust/pull/11)) | `--name`, `--fork-session`, repeatable `--add-dir`, file or inline `--settings` and `--mcp-config`, `--strict-mcp-config`, and replacement/appended system prompts from text or files. Session names and forks apply to the initial session; directory and configuration overrides persist for sessions started within the process. |
-| Skill reload and conversation export ([#13](https://github.com/ayush5harma/claude-code-rust/pull/13)) | `/reload` refreshes available skills and completion without restarting the session. `/export` writes saved conversation history as Markdown and refuses to overwrite an existing file. |
-| Session regression fixes ([#16](https://github.com/ayush5harma/claude-code-rust/pull/16)) | Read symlinked settings without allowing writes through them, preserve active model/mode/effort and process configuration across rewind, and restore SDK session titles while honoring explicit launch names. Resumed command-like text stays verbatim because the SDK does not expose reliable provenance. |
-| Stable CI change comparison ([#17](https://github.com/ayush5harma/claude-code-rust/pull/17)) | Compare changes against the pull request's recorded base commit so parallel merges do not break checks with a missing merge base. |
-| Hook visibility ([#12](https://github.com/ayush5harma/claude-code-rust/pull/12)) | Progress and completion notices, per-hook duration, slow-hook summaries, and measured startup milestones in Status. Hook output is sanitized and redacted before retention. |
-| Native `/diff` viewer ([#15](https://github.com/ayush5harma/claude-code-rust/pull/15)) | Working-tree changes, including untracked files and repositories without a first commit, alongside retained current-session tool diffs. |
-| Session `/agents` panel ([#18](https://github.com/ayush5harma/claude-code-rust/pull/18)) | Public SDK subagent history and current-session task state, with stopping restricted to a matching currently running task. |
-| Retained transcript search ([#19](https://github.com/ayush5harma/claude-code-rust/pull/19)) | `/search [query]` and remappable Ctrl+F search retained user, assistant, and visible tool text, with Unicode-aware matching. Archived history and hidden tool inputs are excluded. |
-| Session tags and deletion ([#21](https://github.com/ayush5harma/claude-code-rust/pull/21)) | SDK-backed picker actions, confirmation before deletion, and protection for the active session. |
-| Resume ergonomics ([#22](https://github.com/ayush5harma/claude-code-rust/pull/22)) | Exact-title resolution with ambiguity reporting, session sizes in bytes, and an explicit compact-first option for large sessions. |
-| Session accents ([#23](https://github.com/ayush5harma/claude-code-rust/pull/23)) | Stable session-ID colors, with `/color` changes applied only after a correlated successful SDK confirmation. |
-| Input ergonomics ([#24](https://github.com/ayush5harma/claude-code-rust/pull/24)) | Backslash-Enter newline, Ctrl+G with VISUAL or EDITOR, Esc Esc rewind, empty Ctrl+D and `/exit`, Ctrl+O retained-transcript detail view, Ctrl+T tasks, remappable shortcuts, and paste-safe input handling. |
-| Composer and footer ([#25](https://github.com/ayush5harma/claude-code-rust/pull/25)) | Configurable `filled` or `rules` composer style; session-accent rules and prompt glyph; dynamic footer with context, session name, available SDK rate information, current-session agent counts, and permissions; the latest confirmed Task or TodoWrite plan; and a user-level configured `statusLine` command. Project and local settings cannot select an executable command; the user command receives documented JSON on stdin after the SDK session connects. Unavailable SDK rate and token fields are omitted rather than estimated. |
+| Upstream sync ([#28](https://github.com/ayush5harma/claude-code-rust/pull/28)) | Upstream main at `a187e1c`, including upstream [#444](https://github.com/srothgan/claude-code-rust/pull/444). |
+| Slash ranking and trust prompt ([#29](https://github.com/ayush5harma/claude-code-rust/pull/29)) | Prefix matches rank before substring matches, and the trust prompt names the directory. |
+| Welcome animation ([#30](https://github.com/ayush5harma/claude-code-rust/pull/30)) | The crab animates while connecting, greets once, then rests. Nothing moves at idle, and `prefersReducedMotion` keeps it still. |
+| `/export` naming ([#31](https://github.com/ayush5harma/claude-code-rust/pull/31)) | Default names `export-<session-id>-<UTC>.md`, with `-2`, `-3` suffixes on collision. |
+| Command-line surface ([#32](https://github.com/ayush5harma/claude-code-rust/pull/32)) | Refuses to start without a terminal (exit 25), checks `--dir` and `--bridge-script` early, scopes session flags to interactive launches, guards subcommand typos and documents exit status. |
 
-### Added in v0.15.2-fork.4
+### v0.15.2-fork.3
 
-| Change | What it adds |
+| Change | What it does |
 | --- | --- |
-| Upstream sync ([#28](https://github.com/ayush5harma/claude-code-rust/pull/28)) | Upstream main at a187e1c, including the merged [#444](https://github.com/srothgan/claude-code-rust/pull/444). |
-| Slash ranking and trust prompt ([#29](https://github.com/ayush5harma/claude-code-rust/pull/29)) | Prefix matches rank before substring matches; the trust prompt names the directory. |
-| Welcome animation ([#30](https://github.com/ayush5harma/claude-code-rust/pull/30)) | Fork-only: the crab scuttles while connecting and waves once, then rests. |
-| `/export` naming ([#31](https://github.com/ayush5harma/claude-code-rust/pull/31)) | `export-<session-id>-<UTC>.md` default names with `-2`, `-3` collision suffixes, matching upstream issue [#465](https://github.com/srothgan/claude-code-rust/issues/465). |
-| Command-line surface ([#32](https://github.com/ayush5harma/claude-code-rust/pull/32)) | No-terminal refusal (exit 25), early `--dir`/`--bridge-script` checks, session flags scoped to interactive launches, consistent logging flags, a typo guard for subcommands, clean completions, documented exit status. |
+| Launch and session flags ([#11](https://github.com/ayush5harma/claude-code-rust/pull/11)) | `--name`, `--fork-session`, repeatable `--add-dir`, file or inline `--settings` and `--mcp-config`, `--strict-mcp-config`, and replacement or appended system prompts from text or files. |
+| Hook visibility ([#12](https://github.com/ayush5harma/claude-code-rust/pull/12)) | Progress and completion notices, per-hook duration, slow-hook summaries and startup milestones in Status. Hook output is sanitized and redacted before it is kept. |
+| `/reload` and `/export` ([#13](https://github.com/ayush5harma/claude-code-rust/pull/13)) | Reload skills without restarting the session; export saved history as Markdown without overwriting a file. |
+| Native `/diff` ([#15](https://github.com/ayush5harma/claude-code-rust/pull/15)) | Working-tree changes, including untracked files and repositories without a first commit, beside the session's tool diffs. |
+| `/agents` panel ([#18](https://github.com/ayush5harma/claude-code-rust/pull/18)) | SDK subagent history and current task state; only a matching running task can be stopped. |
+| Transcript search ([#19](https://github.com/ayush5harma/claude-code-rust/pull/19)) | `/search` and Ctrl+F over kept user, assistant and visible tool text, with Unicode-aware matching. |
+| Session management ([#21](https://github.com/ayush5harma/claude-code-rust/pull/21), [#22](https://github.com/ayush5harma/claude-code-rust/pull/22)) | Tags and confirmed deletion in the picker, exact-title resume with ambiguity reporting, session sizes and a compact-first option for large sessions. |
+| Session accents ([#23](https://github.com/ayush5harma/claude-code-rust/pull/23)) | A stable color per session; `/color` applies only after the SDK confirms it. |
+| Input ergonomics ([#24](https://github.com/ayush5harma/claude-code-rust/pull/24)) | Backslash-Enter newline, Ctrl+G external editor, Esc Esc rewind, Ctrl+D and `/exit`, Ctrl+O transcript detail, Ctrl+T tasks, remappable shortcuts and paste-safe input. |
+| Composer and footer ([#25](https://github.com/ayush5harma/claude-code-rust/pull/25)) | `filled` or `rules` composer, a footer with context, session, rate windows, agents and permissions, the latest plan, and a user-level `statusLine` command. |
+| Session fixes ([#16](https://github.com/ayush5harma/claude-code-rust/pull/16)) | Symlinked settings are read but never written through; model, mode and effort survive rewind; SDK titles are restored while explicit launch names win. |
+| Tooling ([#7](https://github.com/ayush5harma/claude-code-rust/pull/7)-[#10](https://github.com/ayush5harma/claude-code-rust/pull/10), [#17](https://github.com/ayush5harma/claude-code-rust/pull/17)) | Portable bridge test discovery, a local check runner and Nix shell, a live end-to-end harness, a render corpus with revision-to-revision benchmarks, and CI that compares against the pull request's recorded base. |
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the development commands and verification requirements.
+### v0.15.2-fork.2
 
-### Remaining verification
+- **SDK local-command replies.** Replies to `/rename`, `/color`, `/context` and `/usage` appear in the transcript even when the SDK does not stream them, and streamed replies are not printed twice (upstream [#444](https://github.com/srothgan/claude-code-rust/pull/444)).
+- **Live session names.** Status, the rename dialog and title generation use the SDK's current session title (upstream [#445](https://github.com/srothgan/claude-code-rust/pull/445)).
+- **Fork releases.** GitHub releases carry platform archives, a release bundle and SHA-256 checksums under fork version numbers, without publishing to the upstream npm package.
 
-Fresh live verification remains. The native `/memory` flow opens Memory settings; a stock-style memory-file picker/editor is unavailable because the pinned public host SDK has no picker or editor operation. Remote control startup can be configured, but a native start/stop/share-link flow is unavailable through the pinned public host API. Shell input and Vim keymap parity remain unimplemented. Generic MCP resource attachments are conditional on public SDK support: the pinned resource-reading API supports MCP Apps `ui://` resources, not general resource discovery and reading.
+### Not yet available
 
-## About
-
-Claude Code Rust replaces the stock Claude Code terminal interface with a native Rust binary built on [Ratatui](https://ratatui.rs/). It connects to the same Claude API through a local Agent SDK bridge. Core Claude Code functionality works unchanged, including tool calls, file editing, terminal commands, and permissions.
-
-<p align="center">
-  <img src="assets/demo.gif" alt="Claude Code Rust explaining the terminal problems its native Rust interface solves" width="900">
-</p>
-
-## Prerequisite
-
-Install the Claude Code CLI and keep `claude` on `PATH` for some functionality not yet supported by the Anthropic SDK. See the [dependency and feature overview](https://srothgan.github.io/claude-code-rust/about.html#claude-cli-dependencies) for details.
+A stock-style memory-file picker, a native remote-control start/stop/share flow, shell input mode, Vim keymaps and general MCP resource attachments wait on operations the public Agent SDK does not expose yet. `/memory` opens the Memory settings instead.
 
 ## Install
 
+Install the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) first and keep `claude` on `PATH`; some features still go through it ([details](https://srothgan.github.io/claude-code-rust/about.html#claude-cli-dependencies)).
+
 ### This fork
 
-Download the archive for your operating system and architecture from [this fork's releases](https://github.com/ayush5harma/claude-code-rust/releases/latest), and verify it against the release's `SHA256SUMS`. Keep the complete extracted layout, including the bundled bridge and runtime. Fork releases are distributed through GitHub; `npm install -g claude-code-rust` installs the upstream package.
+Download the archive for your platform from [this fork's latest release](https://github.com/ayush5harma/claude-code-rust/releases/latest) and check it against the release's `SHA256SUMS`. Keep the extracted layout whole: it includes the bridge and its runtime.
 
-To build unreleased changes, clone `https://github.com/ayush5harma/claude-code-rust.git` and follow [CONTRIBUTING.md](CONTRIBUTING.md). Check the branch and release before assuming a feature listed above is installed.
+To run unreleased changes, clone `https://github.com/ayush5harma/claude-code-rust.git` and follow [CONTRIBUTING.md](CONTRIBUTING.md).
 
-### Upstream install script (v0.14.0+)
+### Upstream
 
-The following upstream installation methods install Simon Rothgang's distribution, not this fork.
-
-**macOS/Linux:**
+These install Simon Rothgang's distribution, not this fork:
 
 ```bash
+# macOS and Linux
 curl -fsSL https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.sh | sh
 ```
 
-**Windows PowerShell:**
-
 ```powershell
+# Windows PowerShell
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.ps1' | iex"
 ```
 
-<details>
-<summary><b>Already have Node.js 24+? Use npm instead</b></summary>
-
 ```bash
+# Node.js 24+
 npm install -g claude-code-rust
 ```
 
-<sub>The package ships prebuilt platform binaries and its own Bun runtime for the Agent SDK bridge, so no Rust toolchain, Bun install, or `postinstall` script is needed. Node.js 24+ is still required to run the `claude-rs` launcher.</sub>
-
-</details>
-
-See the [installation guide](https://srothgan.github.io/claude-code-rust/installation.html) for release pinning, custom install locations, switching install methods, uninstall, and troubleshooting.
+The [installation guide](https://srothgan.github.io/claude-code-rust/installation.html) covers pinning, install locations, switching methods, uninstalling and troubleshooting.
 
 ## Usage
 
@@ -116,55 +140,42 @@ claude-rs --model opus --permission-mode plan "Review this project"
 claude-rs --continue
 ```
 
-See [Usage](https://srothgan.github.io/claude-code-rust/usage.html) for startup flags, shell completion setup, and man pages.
+[Usage](https://srothgan.github.io/claude-code-rust/usage.html) lists the startup flags, shell completions and man pages.
 
-The upstream manual is available at [srothgan.github.io/claude-code-rust](https://srothgan.github.io/claude-code-rust/).
+> **Agent SDK billing is unchanged.** Anthropic has paused the previously announced Agent SDK credit change. Agent SDK usage, including `claude -p` and third-party apps like this one, still draws from your normal Claude subscription limits. See [Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan).
 
-> **Note — Agent SDK billing unchanged.** Anthropic has paused the previously announced Agent SDK credit change. For now nothing changes: Claude Agent SDK usage (including `claude -p` and third-party apps like this one) still draws from your normal Claude subscription limits. See [Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan).
+## Appearance
 
-## Why
+The palette has a dark and a light variant. At startup, claude-rs picks one in this order:
 
-The stock Claude Code TUI runs on Node.js with React Ink, which renders by redrawing full frames over raw ANSI escape codes. Users widely report the following problems with it:
+1. `CLAUDE_RS_APPEARANCE=light` or `dark`, if set.
+2. The background color the terminal reports (an OSC 11 query, answered by Ghostty, iTerm2, kitty, WezTerm, Terminal.app and most others).
+3. Claude Code's own `theme` setting, if the terminal does not answer and the theme is a light or dark one (`light`, `dark-daltonized` and so on).
+4. Dark.
 
-- **Flickering**: The whole view is redrawn on every status update, causing constant flicker (bad enough to crash editors' integrated terminals during long sessions)
-- **CPU**: Sustained high CPU even when idle, and runaway loops that spawn multiple background processes
-- **Memory**: 200-400MB baseline (and climbing with conversation length) vs ~20-50MB for a native binary
-- **Resize**: Window resizing leaves duplicated frames in scrollback, loses lines when shrinking, and can garble the display
-- **Input latency**: Keystrokes echo with visible delay as context fills up, and noticeably worse on Windows
-- **Scrollback**: Hijacks the terminal's native scrollback, erasing history you can no longer scroll back to
-- **Paste**: Large pastes can flood stdout and freeze the terminal
-
-Claude Code Rust addresses these with a native terminal UI that uses diffed, direct terminal control via Crossterm and Ratatui, with no full-frame redraws and no React Ink rendering loop. There is no benchmark against the stock interface yet, so the improvements are based on daily use, not on measurements.
+The colors are Apple's system colors from the [Human Interface Guidelines](https://developer.apple.com/design/human-interface-guidelines/color). Where the default variant fell short of the contrast floor, the increased-contrast variant is used. Body text uses the terminal's own foreground color. States carry a label or an icon as well as a color, so nothing depends on telling hues apart. Set `prefersReducedMotion` in Claude Code to keep the crab still.
 
 ## Documentation
 
-The manual covers installation with scripts and npm, plus help, slash commands, keyboard shortcuts, settings, diagnostics, troubleshooting, building from source, architecture, and the changelog:
+The [upstream manual](https://srothgan.github.io/claude-code-rust/) covers [installation](https://srothgan.github.io/claude-code-rust/installation.html), [usage](https://srothgan.github.io/claude-code-rust/usage.html), [help](https://srothgan.github.io/claude-code-rust/help.html), [slash commands](https://srothgan.github.io/claude-code-rust/commands.html), [settings](https://srothgan.github.io/claude-code-rust/settings.html), [troubleshooting](https://srothgan.github.io/claude-code-rust/troubleshooting.html) and [development](https://srothgan.github.io/claude-code-rust/development.html). Fork additions are documented here and in the [changelog](CHANGELOG.md).
 
-- [Installation](https://srothgan.github.io/claude-code-rust/installation.html)
-- [Usage](https://srothgan.github.io/claude-code-rust/usage.html)
-- [Help](https://srothgan.github.io/claude-code-rust/help.html)
-- [Slash commands](https://srothgan.github.io/claude-code-rust/commands.html)
-- [Settings](https://srothgan.github.io/claude-code-rust/settings.html)
-- [Troubleshooting](https://srothgan.github.io/claude-code-rust/troubleshooting.html)
-- [Development](https://srothgan.github.io/claude-code-rust/development.html)
+For the design history, including the move from fullscreen to inline rendering in 0.12.0, see Simon Rothgang's [I rebuilt Claude Code's terminal UI in Rust. Then I deleted 12,000 lines of it.](https://medium.com/@simonrothgang/i-rebuilt-claude-codes-terminal-ui-in-rust-then-i-deleted-12-000-lines-of-it-e8593a200452)
 
-For the design history, including the move from fullscreen to inline rendering in 0.12.0, see [I rebuilt Claude Code's terminal UI in Rust. Then I deleted 12,000 lines of it.](https://medium.com/@simonrothgang/i-rebuilt-claude-codes-terminal-ui-in-rust-then-i-deleted-12-000-lines-of-it-e8593a200452)
+## Development
 
-## Status
+[CONTRIBUTING.md](CONTRIBUTING.md) has the build, test and verification commands. To refresh the screenshots above after a UI change, run `recordings/showcase.sh`. It needs [VHS](https://github.com/charmbracelet/vhs) and Node.js, and it drives the app with the test suite's fake bridge, so no login is needed.
 
-This project is pre-1.0 and under active development. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get involved.
+## Status and limitations
 
-Development follows new Agent SDK releases and problems found in daily use. The weekly Dependency Monitor tracks SDK updates. There is no fixed feature roadmap or date for 1.0.
+The project is pre-1.0 and under active development. It follows new Agent SDK releases and problems found in daily use, and has no fixed roadmap or 1.0 date.
 
-## Limitations
-
-Startup is still constrained by the upstream Claude Agent SDK runtime that this TUI wraps. The Rust interface itself is fast, but end-to-end readiness can still take noticeable time before a session is fully available. Improving that remains an active area of work.
+Startup is bounded by the Agent SDK runtime that the interface wraps. The Rust interface is fast, but a session can still take noticeable time to become available.
 
 ## License
 
-This project is licensed under the [Apache License 2.0](LICENSE). Apache-2.0 was chosen to keep usage and redistribution straightforward for individual users, downstream packagers, and commercial adopters.
+[Apache License 2.0](LICENSE), as upstream.
 
-## Disclaimer and Legal Notice
+## Disclaimer and legal notice
 
 This project is not affiliated with, endorsed by, or supported by Anthropic.
 

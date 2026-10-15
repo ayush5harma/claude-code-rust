@@ -13,31 +13,32 @@ pub(super) const fn selection_marker(selected: bool) -> &'static str {
 }
 
 pub(in crate::ui) fn selection_style(selected: bool) -> Style {
-    if selected { Style::default().bg(theme::USER_MSG_BG) } else { Style::default() }
+    if selected { Style::default().bg(theme::fill()) } else { Style::default() }
 }
 
 pub(in crate::ui) fn title_style() -> Style {
-    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+    Style::default().fg(theme::label()).add_modifier(Modifier::BOLD)
 }
 
 pub(super) fn accent_style() -> Style {
-    Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
+    Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD)
 }
 
 pub(super) fn cursor_style() -> Style {
-    title_style().fg(Color::Black).bg(theme::RUST_ORANGE)
+    theme::on_accent_style()
 }
 
 pub(super) fn input_style() -> Style {
-    selection_style(true).fg(Color::White)
+    selection_style(true).fg(theme::label())
 }
 
+/// Key hints are supporting text: the tint stays on what is focused or selected.
 pub(in crate::ui) fn help_style() -> Style {
-    Style::default().fg(theme::RUST_ORANGE)
+    Style::default().fg(theme::tertiary())
 }
 
 pub(super) fn marker_span(selected: bool) -> Span<'static> {
-    Span::styled(selection_marker(selected), help_style())
+    Span::styled(selection_marker(selected), Style::default().fg(theme::accent()))
 }
 
 pub(super) fn overlay_line_style(selected: bool, focused: bool) -> Style {
@@ -46,7 +47,7 @@ pub(super) fn overlay_line_style(selected: bool, focused: bool) -> Style {
     } else if selected {
         title_style()
     } else {
-        Style::default().fg(Color::White)
+        Style::default().fg(theme::label())
     }
 }
 
@@ -60,7 +61,7 @@ pub(in crate::ui) fn selection_line(mut line: Line<'static>, selected: bool) -> 
 pub(in crate::ui) fn position_counter(selected: usize, total: usize) -> Span<'static> {
     Span::styled(
         format!("{}/{}", if total == 0 { 0 } else { selected.min(total - 1) + 1 }, total),
-        Style::default().fg(theme::DIM),
+        Style::default().fg(theme::tertiary()),
     )
 }
 
@@ -110,7 +111,7 @@ pub(in crate::ui) fn render_message(frame: &mut Frame, area: Rect, title: &str, 
         Paragraph::new(vec![
             Line::styled(title, title_style()),
             Line::default(),
-            Line::styled(body, Style::default().fg(theme::DIM)),
+            Line::styled(body, Style::default().fg(theme::tertiary())),
         ])
         .wrap(Wrap { trim: false }),
         area,
@@ -123,13 +124,13 @@ pub(super) fn section_heading(title: &str) -> Line<'static> {
 
 pub(super) fn detail_kv(key: &str, value: &str, value_color: Color) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("{key}: "), Style::default().fg(theme::DIM)),
+        Span::styled(format!("{key}: "), Style::default().fg(theme::tertiary())),
         Span::styled(value.to_owned(), Style::default().fg(value_color)),
     ])
 }
 
-pub(in crate::ui) fn badge_span(label: &str, fg: Color, bg: Color) -> Span<'static> {
-    Span::styled(format!(" {label} "), Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD))
+pub(in crate::ui) fn badge_span(label: &str, tone: theme::Tone) -> Span<'static> {
+    Span::styled(format!(" {label} "), theme::badge_style(tone))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -160,14 +161,14 @@ pub(super) fn tab_line(
     let mut spans = Vec::new();
     for index in start..labels.len() {
         if index > start {
-            spans.push(Span::styled(separator, Style::default().fg(theme::DIM)));
+            spans.push(Span::styled(separator, Style::default().fg(theme::tertiary())));
         }
         let style = if index == active {
             if secondary { cursor_style() } else { accent_style() }
         } else if secondary {
             title_style()
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(theme::label())
         };
         spans.push(Span::styled(label(index), style));
     }

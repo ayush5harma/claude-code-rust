@@ -3,15 +3,15 @@ use super::common;
 use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use unicode_width::UnicodeWidthChar;
 
 pub(super) fn text_input_line(draft: &str, cursor: usize, placeholder: &str) -> Line<'static> {
     let cursor_style = common::cursor_style();
-    let text_style = Style::default().fg(Color::White);
-    let placeholder_style = Style::default().fg(theme::DIM);
+    let text_style = Style::default().fg(theme::label());
+    let placeholder_style = Style::default().fg(theme::tertiary());
 
     if draft.is_empty() {
         return Line::from(vec![
@@ -51,7 +51,11 @@ pub(super) fn search_field_line(
         || {
             Line::styled(
                 if query.is_empty() { placeholder } else { query }.to_owned(),
-                Style::default().fg(if query.is_empty() { theme::DIM } else { Color::White }),
+                Style::default().fg(if query.is_empty() {
+                    theme::tertiary()
+                } else {
+                    theme::label()
+                }),
             )
         },
         |cursor| text_input_line(query, cursor, placeholder),
@@ -87,9 +91,9 @@ pub(super) fn render_search_field(
                     .borders(Borders::ALL)
                     .title(if focused { " Search " } else { " Search (Up to focus) " })
                     .border_style(Style::default().fg(if focused {
-                        theme::RUST_ORANGE
+                        theme::accent()
                     } else {
-                        theme::DIM
+                        theme::tertiary()
                     })),
             )
             .wrap(Wrap { trim: false })
@@ -161,8 +165,8 @@ fn text_input_line_for_width(
     }
 
     let cursor_style = common::cursor_style();
-    let text_style = Style::default().fg(Color::White);
-    let overflow_style = Style::default().fg(theme::DIM);
+    let text_style = Style::default().fg(theme::label());
+    let overflow_style = Style::default().fg(theme::tertiary());
     let chars = draft.chars().collect::<Vec<_>>();
     let cursor = cursor.min(chars.len());
     let width = usize::from(width);
@@ -239,7 +243,7 @@ fn line_slice_width(chars: &[char]) -> usize {
 }
 
 pub(super) fn add_marketplace_example_lines() -> Vec<Line<'static>> {
-    let dim = Style::default().fg(theme::DIM);
+    let dim = Style::default().fg(theme::tertiary());
     vec![
         Line::from(Span::styled("Examples:", dim.add_modifier(Modifier::BOLD))),
         Line::from(Span::styled("  - owner/repo (GitHub)", dim)),

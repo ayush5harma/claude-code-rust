@@ -97,6 +97,11 @@ fn run() -> anyhow::Result<i32> {
         );
     }
 
+    // Before the runtime and the TUI start reading the terminal: the background
+    // query needs the reply to itself, and the palette must be set before the
+    // first draw.
+    claude_code_rust::appearance::init();
+
     let rt = tokio::runtime::Runtime::new()?;
     let local_set = tokio::task::LocalSet::new();
 

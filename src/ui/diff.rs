@@ -4,7 +4,7 @@
 use crate::agent::model;
 use crate::ui::theme;
 use crate::ui::wrap::{StyledChunk, display_width, wrap_styled_chunks};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use similar::TextDiff;
 
@@ -16,7 +16,7 @@ pub fn render_diff(diff: &model::Diff, width: u16) -> Vec<Line<'static>> {
     if let Some(repository) = diff.repository.as_deref() {
         lines.push(Line::from(Span::styled(
             format!("[{repository}]"),
-            Style::default().fg(theme::DIM),
+            Style::default().fg(theme::tertiary()),
         )));
     }
 
@@ -45,17 +45,17 @@ pub fn render_diff(diff: &model::Diff, width: u16) -> Vec<Line<'static>> {
             let (marker, style, line_number) = match change.tag() {
                 similar::ChangeTag::Delete => (
                     "-",
-                    Style::default().fg(Color::Red),
+                    Style::default().fg(theme::danger()),
                     change.old_index().map(|index| index + 1),
                 ),
                 similar::ChangeTag::Insert => (
                     "+",
-                    Style::default().fg(Color::Green),
+                    Style::default().fg(theme::success()),
                     change.new_index().map(|index| index + 1),
                 ),
                 similar::ChangeTag::Equal => (
                     " ",
-                    Style::default().fg(theme::DIM),
+                    Style::default().fg(theme::tertiary()),
                     change.new_index().map(|index| index + 1),
                 ),
             };
@@ -128,21 +128,21 @@ fn render_raw_diff_line(line: &str) -> Line<'static> {
         || line.starts_with("rename from ")
         || line.starts_with("rename to ")
     {
-        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        Style::default().fg(theme::label()).add_modifier(Modifier::BOLD)
     } else if line.starts_with("@@") {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::default().fg(theme::cyan()).add_modifier(Modifier::BOLD)
     } else if line.starts_with("+++ ") {
-        Style::default().fg(Color::Green)
+        Style::default().fg(theme::success())
     } else if line.starts_with("--- ") {
-        Style::default().fg(Color::Red)
+        Style::default().fg(theme::danger())
     } else if line.starts_with('+') {
-        Style::default().fg(Color::Green)
+        Style::default().fg(theme::success())
     } else if line.starts_with('-') {
-        Style::default().fg(Color::Red)
+        Style::default().fg(theme::danger())
     } else if line.starts_with('\\') {
-        Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC)
+        Style::default().fg(theme::tertiary()).add_modifier(Modifier::ITALIC)
     } else {
-        Style::default().fg(theme::DIM)
+        Style::default().fg(theme::tertiary())
     };
 
     Line::from(Span::styled(line.to_owned(), style))
@@ -153,9 +153,9 @@ fn render_diff_count_header(added: usize, removed: usize) -> Option<Line<'static
         return None;
     }
 
-    let punctuation_style = Style::default().fg(theme::DIM);
-    let added_style = Style::default().fg(Color::Green);
-    let removed_style = Style::default().fg(Color::Red);
+    let punctuation_style = Style::default().fg(theme::tertiary());
+    let added_style = Style::default().fg(theme::success());
+    let removed_style = Style::default().fg(theme::danger());
     let mut spans = vec![Span::styled("(".to_owned(), punctuation_style)];
     if added > 0 {
         spans.push(Span::styled(format!("+{added}"), added_style));
@@ -179,7 +179,7 @@ fn render_wrapped_diff_row(
     style: Style,
     content_width: usize,
 ) -> Vec<Line<'static>> {
-    let number_style = Style::default().fg(theme::DIM);
+    let number_style = Style::default().fg(theme::tertiary());
     let (leading_indent, content) = split_leading_whitespace(value);
     let leading_indent_width = display_width(leading_indent);
     let content_lines = if content.is_empty() {
@@ -343,10 +343,10 @@ mod tests {
     fn render_raw_unified_diff_styles_hunks_and_additions() {
         let raw = "--- a/file.rs\n+++ b/file.rs\n@@ -1 +1 @@\n-old\n+new\n";
         let lines = render_raw_unified_diff(raw);
-        assert_eq!(lines[0].spans[0].style.fg, Some(Color::Red));
-        assert_eq!(lines[1].spans[0].style.fg, Some(Color::Green));
-        assert_eq!(lines[2].spans[0].style.fg, Some(Color::Cyan));
-        assert_eq!(lines[4].spans[0].style.fg, Some(Color::Green));
+        assert_eq!(lines[0].spans[0].style.fg, Some(theme::danger()));
+        assert_eq!(lines[1].spans[0].style.fg, Some(theme::success()));
+        assert_eq!(lines[2].spans[0].style.fg, Some(theme::cyan()));
+        assert_eq!(lines[4].spans[0].style.fg, Some(theme::success()));
     }
 
     #[test]
@@ -364,7 +364,7 @@ mod tests {
             .collect();
 
         assert_eq!(rendered[0], "(+1)");
-        assert_eq!(lines[0].spans[1].style.fg, Some(Color::Green));
+        assert_eq!(lines[0].spans[1].style.fg, Some(theme::success()));
         assert!(rendered.iter().any(|line| line.contains("1  +  This is a long")));
         assert!(rendered.iter().any(|line| line.starts_with("      ")));
         assert!(!rendered.iter().any(|line| line == "tmp.md"));
@@ -444,18 +444,18 @@ mod tests {
         let added = render_diff_count_header(4, 0).unwrap();
         let added_text: String = added.spans.iter().map(|span| span.content.as_ref()).collect();
         assert_eq!(added_text, "(+4)");
-        assert_eq!(added.spans[1].style.fg, Some(Color::Green));
+        assert_eq!(added.spans[1].style.fg, Some(theme::success()));
 
         let removed = render_diff_count_header(0, 3).unwrap();
         let removed_text: String = removed.spans.iter().map(|span| span.content.as_ref()).collect();
         assert_eq!(removed_text, "(-3)");
-        assert_eq!(removed.spans[1].style.fg, Some(Color::Red));
+        assert_eq!(removed.spans[1].style.fg, Some(theme::danger()));
 
         let mixed = render_diff_count_header(4, 3).unwrap();
         let mixed_text: String = mixed.spans.iter().map(|span| span.content.as_ref()).collect();
         assert_eq!(mixed_text, "(+4, -3)");
-        assert_eq!(mixed.spans[1].style.fg, Some(Color::Green));
-        assert_eq!(mixed.spans[3].style.fg, Some(Color::Red));
+        assert_eq!(mixed.spans[1].style.fg, Some(theme::success()));
+        assert_eq!(mixed.spans[3].style.fg, Some(theme::danger()));
 
         assert!(render_diff_count_header(0, 0).is_none());
     }

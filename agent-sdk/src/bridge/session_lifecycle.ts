@@ -209,6 +209,8 @@ export type SessionState = {
   taskOrder: string[];
   taskToolUseIds: Map<string, string>;
   taskIdsByToolUseId: Map<string, string>;
+  /** Resolved model of the latest child assistant message per parent tool use, kept until the task is unlinked. */
+  childModelsByToolUseId: Map<string, string>;
   pendingPermissions: Map<string, PendingPermission>;
   pendingQuestions: Map<string, PendingQuestion>;
   pendingUserDialogs: Map<string, PendingUserDialog>;
@@ -736,6 +738,7 @@ export async function createSession(params: {
     taskOrder: [],
     taskToolUseIds: new Map<string, string>(),
     taskIdsByToolUseId: new Map<string, string>(),
+    childModelsByToolUseId: new Map<string, string>(),
     pendingPermissions: new Map<string, PendingPermission>(),
     pendingQuestions: new Map<string, PendingQuestion>(),
     pendingUserDialogs: new Map<string, PendingUserDialog>(),

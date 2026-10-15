@@ -120,7 +120,7 @@ test("resume notifications preserve terminal outcomes, linked tools and optional
       assert.equal(results[0].tool_call_update.fields.task_metadata?.output_file, outputFile);
       assert.equal(results[0].tool_call_update.fields.task_metadata?.terminal_status, status);
       const tasks = updates.filter(update => update.type === "task_state_update").flatMap(update => update.tasks);
-      assert.deepEqual(tasks.map(task => [task.task_id, task.status, task.source_tool_call_id, task.description, task.metadata]), [[`task-${status}`, "completed", "monitor", summary, { output_file: outputFile, summary, terminal_status: status }]]);
+      assert.deepEqual(tasks.map(task => [task.task_id, task.status, task.source_tool_call_id, task.description, task.metadata]), [[`task-${status}`, "completed", "monitor", summary, { sdk_lifecycle_task: true, output_file: outputFile, summary, terminal_status: status }]]);
       assert.ok(!updates.some(update => update.type === "user_message_chunk"));
     }
   }

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::app::App;
+use crate::ui::theme;
 use ratatui::{
     Frame,
     layout::Margin,
-    style::{Color, Modifier, Style},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
@@ -61,11 +61,7 @@ pub(crate) fn render(frame: &mut Frame, app: &App) {
     }
     let mut state = ListState::default().with_selected(Some(picker.selected));
     frame.render_stateful_widget(
-        List::new(items)
-            .highlight_style(
-                Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol("> "),
+        List::new(items).highlight_style(theme::highlight_style()).highlight_symbol("> "),
         inner,
         &mut state,
     );

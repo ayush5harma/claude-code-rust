@@ -251,9 +251,7 @@ mod tests {
                 };
                 assert_eq!(block.text, source);
                 assert!(
-                    lines[1..]
-                        .iter()
-                        .all(|line| line.style.bg == Some(crate::ui::theme::USER_MSG_BG))
+                    lines[1..].iter().all(|line| line.style.bg == Some(crate::ui::theme::fill()))
                 );
             }
         }

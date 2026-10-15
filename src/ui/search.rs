@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::app::App;
+use crate::ui::theme;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Margin},
-    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
@@ -44,10 +44,7 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App) {
             Span::raw(format!("{}: ", row.role)),
             Span::raw(if prefix_start > 0 { "…" } else { "" }),
             Span::raw(prefix),
-            Span::styled(
-                hit,
-                Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(hit, theme::highlight_style()),
             Span::raw(suffix),
             Span::raw(if suffix_end < after.len() { "…" } else { "" }),
         ])
@@ -98,8 +95,8 @@ mod tests {
             .expect("selected result row");
         let text: String = row.iter().map(ratatui::buffer::Cell::symbol).collect();
         let start = text[..text.find("delta").expect("match")].chars().count();
-        assert!(row[start..start + 5].iter().all(|cell| cell.bg == Color::Yellow));
-        assert_ne!(row[start - 1].bg, Color::Yellow);
+        assert!(row[start..start + 5].iter().all(|cell| cell.bg == theme::palette().highlight_bg));
+        assert_ne!(row[start - 1].bg, theme::palette().highlight_bg);
     }
 
     #[test]
@@ -126,8 +123,8 @@ mod tests {
             .expect("selected result row");
         let text: String = row.iter().map(ratatui::buffer::Cell::symbol).collect();
         let start = text[..text.find("Straße").expect("match")].chars().count();
-        assert!(row[start..start + 6].iter().all(|cell| cell.bg == Color::Yellow));
-        assert_ne!(row[start - 1].bg, Color::Yellow);
-        assert_ne!(row[start + 6].bg, Color::Yellow);
+        assert!(row[start..start + 6].iter().all(|cell| cell.bg == theme::palette().highlight_bg));
+        assert_ne!(row[start - 1].bg, theme::palette().highlight_bg);
+        assert_ne!(row[start + 6].bg, theme::palette().highlight_bg);
     }
 }

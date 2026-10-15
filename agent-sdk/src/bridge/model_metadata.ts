@@ -195,7 +195,7 @@ function humanizeModelId(id: string): string {
   return `${familyLabel}${versionLabel}${contextLabel}`;
 }
 
-function shortDisplayNameForModelId(id: string): string {
+export function shortDisplayNameForModelId(id: string): string {
   return humanizeModelId(id);
 }
 

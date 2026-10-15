@@ -100,7 +100,7 @@ mod tests {
         let lines = render_tool_content(&tc);
 
         assert_eq!(rendered_line_texts(&lines), vec!["Path: C:\\repo\\.worktrees\\feature"]);
-        assert_eq!(lines[0].spans[0].style.fg, Some(theme::DIM));
+        assert_eq!(lines[0].spans[0].style.fg, Some(theme::tertiary()));
     }
 
     #[test]
@@ -114,8 +114,8 @@ mod tests {
         let lines = render_tool_content(&tc);
 
         assert_eq!(rendered_line_texts(&lines), vec!["Action: remove", "Discard changes: yes"]);
-        assert_eq!(lines[0].spans[0].style.fg, Some(theme::DIM));
-        assert_eq!(lines[1].spans[0].style.fg, Some(theme::DIM));
+        assert_eq!(lines[0].spans[0].style.fg, Some(theme::tertiary()));
+        assert_eq!(lines[1].spans[0].style.fg, Some(theme::tertiary()));
     }
 
     #[test]
@@ -125,6 +125,6 @@ mod tests {
         let lines = render_tool_content(&tc);
 
         assert_eq!(rendered_line_texts(&lines), vec!["Branch: feature"]);
-        assert_eq!(lines[0].spans[0].style.fg, Some(theme::DIM));
+        assert_eq!(lines[0].spans[0].style.fg, Some(theme::tertiary()));
     }
 }

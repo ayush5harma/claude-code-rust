@@ -149,6 +149,8 @@ pub fn create_app(cli: &Cli, session_config: crate::agent::wire::SessionConfig) 
         spinner_frame: 0,
         spinner_last_advance_at: None,
         tool_call_scopes: HashMap::new(),
+        recent_child_tool_ids: HashMap::new(),
+        agent_shelf_last_redraw: None,
         pending_interaction_ids: Vec::new(),
         focus: FocusManager::default(),
         keymap: super::keymap::ResolvedKeymap::defaults(),

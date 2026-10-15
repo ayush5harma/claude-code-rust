@@ -46,7 +46,7 @@ pub(super) fn render_overlay_shell(
         Block::default()
             .borders(Borders::ALL)
             .title(chrome.title)
-            .border_style(Style::default().fg(theme::RUST_ORANGE)),
+            .border_style(Style::default().fg(theme::accent())),
         overlay_area,
     );
 
@@ -66,7 +66,10 @@ pub(super) fn render_overlay_shell(
 
     if let Some(subtitle) = chrome.subtitle {
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(subtitle, Style::default().fg(theme::DIM)))),
+            Paragraph::new(Line::from(Span::styled(
+                subtitle,
+                Style::default().fg(theme::tertiary()),
+            ))),
             sections[0],
         );
     }
@@ -95,7 +98,7 @@ pub(super) fn render_overlay_separator(frame: &mut Frame, area: Rect) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "-".repeat(width),
-            Style::default().fg(theme::DIM),
+            Style::default().fg(theme::tertiary()),
         ))),
         area,
     );
@@ -103,8 +106,8 @@ pub(super) fn render_overlay_separator(frame: &mut Frame, area: Rect) {
 
 fn overlay_message_style(kind: OverlayMessageKind) -> Style {
     match kind {
-        OverlayMessageKind::Info => Style::default().fg(theme::DIM),
-        OverlayMessageKind::Error => Style::default().fg(theme::STATUS_ERROR),
+        OverlayMessageKind::Info => Style::default().fg(theme::tertiary()),
+        OverlayMessageKind::Error => Style::default().fg(theme::danger()),
     }
 }
 

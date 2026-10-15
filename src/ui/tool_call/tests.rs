@@ -68,7 +68,7 @@ fn status_icon_pending() {
     let (icon, color) =
         status_icon(model::ToolCallStatus::Pending, crate::ui::SpinnerState::Animated(0));
     assert!(!icon.is_empty());
-    assert_eq!(color, theme::RUST_ORANGE);
+    assert_eq!(color, theme::accent());
 }
 
 #[test]
@@ -76,7 +76,7 @@ fn status_icon_in_progress() {
     let (icon, color) =
         status_icon(model::ToolCallStatus::InProgress, crate::ui::SpinnerState::Animated(3));
     assert!(!icon.is_empty());
-    assert_eq!(color, theme::RUST_ORANGE);
+    assert_eq!(color, theme::accent());
 }
 
 #[test]
@@ -102,7 +102,7 @@ fn status_icon_completed() {
     let (icon, color) =
         status_icon(model::ToolCallStatus::Completed, crate::ui::SpinnerState::Animated(0));
     assert_eq!(icon, theme::ICON_COMPLETED);
-    assert_eq!(color, theme::RUST_ORANGE);
+    assert_eq!(color, theme::accent());
 }
 
 #[test]
@@ -110,7 +110,7 @@ fn status_icon_failed() {
     let (icon, color) =
         status_icon(model::ToolCallStatus::Failed, crate::ui::SpinnerState::Animated(0));
     assert_eq!(icon, theme::ICON_FAILED);
-    assert_eq!(color, theme::STATUS_ERROR);
+    assert_eq!(color, theme::danger());
 }
 
 #[test]
@@ -118,7 +118,7 @@ fn status_icon_killed() {
     let (icon, color) =
         status_icon(model::ToolCallStatus::Killed, crate::ui::SpinnerState::Animated(0));
     assert_eq!(icon, theme::ICON_FAILED);
-    assert_eq!(color, theme::STATUS_ERROR);
+    assert_eq!(color, theme::danger());
 }
 
 #[test]
@@ -882,19 +882,19 @@ fn read_image_body_distinguishes_status_from_filename() {
         vec!["  \u{2514}\u{2500} Viewed image screen.png"]
     );
     assert_eq!(body.len(), 1);
-    assert!(body[0].spans.len() >= 4);
+    // The file name takes the terminal's own label color, so it may share a
+    // span with the space before it; find each part by its text.
+    let span_with =
+        |text: &str| body[0].spans.iter().find(|span| span.content.contains(text)).expect(text);
 
-    let status = &body[0].spans[1];
+    let status = span_with("Viewed image");
     assert_eq!(status.content.as_ref(), "Viewed image");
-    assert_eq!(status.style.fg, Some(theme::DIM));
+    assert_eq!(status.style.fg, Some(theme::tertiary()));
     assert!(status.style.add_modifier.contains(Modifier::ITALIC));
 
-    let separator = &body[0].spans[2];
-    assert_eq!(separator.content.as_ref(), " ");
-
-    let file_name = &body[0].spans[3];
-    assert_eq!(file_name.content.as_ref(), "screen.png");
-    assert_eq!(file_name.style.fg, Some(Color::White));
+    let file_name = span_with("screen.png");
+    assert_eq!(file_name.style.fg, Some(theme::label()));
+    assert!(!file_name.style.add_modifier.contains(Modifier::ITALIC));
     assert!(!file_name.style.add_modifier.contains(Modifier::BOLD));
 }
 
@@ -935,7 +935,7 @@ fn read_file_text_renders_one_row_per_source_line_behind_a_dim_gutter() {
     // The right-aligned number and its separator are one dim cell run after the tree prefix.
     for (row, gutter) in body.iter().zip([" 9  ", "10  ", "11  ", "12  "]) {
         assert_eq!(row.spans[1].content.as_ref(), gutter);
-        assert_eq!(row.spans[1].style.fg, Some(theme::DIM));
+        assert_eq!(row.spans[1].style.fg, Some(theme::tertiary()));
     }
 }
 
@@ -2053,12 +2053,15 @@ fn bash_output_keeps_the_sgr_colours_the_program_asked_for() {
     assert_eq!(
         styled_cells(&execute::render_execute_content(&tc)),
         vec![
-            vec![cell("RED", Color::Red, None, none), cell(" plain", theme::DIM, None, none)],
+            vec![
+                cell("RED", Color::Red, None, none),
+                cell(" plain", theme::tertiary(), None, none)
+            ],
             vec![
                 cell("BOLD_GREEN", Color::Green, None, Modifier::BOLD),
-                cell(" ", theme::DIM, None, none),
+                cell(" ", theme::tertiary(), None, none),
                 cell("ORANGE", Color::Indexed(208), None, none),
-                cell(" ", theme::DIM, None, none),
+                cell(" ", theme::tertiary(), None, none),
                 cell(
                     "TRUE",
                     Color::Rgb(0, 200, 255),
@@ -2066,7 +2069,7 @@ fn bash_output_keeps_the_sgr_colours_the_program_asked_for() {
                     Modifier::UNDERLINED
                 ),
             ],
-            vec![cell("plain again", theme::DIM, None, none)],
+            vec![cell("plain again", theme::tertiary(), None, none)],
         ]
     );
 }
@@ -2085,9 +2088,9 @@ fn bash_output_never_passes_other_control_sequences_through() {
     assert_eq!(
         styled_cells(&lines),
         vec![vec![
-            cell("LINK ", theme::DIM, None, Modifier::empty()),
+            cell("LINK ", theme::tertiary(), None, Modifier::empty()),
             cell("GREEN", Color::Green, None, Modifier::empty()),
-            cell(" end", theme::DIM, None, Modifier::empty()),
+            cell(" end", theme::tertiary(), None, Modifier::empty()),
         ]]
     );
     for span in lines.iter().flat_map(|line| &line.spans) {
@@ -2107,7 +2110,7 @@ fn bash_output_drops_unsupported_sgr_instead_of_printing_it() {
 
     assert_eq!(
         styled_cells(&execute::render_execute_content(&tc)),
-        vec![vec![cell("A B", theme::DIM, None, none)]]
+        vec![vec![cell("A B", theme::tertiary(), None, none)]]
     );
 }
 
@@ -2116,8 +2119,8 @@ fn uncoloured_diff_output_still_gets_diff_colours() {
     let tc = bash_call_with_output("--- a/f\n+++ b/f\n@@ -1 +1 @@\n-old\n+new");
     let lines = execute::render_execute_content(&tc);
 
-    assert_eq!(lines[3].spans[0].style.fg, Some(Color::Red));
-    assert_eq!(lines[4].spans[0].style.fg, Some(Color::Green));
+    assert_eq!(lines[3].spans[0].style.fg, Some(theme::danger()));
+    assert_eq!(lines[4].spans[0].style.fg, Some(theme::success()));
 }
 
 #[test]

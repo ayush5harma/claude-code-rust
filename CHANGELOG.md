@@ -4,6 +4,34 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.15.2-fork.6] - 2026-10-15
+
+### Features
+
+- One semantic palette after Apple's Human Interface Guidelines replaces named ANSI colors, which terminal themes remap. Every text color reaches 4.5:1 contrast against the terminal background and the app's own fills, and tests enforce it.
+- The palette follows the terminal's light or dark appearance. `CLAUDE_RS_APPEARANCE=light|dark` overrides it; otherwise the background the terminal reports decides, then Claude Code's own `light`/`dark` theme.
+- MCP status badges are tinted capsules in Apple's meanings (green connected, yellow needs auth, blue pending, gray disabled, red failed). Zero counts stay neutral, and scope and transport are quiet text.
+- The welcome crab is redrawn as block-element pixel art. It looks around and scuttles while connecting, and snaps its claws once when it connects.
+- Code blocks and Read output use the light syntax themes in a light terminal.
+
+### Dependencies
+
+- Agent SDK 0.3.300, Rust toolchain 1.98, and refreshed Cargo and npm lockfiles.
+
+## [0.15.2-fork.5] - 2026-10-15
+
+### Features
+
+- Responsive footer groups session identity, location, context and rate windows without repeating default states.
+- A bounded agent shelf shows each running agent's model, current activity, usage and elapsed time.
+- Ctrl+T groups plan steps, agents and other tasks; Enter opens the selected agent's inspector with model choice, recent tools, prompt and saved messages.
+
+### Fixes
+
+- Preserve resolved child models and usage across out-of-order background inventory and completion events.
+- Feed status-line commands the resolved human model name instead of a catalog option label.
+- Keep agent selection and message content associated while live inventory changes.
+
 ## [0.15.2-fork.4] - 2026-10-14
 
 ### Features

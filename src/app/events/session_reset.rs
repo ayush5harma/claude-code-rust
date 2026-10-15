@@ -78,6 +78,8 @@ pub(super) fn reset_for_conversation(
     app.clear_tool_scope_tracking();
     app.clear_tool_call_index();
     app.sdk_inventory.tasks.clear();
+    app.sdk_inventory.task_observations.clear();
+    app.sdk_inventory.agent_shelf_wave_started_at = None;
     app.footer.clear();
     app.focus = super::super::FocusManager::default();
     clear_cached_active_session_title(app);
@@ -177,6 +179,8 @@ fn reset_interaction_state_for_new_session(app: &mut App) {
     app.clear_tool_scope_tracking();
     app.clear_tool_call_index();
     app.sdk_inventory.tasks.clear();
+    app.sdk_inventory.task_observations.clear();
+    app.sdk_inventory.agent_shelf_wave_started_at = None;
     app.footer.clear();
     app.focus = super::super::FocusManager::default();
     app.sdk_inventory.available_commands.clear();

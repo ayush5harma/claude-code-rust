@@ -194,7 +194,7 @@ fn settings_metadata_distinguishes_collection_contributions_and_retains_wrapped_
         .chunks(40)
         .map(|row| {
             row.iter()
-                .filter(|cell| cell.fg == crate::ui::theme::STATUS_WARNING)
+                .filter(|cell| cell.fg == crate::ui::theme::warning())
                 .map(ratatui::buffer::Cell::symbol)
                 .collect::<String>()
         })

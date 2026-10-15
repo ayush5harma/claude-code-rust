@@ -6,7 +6,7 @@ use crate::agent::model::PermissionOptionKind;
 use crate::app::{InlinePermission, InlineQuestion, ToolCallInfo};
 use crate::ui::theme;
 use crate::ui::tool_display;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::markdown_inline_spans;
@@ -27,7 +27,7 @@ pub(super) fn render_permission_lines(
     if !perm.focused {
         lines.push(Line::from(Span::styled(
             "  \u{25cb} Waiting for input... (Tab to focus)",
-            Style::default().fg(theme::DIM),
+            Style::default().fg(theme::tertiary()),
         )));
         return lines;
     }
@@ -39,7 +39,7 @@ pub(super) fn render_permission_lines(
     }
 
     let mut spans: Vec<Span<'static>> = Vec::new();
-    let dot = Span::styled("  \u{00b7}  ", Style::default().fg(theme::DIM));
+    let dot = Span::styled("  \u{00b7}  ", Style::default().fg(theme::tertiary()));
 
     for (i, opt) in perm.options.iter().enumerate() {
         let is_selected = i == perm.selected_index;
@@ -51,9 +51,9 @@ pub(super) fn render_permission_lines(
         );
 
         let (icon, icon_color) = if is_allow {
-            ("\u{2713}", Color::Green) // check
+            ("\u{2713}", theme::success()) // check
         } else {
-            ("\u{2717}", Color::Red) // cross
+            ("\u{2717}", theme::danger()) // cross
         };
 
         // Separator between options
@@ -65,16 +65,16 @@ pub(super) fn render_permission_lines(
         if is_selected {
             spans.push(Span::styled(
                 "\u{25b8} ",
-                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD),
             ));
         }
 
         spans.push(Span::styled(format!("{icon} "), Style::default().fg(icon_color)));
 
         let name_style = if is_selected {
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
+            Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Gray)
+            Style::default().fg(theme::secondary())
         };
         let mut name_spans = markdown_inline_spans(&opt.name);
         if name_spans.is_empty() {
@@ -90,7 +90,7 @@ pub(super) fn render_permission_lines(
     lines.push(Line::from(spans));
     lines.push(Line::from(Span::styled(
         "\u{2190}\u{2192} select  \u{2191}\u{2193} next  enter confirm  esc reject",
-        Style::default().fg(theme::DIM),
+        Style::default().fg(theme::tertiary()),
     )));
     lines
 }
@@ -118,13 +118,13 @@ fn permission_display_lines(
     if let Some(title) = header {
         lines.push(Line::from(Span::styled(
             format!("  {title}"),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::label()).add_modifier(Modifier::BOLD),
         )));
     }
     if let Some(description) = description {
         lines.push(Line::from(vec![
             Span::raw("    "),
-            Span::styled(description.to_owned(), Style::default().fg(theme::DIM)),
+            Span::styled(description.to_owned(), Style::default().fg(theme::tertiary())),
         ]));
     }
     if !lines.is_empty() {
@@ -179,7 +179,7 @@ fn render_plan_approval_lines(tc: &ToolCallInfo, perm: &InlinePermission) -> Vec
             Line::default(),
             Line::from(Span::styled(
                 "  \u{25cb} Waiting for input... (Tab to focus)",
-                Style::default().fg(theme::DIM),
+                Style::default().fg(theme::tertiary()),
             )),
         ];
     }
@@ -191,12 +191,12 @@ fn render_plan_approval_lines(tc: &ToolCallInfo, perm: &InlinePermission) -> Vec
     if !allowed_prompts.is_empty() {
         lines.push(Line::from(Span::styled(
             "  Pre-approved actions:",
-            Style::default().fg(theme::DIM),
+            Style::default().fg(theme::tertiary()),
         )));
         for prompt_text in allowed_prompts {
             lines.push(Line::from(vec![
-                Span::styled("    \u{2022} ", Style::default().fg(theme::DIM)),
-                Span::styled(prompt_text, Style::default().fg(Color::White)),
+                Span::styled("    \u{2022} ", Style::default().fg(theme::tertiary())),
+                Span::styled(prompt_text, Style::default().fg(theme::label())),
             ]));
         }
         lines.push(Line::default());
@@ -206,22 +206,22 @@ fn render_plan_approval_lines(tc: &ToolCallInfo, perm: &InlinePermission) -> Vec
     for (i, opt) in perm.options.iter().enumerate() {
         let is_selected = i == perm.selected_index;
         let (icon, icon_color) = match opt.kind {
-            PermissionOptionKind::PlanApprove => ("\u{2713}", Color::Green),
-            PermissionOptionKind::PlanReject => ("\u{2717}", Color::Red),
-            _ => ("\u{00b7}", Color::Gray),
+            PermissionOptionKind::PlanApprove => ("\u{2713}", theme::success()),
+            PermissionOptionKind::PlanReject => ("\u{2717}", theme::danger()),
+            _ => ("\u{00b7}", theme::secondary()),
         };
 
         let name_style = if is_selected {
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
+            Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Gray)
+            Style::default().fg(theme::secondary())
         };
 
         let mut line_spans: Vec<Span<'static>> = Vec::new();
         if is_selected {
             line_spans.push(Span::styled(
                 "  \u{25b8} ",
-                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD),
             ));
         } else {
             line_spans.push(Span::raw("    "));
@@ -233,7 +233,7 @@ fn render_plan_approval_lines(tc: &ToolCallInfo, perm: &InlinePermission) -> Vec
 
     lines.push(Line::from(Span::styled(
         "  \u{2191}\u{2193} select  enter confirm  esc reject",
-        Style::default().fg(theme::DIM),
+        Style::default().fg(theme::tertiary()),
     )));
 
     lines
@@ -249,10 +249,10 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
     let mut lines = vec![
         Line::default(),
         Line::from(vec![
-            Span::styled("  ? ", Style::default().fg(theme::RUST_ORANGE)),
+            Span::styled("  ? ", Style::default().fg(theme::accent())),
             Span::styled(
                 format!("{}{}", question.prompt.header, progress),
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::label()).add_modifier(Modifier::BOLD),
             ),
         ]),
     ];
@@ -261,9 +261,9 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
         lines.push(Line::from(vec![Span::styled(
             format!("    {row}"),
             if question.focused {
-                Style::default().fg(theme::RUST_ORANGE)
+                Style::default().fg(theme::accent())
             } else {
-                Style::default().fg(Color::Gray)
+                Style::default().fg(theme::secondary())
             },
         )]));
     }
@@ -271,7 +271,7 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
     if !question.focused {
         lines.push(Line::from(Span::styled(
             "  waiting for input... (Tab to focus)",
-            Style::default().fg(theme::DIM),
+            Style::default().fg(theme::tertiary()),
         )));
         return lines;
     }
@@ -287,7 +287,7 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
                 "  Auto-continue after {}s idle; unselected questions are skipped.",
                 timeout.as_secs()
             ),
-            Style::default().fg(theme::DIM),
+            Style::default().fg(theme::tertiary()),
         ));
     }
 
@@ -295,26 +295,26 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
         let mut spans: Vec<Span<'static>> = Vec::new();
         for (i, opt) in question.prompt.options.iter().enumerate() {
             if i > 0 {
-                spans.push(Span::styled("  |  ", Style::default().fg(theme::DIM)));
+                spans.push(Span::styled("  |  ", Style::default().fg(theme::tertiary())));
             }
             let selected = i == question.focused_option_index;
             let checked = question.selected_option_indices.contains(&i);
             if selected {
                 spans.push(Span::styled(
                     "\u{25b8} ",
-                    Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+                    Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD),
                 ));
             } else {
-                spans.push(Span::styled("  ", Style::default().fg(theme::DIM)));
+                spans.push(Span::styled("  ", Style::default().fg(theme::tertiary())));
             }
             let style = if selected {
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                Style::default().fg(theme::label()).add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::Gray)
+                Style::default().fg(theme::secondary())
             };
             let marker = if checked { "[x] " } else { "[ ] " };
             if question.prompt.multi_select {
-                spans.push(Span::styled(marker, Style::default().fg(theme::DIM)));
+                spans.push(Span::styled(marker, Style::default().fg(theme::tertiary())));
             }
             spans.push(Span::styled(opt.label.clone(), style));
         }
@@ -325,17 +325,17 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
             let checked = question.selected_option_indices.contains(&i);
             let bullet = if selected { "  \u{25b8} " } else { "  \u{25cb} " };
             let name_style = if selected {
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                Style::default().fg(theme::label()).add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::Gray)
+                Style::default().fg(theme::secondary())
             };
             lines.push(Line::from(vec![
                 Span::styled(
                     bullet,
                     if selected {
-                        Style::default().fg(theme::RUST_ORANGE)
+                        Style::default().fg(theme::accent())
                     } else {
-                        Style::default().fg(theme::DIM)
+                        Style::default().fg(theme::tertiary())
                     },
                 ),
                 Span::styled(
@@ -344,7 +344,7 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
                     } else {
                         ""
                     },
-                    Style::default().fg(theme::DIM),
+                    Style::default().fg(theme::tertiary()),
                 ),
                 Span::styled(opt.label.clone(), name_style),
                 option_description_suffix(opt.description.as_deref()),
@@ -367,12 +367,12 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
         lines.push(Line::default());
         lines.push(Line::from(Span::styled(
             format!("{answer_text_indent}Preview"),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::label()).add_modifier(Modifier::BOLD),
         )));
         for row in preview.lines() {
             lines.push(Line::from(Span::styled(
                 format!("{answer_text_indent}  {row}"),
-                Style::default().fg(theme::DIM),
+                Style::default().fg(theme::tertiary()),
             )));
         }
     }
@@ -384,14 +384,14 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
                 "{answer_text_indent}Notes{}: ",
                 if question.editing_notes { " [editing]" } else { "" }
             ),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::label()).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             if question.notes.is_empty() { "<empty>".to_owned() } else { question.notes.clone() },
             if question.editing_notes {
-                Style::default().fg(Color::White)
+                Style::default().fg(theme::label())
             } else {
-                Style::default().fg(theme::DIM)
+                Style::default().fg(theme::tertiary())
             },
         ),
     ]));
@@ -402,7 +402,7 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
         } else {
             "  Left/Right select  Tab notes  Enter confirm  Esc cancel"
         },
-        Style::default().fg(theme::DIM),
+        Style::default().fg(theme::tertiary()),
     )));
     lines
 }
@@ -415,7 +415,10 @@ fn option_description_suffix(description: Option<&str>) -> Span<'static> {
     description.map(str::trim).filter(|desc| !desc.is_empty()).map_or_else(
         || Span::raw(""),
         |desc| {
-            Span::styled(format!(" - {}", single_line_text(desc)), Style::default().fg(theme::DIM))
+            Span::styled(
+                format!(" - {}", single_line_text(desc)),
+                Style::default().fg(theme::tertiary()),
+            )
         },
     )
 }
@@ -433,7 +436,7 @@ mod tests {
     };
     use crate::app::{InlinePermission, InlineQuestion, ToolCallInfo};
     use crate::ui::theme;
-    use ratatui::style::Color;
+
     use std::collections::BTreeSet;
 
     fn test_question() -> InlineQuestion {
@@ -522,7 +525,7 @@ mod tests {
     #[test]
     fn focused_question_text_turns_orange() {
         let lines = render_question_lines(&test_question());
-        assert_eq!(lines[2].spans[0].style.fg, Some(theme::RUST_ORANGE));
+        assert_eq!(lines[2].spans[0].style.fg, Some(theme::accent()));
     }
 
     #[test]
@@ -532,7 +535,7 @@ mod tests {
         let lines = render_question_lines(&question);
         let footer = lines.last().expect("question footer line");
         assert_eq!(footer.spans[0].content.as_ref(), "  waiting for input... (Tab to focus)");
-        assert_eq!(lines[2].spans[0].style.fg, Some(Color::Gray));
+        assert_eq!(lines[2].spans[0].style.fg, Some(theme::secondary()));
     }
 
     #[test]
@@ -589,7 +592,7 @@ mod tests {
             .find(|span| span.content.as_ref() == "Allow")
             .expect("selected permission label");
 
-        assert_eq!(selected_label.style.fg, Some(theme::RUST_ORANGE));
+        assert_eq!(selected_label.style.fg, Some(theme::accent()));
     }
 
     #[test]
@@ -756,7 +759,7 @@ mod tests {
             .find(|span| span.content.as_ref() == "Allow")
             .expect("selected plan label");
 
-        assert_eq!(selected_label.style.fg, Some(theme::RUST_ORANGE));
+        assert_eq!(selected_label.style.fg, Some(theme::accent()));
     }
 
     #[test]

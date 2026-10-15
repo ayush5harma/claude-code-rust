@@ -5,7 +5,7 @@ use crate::ui::theme;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Margin},
-    style::{Color, Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
@@ -30,14 +30,9 @@ pub(crate) fn render(frame: &mut Frame, app: &App) {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme::DIM)),
+                    .border_style(Style::default().fg(theme::tertiary())),
             )
-            .highlight_style(
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(theme::RUST_ORANGE)
-                    .add_modifier(Modifier::BOLD),
-            )
+            .highlight_style(theme::on_accent_style())
             .highlight_symbol("› "),
         sections[1],
         &mut state,

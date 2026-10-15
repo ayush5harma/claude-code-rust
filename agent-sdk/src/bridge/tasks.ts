@@ -8,6 +8,7 @@ import type {
 import type { SessionState } from "./session_lifecycle.js";
 import { emitSessionUpdate } from "./events.js";
 import { asRecordOrNull } from "./shared.js";
+import { shortDisplayNameForModelId } from "./model_metadata.js";
 import { linkTaskToolUse, unlinkTaskToolUse } from "./task_links.js";
 
 type TaskPatch = {
@@ -37,7 +38,10 @@ export type TaskTitleContext = {
 };
 
 const BACKGROUND_TASK_METADATA_KEY = "sdk_background_task";
-const LIFECYCLE_STARTED_METADATA_KEY = "sdk_lifecycle_started";
+// Set by every lifecycle edge (start, progress, update, notification, stop):
+// the row is a runtime task the lifecycle owns, never a TaskList plan step,
+// and background inventory snapshots can no longer remove it.
+const LIFECYCLE_TASK_METADATA_KEY = "sdk_lifecycle_task";
 
 export function isTaskToolName(name: string): boolean {
   return TASK_TOOL_NAMES.has(name);
@@ -711,7 +715,7 @@ function replaceTaskSnapshot(
     if (nextTasks.has(taskId)) continue;
     const task = session.tasksById.get(taskId);
     const metadata = asRecordOrNull(task?.metadata);
-    if (!task || (typeof metadata?.task_type !== "string" && metadata?.[BACKGROUND_TASK_METADATA_KEY] !== true)) continue;
+    if (!task || (metadata?.[LIFECYCLE_TASK_METADATA_KEY] !== true && metadata?.[BACKGROUND_TASK_METADATA_KEY] !== true)) continue;
     nextTasks.set(taskId, task);
     nextIds.push(taskId);
     emitted.push(cloneTask(task));
@@ -1007,6 +1011,8 @@ export function applyTaskToolResult(
       return;
     }
     const metadata = mergeMetadata(existing?.metadata, {
+      [LIFECYCLE_TASK_METADATA_KEY]: true,
+      [BACKGROUND_TASK_METADATA_KEY]: null,
       terminal_status: "stopped",
       task_type: output.task_type as Json,
       ...(typeof output.command === "string"
@@ -1051,7 +1057,7 @@ function lifecycleMetadata(
   msg: Record<string, unknown>,
 ): Record<string, Json> | undefined {
   const patch = asRecordOrNull(msg.patch) ?? undefined;
-  const metadata: Record<string, Json> = {};
+  const metadata: Record<string, Json> = { [LIFECYCLE_TASK_METADATA_KEY]: true };
   const copyValue = (
     from: Record<string, unknown> | undefined,
     key: string,
@@ -1078,6 +1084,8 @@ function lifecycleMetadata(
     "prompt",
     "output_file",
     "summary",
+    "usage",
+    "last_tool_name",
     "end_time",
     "total_paused_ms",
     "blocked",
@@ -1105,6 +1113,29 @@ function lifecycleMetadata(
   return Object.keys(metadata).length > 0 ? metadata : undefined;
 }
 
+function childModelMetadata(model: string): Record<string, Json> {
+  return { model, model_display: shortDisplayNameForModelId(model) };
+}
+
+export function applyLinkedChildModel(session: SessionState, taskId: string, toolUseId: string): void {
+  const model = session.childModelsByToolUseId.get(toolUseId);
+  const task = session.tasksById.get(taskId);
+  if (!model || !task || asRecordOrNull(task.metadata)?.model === model) return;
+  emitTaskStateUpdate(session, "task_lifecycle", [upsertTask(session, {
+    task_id: taskId,
+    metadata: mergeMetadata(task.metadata, childModelMetadata(model)),
+  })]);
+}
+
+export function observeTaskChildModel(session: SessionState, message: Record<string, unknown>): void {
+  const toolUseId = nonEmptyString(message.parent_tool_use_id);
+  const model = nonEmptyString(asRecordOrNull(message.message)?.model);
+  if (!toolUseId || !model) return;
+  session.childModelsByToolUseId.set(toolUseId, model);
+  const taskId = session.taskIdsByToolUseId.get(toolUseId);
+  if (taskId) applyLinkedChildModel(session, taskId, toolUseId);
+}
+
 export function applyTaskLifecycleState(
   session: SessionState,
   subtype: string,
@@ -1120,7 +1151,12 @@ export function applyTaskLifecycleState(
   }
 
   const task = taskLifecyclePatch(session.tasksById.get(taskId), subtype, msg, session.taskToolUseIds.get(taskId));
-  if (task) emitTaskStateUpdate(session, "task_lifecycle", [upsertTask(session, task)]);
+  if (task) {
+    const toolUseId = session.taskToolUseIds.get(taskId);
+    const model = toolUseId ? session.childModelsByToolUseId.get(toolUseId) : undefined;
+    if (model) task.metadata = mergeMetadata(task.metadata, childModelMetadata(model));
+    emitTaskStateUpdate(session, "task_lifecycle", [upsertTask(session, task)]);
+  }
 }
 
 export function taskLifecyclePatch(
@@ -1151,11 +1187,13 @@ export function taskLifecyclePatch(
     nonEmptyString(msg.task_description) ??
     description ??
     taskId;
-  const lifecycleFields = lifecycleMetadata(msg);
+  const lifecycle = lifecycleMetadata(msg);
+  // SDK 0.3.288 sends membership snapshots before or after lifecycle edges
+  // (2026-10-15). Once an edge owns a row, inventory cannot erase its history.
   const metadata = mergeMetadata(existing?.metadata,
-    subtype === "task_started"
-      ? { ...lifecycleFields, [LIFECYCLE_STARTED_METADATA_KEY]: true }
-      : lifecycleFields);
+    asRecordOrNull(existing?.metadata)?.[BACKGROUND_TASK_METADATA_KEY] === true
+      ? { ...lifecycle, [BACKGROUND_TASK_METADATA_KEY]: null }
+      : lifecycle);
 
   if (
     !status &&
@@ -1193,48 +1231,35 @@ export function applyBackgroundTasksChanged(
       const taskType = nonEmptyString(task.task_type);
       const description = nonEmptyString(task.description);
       const ambient = typeof task.ambient === "boolean" ? task.ambient : undefined;
+      const existing = session.tasksById.get(taskId);
+      const inventoryOnly = !existing || asRecordOrNull(existing.metadata)?.[BACKGROUND_TASK_METADATA_KEY] === true;
       return {
         task_id: taskId,
         subject: description ?? taskType ?? taskId,
         description,
-        status: "in_progress",
-        blocks: [],
-        blocked_by: [],
-        metadata: {
-          [BACKGROUND_TASK_METADATA_KEY]: true,
+        status: existing?.status ?? "in_progress",
+        metadata: mergeMetadata(existing?.metadata, {
+          ...(inventoryOnly ? { [BACKGROUND_TASK_METADATA_KEY]: true } : {}),
           ...(taskType ? { task_type: taskType } : {}),
           ...(ambient !== undefined ? { ambient } : {}),
-        },
+        }),
       };
     })
     .filter((task): task is TaskPatch => Boolean(task));
 
   const nextIds = new Set(nextTasks.map((task) => task.task_id));
-  const leaving = session.taskOrder.filter((taskId) => {
+  // The snapshot only says what is still in the background, so it removes
+  // only rows it alone owns. A lifecycle-owned row (a subagent that left before
+  // or after its outcome) stays until the lifecycle settles it.
+  const removedTaskIds = session.taskOrder.filter((taskId) => {
     if (nextIds.has(taskId)) {
       return false;
     }
     const metadata = asRecordOrNull(session.tasksById.get(taskId)?.metadata);
     return metadata?.[BACKGROUND_TASK_METADATA_KEY] === true;
   });
-  // The snapshot only says what is still in the background. A lifecycle-owned
-  // subagent may leave before its outcome arrives, so retain its row without
-  // inventing a terminal status. Other settled tasks keep their reported row.
-  const retained = leaving.filter((taskId) => {
-    const metadata = asRecordOrNull(session.tasksById.get(taskId)?.metadata);
-    return metadata?.terminal_status !== undefined || (metadata?.task_type === "local_agent" && metadata?.[LIFECYCLE_STARTED_METADATA_KEY] === true);
-  });
-  if (retained.length > 0) {
-    emitTaskStateUpdate(session, "task_lifecycle", retained.map((taskId) => upsertTask(session, {
-      task_id: taskId,
-      metadata: mergeMetadata(session.tasksById.get(taskId)?.metadata, { [BACKGROUND_TASK_METADATA_KEY]: null }),
-    })));
-  }
-  const tasks = nextTasks.map((task) => upsertTask(session, {
-    ...task,
-    metadata: mergeMetadata(session.tasksById.get(task.task_id)?.metadata, asRecordOrNull(task.metadata) as Record<string, Json> | undefined),
-  }));
-  const removed = removeTasks(session, leaving.filter((taskId) => !retained.includes(taskId)));
+  const tasks = nextTasks.map((task) => upsertTask(session, task));
+  const removed = removeTasks(session, removedTaskIds);
   emitTaskStateUpdate(session, "background_tasks", tasks, removed, true);
 }
 

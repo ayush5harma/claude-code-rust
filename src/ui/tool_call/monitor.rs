@@ -122,7 +122,7 @@ mod tests {
                 "Command: tail -f deploy.log",
             ]
         );
-        assert_eq!(lines[0].spans[0].style.fg, Some(theme::DIM));
+        assert_eq!(lines[0].spans[0].style.fg, Some(theme::tertiary()));
     }
 
     #[test]

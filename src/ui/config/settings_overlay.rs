@@ -93,17 +93,17 @@ fn setting_details(
     if stale_context(app, overlay) {
         lines.push(Line::styled(
             "Settings location changed. Cancel and reopen to save.",
-            Style::default().fg(theme::STATUS_WARNING),
+            Style::default().fg(theme::warning()),
         ));
         return lines;
     }
     lines.push(Line::styled(
         format!("Saved in {}: {current}", overlay.scope.label()),
-        Style::default().fg(theme::DIM),
+        Style::default().fg(theme::tertiary()),
     ));
-    lines.push(Line::styled(setting.reset.clone(), Style::default().fg(theme::DIM)));
+    lines.push(Line::styled(setting.reset.clone(), Style::default().fg(theme::tertiary())));
     if setting.application == SettingsApplication::Host {
-        lines.push(Line::styled("Applies immediately.", Style::default().fg(theme::DIM)));
+        lines.push(Line::styled("Applies immediately.", Style::default().fg(theme::tertiary())));
     }
     lines
 }
@@ -153,7 +153,7 @@ pub(super) fn render_session_rename_overlay(frame: &mut Frame, area: Rect, app: 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "Leave the field empty to clear the custom session name.",
-            Style::default().fg(theme::DIM),
+            Style::default().fg(theme::tertiary()),
         ))),
         sections[1],
     );

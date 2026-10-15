@@ -7,7 +7,7 @@ use crate::app::{
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Wrap};
 
@@ -63,7 +63,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
             .map(|value| format!("Plan: {value}"))
             .unwrap_or_default();
         frame.render_widget(
-            Paragraph::new(plan).style(Style::default().fg(theme::DIM)),
+            Paragraph::new(plan).style(Style::default().fg(theme::tertiary())),
             sections[0],
         );
     } else {
@@ -126,14 +126,17 @@ fn render_empty_state(frame: &mut Frame, area: Rect, app: &App) {
 fn render_window(frame: &mut Frame, area: Rect, window: &UsageWindow) {
     let label_line = Line::from(vec![
         Span::styled(window.label.clone(), Style::default().add_modifier(Modifier::BOLD)),
-        Span::styled(format!("   {}", window_detail_text(window)), Style::default().fg(theme::DIM)),
+        Span::styled(
+            format!("   {}", window_detail_text(window)),
+            Style::default().fg(theme::tertiary()),
+        ),
     ]);
     let label_height = wrapped_height(Text::from(vec![label_line.clone()]), area.width);
     let reset_line = usage::format_window_reset(window).unwrap_or_default();
     let reset_height = wrapped_height(
         Text::from(vec![Line::from(Span::styled(
             reset_line.clone(),
-            Style::default().fg(theme::DIM),
+            Style::default().fg(theme::tertiary()),
         ))]),
         area.width,
     );
@@ -158,8 +161,11 @@ fn render_window(frame: &mut Frame, area: Rect, window: &UsageWindow) {
     );
 
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(reset_line, Style::default().fg(theme::DIM))))
-            .wrap(Wrap { trim: false }),
+        Paragraph::new(Line::from(Span::styled(
+            reset_line,
+            Style::default().fg(theme::tertiary()),
+        )))
+        .wrap(Wrap { trim: false }),
         sections[2],
     );
 }
@@ -169,11 +175,11 @@ fn render_extra_usage(frame: &mut Frame, area: Rect, extra_usage: &ExtraUsage) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Extra credits")
-        .border_style(Style::default().fg(theme::DIM));
+        .border_style(Style::default().fg(theme::tertiary()));
     frame.render_widget(block.clone(), area);
     let inner = area.inner(Margin { vertical: 1, horizontal: 2 });
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(detail, Style::default().fg(Color::White))))
+        Paragraph::new(Line::from(Span::styled(detail, Style::default().fg(theme::label()))))
             .wrap(Wrap { trim: false }),
         inner,
     );
@@ -191,7 +197,7 @@ fn render_detail_card(frame: &mut Frame, area: Rect, title: &str, detail: &str) 
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .border_style(Style::default().fg(theme::DIM));
+        .border_style(Style::default().fg(theme::tertiary()));
     frame.render_widget(block.clone(), area);
     frame.render_widget(
         Paragraph::new(detail.to_owned()).wrap(Wrap { trim: false }),
@@ -203,7 +209,7 @@ fn render_error(frame: &mut Frame, area: Rect, error: &str) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Latest refresh error")
-        .border_style(Style::default().fg(theme::STATUS_ERROR));
+        .border_style(Style::default().fg(theme::danger()));
     frame.render_widget(block.clone(), area);
     frame.render_widget(
         Paragraph::new(error).wrap(Wrap { trim: false }),
@@ -217,13 +223,13 @@ fn window_detail_text(window: &UsageWindow) -> String {
 
 fn gauge_style(utilization: f64) -> Style {
     let color = if utilization >= 85.0 {
-        theme::STATUS_ERROR
+        theme::danger()
     } else if utilization >= 65.0 {
-        theme::STATUS_WARNING
+        theme::warning()
     } else {
-        theme::RUST_ORANGE
+        theme::accent()
     };
-    Style::default().fg(color).bg(Color::DarkGray)
+    Style::default().fg(color).bg(theme::fill())
 }
 
 fn format_extra_usage(extra_usage: &ExtraUsage) -> String {
@@ -347,11 +353,14 @@ fn append_named_attributions(
 fn window_height(window: &UsageWindow, width: u16) -> u16 {
     let label_line = Line::from(vec![
         Span::styled(window.label.clone(), Style::default().add_modifier(Modifier::BOLD)),
-        Span::styled(format!("   {}", window_detail_text(window)), Style::default().fg(theme::DIM)),
+        Span::styled(
+            format!("   {}", window_detail_text(window)),
+            Style::default().fg(theme::tertiary()),
+        ),
     ]);
     let reset_line = Line::from(Span::styled(
         usage::format_window_reset(window).unwrap_or_default(),
-        Style::default().fg(theme::DIM),
+        Style::default().fg(theme::tertiary()),
     ));
     wrapped_height(Text::from(vec![label_line]), width)
         .saturating_add(1)
@@ -363,7 +372,7 @@ fn extra_usage_height(extra_usage: &ExtraUsage, width: u16) -> u16 {
     wrapped_height(
         Text::from(vec![Line::from(Span::styled(
             format_extra_usage(extra_usage),
-            Style::default().fg(Color::White),
+            Style::default().fg(theme::label()),
         ))]),
         inner_width,
     )

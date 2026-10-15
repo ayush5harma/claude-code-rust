@@ -5,6 +5,7 @@ use crate::agent::model;
 use std::collections::{BTreeSet, HashSet};
 
 pub(super) fn apply_task_state_update(app: &mut App, update: model::TaskStateUpdate) {
+    observe_task_update(app, &update);
     let selects_plan = update.source != model::TaskUpdateSource::BackgroundTasks
         && ((update.source == model::TaskUpdateSource::List && update.is_complete_snapshot)
             || update.tasks.iter().any(is_user_plan_task)
@@ -66,6 +67,72 @@ pub(super) fn apply_task_state_update(app: &mut App, update: model::TaskStateUpd
     refresh_task_tool_displays_with_previous(app, &previous_tasks);
 }
 
+fn observe_task_update(app: &mut App, update: &model::TaskStateUpdate) {
+    let now = std::time::Instant::now();
+    for id in &update.removed_task_ids {
+        app.sdk_inventory.task_observations.remove(id);
+    }
+    for task in &update.tasks {
+        if update.removed_task_ids.contains(&task.task_id) {
+            continue;
+        }
+        let duration_ms = task
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("usage"))
+            .and_then(|u| u.get("duration_ms"))
+            .and_then(serde_json::Value::as_u64);
+        let observation =
+            app.sdk_inventory.task_observations.entry(task.task_id.clone()).or_insert(
+                super::state::sdk_inventory::TaskObservation {
+                    started_at: now,
+                    finished_at: None,
+                    usage_reported_at: now,
+                    duration_ms,
+                },
+            );
+        let usage_changed = app
+            .sdk_inventory
+            .tasks
+            .iter()
+            .find(|existing| existing.task_id == task.task_id)
+            .is_some_and(|existing| {
+                existing.metadata.as_ref().and_then(|m| m.get("usage"))
+                    != task.metadata.as_ref().and_then(|m| m.get("usage"))
+            });
+        if task.status == model::TaskStatus::InProgress
+            && app
+                .sdk_inventory
+                .tasks
+                .iter()
+                .find(|existing| existing.task_id == task.task_id)
+                .is_some_and(|existing| existing.status == model::TaskStatus::Pending)
+        {
+            observation.started_at = now;
+        }
+        if observation.duration_ms != duration_ms || usage_changed {
+            observation.duration_ms = duration_ms;
+            observation.usage_reported_at = now;
+        }
+        if task.status == model::TaskStatus::Completed && observation.finished_at.is_none() {
+            observation.finished_at = Some(now);
+        } else if task.status == model::TaskStatus::InProgress {
+            observation.finished_at = None;
+        }
+    }
+    if update.is_complete_snapshot {
+        app.sdk_inventory.task_observations.retain(|id, _| {
+            update.tasks.iter().any(|t| t.task_id == *id)
+                || (update.source == model::TaskUpdateSource::BackgroundTasks
+                    && app
+                        .sdk_inventory
+                        .tasks
+                        .iter()
+                        .any(|t| t.task_id == *id && !is_sdk_background_task(t)))
+        });
+    }
+}
+
 pub(crate) fn is_sdk_background_task(task: &model::TaskItem) -> bool {
     task.metadata
         .as_ref()
@@ -76,7 +143,13 @@ pub(crate) fn is_sdk_background_task(task: &model::TaskItem) -> bool {
 }
 
 pub(crate) fn is_user_plan_task(task: &model::TaskItem) -> bool {
-    !is_sdk_background_task(task) && !crate::app::agents::is_subagent_task(task)
+    !is_sdk_background_task(task)
+        && !task.metadata.as_ref().is_some_and(|metadata| {
+            metadata.get("task_type").is_some()
+                || metadata.get("background_source").is_some()
+                || metadata.get("sdk_lifecycle_task").and_then(serde_json::Value::as_bool)
+                    == Some(true)
+        })
 }
 
 pub(super) fn refresh_task_tool_displays(app: &mut App) -> bool {
@@ -88,6 +161,24 @@ fn refresh_task_tool_displays_with_previous(
     app: &mut App,
     previous_tasks: &[model::TaskItem],
 ) -> bool {
+    let is_running = |task: &&model::TaskItem| {
+        task.status == model::TaskStatus::InProgress
+            && crate::app::agents::is_subagent_task(task)
+    };
+    let running = app.sdk_inventory.tasks.iter().any(|t| is_running(&t));
+    if running && !previous_tasks.iter().any(|t| is_running(&t)) {
+        app.sdk_inventory.agent_shelf_wave_started_at = app
+            .sdk_inventory
+            .tasks
+            .iter()
+            .filter(is_running)
+            .filter_map(|t| {
+                app.sdk_inventory.task_observations.get(&t.task_id).map(|o| o.started_at)
+            })
+            .min();
+    } else if !running {
+        app.sdk_inventory.agent_shelf_wave_started_at = None;
+    }
     let current_tasks = app.sdk_inventory.tasks.clone();
     let mut dirty_blocks = Vec::new();
 
@@ -627,5 +718,143 @@ mod tests {
 
         assert!(app.sdk_inventory.tasks.is_empty());
         assert_eq!(only_tool_call(&app).title, "Delete task #1: Remove temporary files");
+    }
+    #[test]
+    fn background_snapshot_updates_lifecycle_rows_without_duplicate_membership() {
+        let mut app = App::test_default();
+        let mut live =
+            model::TaskItem::new("agent", "Before snapshot", model::TaskStatus::InProgress);
+        live.metadata = Some(
+            serde_json::json!({"task_type":"local_agent","model_display":"Sonnet 5.5","usage":{"total_tokens":34000,"tool_uses":12,"duration_ms":62000}}),
+        );
+        apply_task_state_update(
+            &mut app,
+            model::TaskStateUpdate::new(model::TaskUpdateSource::Lifecycle)
+                .tasks(vec![live.clone()]),
+        );
+        live.subject = "After snapshot".into();
+        apply_task_state_update(
+            &mut app,
+            model::TaskStateUpdate::new(model::TaskUpdateSource::BackgroundTasks)
+                .complete_snapshot(true)
+                .tasks(vec![live]),
+        );
+        assert_eq!(app.sdk_inventory.tasks.len(), 1);
+        assert_eq!(app.sdk_inventory.tasks[0].subject, "After snapshot");
+        let row = crate::ui::agent_rows::agent_row(&app, &app.sdk_inventory.tasks[0]);
+        assert_eq!(row.model, "Sonnet 5.5");
+        assert_eq!(row.tools, Some(12));
+        assert_eq!(row.tokens, Some(34000));
+    }
+
+    #[test]
+    fn task_usage_clock_advances_running_and_freezes_finished_duration() {
+        let mut app = App::test_default();
+        let mut live = model::TaskItem::new("agent", "Clock", model::TaskStatus::Pending);
+        live.metadata =
+            Some(serde_json::json!({"task_type":"local_agent","usage":{"duration_ms":40000}}));
+        apply_task_state_update(
+            &mut app,
+            model::TaskStateUpdate::new(model::TaskUpdateSource::Lifecycle)
+                .tasks(vec![live.clone()]),
+        );
+        assert!(app.sdk_inventory.task_observations["agent"].finished_at.is_none());
+        live.status = model::TaskStatus::InProgress;
+        apply_task_state_update(
+            &mut app,
+            model::TaskStateUpdate::new(model::TaskUpdateSource::Lifecycle)
+                .tasks(vec![live.clone()]),
+        );
+        app.sdk_inventory.task_observations.get_mut("agent").expect("clock").usage_reported_at =
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(3))
+                .expect("test clock permits subtraction");
+        let row = crate::ui::agent_rows::agent_row(&app, &app.sdk_inventory.tasks[0]);
+        assert!(row.elapsed_ms.is_some_and(|ms| (43000..44000).contains(&ms)));
+        live.status = model::TaskStatus::Completed;
+        apply_task_state_update(
+            &mut app,
+            model::TaskStateUpdate::new(model::TaskUpdateSource::Lifecycle).tasks(vec![live]),
+        );
+        assert!(app.sdk_inventory.task_observations["agent"].finished_at.is_some());
+        assert_eq!(
+            crate::ui::agent_rows::agent_row(&app, &app.sdk_inventory.tasks[0]).elapsed_ms,
+            Some(40000)
+        );
+    }
+    #[test]
+    fn lifecycle_shell_and_mcp_inventory_never_become_plan_steps() {
+        let mut app = App::test_default();
+        app.footer.apply_todo_plan(vec![model::TodoPlanItem {
+            content: "User plan".into(),
+            active_form: None,
+            status: model::TaskStatus::InProgress,
+        }]);
+        for kind in ["local_bash", "mcp_task"] {
+            let mut background =
+                model::TaskItem::new(kind, "Background work", model::TaskStatus::InProgress);
+            background.metadata = Some(serde_json::json!({"task_type":kind}));
+            apply_task_state_update(
+                &mut app,
+                model::TaskStateUpdate::new(model::TaskUpdateSource::Lifecycle)
+                    .tasks(vec![background]),
+            );
+        }
+        assert!(app.footer.plan_source == crate::app::PlanSource::Todo);
+        assert!(app.sdk_inventory.tasks.iter().all(|task| !is_user_plan_task(task)));
+        let footer = crate::ui::footer_rows::serialize_footer_rows(&app, 100);
+        let plan: String = footer.rows[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(plan.contains("0/1 User plan"), "{plan}");
+    }
+    #[test]
+    fn notification_only_lifecycle_task_never_selects_plan_source() {
+        let mut app = App::test_default();
+        let mut task = model::TaskItem::new(
+            "notification",
+            "Background notification",
+            model::TaskStatus::Completed,
+        );
+        task.metadata =
+            Some(serde_json::json!({"sdk_lifecycle_task":true,"terminal_status":"completed"}));
+        apply_task_state_update(
+            &mut app,
+            model::TaskStateUpdate::new(model::TaskUpdateSource::Lifecycle).tasks(vec![task]),
+        );
+        assert!(app.footer.plan_source == crate::app::PlanSource::None);
+        assert!(!is_user_plan_task(&app.sdk_inventory.tasks[0]));
+    }
+    #[test]
+    fn unreported_usage_clock_uses_observed_start_and_freezes_on_completion() {
+        let mut app = App::test_default();
+        let mut task = model::TaskItem::new("clock", "Clock", model::TaskStatus::InProgress);
+        task.metadata = Some(serde_json::json!({"task_type":"local_agent"}));
+        apply_task_state_update(
+            &mut app,
+            model::TaskStateUpdate::new(model::TaskUpdateSource::Lifecycle)
+                .tasks(vec![task.clone()]),
+        );
+        app.sdk_inventory.task_observations.get_mut("clock").expect("clock").started_at =
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(3))
+                .expect("test clock permits subtraction");
+        assert!(
+            crate::ui::agent_rows::agent_row(&app, &app.sdk_inventory.tasks[0])
+                .elapsed_ms
+                .is_some_and(|ms| (3000..4000).contains(&ms))
+        );
+        task.status = model::TaskStatus::Completed;
+        apply_task_state_update(
+            &mut app,
+            model::TaskStateUpdate::new(model::TaskUpdateSource::Lifecycle).tasks(vec![task]),
+        );
+        let before = crate::ui::agent_rows::agent_row(&app, &app.sdk_inventory.tasks[0]).elapsed_ms;
+        app.sdk_inventory.task_observations.get_mut("clock").expect("clock").usage_reported_at =
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(20))
+                .expect("test clock permits subtraction");
+        assert_eq!(
+            crate::ui::agent_rows::agent_row(&app, &app.sdk_inventory.tasks[0]).elapsed_ms,
+            before
+        );
     }
 }

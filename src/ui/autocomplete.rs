@@ -137,7 +137,7 @@ fn slash_placeholder_line(slash: &slash::SlashState) -> Line<'static> {
 }
 
 fn hint_line(message: &str) -> Line<'static> {
-    Line::from(Span::styled(message.to_owned(), Style::default().fg(theme::DIM)))
+    Line::from(Span::styled(message.to_owned(), Style::default().fg(theme::tertiary())))
 }
 
 fn mention_candidate_line(
@@ -193,8 +193,8 @@ fn slash_candidate_line(
     }
 
     if let Some(secondary) = &candidate.secondary {
-        spans.push(Span::styled("  | ", Style::default().fg(theme::DIM)));
-        spans.push(Span::styled(secondary.clone(), Style::default().fg(theme::DIM)));
+        spans.push(Span::styled("  | ", Style::default().fg(theme::tertiary())));
+        spans.push(Span::styled(secondary.clone(), Style::default().fg(theme::tertiary())));
     }
 
     Line::from(spans)
@@ -226,8 +226,8 @@ fn subagent_candidate_line(
         _ => None,
     };
     if let Some(secondary) = secondary {
-        spans.push(Span::styled("  ", Style::default().fg(theme::DIM)));
-        spans.push(Span::styled(secondary, Style::default().fg(theme::DIM)));
+        spans.push(Span::styled("  ", Style::default().fg(theme::tertiary())));
+        spans.push(Span::styled(secondary, Style::default().fg(theme::tertiary())));
     }
 
     Line::from(spans)
@@ -237,7 +237,7 @@ fn push_selection_prefix(spans: &mut Vec<Span<'static>>, is_selected: bool) {
     if is_selected {
         spans.push(Span::styled(
             "> ",
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD),
         ));
     } else {
         spans.push(Span::raw("  "));
@@ -245,12 +245,12 @@ fn push_selection_prefix(spans: &mut Vec<Span<'static>>, is_selected: bool) {
 }
 
 fn autocomplete_text(content: String) -> Span<'static> {
-    Span::styled(content, Style::default().fg(theme::DIM))
+    Span::styled(content, Style::default().fg(theme::tertiary()))
 }
 
 fn with_left_rail(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
     let line_count = lines.len();
-    let pipe_style = Style::default().fg(theme::DIM);
+    let pipe_style = Style::default().fg(theme::tertiary());
 
     lines
         .into_iter()
@@ -331,7 +331,7 @@ fn push_highlighted_text(
     }
     spans.push(Span::styled(
         matched.to_owned(),
-        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+        Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD),
     ));
     if !after.is_empty() {
         spans.push(autocomplete_text(after.to_owned()));
@@ -528,6 +528,6 @@ mod tests {
             .iter()
             .find(|span| span.content.as_ref() == "src/main.rs")
             .expect("candidate path span");
-        assert_eq!(path_span.style.fg, Some(theme::DIM));
+        assert_eq!(path_span.style.fg, Some(theme::tertiary()));
     }
 }

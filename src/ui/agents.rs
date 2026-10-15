@@ -14,7 +14,7 @@ use crate::app::agents::{
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
 
@@ -63,13 +63,13 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App) {
 fn notice_line(app: &App) -> Option<Line<'static>> {
     if let Some(notice) = &app.agents.notice {
         let color = match notice.kind {
-            NoticeKind::Error => theme::STATUS_ERROR,
-            NoticeKind::Info => theme::DIM,
+            NoticeKind::Error => theme::danger(),
+            NoticeKind::Info => theme::tertiary(),
         };
         return Some(Line::styled(notice.text.clone(), Style::default().fg(color)));
     }
     (app.agents.listing && app.agents.transcript.is_none())
-        .then(|| Line::styled("Checking saved transcripts...", Style::default().fg(theme::DIM)))
+        .then(|| Line::styled("Checking saved transcripts...", Style::default().fg(theme::tertiary())))
 }
 
 fn hint(app: &App, width: u16) -> String {
@@ -91,13 +91,13 @@ fn render_list(frame: &mut Frame, title_area: Rect, body: Rect, app: &App) {
     let rows = subagent_rows(app);
     let selected = app.agents.selected_index(&rows);
     let mut title = vec![
-        Span::styled(TITLE, title_style().fg(theme::RUST_ORANGE)),
+        Span::styled(TITLE, title_style().fg(theme::accent())),
         Span::raw("  "),
         position_counter(selected, rows.len()),
     ];
     let running = running_subagent_count(app);
     if running > 0 {
-        title.push(Span::styled(format!("  {running} running"), Style::default().fg(theme::DIM)));
+        title.push(Span::styled(format!("  {running} running"), Style::default().fg(theme::tertiary())));
     }
     frame.render_widget(Paragraph::new(Line::from(title)), title_area);
     if app.session_runtime.session_id.is_none() {
@@ -127,19 +127,19 @@ fn render_list(frame: &mut Frame, title_area: Rect, body: Rect, app: &App) {
 }
 
 fn status_badge(status: SubagentStatus) -> Span<'static> {
-    let (fg, bg) = match status {
-        SubagentStatus::Pending => (Color::Black, Color::Cyan),
-        SubagentStatus::Running => (Color::Black, theme::RUST_ORANGE),
-        SubagentStatus::Stopping => (Color::Black, theme::STATUS_WARNING),
-        SubagentStatus::Completed => (Color::Black, Color::White),
-        SubagentStatus::Failed => (Color::White, theme::STATUS_ERROR),
-        SubagentStatus::Stopped => (Color::White, Color::DarkGray),
+    let tone = match status {
+        SubagentStatus::Pending => theme::Tone::Info,
+        SubagentStatus::Running => theme::Tone::Accent,
+        SubagentStatus::Stopping => theme::Tone::Warning,
+        SubagentStatus::Completed => theme::Tone::Success,
+        SubagentStatus::Failed => theme::Tone::Danger,
+        SubagentStatus::Stopped => theme::Tone::Neutral,
     };
-    badge_span(status.label(), fg, bg)
+    badge_span(status.label(), tone)
 }
 
 fn row_lines(app: &App, row: &SubagentRow<'_>, selected: bool) -> Vec<Line<'static>> {
-    let dim = Style::default().fg(theme::DIM);
+    let dim = Style::default().fg(theme::tertiary());
     let mut details = Vec::new();
     if let Some(kind) = row.subagent_type() {
         details.push(kind.to_owned());
@@ -161,7 +161,7 @@ fn row_lines(app: &App, row: &SubagentRow<'_>, selected: bool) -> Vec<Line<'stat
         lines.push(Line::styled(format!("  {}", details.join(" · ")), dim));
     }
     if let Some(summary) = row.summary() {
-        lines.push(Line::styled(format!("  {summary}"), Style::default().fg(Color::White)));
+        lines.push(Line::styled(format!("  {summary}"), Style::default().fg(theme::secondary())));
     }
     lines.push(Line::default());
     lines
@@ -179,8 +179,8 @@ fn render_transcript(frame: &mut Frame, title_area: Rect, body: Rect, app: &mut 
     let Some(view) = app.agents.transcript.as_mut() else { return };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(TITLE, title_style().fg(theme::RUST_ORANGE)),
-            Span::styled(" › ", Style::default().fg(theme::DIM)),
+            Span::styled(TITLE, title_style().fg(theme::accent())),
+            Span::styled(" › ", Style::default().fg(theme::tertiary())),
             Span::styled(subject.unwrap_or_else(|| view.agent_id.clone()), title_style()),
         ])),
         title_area,
@@ -226,7 +226,7 @@ fn transcript_lines(view: &TranscriptView) -> Vec<Line<'static>> {
             SubagentMessageRole::Tool => {
                 lines.push(Line::styled(
                     format!("• {}", message.text),
-                    Style::default().fg(theme::DIM),
+                    Style::default().fg(theme::tertiary()),
                 ));
                 continue;
             }

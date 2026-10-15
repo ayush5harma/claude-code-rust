@@ -289,6 +289,7 @@ async fn run_tui_loop(
 
         // Phase 3: render once (only when something changed)
         let is_animating = schedule_animation_frame(app, now);
+        schedule_agent_shelf_frame(app, now);
         if is_animating {
             tab_title::update_tab_title(app);
         }
@@ -691,6 +692,26 @@ fn schedule_animation_frame(app: &mut App, now: Instant) -> bool {
         app.request_active_surface_repaint();
     }
     is_animating
+}
+
+fn schedule_agent_shelf_frame(app: &mut App, now: Instant) {
+    let visible = matches!(app.surface_mode, SurfaceMode::Chat)
+        && crate::ui::footer_rows::shelf_row_capacity(app.chat_render.terminal_height) > 0
+        && app.sdk_inventory.tasks.iter().any(|task| {
+            task.status == model::TaskStatus::InProgress
+                && agents::is_subagent_task(task)
+        });
+    if !visible {
+        app.agent_shelf_last_redraw = None;
+        return;
+    }
+    if app
+        .agent_shelf_last_redraw
+        .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(1))
+    {
+        app.agent_shelf_last_redraw = Some(now);
+        app.request_active_surface_repaint();
+    }
 }
 
 fn advance_spinner_frame(app: &mut App, now: Instant) {

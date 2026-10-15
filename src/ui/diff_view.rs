@@ -5,7 +5,7 @@ use crate::ui::{diff, theme};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Margin},
-    style::{Color, Modifier, Style},
+    style::Style,
     text::Line,
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
@@ -41,12 +41,7 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App) {
     frame.render_stateful_widget(
         List::new(items)
             .block(Block::default().borders(Borders::ALL).title("Files"))
-            .highlight_style(
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(theme::RUST_ORANGE)
-                    .add_modifier(Modifier::BOLD),
-            )
+            .highlight_style(theme::on_accent_style())
             .highlight_symbol("› "),
         columns[0],
         &mut selection,
@@ -90,7 +85,7 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App) {
     );
     if let Some(error) = &state.error {
         frame.render_widget(
-            Paragraph::new(error.as_str()).style(Style::default().fg(Color::Yellow)),
+            Paragraph::new(error.as_str()).style(Style::default().fg(theme::warning())),
             rows[2],
         );
     }

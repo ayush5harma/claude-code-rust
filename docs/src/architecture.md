@@ -136,6 +136,14 @@ The view lists the active session's `local_agent` lifecycle rows from the task s
 
 The bridge announces each live top-level SDK response through the typed `agent_response_started` update before sending its text. A response triggered by a background completion receives a fresh mutable assistant owner even when no user prompt is pending; history replay does not activate live responses. The renderer groups consecutive visible assistant messages under one speaker label, carrying speaker context across content already inserted into terminal history. Streaming ownership, message identities and tool insertion order remain separate from that visual grouping.
 
+### Agent progress and inspection
+
+The bridge normalizes task progress into the existing task metadata: `usage` (`total_tokens`, `tool_uses`, `duration_ms`), `last_tool_name`, `summary`, and the child's resolved `model` and `model_display`. Child assistant messages may precede task linkage; the bridge remembers their model by parent tool-use ID and emits a task update when the linked model changes. Background inventory snapshots preserve lifecycle-owned metadata and cannot erase a completed agent's history merely because membership changes arrive before its completion event.
+
+Rust's task inventory remains the status authority. The Agents view merges SDK-listed saved agent IDs with live task IDs, preserving selection by identity. The footer, task overlay and inspector share the same agent-row projection and renderer. Requested model aliases and agent-definition defaults remain distinguishable from a model observed in a child response. A bounded index of the last eight child tool-call IDs per parent is maintained on tool events and pruned with transcript retention; rendering reads this index without scanning the transcript or performing I/O. Local observation times extend reported running durations, and the visible shelf requests at most one redraw per second when no other animation is active.
+
+The shelf includes running agents and agents finished during the current continuous delegation wave; the task overlay and inspector retain prior agent history.
+
 ### Session title
 
 | Concern | Owner | Location |

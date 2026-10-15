@@ -175,11 +175,56 @@ fn notice(app: &mut App, kind: NoticeKind, text: impl Into<String>) {
 }
 
 pub(crate) fn open(app: &mut App) {
+    open_at(app, None);
+}
+
+/// Opens the view with `selected` chosen, or the default row when `None`.
+fn open_at(app: &mut App, selected: Option<String>) {
     app.agents.transcript = None;
     app.agents.notice = None;
-    app.agents.selected_task_id = None;
+    app.agents.selected_task_id = selected;
     crate::app::view::set_fullscreen_view(app, crate::app::FullscreenView::Agents);
     request_transcript_list(app);
+}
+
+/// Keys of the Ctrl+T task list: Up/Down choose an agent, Enter inspects it in
+/// this view, and Esc or the toggle key returns to the chat.
+pub(crate) fn handle_list_key(app: &mut App, key: KeyEvent) {
+    use crate::app::keymap::{AppAction, KeyAction, KeyContext};
+    if key.code == KeyCode::Esc
+        || app.keymap.resolve_event(KeyContext::ChatInput, key).is_some_and(|binding| {
+            binding.action == KeyAction::App(AppAction::ToggleTasks)
+        })
+    {
+        crate::app::view::set_chat_surface(app);
+        return;
+    }
+    if !key.modifiers.is_empty() {
+        return;
+    }
+    let ids: Vec<String> = crate::ui::agent_rows::session_agent_rows(app)
+        .iter()
+        .map(|row| row.task.task_id.clone())
+        .collect();
+    let current = app
+        .agents
+        .selected_task_id
+        .as_ref()
+        .and_then(|id| ids.iter().position(|candidate| candidate == id))
+        .unwrap_or(0);
+    match key.code {
+        KeyCode::Up => app.agents.selected_task_id = ids.get(current.saturating_sub(1)).cloned(),
+        KeyCode::Down => {
+            let next = (current + 1).min(ids.len().saturating_sub(1));
+            app.agents.selected_task_id = ids.get(next).cloned();
+        }
+        KeyCode::Enter => {
+            if let Some(id) = ids.get(current).cloned() {
+                open_at(app, Some(id));
+            }
+        }
+        _ => {}
+    }
 }
 
 fn close(app: &mut App) {

@@ -2,6 +2,7 @@
 // Copyright 2025 Simon Peter Rothgang
 
 use super::prelude::*;
+use crate::app::ToolCallInfo;
 
 impl App {
     pub(crate) fn sync_tool_call_history(&mut self, id: &str) {
@@ -49,7 +50,32 @@ impl App {
     }
 
     pub fn register_tool_call_scope(&mut self, id: String, scope: ToolCallScope) {
+        if let ToolCallScope::SubagentChild { parent_tool_use_id } = &scope {
+            let children =
+                self.recent_child_tool_ids.entry(parent_tool_use_id.clone()).or_default();
+            if !children.contains(&id) {
+                if children.len() == 8 {
+                    children.pop_front();
+                }
+                children.push_back(id.clone());
+            }
+        }
         self.tool_call_scopes.insert(id, scope);
+    }
+
+    pub(crate) fn recent_child_tools<'a>(
+        &'a self,
+        parent_id: &str,
+    ) -> impl Iterator<Item = &'a ToolCallInfo> {
+        self.recent_child_tool_ids
+            .get(parent_id)
+            .into_iter()
+            .flat_map(|ids| ids.iter().rev())
+            .filter_map(|id| self.lookup_tool_call(id))
+            .filter_map(|(mi, bi)| match self.transcript.messages.get(mi)?.blocks.get(bi)? {
+                MessageBlock::ToolCall(tool) => Some(tool.as_ref()),
+                _ => None,
+            })
     }
 
     #[must_use]
@@ -59,6 +85,7 @@ impl App {
 
     pub fn clear_tool_scope_tracking(&mut self) {
         self.tool_call_scopes.clear();
+        self.recent_child_tool_ids.clear();
         self.turn.active_task_ids.clear();
     }
 

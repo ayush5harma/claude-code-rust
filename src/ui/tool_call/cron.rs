@@ -71,7 +71,10 @@ fn render_delete_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
 
 fn render_text_line(line: &str) -> Line<'static> {
     if line.trim() == CRON_LIST_DIVIDER {
-        return Line::from(Span::styled("\u{2500}".repeat(16), Style::default().fg(theme::DIM)));
+        return Line::from(Span::styled(
+            "\u{2500}".repeat(16),
+            Style::default().fg(theme::tertiary()),
+        ));
     }
     if let Some((label, value)) = line.split_once(':')
         && let Some(label) = field_label(label.trim())
@@ -247,7 +250,7 @@ mod tests {
                 "Prompt: second",
             ]
         );
-        assert_eq!(lines[3].spans[0].style.fg, Some(crate::ui::theme::DIM));
+        assert_eq!(lines[3].spans[0].style.fg, Some(crate::ui::theme::tertiary()));
     }
 
     #[test]
