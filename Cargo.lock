@@ -579,7 +579,7 @@ dependencies = [
 
 [[package]]
 name = "claude-code-rust"
-version = "0.15.2-fork.6"
+version = "0.15.2-fork.7"
 dependencies = [
  "anyhow",
  "arboard",

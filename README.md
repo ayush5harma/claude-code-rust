@@ -50,7 +50,7 @@ The stock interface runs on Node.js with React Ink, which redraws whole frames o
 
 The additions below are measured against upstream commit `26f9b12` (v0.15.2); ordinary upstream features are not listed. The [changelog](CHANGELOG.md) has the details of each release.
 
-### Next release
+### v0.15.2-fork.7
 
 | Change | What it does |
 | --- | --- |
