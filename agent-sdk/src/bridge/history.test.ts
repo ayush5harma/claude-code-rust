@@ -183,8 +183,9 @@ test("a resumed notification for a non-Agent tool stays a plain runtime task", (
   ]);
   const row = updates.filter(update => update.type === "task_state_update").flatMap(update => update.tasks).at(-1);
   assert.equal(row?.status, "completed");
-  assert.equal((row?.metadata as Record<string, unknown>).terminal_status, "killed");
-  assert.equal((row?.metadata as Record<string, unknown>).task_type, undefined);
+  const metadata = row?.metadata as Record<string, unknown> | undefined;
+  assert.equal(metadata?.terminal_status, "killed");
+  assert.equal(metadata?.task_type, undefined);
 });
 
 test("resume skips malformed internal notifications and restores later conversation and task outcomes", () => {
