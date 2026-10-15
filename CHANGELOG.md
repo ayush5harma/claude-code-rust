@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.15.2-fork.6] - 2026-10-15
+
 ### Features
 
 - One semantic palette after Apple's Human Interface Guidelines replaces named ANSI colors, which terminal themes remap. Every text color reaches 4.5:1 contrast against the terminal background and the app's own fills, and tests enforce it.
