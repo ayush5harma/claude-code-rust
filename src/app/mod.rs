@@ -275,20 +275,9 @@ async fn run_tui_loop(
         terminal_runtime.sync_surface(app)?;
 
         // Phase 3: render once (only when something changed)
-        let is_animating = !app.shutdown_requested()
-            && !app.config.prefers_reduced_motion_effective()
-            && (app.activity_presentation(now).is_some()
-                || matches!(app.status, AppStatus::Connecting | AppStatus::CommandPending)
-                || app.btw.has_active()
-                || app.transcript.messages.iter().flat_map(|message| &message.blocks).any(|block| {
-                    matches!(block, MessageBlock::ToolCall(tool) if !tool.hidden_unless_focused_interaction() && matches!(tool.status, model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending))
-                }));
+        let is_animating = schedule_animation_frame(app, now);
         if is_animating {
-            advance_spinner_frame(app, Instant::now());
             tab_title::update_tab_title(app);
-            app.request_active_surface_repaint();
-        } else {
-            app.spinner_last_advance_at = None;
         }
         // Update tab title on non-animating state transitions (Ready, Error).
         if !is_animating && app.surface_dirty.active_surface_needs_draw(app.terminal_lifecycle) {
@@ -572,6 +561,38 @@ async fn shutdown_connection_with_interrupts(app: &mut App, events: &mut Termina
             return;
         }
     }
+}
+
+/// Whether this frame shows motion and so must be redrawn on the next tick.
+/// It is false at idle, so an idle app schedules no redraws.
+fn frame_is_animating(app: &App, now: Instant) -> bool {
+    !app.shutdown_requested()
+        && !app.config.prefers_reduced_motion_effective()
+        && (app.activity_presentation(now).is_some()
+            || matches!(app.status, AppStatus::Connecting | AppStatus::CommandPending)
+            || app.btw.has_active()
+            || crate::ui::ferris_hello_live(app, now)
+            || app.transcript.messages.iter().flat_map(|message| &message.blocks).any(|block| {
+                matches!(block, MessageBlock::ToolCall(tool) if !tool.hidden_unless_focused_interaction() && matches!(tool.status, model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending))
+            }))
+}
+
+/// Advances the spinner and requests the next draw while the frame animates.
+/// While the welcome is the whole transcript, an animation that stops
+/// requests one more draw even if nothing else changed: the welcome crab's
+/// hello ends on the clock alone, and that draw is the one that commits the
+/// rested welcome. Returns whether the frame animates.
+fn schedule_animation_frame(app: &mut App, now: Instant) -> bool {
+    let is_animating = frame_is_animating(app, now);
+    if is_animating {
+        advance_spinner_frame(app, now);
+        app.request_active_surface_repaint();
+    } else if app.spinner_last_advance_at.take().is_some()
+        && crate::ui::welcome_is_whole_transcript(app)
+    {
+        app.request_active_surface_repaint();
+    }
+    is_animating
 }
 
 fn advance_spinner_frame(app: &mut App, now: Instant) {

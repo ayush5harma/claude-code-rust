@@ -586,3 +586,147 @@ fn reduced_motion_stops_animation_and_reset_resumes_it() {
     assert_ne!(app.spinner_frame, frame);
     assert_ne!(crate::ui::SpinnerState::for_app(&app).icon(), "\u{25C6}");
 }
+
+/// A ready app whose first connect was at `connected`, with the welcome as
+/// its whole transcript and the settings snapshot acknowledged.
+fn welcomed_app(connected: Instant, reduced_motion: bool) -> App {
+    let mut app = App::test_default();
+    app.status = AppStatus::Ready;
+    app.startup.mark_connected(connected);
+    app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+        "prefersReducedMotion",
+        serde_json::json!(reduced_motion),
+    ));
+    app.transcript.messages.push(ChatMessage::welcome("1.2.3", "Pro", "/demo", "session-1"));
+    app.chat_render.observe_terminal_size(110, 34);
+    app
+}
+
+/// Runs one frame-loop scheduling step at `at` and reports whether it asked
+/// for a draw, clearing the request for the next step.
+fn scheduled_draw(app: &mut App, at: Instant) -> bool {
+    schedule_animation_frame(app, at);
+    std::mem::take(&mut app.surface_dirty.chat.repaint)
+}
+
+#[test]
+fn welcome_hello_redraws_through_its_window_and_ends_with_exactly_one_more_draw() {
+    let connected = Instant::now();
+    let mut app = welcomed_app(connected, false);
+    app.surface_dirty.chat.repaint = false;
+
+    assert!(scheduled_draw(&mut app, connected + Duration::from_millis(100)));
+    assert!(scheduled_draw(&mut app, connected + Duration::from_millis(1_199)));
+    assert!(
+        scheduled_draw(&mut app, connected + Duration::from_millis(1_200)),
+        "the draw that commits the rested welcome"
+    );
+    assert!(!scheduled_draw(&mut app, connected + Duration::from_millis(1_216)));
+    assert!(!scheduled_draw(&mut app, connected + Duration::from_secs(60)), "idle stays idle");
+}
+
+#[test]
+fn a_welcome_held_back_without_a_wave_still_gets_the_draw_that_commits_it() {
+    let connected = Instant::now();
+    let mut app = welcomed_app(connected, false);
+    app.config.snapshot = None;
+    app.surface_dirty.chat.repaint = false;
+
+    assert!(scheduled_draw(&mut app, connected + Duration::from_millis(100)));
+    assert!(
+        scheduled_draw(&mut app, connected + Duration::from_millis(1_200)),
+        "the window closed with no wave drawn; this draw commits the welcome"
+    );
+    assert!(!scheduled_draw(&mut app, connected + Duration::from_millis(1_216)));
+}
+
+#[test]
+fn a_narrow_terminal_neither_holds_the_welcome_nor_schedules_draws() {
+    let connected = Instant::now();
+    // 36 columns is the width at which the overview drops the crab column.
+    let mut app = welcomed_app(connected, false);
+    app.chat_render.observe_terminal_size(36, 34);
+    app.surface_dirty.chat.repaint = false;
+
+    assert!(!scheduled_draw(&mut app, connected + Duration::from_millis(100)));
+    assert!(!scheduled_draw(&mut app, connected + Duration::from_millis(1_200)));
+}
+
+#[test]
+fn the_hello_does_not_redraw_a_fullscreen_view_over_the_welcome() {
+    let connected = Instant::now();
+    let mut app = welcomed_app(connected, false);
+    app.terminal_lifecycle =
+        TerminalLifecycleState::Running(SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
+
+    assert!(!frame_is_animating(&app, connected + Duration::from_millis(100)));
+}
+
+#[test]
+fn reduced_motion_schedules_no_welcome_redraws() {
+    let connected = Instant::now();
+    let mut app = welcomed_app(connected, true);
+    assert!(!frame_is_animating(&app, connected + Duration::from_millis(100)));
+
+    app.status = AppStatus::Connecting;
+    assert!(!frame_is_animating(&app, connected + Duration::from_millis(100)));
+}
+
+#[test]
+fn a_stopped_animation_requests_no_extra_draw_once_the_transcript_has_more_than_the_welcome() {
+    let mut app = App::test_default();
+    app.status = AppStatus::Connecting;
+    app.transcript.messages.push(ChatMessage::welcome("1.2.3", "Pro", "/demo", "session-1"));
+    app.transcript.messages.push(ChatMessage::new(
+        MessageRole::User,
+        vec![MessageBlock::Text(crate::app::TextBlock::from_complete("hello"))],
+        None,
+    ));
+    let start = Instant::now();
+    app.surface_dirty.chat.repaint = false;
+    assert!(scheduled_draw(&mut app, start), "Connecting animates");
+
+    app.status = AppStatus::Ready;
+
+    assert!(!scheduled_draw(&mut app, start + Duration::from_millis(16)));
+}
+
+/// The welcome's rows as text, from the real inline row serializer.
+fn rendered_welcome_text(app: &mut App) -> String {
+    let rows = crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding(
+        app,
+        120,
+        &std::collections::BTreeSet::new(),
+    );
+    rows.rows()
+        .iter()
+        .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn the_connecting_crab_changes_pose_every_192_ms_on_the_real_loop_tick() {
+    let start = Instant::now();
+    let mut app = App::test_default();
+    app.status = AppStatus::Connecting;
+    app.transcript.messages.push(ChatMessage::welcome("1.2.3", "-", "/demo", "-"));
+    let mut shown = rendered_welcome_text(&mut app);
+    let mut changes_ms = Vec::new();
+
+    // The loop ticks every 16 ms; the spinner that paces the crab advances at
+    // most once per 30 ms, so once per two ticks.
+    for tick in 0..=70_u32 {
+        let elapsed = EVENT_LOOP_TICK_INTERVAL * tick;
+        schedule_animation_frame(&mut app, start + elapsed);
+        let now_shown = rendered_welcome_text(&mut app);
+        if now_shown != shown {
+            changes_ms.push(elapsed.as_millis());
+            shown = now_shown;
+        }
+    }
+
+    // The first advance is on the first tick, so the first pose is shorter;
+    // after that a pose lasts 6 spinner frames of 32 ms.
+    assert_eq!(changes_ms, [160, 352, 544, 736, 928, 1120]);
+}

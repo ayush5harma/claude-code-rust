@@ -232,7 +232,7 @@ Every row has a description in the app. This section covers behavior that needs 
 | Question timeout | `askUserQuestionTimeout` | Never / 60 seconds / 5 minutes / 10 minutes | User only. See below. |
 | Dialog expiry | `dialogExpiry` | 60 seconds / 5 minutes / 10 minutes / Never | User only. See below. |
 | Respect .gitignore | `respectGitignore` | On / Off | Hides ignored files from the file picker. Applies immediately. |
-| Reduce motion | `prefersReducedMotion` | On / Off | Shows a static `◆` in place of animated spinners. Applies immediately. |
+| Reduce motion | `prefersReducedMotion` | On / Off | Shows a static `◆` in place of animated spinners and keeps the welcome crab still. Applies immediately. |
 
 General also holds the settings described under [Presentation and scrolling](#presentation-and-scrolling), [Notifications](#notifications) and [Automatic updates](#automatic-updates).
 
