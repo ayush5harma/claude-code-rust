@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 use crate::app::App;
+use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
@@ -119,7 +120,7 @@ pub(super) fn render_add_marketplace_overlay(frame: &mut Frame, area: Rect, app:
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "Enter marketplace source:",
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::label()).add_modifier(Modifier::BOLD),
         ))),
         sections[0],
     );

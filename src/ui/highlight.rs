@@ -166,7 +166,12 @@ pub(crate) fn code_background() -> Option<Color> {
 }
 
 fn highlight_theme() -> &'static Theme {
-    theme(EmbeddedThemeName::Base16OceanDark)
+    // Code blocks paint their theme's own background, so the pair only has to
+    // match the terminal's appearance to sit well beside the rest of the text.
+    match crate::ui::theme::appearance() {
+        crate::ui::theme::Appearance::Dark => theme(EmbeddedThemeName::Base16OceanDark),
+        crate::ui::theme::Appearance::Light => theme(EmbeddedThemeName::Base16OceanLight),
+    }
 }
 
 fn theme(theme_name: EmbeddedThemeName) -> &'static Theme {

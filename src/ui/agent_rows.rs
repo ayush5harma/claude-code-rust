@@ -168,15 +168,15 @@ pub(crate) fn task_status(task: &TaskItem) -> &'static str {
 
 pub(crate) fn status_glyph(row: &AgentRow<'_>) -> (&'static str, Color) {
     if text(row.task.metadata.as_ref(), "terminal_status") == Some("failed") {
-        return ("✗", theme::STATUS_ERROR);
+        return ("✗", theme::danger());
     }
     if task_status(row.task) == "stopped" {
-        return ("○", theme::DIM);
+        return ("○", theme::tertiary());
     }
     match row.task.status {
         TaskStatus::InProgress => ("●", row.accent),
-        TaskStatus::Completed => ("✓", Color::Green),
-        TaskStatus::Pending => ("○", theme::DIM),
+        TaskStatus::Completed => ("✓", theme::success()),
+        TaskStatus::Pending => ("○", theme::tertiary()),
     }
 }
 
@@ -268,7 +268,7 @@ pub(crate) fn render_agent_row(
         Span::raw(" "),
         Span::styled(
             format!("{:<name_width$}", clip(row.name, columns.name), name_width = columns.name),
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme::secondary()),
         ),
         Span::raw("  "),
         Span::styled(
@@ -277,7 +277,11 @@ pub(crate) fn render_agent_row(
                 clip(row.model, columns.model),
                 model_width = columns.model
             ),
-            Style::default().fg(if row.model_requested { theme::DIM } else { Color::Gray }),
+            Style::default().fg(if row.model_requested {
+                theme::tertiary()
+            } else {
+                theme::secondary()
+            }),
         ),
     ];
     let available = width.saturating_sub(prefix_width + metrics.width() + 2);
@@ -288,16 +292,19 @@ pub(crate) fn render_agent_row(
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
             format!("{:<task_width$}", clip(task, task_width)),
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme::secondary()),
         ));
         if now_width > 0 {
             spans.push(Span::raw("  "));
-            spans.push(Span::styled(clip(&row.now, now_width), Style::default().fg(theme::DIM)));
+            spans.push(Span::styled(
+                clip(&row.now, now_width),
+                Style::default().fg(theme::tertiary()),
+            ));
         }
     }
     let used: usize = spans.iter().map(|s| s.content.width()).sum();
     spans.push(Span::raw(" ".repeat(width.saturating_sub(used + metrics.width()))));
-    spans.push(Span::styled(metrics, Style::default().fg(theme::DIM)));
+    spans.push(Span::styled(metrics, Style::default().fg(theme::tertiary())));
     Line::from(spans)
 }
 

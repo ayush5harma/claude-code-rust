@@ -21,20 +21,20 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let outer = Block::default()
         .borders(Borders::ALL)
         .title("Trust project")
-        .border_style(Style::default().fg(theme::DIM));
+        .border_style(Style::default().fg(theme::tertiary()));
     frame.render_widget(outer, area);
 
     let inner = area.inner(Margin { vertical: 1, horizontal: 2 });
     let question = Line::from(Span::styled(
         QUESTION,
-        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+        Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD),
     ));
     let intro = vec![Line::default(), Line::from(INTRO)];
     let message = app.trust.last_error.clone().unwrap_or_else(|| DEFAULT_MESSAGE.to_owned());
     let message_style = if app.trust.last_error.is_some() {
-        Style::default().fg(theme::STATUS_ERROR)
+        Style::default().fg(theme::danger())
     } else {
-        Style::default().fg(theme::DIM)
+        Style::default().fg(theme::tertiary())
     };
     let message_lines = vec![Line::from(Span::styled(message, message_style))];
 
@@ -164,9 +164,9 @@ fn action_lines(app: &App) -> Vec<Line<'static>> {
 fn action_line(label: &str, selected: bool) -> Line<'static> {
     let marker = if selected { ">" } else { " " };
     let style = if selected {
-        Style::default().fg(ratatui::style::Color::White).bg(theme::RUST_ORANGE)
+        Style::default().fg(theme::on_accent()).bg(theme::accent())
     } else {
-        Style::default().fg(theme::DIM)
+        Style::default().fg(theme::tertiary())
     }
     .add_modifier(Modifier::BOLD);
 

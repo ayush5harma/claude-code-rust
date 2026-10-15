@@ -21,7 +21,7 @@ pub(crate) fn build_activity_rows(app: &App, width: u16, now: Instant) -> Vec<Li
     }
     let status = Line::from(Span::styled(
         format!("{} {}", SpinnerState::for_app(app).icon(), presentation.text()),
-        Style::default().fg(theme::RUST_ORANGE),
+        Style::default().fg(theme::accent()),
     ));
     let mut rows = if presentation.heading == ActivityHeading::Composer {
         crate::ui::wrap::wrap_lines_to_physical_rows(
@@ -36,7 +36,7 @@ pub(crate) fn build_activity_rows(app: &App, width: u16, now: Instant) -> Vec<Li
         rows.extend(railed_rows(
             Line::from(vec![
                 Span::raw("Tip: "),
-                Span::styled(tip, Style::default().fg(theme::DIM)),
+                Span::styled(tip, Style::default().fg(theme::tertiary())),
             ]),
             width,
             true,
@@ -45,7 +45,7 @@ pub(crate) fn build_activity_rows(app: &App, width: u16, now: Instant) -> Vec<Li
         rows.extend(railed_rows(
             Line::from(Span::styled(
                 "Keep drafting — sending resumes when compaction finishes.",
-                Style::default().fg(theme::DIM),
+                Style::default().fg(theme::tertiary()),
             )),
             width,
             true,
@@ -58,7 +58,7 @@ fn railed_rows(line: Line<'static>, width: u16, wrap: bool) -> Vec<Line<'static>
     if width == 0 {
         return Vec::new();
     }
-    let rail_style = Style::default().fg(theme::RUST_ORANGE);
+    let rail_style = Style::default().fg(theme::accent());
     if width <= 2 {
         return vec![Line::from(Span::styled("│", rail_style))];
     }
@@ -97,11 +97,11 @@ mod tests {
             assert!(rows.len() >= 2);
             assert!(rows.iter().all(|row| row.width() <= usize::from(width)));
             assert!(rows.iter().all(|row| row.to_string().starts_with('│')));
-            assert!(rows.iter().all(|row| row.spans[0].style.fg == Some(theme::RUST_ORANGE)));
+            assert!(rows.iter().all(|row| row.spans[0].style.fg == Some(theme::accent())));
             if width > 2 {
                 assert!(rows[0].to_string().starts_with("│ ◆ "));
                 assert!(rows[1].to_string().starts_with("│ Tip: "));
-                assert_eq!(rows[0].spans[1].style.fg, Some(theme::RUST_ORANGE));
+                assert_eq!(rows[0].spans[1].style.fg, Some(theme::accent()));
             }
         }
         assert!(build_activity_rows(&app, 0, now).is_empty());

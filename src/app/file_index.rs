@@ -1221,7 +1221,7 @@ fn run_scan_with_limit(
             return true;
         }
         batches_sent += 1;
-        if batches_sent == 1 || batches_sent % 64 == 0 {
+        if batches_sent == 1 || batches_sent.is_multiple_of(64) {
             tracing::debug!(
                 target: crate::logging::targets::APP_FILE_INDEX,
                 event_name = "file_index_scan_progress",

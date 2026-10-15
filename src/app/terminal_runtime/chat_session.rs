@@ -990,7 +990,7 @@ impl ComposerSurface {
         let editor_preview = match &self.editor {
             ComposerEditor::TextArea { desired_height } => vec![Line::from(Span::styled(
                 format!("<textarea widget rows={desired_height}>"),
-                Style::default().fg(theme::DIM),
+                Style::default().fg(theme::tertiary()),
             ))],
             ComposerEditor::Rows(_) => editor_rows.to_vec(),
         };
@@ -1204,7 +1204,7 @@ fn render_textarea_editor(frame: &mut ratatui::Frame<'_>, app: &mut App, area: R
         }
     } else {
         frame.render_widget(
-            Paragraph::new("").style(Style::default().bg(theme::USER_MSG_BG)),
+            Paragraph::new("").style(Style::default().bg(theme::fill())),
             geometry.field,
         );
         frame.render_widget(
@@ -1497,7 +1497,7 @@ mod tests {
 
         for y in 0..3 {
             for x in 0..20 {
-                assert_eq!(buffer[(x, y)].style().bg, Some(theme::USER_MSG_BG));
+                assert_eq!(buffer[(x, y)].style().bg, Some(theme::fill()));
             }
         }
     }
@@ -1512,7 +1512,7 @@ mod tests {
 
         for y in 0..3 {
             for x in 0..20 {
-                assert_eq!(buffer[(x, y)].style().bg, Some(theme::USER_MSG_BG));
+                assert_eq!(buffer[(x, y)].style().bg, Some(theme::fill()));
             }
         }
     }
@@ -1538,7 +1538,7 @@ mod tests {
         assert_eq!(buffer[(1, 1)].symbol(), "❯");
         assert_eq!(buffer[(1, 1)].style().fg, Some(app.session_runtime.accent));
         assert_eq!(buffer[(3, 1)].symbol(), "h");
-        assert_ne!(buffer[(3, 1)].style().bg, Some(theme::USER_MSG_BG));
+        assert_ne!(buffer[(3, 1)].style().bg, Some(theme::fill()));
     }
 
     #[test]

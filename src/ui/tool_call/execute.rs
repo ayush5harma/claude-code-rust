@@ -31,7 +31,8 @@ pub(super) fn render_execute_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
                 .collect();
         }
     } else if matches!(tc.status, model::ToolCallStatus::InProgress) {
-        body_lines.push(Line::from(Span::styled("running...", Style::default().fg(theme::DIM))));
+        body_lines
+            .push(Line::from(Span::styled("running...", Style::default().fg(theme::tertiary()))));
     }
 
     let output_budget = TOOL_BODY_MAX_LINES.saturating_sub(lines.len());
@@ -52,7 +53,7 @@ fn cap_execute_output_lines(lines: Vec<Line<'static>>, max_lines: usize) -> Vec<
     let mut out = Vec::with_capacity(max_lines);
     out.push(Line::from(Span::styled(
         format!("... {omitted} lines hidden ..."),
-        Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+        Style::default().fg(theme::tertiary()).add_modifier(Modifier::ITALIC),
     )));
     out.extend(lines.into_iter().skip(omitted));
     out
@@ -61,7 +62,7 @@ fn cap_execute_output_lines(lines: Vec<Line<'static>>, max_lines: usize) -> Vec<
 /// Output with no colour of its own stays dim; whatever colour and style the program asked
 /// for (SGR) is kept on top of that.
 fn dim_unstyled_line(line: Line<'static>) -> Line<'static> {
-    let base = Style::default().fg(theme::DIM);
+    let base = Style::default().fg(theme::tertiary());
     Line::from(
         line.spans
             .into_iter()

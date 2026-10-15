@@ -15,7 +15,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let outer = Block::default()
         .borders(Borders::ALL)
         .title("Update Available!")
-        .border_style(Style::default().fg(theme::DIM));
+        .border_style(Style::default().fg(theme::tertiary()));
     frame.render_widget(outer, area);
 
     let inner = area.inner(Margin { vertical: 1, horizontal: 2 });
@@ -26,7 +26,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let title = Line::from(Span::styled(
         format!("Claude Rust v{} is available", prompt.latest_version),
-        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+        Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD),
     ));
     let detail = vec![
         Line::from(format!("Current version: v{}", prompt.current_version)),
@@ -53,7 +53,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if let Some(error) = prompt.last_error.as_deref() {
         frame.render_widget(
             Paragraph::new(error.to_owned())
-                .style(Style::default().fg(theme::STATUS_ERROR))
+                .style(Style::default().fg(theme::danger()))
                 .wrap(Wrap { trim: false }),
             chunks[2],
         );
@@ -62,7 +62,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Paragraph::new(action_lines(app)).wrap(Wrap { trim: false }), chunks[3]);
     frame.render_widget(
         Paragraph::new("Enter select | Esc skip now | Ctrl+Q quit")
-            .style(Style::default().fg(theme::DIM)),
+            .style(Style::default().fg(theme::tertiary())),
         chunks[4],
     );
 }
@@ -101,9 +101,9 @@ fn action_lines(app: &App) -> Vec<Line<'static>> {
 fn action_line(label: &str, selected: bool) -> Line<'static> {
     let marker = if selected { ">" } else { " " };
     let style = if selected {
-        Style::default().fg(theme::RUST_ORANGE)
+        Style::default().fg(theme::accent())
     } else {
-        Style::default().fg(theme::DIM)
+        Style::default().fg(theme::tertiary())
     }
     .add_modifier(Modifier::BOLD);
 

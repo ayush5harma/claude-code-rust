@@ -7,7 +7,7 @@ use super::input::render_text_input_field;
 use super::overlay::{
     OverlayChrome, OverlayLayoutSpec, render_overlay_separator, render_overlay_shell,
 };
-use super::theme;
+use super::theme::{self, Tone};
 use crate::agent::model::{McpServerConnectionStatus, McpServerStatus, McpServerStatusConfig};
 use crate::agent::types::{ElicitationAction, ElicitationMode};
 use crate::app::App;
@@ -149,14 +149,14 @@ pub(super) fn render_callback_url_overlay(frame: &mut Frame, area: Rect, app: &A
         section_heading("Callback"),
         Line::from(Span::styled(
             "Paste the OAuth callback URL returned by the provider.",
-            Style::default().fg(theme::DIM),
+            Style::default().fg(theme::tertiary()),
         )),
         Line::default(),
-        detail_kv("Server", &overlay.server_name, Color::White),
+        detail_kv("Server", &overlay.server_name, theme::label()),
     ];
     let footer_lines = vec![Line::from(Span::styled(
         "The URL is sent to the SDK exactly as pasted.",
-        Style::default().fg(theme::DIM),
+        Style::default().fg(theme::tertiary()),
     ))];
     let sections = Layout::default()
         .direction(Direction::Vertical)
@@ -305,25 +305,21 @@ fn summary_lines(app: &App) -> Vec<Line<'static>> {
             app.mcp.servers.len(),
         ),
         Span::raw(" "),
-        badge_span(&format!("total {}", app.mcp.servers.len()), Color::Black, Color::White),
+        badge_span(&format!("total {}", app.mcp.servers.len()), Tone::Neutral),
         Span::styled(" ", Style::default()),
-        badge_span(&format!("connected {}", counts.connected), Color::Black, theme::RUST_ORANGE),
+        count_badge("connected", counts.connected, Tone::Success),
         Span::styled(" ", Style::default()),
-        badge_span(
-            &format!("needs auth {}", counts.needs_auth),
-            Color::Black,
-            theme::STATUS_WARNING,
-        ),
+        count_badge("needs auth", counts.needs_auth, Tone::Warning),
         Span::styled(" ", Style::default()),
-        badge_span(&format!("pending {}", counts.pending), Color::Black, Color::Cyan),
+        count_badge("pending", counts.pending, Tone::Info),
         Span::styled(" ", Style::default()),
-        badge_span(&format!("disabled {}", counts.disabled), Color::White, Color::DarkGray),
+        count_badge("disabled", counts.disabled, Tone::Neutral),
         Span::styled(" ", Style::default()),
-        badge_span(&format!("failed {}", counts.failed), Color::White, theme::STATUS_ERROR),
+        count_badge("failed", counts.failed, Tone::Danger),
     ];
     if app.mcp.in_flight {
         stats_spans.push(Span::styled(" ", Style::default()));
-        stats_spans.push(badge_span("refreshing", Color::Black, Color::Cyan));
+        stats_spans.push(badge_span("refreshing", Tone::Info));
     }
 
     let mut lines = vec![Line::from(stats_spans), Line::default()];
@@ -331,7 +327,7 @@ fn summary_lines(app: &App) -> Vec<Line<'static>> {
     if let Some(error) = app.mcp.last_error.as_deref() {
         lines.push(Line::from(Span::styled(
             format!("Last MCP error: {error}"),
-            Style::default().fg(theme::STATUS_ERROR),
+            Style::default().fg(theme::danger()),
         )));
         lines.push(Line::default());
     }
@@ -345,15 +341,17 @@ fn server_list_lines(server: &McpServerStatus, selected: bool) -> Vec<Line<'stat
             Line::from(vec![
                 Span::styled(server.name.clone(), super::common::title_style()),
                 Span::styled("  ", Style::default()),
-                badge_span(
-                    status_label(server.status),
-                    status_badge_fg(server.status),
-                    status_color(server.status),
+                badge_span(status_label(server.status), status_tone(server.status)),
+                // Scope and transport are metadata: quiet text beside the one
+                // badge that carries state, so the status reads first.
+                Span::styled(
+                    format!(
+                        "  {} \u{b7} {}",
+                        scope_label(server.scope.as_deref()),
+                        transport_label(server.config.as_ref())
+                    ),
+                    Style::default().fg(theme::tertiary()),
                 ),
-                Span::styled(" ", Style::default()),
-                badge_span(scope_label(server.scope.as_deref()), Color::White, Color::DarkGray),
-                Span::styled(" ", Style::default()),
-                badge_span(transport_label(server.config.as_ref()), Color::Black, Color::White),
             ]),
             selected,
         ),
@@ -368,25 +366,29 @@ fn server_list_lines(server: &McpServerStatus, selected: bool) -> Vec<Line<'stat
 fn server_detail_lines(app: &App, server: &McpServerStatus) -> Vec<Line<'static>> {
     let mut lines = vec![
         section_heading("Status"),
-        detail_kv("Status", status_label(server.status), status_color(server.status)),
+        detail_kv(
+            "Status",
+            status_label(server.status),
+            theme::tone_color(status_tone(server.status)),
+        ),
         detail_kv(
             "Enabled",
             if matches!(server.status, McpServerConnectionStatus::Disabled) { "No" } else { "Yes" },
-            Color::White,
+            theme::label(),
         ),
-        detail_kv("Scope", scope_label(server.scope.as_deref()), Color::White),
-        detail_kv("Source", scope_label(server.source.as_deref()), Color::White),
-        detail_kv("Transport", transport_label(server.config.as_ref()), Color::White),
-        detail_kv("Tools", &tool_summary(server.tools.len()), Color::White),
+        detail_kv("Scope", scope_label(server.scope.as_deref()), theme::label()),
+        detail_kv("Source", scope_label(server.source.as_deref()), theme::label()),
+        detail_kv("Transport", transport_label(server.config.as_ref()), theme::label()),
+        detail_kv("Tools", &tool_summary(server.tools.len()), theme::label()),
     ];
 
     if let Some(owner) = mcp_server_owner_summary(app, server) {
-        lines.push(detail_kv("Owner", &owner, Color::White));
+        lines.push(detail_kv("Owner", &owner, theme::label()));
     }
 
     if let Some(info) = server.server_info.as_ref() {
-        lines.push(detail_kv("Server name", &info.name, Color::White));
-        lines.push(detail_kv("Version", &info.version, Color::White));
+        lines.push(detail_kv("Server name", &info.name, theme::label()));
+        lines.push(detail_kv("Version", &info.version, theme::label()));
     }
 
     if let Some(config) = server.config.as_ref() {
@@ -398,7 +400,7 @@ fn server_detail_lines(app: &App, server: &McpServerStatus) -> Vec<Line<'static>
     if let Some(error) = server.error.as_deref() {
         lines.push(Line::default());
         lines.push(section_heading("Error"));
-        lines.push(detail_value(error, theme::STATUS_ERROR));
+        lines.push(detail_value(error, theme::danger()));
     }
 
     lines
@@ -408,12 +410,12 @@ fn server_missing_lines() -> Vec<Line<'static>> {
     vec![
         Line::from(Span::styled(
             "The selected server is no longer present in the latest MCP snapshot.",
-            Style::default().fg(theme::DIM),
+            Style::default().fg(theme::tertiary()),
         )),
         Line::default(),
         Line::from(Span::styled(
             "Close this overlay and refresh the MCP list.",
-            Style::default().fg(theme::DIM),
+            Style::default().fg(theme::tertiary()),
         )),
     ]
 }
@@ -425,7 +427,7 @@ fn mcp_action_lines(
 ) -> Vec<Line<'static>> {
     let actions = available_mcp_actions(app, server);
     if actions.is_empty() {
-        return vec![detail_value("No actions available.", theme::DIM)];
+        return vec![detail_value("No actions available.", theme::tertiary())];
     }
 
     let mut lines = vec![section_heading("Actions"), Line::default()];
@@ -437,7 +439,7 @@ fn mcp_action_lines(
         )];
         if !is_mcp_action_available(app, server, action) {
             spans.push(Span::styled("  ", Style::default()));
-            spans.push(badge_span("not available", Color::Black, theme::STATUS_WARNING));
+            spans.push(badge_span("not available", Tone::Warning));
         }
         lines.push(Line::from(spans));
     }
@@ -450,37 +452,37 @@ fn elicitation_body_lines(
     let request = &overlay.request;
     let mut lines = vec![
         section_heading("Request"),
-        detail_kv("Mode", elicitation_mode_label(request.mode), Color::White),
-        Line::from(Span::styled(request.message.clone(), Style::default().fg(Color::White))),
+        detail_kv("Mode", elicitation_mode_label(request.mode), theme::label()),
+        Line::from(Span::styled(request.message.clone(), Style::default().fg(theme::label()))),
     ];
     if let Some(url) = request.url.as_deref() {
         lines.push(Line::default());
         lines.push(section_heading("URL"));
-        lines.push(detail_value(url, Color::White));
+        lines.push(detail_value(url, theme::label()));
     }
     if overlay.browser_opened {
         lines.push(Line::default());
         lines.push(detail_value(
             "Opened your browser automatically. Finish auth there, then accept below.",
-            theme::DIM,
+            theme::tertiary(),
         ));
     }
     if let Some(error) = overlay.browser_open_error.as_deref() {
         lines.push(Line::default());
-        lines.push(detail_value(error, theme::STATUS_ERROR));
+        lines.push(detail_value(error, theme::danger()));
     }
     if matches!(request.mode, ElicitationMode::Form) {
         lines.push(Line::default());
         lines.push(section_heading("Form"));
         lines.push(detail_value(
             "Structured MCP forms are not editable yet in claude-rs.",
-            theme::DIM,
+            theme::tertiary(),
         ));
         if let Some(schema) = request.requested_schema.as_ref() {
             let schema_text =
                 serde_json::to_string_pretty(schema).unwrap_or_else(|_| schema.to_string());
             for line in schema_text.lines() {
-                lines.push(detail_value(line, theme::DIM));
+                lines.push(detail_value(line, theme::tertiary()));
             }
         }
     }
@@ -517,22 +519,22 @@ fn auth_redirect_body_lines(
         section_heading("Request"),
         detail_value(
             "Claude Code returned a browser auth redirect for this MCP server.",
-            Color::White,
+            theme::label(),
         ),
         Line::default(),
         section_heading("URL"),
-        detail_value(&redirect.auth_url, Color::White),
+        detail_value(&redirect.auth_url, theme::label()),
     ];
     if overlay.browser_opened {
         lines.push(Line::default());
         lines.push(detail_value(
             "Opened your browser automatically. Finish auth there, then refresh.",
-            theme::DIM,
+            theme::tertiary(),
         ));
     }
     if let Some(error) = overlay.browser_open_error.as_deref() {
         lines.push(Line::default());
-        lines.push(detail_value(error, theme::STATUS_ERROR));
+        lines.push(detail_value(error, theme::danger()));
     }
     lines
 }
@@ -568,9 +570,9 @@ fn config_lines(config: &McpServerStatusConfig) -> Vec<Line<'static>> {
         } => {
             let args_label = if args.is_empty() { "(none)".to_owned() } else { args.join(" ") };
             let mut lines = vec![
-                detail_kv("Command", command, Color::White),
-                detail_kv("Args", &args_label, Color::White),
-                detail_kv("Env", &format!("{} variable(s)", env.len()), Color::White),
+                detail_kv("Command", command, theme::label()),
+                detail_kv("Args", &args_label, theme::label()),
+                detail_kv("Env", &format!("{} variable(s)", env.len()), theme::label()),
             ];
             append_mcp_runtime_config_lines(
                 &mut lines,
@@ -598,8 +600,8 @@ fn config_lines(config: &McpServerStatusConfig) -> Vec<Line<'static>> {
             always_load,
         } => {
             let mut lines = vec![
-                detail_kv("URL", url, Color::White),
-                detail_kv("Headers", &format!("{} configured", headers.len()), Color::White),
+                detail_kv("URL", url, theme::label()),
+                detail_kv("Headers", &format!("{} configured", headers.len()), theme::label()),
             ];
             append_mcp_runtime_config_lines(
                 &mut lines,
@@ -610,17 +612,17 @@ fn config_lines(config: &McpServerStatusConfig) -> Vec<Line<'static>> {
             );
             lines
         }
-        McpServerStatusConfig::Sdk { name } => vec![detail_kv("SDK server", name, Color::White)],
+        McpServerStatusConfig::Sdk { name } => vec![detail_kv("SDK server", name, theme::label())],
         McpServerStatusConfig::ClaudeaiProxy { url, id, timeout } => {
             let mut lines = vec![
-                detail_kv("Proxy URL", url, Color::White),
-                detail_kv("Proxy ID", id, Color::White),
+                detail_kv("Proxy URL", url, theme::label()),
+                detail_kv("Proxy ID", id, theme::label()),
             ];
             append_mcp_runtime_config_lines(&mut lines, *timeout, None, None, &[]);
             lines
         }
         McpServerStatusConfig::Unknown { raw_type } => {
-            vec![detail_kv("Config type", &format!("unknown ({raw_type})"), theme::DIM)]
+            vec![detail_kv("Config type", &format!("unknown ({raw_type})"), theme::tertiary())]
         }
     }
 }
@@ -633,27 +635,27 @@ fn append_mcp_runtime_config_lines(
     tools: &[crate::agent::model::McpServerToolPolicy],
 ) {
     if let Some(timeout_ms) = timeout {
-        lines.push(detail_kv("Timeout", &format!("{timeout_ms} ms"), Color::White));
+        lines.push(detail_kv("Timeout", &format!("{timeout_ms} ms"), theme::label()));
     }
     if let Some(timeout_ms) = request_timeout_ms {
-        lines.push(detail_kv("Request timeout", &format!("{timeout_ms} ms"), Color::White));
+        lines.push(detail_kv("Request timeout", &format!("{timeout_ms} ms"), theme::label()));
     }
     if let Some(always_load) = always_load {
         lines.push(detail_kv(
             "Always load",
             if always_load { "enabled" } else { "disabled" },
-            Color::White,
+            theme::label(),
         ));
     }
     if !tools.is_empty() {
         lines.push(detail_kv(
             "Tool policies",
             &format!("{} configured", tools.len()),
-            Color::White,
+            theme::label(),
         ));
         for tool in tools {
             let policy_summary = format_mcp_tool_policy_summary(tool);
-            lines.push(detail_kv(&format!("  {}", tool.name), &policy_summary, Color::White));
+            lines.push(detail_kv(&format!("  {}", tool.name), &policy_summary, theme::label()));
         }
     }
 }
@@ -674,9 +676,9 @@ fn detail_value(value: &str, color: Color) -> Line<'static> {
 
 fn server_secondary_style(server: &McpServerStatus) -> Style {
     if server.error.as_deref().is_some_and(|error| !error.trim().is_empty()) {
-        Style::default().fg(theme::STATUS_ERROR)
+        Style::default().fg(theme::danger())
     } else {
-        Style::default().fg(theme::DIM)
+        Style::default().fg(theme::tertiary())
     }
 }
 
@@ -716,23 +718,21 @@ fn tool_summary(tool_count: usize) -> String {
     }
 }
 
-fn status_color(status: McpServerConnectionStatus) -> Color {
+/// The badge tone for a server state, in Apple's meanings: green for working,
+/// yellow for needs attention, blue for in progress, gray for off, red for failed.
+fn status_tone(status: McpServerConnectionStatus) -> Tone {
     match status {
-        McpServerConnectionStatus::Connected => theme::RUST_ORANGE,
-        McpServerConnectionStatus::NeedsAuth => theme::STATUS_WARNING,
-        McpServerConnectionStatus::Pending => Color::Cyan,
-        McpServerConnectionStatus::Disabled => Color::DarkGray,
-        McpServerConnectionStatus::Failed => theme::STATUS_ERROR,
+        McpServerConnectionStatus::Connected => Tone::Success,
+        McpServerConnectionStatus::NeedsAuth => Tone::Warning,
+        McpServerConnectionStatus::Pending => Tone::Info,
+        McpServerConnectionStatus::Disabled => Tone::Neutral,
+        McpServerConnectionStatus::Failed => Tone::Danger,
     }
 }
 
-fn status_badge_fg(status: McpServerConnectionStatus) -> Color {
-    match status {
-        McpServerConnectionStatus::Connected
-        | McpServerConnectionStatus::NeedsAuth
-        | McpServerConnectionStatus::Pending => Color::Black,
-        McpServerConnectionStatus::Disabled | McpServerConnectionStatus::Failed => Color::White,
-    }
+/// A summary count; zero stays neutral so only states that exist draw the eye.
+fn count_badge(label: &str, count: usize, tone: Tone) -> Span<'static> {
+    badge_span(&format!("{label} {count}"), if count == 0 { Tone::Neutral } else { tone })
 }
 
 fn status_label(status: McpServerConnectionStatus) -> &'static str {

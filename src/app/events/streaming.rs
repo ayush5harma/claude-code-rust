@@ -83,10 +83,7 @@ fn new_text_block(text: String, source_message_uuid: Option<&str>) -> MessageBlo
 }
 
 fn split_tail_text_block(blocks: &mut Vec<MessageBlock>) {
-    loop {
-        let Some(tail_idx) = blocks.len().checked_sub(1) else {
-            break;
-        };
+    while let Some(tail_idx) = blocks.len().checked_sub(1) {
         let Some(split) = blocks.get(tail_idx).and_then(|block| {
             if let MessageBlock::Text(block) = block {
                 find_text_block_split(block.text.as_str())

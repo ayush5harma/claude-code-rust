@@ -111,7 +111,7 @@ mod tests {
                 "Body: {\"branch\":\"main\",\"retry\":false}",
             ]
         );
-        assert_eq!(lines[0].spans[0].style.fg, Some(theme::DIM));
+        assert_eq!(lines[0].spans[0].style.fg, Some(theme::tertiary()));
     }
 
     #[test]
@@ -188,6 +188,6 @@ mod tests {
         let rendered = rendered_line_texts(&lines);
 
         assert_eq!(rendered, vec!["Action: run", "Remote trigger unavailable"]);
-        assert_eq!(lines[1].spans[0].style.fg, Some(theme::STATUS_ERROR));
+        assert_eq!(lines[1].spans[0].style.fg, Some(theme::danger()));
     }
 }

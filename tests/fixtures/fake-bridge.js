@@ -557,6 +557,24 @@ readline
         }, INTERVAL_MS);
         break;
       }
+      case 'get_mcp_snapshot':
+        // Neutral demo servers, one per connection state, for README screenshots
+        // (recordings/showcase.tape); other scenarios leave the MCP tab empty.
+        if (SCENARIO !== 'showcase') break;
+        send({ event: 'mcp_snapshot', session_id: SESSION, source: 'mcp_status',
+          auth_capabilities: { authenticate: true, clear_auth: true, submit_oauth_callback_url: true },
+          servers: [
+            { name: 'github', status: 'connected', scope: 'user', config: { type: 'http', url: 'https://api.githubcopilot.com/mcp/' },
+              tools: [{ name: 'search_code' }, { name: 'get_pull_request' }, { name: 'create_issue' }] },
+            { name: 'filesystem', status: 'connected', scope: 'project', config: { type: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '.'] },
+              tools: [{ name: 'read_file' }, { name: 'write_file' }, { name: 'list_directory' }, { name: 'search_files' }] },
+            { name: 'linear', status: 'needs-auth', scope: 'user', config: { type: 'http', url: 'https://mcp.linear.app/mcp' }, tools: [] },
+            { name: 'sentry', status: 'pending', scope: 'user', config: { type: 'http', url: 'https://mcp.sentry.dev/mcp' }, tools: [] },
+            { name: 'postgres', status: 'failed', scope: 'local', error: 'connection refused (127.0.0.1:5432)',
+              config: { type: 'stdio', command: 'postgres-mcp', args: ['--readonly'] }, tools: [] },
+            { name: 'playwright', status: 'disabled', scope: 'user', config: { type: 'stdio', command: 'npx', args: ['@playwright/mcp'] }, tools: [] },
+          ] });
+        break;
       case 'list_session_agents':
         send({ event: 'session_agents_result', session_id: SESSION, request_id: message.request_id, action: message.command,
           agent_ids: SCENARIO === 'agents-inspector' ? ['agent-running'] : ['agent-running', 'agent-completed'], messages: [] });

@@ -4,8 +4,9 @@ use super::*;
 use crate::agent::model;
 use crate::app::focus::{FocusOwner, FocusTarget};
 use crate::app::slash::{SlashCandidate, SlashContext, SlashState};
+use crate::ui::theme;
 use pretty_assertions::assert_eq;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use std::time::Instant;
 
@@ -127,9 +128,9 @@ fn cache_rapid_store_invalidate_cycle() {
 fn cache_store_styled_lines() {
     let mut cache = BlockCache::default();
     let line = Line::from(vec![
-        Span::styled("bold", Style::default().fg(Color::Red)),
+        Span::styled("bold", Style::default().fg(theme::danger())),
         Span::raw(" normal "),
-        Span::styled("blue", Style::default().fg(Color::Blue)),
+        Span::styled("blue", Style::default().fg(theme::info())),
     ]);
     cache.store(vec![line]);
     let lines = cache.get().unwrap();

@@ -5,7 +5,7 @@ use crate::ui::{agent_rows, theme};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Paragraph, Wrap},
 };
@@ -52,7 +52,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(rows), panes[0]);
     let mut details = inspector_lines(app, panes[1].width);
     if let Some(error) = &app.session_agents.error {
-        details.push(Line::styled(error.clone(), Style::default().fg(Color::Red)));
+        details.push(Line::styled(error.clone(), Style::default().fg(theme::danger())));
     } else if app.session_agents.loading {
         details.push(Line::from("Loading..."));
     } else if app.session_agents.messages.is_empty() {
@@ -61,7 +61,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
     for message in &app.session_agents.messages {
         details.push(Line::styled(
             if message.role == "user" { "User" } else { "Assistant" },
-            Style::default().fg(theme::DIM),
+            Style::default().fg(theme::tertiary()),
         ));
         details.extend(message.text.lines().map(|line| Line::from(line.to_owned())));
         details.push(Line::default());

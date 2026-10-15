@@ -83,7 +83,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App, overlay: &Setting
     if stale {
         frame.render_widget(
             Paragraph::new("Settings location changed. Cancel and reopen to save.")
-                .style(Style::default().fg(theme::STATUS_WARNING)),
+                .style(Style::default().fg(theme::warning())),
             source,
         );
     }
@@ -98,11 +98,11 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App, overlay: &Setting
                 } else {
                     "Changes stay in your draft until Ctrl+S. Esc cancels the current field or goes back."
                 },
-                Style::default().fg(theme::DIM),
+                Style::default().fg(theme::tertiary()),
             ),
             Line::styled(
                 "Only this scope is edited. Other scopes can supply additional entries.",
-                Style::default().fg(theme::DIM),
+                Style::default().fg(theme::tertiary()),
             ),
         ],
     );
@@ -128,16 +128,16 @@ fn render_content(frame: &mut Frame, body: Rect, overlay: &SettingOverlayState, 
             );
         } else {
             let lines = vec![
-                common::detail_kv("Event", &wizard.event, theme::BTW_ACCENT),
+                common::detail_kv("Event", &wizard.event, theme::btw_accent()),
                 common::detail_kv(
                     "Matcher",
                     if wizard.matcher.is_empty() { "All" } else { &wizard.matcher },
-                    theme::BTW_ACCENT,
+                    theme::btw_accent(),
                 ),
                 common::detail_kv(
                     "Action",
                     wizard.handler.get("type").and_then(Value::as_str).unwrap_or_default(),
-                    theme::BTW_ACCENT,
+                    theme::btw_accent(),
                 ),
                 Line::default(),
                 Line::from(
@@ -227,7 +227,7 @@ fn render_field(frame: &mut Frame, area: Rect, field: &FieldInput, guidance: &st
     common::render_details(
         frame,
         description_area,
-        vec![Line::styled(description.to_owned(), Style::default().fg(theme::DIM))],
+        vec![Line::styled(description.to_owned(), Style::default().fg(theme::tertiary()))],
     );
     let options = field.options();
     if options.is_empty() {
@@ -294,7 +294,7 @@ fn render_rows(frame: &mut Frame, area: Rect, overlay: &SettingOverlayState, roo
     common::render_details(
         frame,
         intro,
-        vec![Line::styled(guidance, Style::default().fg(theme::DIM))],
+        vec![Line::styled(guidance, Style::default().fg(theme::tertiary()))],
     );
     let blocks = if overlay.setting.id == "hooks" && form.path.is_empty() {
         hook_blocks(root)
@@ -341,7 +341,7 @@ fn hook_blocks(root: &Value) -> Vec<Vec<Line<'static>>> {
                             .unwrap_or_else(|| "All".into()),
                         hook.action
                     ),
-                    Style::default().fg(theme::BTW_ACCENT),
+                    Style::default().fg(theme::btw_accent()),
                 ),
             ])]
         })
@@ -371,7 +371,7 @@ fn row_blocks(form: &StructuredEditor, rows: Vec<FormRow>) -> Vec<Vec<Line<'stat
                     format!("{}{}  ", row.label, if row.required { " *" } else { "" }),
                     common::title_style(),
                 ),
-                Span::styled(value, Style::default().fg(theme::BTW_ACCENT)),
+                Span::styled(value, Style::default().fg(theme::btw_accent())),
             ])]
         })
         .collect()

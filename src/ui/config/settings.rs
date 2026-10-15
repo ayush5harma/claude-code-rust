@@ -93,7 +93,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let items = app.config.settings.items(snapshot);
     let selected = app.config.settings.selected_index(snapshot);
     let mut scope = Line::from(vec![
-        Span::styled("Save in: ", Style::default().fg(theme::DIM)),
+        Span::styled("Save in: ", Style::default().fg(theme::tertiary())),
         Span::styled(
             if scope_area.width < 35 {
                 source_label(app.config.selected_scope.label())
@@ -228,9 +228,9 @@ fn table_rows<'a>(
             Row::new(vec![
                 Cell::from(super::common::marker_span(focused)),
                 Cell::from(setting.label.clone()).style(Style::default().fg(if writable {
-                    ratatui::style::Color::White
+                    theme::label()
                 } else {
-                    theme::DIM
+                    theme::tertiary()
                 })),
                 Cell::from(value.map_or_else(
                     || {
@@ -245,9 +245,9 @@ fn table_rows<'a>(
                 .style(
                     Style::default()
                         .fg(if value.is_some() && writable {
-                            theme::BTW_ACCENT
+                            theme::btw_accent()
                         } else {
-                            theme::DIM
+                            theme::tertiary()
                         })
                         .add_modifier(if value.is_some() {
                             Modifier::BOLD
@@ -320,22 +320,22 @@ fn details_lines(app: &App) -> Vec<Line<'static>> {
         .find(|source| source.scope == app.config.selected_scope)
         .and_then(|source| source.error.as_ref())
     {
-        lines.push(Line::styled(error.clone(), Style::default().fg(theme::STATUS_WARNING)));
+        lines.push(Line::styled(error.clone(), Style::default().fg(theme::warning())));
     }
     if let Some(restriction) = restriction_text(
         setting,
         app.config.selected_scope,
         resolved.is_some_and(|value| value.policy_restricted),
     ) {
-        lines.push(Line::styled(restriction, Style::default().fg(theme::STATUS_WARNING)));
+        lines.push(Line::styled(restriction, Style::default().fg(theme::warning())));
     }
     lines.push(Line::styled(
         context,
         Style::default().fg(
             if saved.is_some() && saved != configured && !setting.kind.is_structured() {
-                theme::STATUS_WARNING
+                theme::warning()
             } else {
-                theme::DIM
+                theme::tertiary()
             },
         ),
     ));
@@ -418,7 +418,7 @@ fn session_difference(
         _ => return None,
     };
     (running != display(configured)).then(|| {
-        Line::styled(format!("Current session: {running}"), Style::default().fg(theme::DIM))
+        Line::styled(format!("Current session: {running}"), Style::default().fg(theme::tertiary()))
     })
 }
 
