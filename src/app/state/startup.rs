@@ -3,6 +3,7 @@
 
 use crate::StartupLaunch;
 use std::path::PathBuf;
+use std::time::Instant;
 
 /// Bootstrap state resolved from CLI flags and consumed while the app
 /// transitions from launch to a connected session.
@@ -18,6 +19,9 @@ pub struct StartupState {
     phase: StartupPhase,
     session_options: Option<crate::SessionOptions>,
     initial_prompt: Option<String>,
+    /// When the first session of the process connected. Later sessions
+    /// (`/new`, resume) never move it.
+    first_connected_at: Option<Instant>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -52,6 +56,16 @@ impl StartupState {
             initial_prompt: cli.initial_prompt().map(str::to_owned),
             ..Self::new(cli.bridge_script.clone(), cli.startup_launch())
         }
+    }
+
+    /// Records a connection; only the first one of the process is kept.
+    pub fn mark_connected(&mut self, now: Instant) {
+        self.first_connected_at.get_or_insert(now);
+    }
+
+    #[must_use]
+    pub fn first_connected_at(&self) -> Option<Instant> {
+        self.first_connected_at
     }
 
     pub fn session_options(&self) -> Option<&crate::SessionOptions> {

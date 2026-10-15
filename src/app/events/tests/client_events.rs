@@ -141,6 +141,27 @@ fn connected_updates_cwd_and_clears_resuming_marker() {
 }
 
 #[test]
+fn the_first_connection_of_the_process_is_recorded_for_the_welcome_hello() {
+    let mut app = make_test_app();
+    assert!(app.startup.first_connected_at().is_none());
+
+    handle_client_event(&mut app, connected_event("claude-first"));
+
+    assert!(app.startup.first_connected_at().is_some());
+}
+
+#[test]
+fn a_later_connection_leaves_the_recorded_first_connection_unchanged() {
+    let mut app = make_test_app();
+    let first = std::time::Instant::now();
+    app.startup.mark_connected(first);
+
+    handle_client_event(&mut app, connected_event("claude-later"));
+
+    assert_eq!(app.startup.first_connected_at(), Some(first));
+}
+
+#[test]
 fn connected_reconciles_trust_for_new_cwd() {
     let mut app = make_test_app();
     app.trust.status = crate::app::trust::TrustStatus::Trusted;

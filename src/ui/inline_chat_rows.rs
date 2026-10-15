@@ -23,6 +23,7 @@ use crate::ui::wrap::wrap_lines_to_physical_rows;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::collections::BTreeSet;
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TopLevelInlineBlockKind {
@@ -43,6 +44,18 @@ pub(crate) fn serialize_live_rows_with_boundaries_excluding(
     width: u16,
     excluded_ids: &BTreeSet<HistoryOutputId>,
 ) -> SerializedLiveRows {
+    serialize_live_rows_at(app, width, excluded_ids, Instant::now())
+}
+
+/// Serializes the live rows as of `now`: one clock reading per pass, so the
+/// welcome crab's pose and its commit decision agree, and the rows committed
+/// to scrollback are exactly the rows this pass drew.
+fn serialize_live_rows_at(
+    app: &mut App,
+    width: u16,
+    excluded_ids: &BTreeSet<HistoryOutputId>,
+    now: Instant,
+) -> SerializedLiveRows {
     let current_mode_id =
         app.session_runtime.mode.as_ref().map(|mode| mode.current_mode_id.clone());
     let mut rows = Vec::new();
@@ -61,6 +74,7 @@ pub(crate) fn serialize_live_rows_with_boundaries_excluding(
                 width,
                 excluded_ids,
                 previous_block_kind,
+                now,
             },
         );
 
@@ -90,6 +104,7 @@ struct LiveRowsRenderContext<'a> {
     width: u16,
     excluded_ids: &'a BTreeSet<HistoryOutputId>,
     previous_block_kind: Option<TopLevelInlineBlockKind>,
+    now: Instant,
 }
 
 fn render_live_message_rows(
@@ -100,7 +115,7 @@ fn render_live_message_rows(
 ) -> RenderedMessageRows {
     match role {
         MessageRole::Welcome => {
-            render_welcome_live_rows(app, msg_idx, context.width, context.excluded_ids)
+            render_welcome_live_rows(app, msg_idx, context.width, context.excluded_ids, context.now)
         }
         MessageRole::User | MessageRole::System(_) => render_user_system_live_rows(
             app,
@@ -125,15 +140,17 @@ fn render_welcome_live_rows(
     msg_idx: usize,
     width: u16,
     excluded_ids: &BTreeSet<HistoryOutputId>,
+    now: Instant,
 ) -> RenderedMessageRows {
     let ids = welcome_output_ids(&app.transcript.messages[msg_idx]);
-    let commit_ready = message_commit_ready(&app.transcript.messages[msg_idx]);
     if ids_are_excluded(&ids, excluded_ids) {
         return RenderedMessageRows::skipped_transcript_content();
     }
 
+    let commit_ready = welcome::welcome_block(&app.transcript.messages[msg_idx])
+        .is_some_and(|welcome| welcome::welcome_commit_ready(app, welcome, width, now));
     RenderedMessageRows::message(
-        serialize_welcome_message(app, msg_idx, width),
+        serialize_welcome_message(app, msg_idx, width, now),
         LiveRowBoundary {
             ids,
             msg_idx,
@@ -404,7 +421,12 @@ fn welcome_output_ids(message: &ChatMessage) -> Vec<HistoryOutputId> {
         .unwrap_or_else(|| vec![HistoryOutputId::Message(message.id)])
 }
 
-fn serialize_welcome_message(app: &App, msg_idx: usize, width: u16) -> Vec<Line<'static>> {
+fn serialize_welcome_message(
+    app: &App,
+    msg_idx: usize,
+    width: u16,
+    now: Instant,
+) -> Vec<Line<'static>> {
     if !app.show_session_overview {
         return Vec::new();
     }
@@ -417,7 +439,7 @@ fn serialize_welcome_message(app: &App, msg_idx: usize, width: u16) -> Vec<Line<
         return Vec::new();
     };
 
-    serialize_compact_welcome_entry(app, welcome, width)
+    serialize_compact_welcome_entry(app, welcome, width, now)
 }
 
 const fn message_block_kind(role: &MessageRole) -> TopLevelInlineBlockKind {
@@ -429,47 +451,19 @@ const fn message_block_kind(role: &MessageRole) -> TopLevelInlineBlockKind {
     }
 }
 
-fn message_commit_ready(message: &ChatMessage) -> bool {
-    match &message.role {
-        MessageRole::Welcome => welcome_message_commit_ready(message),
-        MessageRole::User | MessageRole::System(_) | MessageRole::Assistant => true,
-    }
-}
-
-fn welcome_message_commit_ready(message: &ChatMessage) -> bool {
-    message
-        .blocks
-        .iter()
-        .find_map(|block| match block {
-            MessageBlock::Welcome(welcome) => Some(welcome),
-            MessageBlock::Text(_)
-            | MessageBlock::BtwExchange(_)
-            | MessageBlock::Notice(_)
-            | MessageBlock::ToolCall(_)
-            | MessageBlock::ToolResult { .. }
-            | MessageBlock::ImageAttachment(_)
-            | MessageBlock::UserDialog(_) => None,
-        })
-        .is_some_and(|welcome| {
-            welcome_value_ready(&welcome.subscription) && welcome_value_ready(&welcome.session_id)
-        })
-}
-
-fn welcome_value_ready(value: &str) -> bool {
-    !value.trim().is_empty() && value != "-"
-}
-
 fn serialize_compact_welcome_entry(
     app: &App,
     entry: &WelcomeBlock,
     width: u16,
+    now: Instant,
 ) -> Vec<Line<'static>> {
     let heading = Line::from(Span::styled(
         "Overview",
         Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
     ));
     let mut lines = wrap_lines_to_physical_rows(&[heading], width);
-    lines.extend(welcome::overview_lines(entry, Some(status_label(app)), width));
+    let ferris = welcome::ferris_frame(welcome::ferris_phase(app, entry, width, now));
+    lines.extend(welcome::overview_lines(entry, Some(status_label(app)), ferris, width));
     lines
 }
 
@@ -1458,7 +1452,7 @@ fn preview_rows(rows: &[Line<'static>], limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        LiveRowBoundaryKind, LiveRowSegment, SerializedLiveRows,
+        LiveRowBoundaryKind, LiveRowSegment, SerializedLiveRows, serialize_live_rows_at,
         serialize_live_rows_with_boundaries_excluding,
     };
 
@@ -2953,6 +2947,197 @@ mod tests {
             line_texts(serialized.rows()).iter().any(|line| line == " > queued while connecting")
         );
         assert_eq!(serialized.stable_row_count(), 0);
+    }
+
+    // The crab fixtures are written out here rather than taken from
+    // welcome.rs, so a changed frame table fails these tests.
+    const REST_CRAB: [&str; 4] =
+        [r"    _~^~^~_     ", r"\) /  o o  \ (/ ", r"  '_   -   _'   ", r"  / '-----' \   "];
+    const EYES_LEFT_ROW: &str = r"\) / o o   \ (/ ";
+    const EYES_RIGHT_ROW: &str = r"\) /   o o \ (/ ";
+    const LEGS_B_ROW: &str = r"  \ '-----' /   ";
+    const WAVE_TOP_ROW: &str = r"\)  _~^~^~_  (/ ";
+
+    /// The four crab cells of the rendered welcome: the art sits after the
+    /// two-column left padding, 16 columns wide.
+    fn crab_rows(rows: &[Line<'_>]) -> Vec<String> {
+        let text = line_texts(rows);
+        let Some(start) = text.iter().position(|line| line.contains("_~^~^~_")) else {
+            return Vec::new();
+        };
+        text[start..]
+            .iter()
+            .take(4)
+            .map(|line| format!("{line:<18}").chars().skip(2).take(16).collect())
+            .collect()
+    }
+
+    /// The hello is timed from the first connect, pinned to this instant, and
+    /// every render passes an explicit `now`, so no test depends on how fast
+    /// it runs.
+    struct CrabClock(std::time::Instant);
+
+    impl CrabClock {
+        fn new() -> Self {
+            Self(std::time::Instant::now())
+        }
+
+        fn at(&self, millis: u64) -> std::time::Instant {
+            self.0 + std::time::Duration::from_millis(millis)
+        }
+    }
+
+    fn rows_at(app: &mut App, now: std::time::Instant) -> SerializedLiveRows {
+        serialize_live_rows_at(app, 120, &BTreeSet::new(), now)
+    }
+
+    /// A welcome whose values are still loading, `spinner_frame` frames into
+    /// the connecting loop.
+    fn connecting_app(spinner_frame: usize) -> App {
+        let mut app = App::test_default();
+        app.status = AppStatus::Connecting;
+        app.spinner_frame = spinner_frame;
+        app.transcript.messages.push(ChatMessage::welcome("1.2.3", "-", "/workspace/demo", "-"));
+        app
+    }
+
+    /// A ready welcome whose first connect is the clock's base instant, with
+    /// the settings snapshot acknowledged.
+    fn connected_app(clock: &CrabClock) -> App {
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        app.startup.mark_connected(clock.0);
+        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+            "prefersReducedMotion",
+            serde_json::json!(false),
+        ));
+        app.transcript.messages.push(ChatMessage::welcome(
+            "1.2.3",
+            "Pro",
+            "/workspace/demo",
+            "session-123",
+        ));
+        app
+    }
+
+    fn reduce_motion(app: &mut App) {
+        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+            "prefersReducedMotion",
+            serde_json::json!(true),
+        ));
+    }
+
+    #[test]
+    fn connecting_crab_steps_through_poses_by_spinner_frame() {
+        let clock = CrabClock::new();
+        let mut app = connecting_app(0);
+        let now = clock.at(0);
+        let crab_at = |app: &mut App, spinner_frame: usize| {
+            app.spinner_frame = spinner_frame;
+            crab_rows(rows_at(app, now).rows())
+        };
+
+        let first = crab_at(&mut app, 0);
+        let last_of_first = crab_at(&mut app, 5);
+        let second = crab_at(&mut app, 6);
+        let third = crab_at(&mut app, 12);
+        let wrapped = crab_at(&mut app, 24);
+
+        assert_eq!(first.len(), 4, "{first:?}");
+        assert_eq!(last_of_first, first, "a pose lasts 6 spinner frames");
+        assert_ne!(first, second);
+        assert_eq!(first[1], EYES_LEFT_ROW);
+        assert_eq!(second[3], LEGS_B_ROW);
+        assert_eq!(third[1], EYES_RIGHT_ROW);
+        assert_eq!(wrapped, first, "the loop repeats after four poses");
+    }
+
+    #[test]
+    fn hello_waves_while_holding_the_welcome_back_from_scrollback() {
+        let clock = CrabClock::new();
+        let mut app = connected_app(&clock);
+
+        let serialized = rows_at(&mut app, clock.at(0));
+
+        assert_eq!(crab_rows(serialized.rows())[0], WAVE_TOP_ROW);
+        assert_eq!(serialized.stable_row_count(), 0);
+        let last_instant = rows_at(&mut app, clock.at(1_199));
+        assert_eq!(crab_rows(last_instant.rows()), REST_CRAB, "the hello ends at rest");
+        assert_eq!(last_instant.stable_row_count(), 0, "still held inside the window");
+    }
+
+    #[test]
+    fn crab_rests_and_commits_when_the_hello_window_closes() {
+        let clock = CrabClock::new();
+        let mut app = connected_app(&clock);
+
+        let serialized = rows_at(&mut app, clock.at(1_200));
+
+        assert_eq!(crab_rows(serialized.rows()), REST_CRAB);
+        assert_eq!(serialized.stable_row_count(), serialized.rows().len());
+    }
+
+    #[test]
+    fn a_later_connection_does_not_replay_the_hello() {
+        let clock = CrabClock::new();
+        let mut app = connected_app(&clock);
+        // `/new` or a resume connects again with the welcome as the whole
+        // transcript, long after the first hello ended.
+        app.startup.mark_connected(clock.at(60_000));
+
+        let serialized = rows_at(&mut app, clock.at(60_100));
+
+        assert_eq!(crab_rows(serialized.rows()), REST_CRAB);
+        assert_eq!(serialized.stable_row_count(), serialized.rows().len());
+    }
+
+    #[test]
+    fn a_narrow_terminal_shows_no_crab_and_does_not_hold_the_welcome_back() {
+        let clock = CrabClock::new();
+        let mut app = connected_app(&clock);
+
+        let narrow = serialize_live_rows_at(&mut app, 36, &BTreeSet::new(), clock.at(0));
+
+        assert!(crab_rows(narrow.rows()).is_empty(), "no crab column at 36 columns");
+        assert_eq!(narrow.stable_row_count(), narrow.rows().len(), "nothing to wait for");
+    }
+
+    #[test]
+    fn a_prompt_during_the_hello_snaps_the_crab_to_rest_and_commits_it() {
+        let clock = CrabClock::new();
+        let mut app = connected_app(&clock);
+        app.push_message_tracked(user_text_message("typed first"));
+
+        let serialized = rows_at(&mut app, clock.at(100));
+
+        assert_eq!(crab_rows(serialized.rows()), REST_CRAB);
+        assert_eq!(serialized.stable_row_count(), serialized.rows().len());
+    }
+
+    #[test]
+    fn hello_waits_at_rest_until_the_motion_preference_is_known() {
+        let clock = CrabClock::new();
+        let mut app = connected_app(&clock);
+        app.config.snapshot = None;
+
+        let serialized = rows_at(&mut app, clock.at(100));
+
+        assert_eq!(crab_rows(serialized.rows()), REST_CRAB);
+        assert_eq!(serialized.stable_row_count(), 0, "held until the hello window closes");
+    }
+
+    #[test]
+    fn reduced_motion_keeps_the_crab_at_rest() {
+        let clock = CrabClock::new();
+        let mut connecting = connecting_app(0);
+        reduce_motion(&mut connecting);
+        assert_eq!(crab_rows(rows_at(&mut connecting, clock.at(0)).rows()), REST_CRAB);
+
+        let mut hello = connected_app(&clock);
+        reduce_motion(&mut hello);
+        let serialized = rows_at(&mut hello, clock.at(100));
+        assert_eq!(crab_rows(serialized.rows()), REST_CRAB);
+        assert_eq!(serialized.stable_row_count(), serialized.rows().len());
     }
 
     #[test]
