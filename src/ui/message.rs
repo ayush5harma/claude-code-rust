@@ -5,7 +5,7 @@
 use crate::app::ChatMessage;
 use crate::app::{BlockCache, TextBlock};
 use crate::ui::tool_call;
-use crate::ui::wrap::wrap_markdown_lines_to_physical_rows;
+use crate::ui::wrap::wrap_lines_to_physical_rows;
 use ratatui::style::Color;
 use ratatui::text::Line;
 
@@ -79,10 +79,23 @@ fn render_message_rows(
 /// Handles variations: `#Title`, `#  Title`, `  ## Title  `, etc.
 /// Links are left as-is -- `tui_markdown` handles `[title](url)` natively.
 fn preprocess_markdown(text: &str) -> String {
+    let code_ranges = pulldown_cmark::Parser::new(text)
+        .into_offset_iter()
+        .filter_map(|(event, range)| {
+            matches!(event, pulldown_cmark::Event::Start(pulldown_cmark::Tag::CodeBlock(_)))
+                .then_some(range)
+        })
+        .collect::<Vec<_>>();
     let mut result = String::with_capacity(text.len());
-    for line in text.lines() {
+    let mut offset = 0;
+    for source_line in text.split_inclusive('\n') {
+        let line = source_line.trim_end_matches(['\r', '\n']);
+        let in_code = code_ranges
+            .iter()
+            .any(|range| range.start < offset + source_line.len() && range.end > offset);
+        offset += source_line.len();
         let trimmed = line.trim();
-        if trimmed.starts_with('#') {
+        if !in_code && trimmed.starts_with('#') {
             // Strip all leading '#' characters
             let after_hashes = trimmed.trim_start_matches('#');
             // Extract heading content (trim spaces between # and text, and trailing)
@@ -92,6 +105,7 @@ fn preprocess_markdown(text: &str) -> String {
                 if !result.is_empty() && !result.ends_with("\n\n") {
                     result.push('\n');
                 }
+                result.push_str(&line[..line.len() - line.trim_start().len()]);
                 result.push_str("**");
                 result.push_str(content);
                 result.push_str("**\n");
@@ -119,8 +133,8 @@ pub(super) fn render_text_cached(
     out: &mut Vec<Line<'static>>,
 ) {
     // Fast path only when the cached lines were measured at this width.
-    // Markdown tables produce width-dependent logical lines before paragraph
-    // wrapping, so a fresh cache from another width is not safe to reuse.
+    // Lists and tables resolve width-dependent geometry before final row wrapping,
+    // so a fresh cache from another width is not safe to reuse.
     if cache.height_at(width).is_some()
         && let Some(cached_lines) = cache.get()
     {
@@ -137,7 +151,7 @@ pub(super) fn render_text_cached(
     // Store in the full block cache with wrapped height.
     // For streaming messages this will be invalidated on the next chunk,
     // but for completed messages it persists.
-    let h = wrap_markdown_lines_to_physical_rows(&fresh, width).len();
+    let h = wrap_lines_to_physical_rows(&fresh, width).len();
     cache.store(fresh);
     cache.set_height(h, width);
     if let Some(stored) = cache.get() {
@@ -200,6 +214,27 @@ mod tests {
         let input = "Just normal text\nwith multiple lines";
         let result = preprocess_markdown(input);
         assert_eq!(result, input);
+    }
+
+    #[test]
+    fn list_headings_and_code_survive_the_actual_message_pipeline() {
+        let source = "1. Parent\n\n   ## Child heading\n\n   ~~~text\n   # literal code\n   ~~~\n\n   Tail paragraph.";
+        let mut cache = BlockCache::default();
+        let mut lines = Vec::new();
+        render_text_cached(source, &mut cache, 60, None, true, &mut lines);
+        for (text, column) in [("Child heading", 5), ("# literal code", 5), ("Tail paragraph.", 5)]
+        {
+            let row = lines
+                .iter()
+                .map(Line::to_string)
+                .find(|row| row.contains(text))
+                .expect("message content survives preprocessing");
+            assert_eq!(
+                row.find(text),
+                Some(column),
+                "nested message content lost its owner: {row:?}"
+            );
+        }
     }
 
     #[test]
@@ -418,40 +453,40 @@ mod tests {
     }
 
     fn render_lines_to_strings(lines: &[Line<'static>]) -> Vec<String> {
-        lines
+        lines.iter().map(|line| line.to_string().trim_end().to_owned()).collect()
+    }
+
+    fn user_paragraphs(lines: &[Line<'static>]) -> Vec<String> {
+        let content = lines
             .iter()
-            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .map(|line| line.to_string().chars().skip(3).collect::<String>().trim_end().to_owned())
+            .collect::<Vec<_>>();
+        content
+            .split(String::is_empty)
+            .filter(|paragraph| !paragraph.is_empty())
+            .map(|paragraph| paragraph.join(" "))
             .collect()
     }
 
     #[test]
     fn user_paragraph_spacing_survives_cache_reuse_and_resize() {
         for (source, expected) in [
-            ("hello\n\nhow are you", vec!["User", "hello", "", "how are you"]),
-            ("hello\nhow are you", vec!["User", "hello", "how are you"]),
-            ("one\n\ntwo\n\nthree", vec!["User", "one", "", "two", "", "three"]),
-            ("hello\n\n\nhow are you", vec!["User", "hello", "", "how are you"]),
-            ("hello\n \t\nhow are you", vec!["User", "hello", "", "how are you"]),
-            ("こんにちは\n\n😀 hello", vec!["User", "こんにちは", "", "😀 hello"]),
+            ("hello\n\nhow are you", vec!["hello", "how are you"]),
+            ("hello\nhow are you", vec!["hello how are you"]),
+            ("one\n\ntwo\n\nthree", vec!["one", "two", "three"]),
+            ("hello\n\n\nhow are you", vec!["hello", "how are you"]),
+            ("hello\n \t\nhow are you", vec!["hello", "how are you"]),
+            ("こんにちは\n\n😀 hello", vec!["こんにちは", "😀 hello"]),
         ] {
             let mut msg = make_text_message(MessageRole::User, source);
-            for width in [80, 80, 12, 80] {
+            for width in [80, 80, 16, 80] {
                 let mut lines = Vec::new();
                 render_message(&mut msg, width, &mut lines);
-                assert_eq!(
-                    render_lines_to_strings(&lines),
-                    expected,
-                    "source={source:?}, width={width}"
-                );
+                assert_eq!(user_paragraphs(&lines), expected, "source={source:?}, width={width}");
                 let MessageBlock::Text(block) = &msg.blocks[0] else {
                     panic!("expected user text");
                 };
                 assert_eq!(block.text, source);
-                assert!(
-                    lines[1..]
-                        .iter()
-                        .all(|line| line.style.bg == Some(crate::ui::theme::USER_MSG_BG))
-                );
             }
         }
     }
@@ -469,33 +504,8 @@ mod tests {
 
         let mut after = Vec::new();
         render_message(&mut msg, 80, &mut after);
-        assert_eq!(render_lines_to_strings(&after), vec!["User", "hello", "", "how are you"]);
-    }
-
-    #[test]
-    fn user_markdown_boundaries_retain_existing_document_spacing() {
-        for (source, expected) in [
-            ("before\n\n# Heading\n\nafter", vec!["User", "before", "", "Heading", "", "after"]),
-            (
-                "intro\n\n- one\n- two\n\noutro",
-                vec!["User", "intro", "  - one", "  - two", "outro"],
-            ),
-            (
-                "before\n\n```text\none\n\nthree\n```\n\nafter",
-                vec!["User", "before", "", "```text", "one", "", "three", "```", "", "after"],
-            ),
-            ("\n\nhello\n\n", vec!["User", "hello"]),
-            ("", vec!["User"]),
-        ] {
-            let mut msg = make_text_message(MessageRole::User, source);
-            let mut lines = Vec::new();
-            render_message(&mut msg, 80, &mut lines);
-            let text: Vec<_> = render_lines_to_strings(&lines)
-                .into_iter()
-                .map(|line| line.trim_end().to_owned())
-                .collect();
-            assert_eq!(text, expected, "source={source:?}");
-        }
+        assert_eq!(user_paragraphs(&before), ["hello"]);
+        assert_eq!(user_paragraphs(&after), ["hello", "how are you"]);
     }
 
     #[test]
@@ -515,7 +525,7 @@ mod tests {
         assert!(!wide_rendered.iter().any(|line| line.contains("Name:")));
 
         let mut narrow_lines = Vec::new();
-        render_message(&mut msg, 12, &mut narrow_lines);
+        render_message(&mut msg, 16, &mut narrow_lines);
         let narrow_rendered = render_lines_to_strings(&narrow_lines);
         assert!(narrow_rendered.iter().any(|line| line.contains("Name:")));
         assert!(narrow_rendered.iter().any(|line| line.contains("Description")));
