@@ -33,6 +33,7 @@ The PR workflow runs this suite on Ubuntu, Windows, and macOS, and requires all 
 | `session-management` | Lists a saved and active session; acknowledges tag and confirmed delete by exact ID with refreshed SDK-style metadata. |
 | `verbose-bash` | Answers the first prompt with a completed Bash call whose output arrives both as update content and as raw output, then a short reply. |
 | `agents` | Connects with two running subagents (their Agent calls with a requested model alias, worktree isolation and prompt; resolved models; usage; one child Read), a completed subagent and a background shell, as normalized task lifecycle rows. Lists a saved transcript only for the completed subagent and returns its messages. A stop request is acknowledged at once; its `killed` lifecycle row follows only after the release file appears (barrier `subagent-stopped`), so the row can be seen stopping first. Prompts stream normally. |
+| `agents-resumed` | Connects with the `history_updates` of `resumed-agents.json`: the bridge's replay of a saved session whose two background subagents have no saved start record, one completed and one stopped. Lists a saved transcript for both. |
 
 `FAKE_BRIDGE_JOURNAL` records commands, events, and the `reply-held` coordination point as JSONL. `FAKE_BRIDGE_RELEASE_FILE` lets a test release a held turn after exercising the UI. Reply length and interval remain configurable with `FAKE_BRIDGE_LINES`, `FAKE_BRIDGE_FOLLOW_UP_LINES`, and `FAKE_BRIDGE_INTERVAL_MS`.
 
@@ -49,6 +50,8 @@ Each test owns its temporary project, configuration directory, fake CLI, journal
 ## Render corpus
 
 `render-corpus.json` is a deterministic transcript that covers what a chat renders: Markdown (headings, nested lists, a table, a quote, inline code, links, a long paragraph), fenced code in six languages, a 2000-line Bash output with ANSI colour, small and 500-line Edit and Write diffs, a failed tool call, notices, and user messages. `history` is a resumed conversation and `stream` is one long reply in chunks, both as bridge `session_update` payloads. The `render-corpus` scenario above replays it through the real binary; `src/app/connect/render_corpus.rs` replays the same file through the app's event path for the render benchmark (`cargo test --release --lib render_bench -- --ignored --nocapture`, compared across refs by `scripts/dev/bench-render.mjs`). The app has no thinking text to render, so the corpus carries the one thing it shows: the `thinking` activity phase that opens the streamed reply.
+
+`resumed-agents.json` holds saved records in the shape Claude Code 2.1.300 writes for background Agent calls and the bridge's replay of them; `node tests/fixtures/generate-resumed-agents.mjs` (after `npm run build --prefix agent-sdk`) rewrites the replay, and `agent-sdk/src/bridge/history.test.ts` fails when the two drift apart.
 
 `generate-render-corpus.js` is the authority and the JSON is its committed output: edit the generator and rerun `node tests/fixtures/generate-render-corpus.js`. The test `render_corpus_fixture_matches_its_generator` runs it with `--check`, so a stale JSON fails `cargo test`. Changing the corpus changes every benchmark baseline, so compare refs that share one corpus.
 

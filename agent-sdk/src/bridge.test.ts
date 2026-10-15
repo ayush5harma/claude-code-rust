@@ -9433,6 +9433,8 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
         blocked_by: [],
         metadata: {
           sdk_lifecycle_task: true,
+          // The saved start has no task_type; its Agent call makes it a subagent.
+          task_type: "local_agent",
           subagent_type: "general-purpose",
           is_backgrounded: true,
           spawn_depth: 2,

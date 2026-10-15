@@ -3026,6 +3026,41 @@ fn ctrl_t_enter_opens_the_agents_view_on_the_chosen_agent_at_80_by_24() {
 }
 
 #[test]
+fn a_resumed_session_lists_its_finished_and_stopped_subagents_across_a_refresh() {
+    let mut test = TerminalTest::start("agents-resumed", 3);
+    test.submit("/agents", "/agents");
+    let first = test.wait_screen_with("Up/Down select", &["/2"]);
+    let agent_rows = |screen: &str| {
+        screen
+            .lines()
+            .filter(|row| has_row_with(row, &["general-purpose", "haiku", "Agent \""]))
+            .count()
+    };
+    assert_eq!(agent_rows(&first), 2, "{first}");
+    test.wait_screen("saved · Enter to read");
+    test.send(b"\x1b[B");
+    let second = test.wait_screen_with("2/2", &[]);
+    // One agent is selected on each screen; between them both carry their outcome.
+    let both = format!("{first}\n{second}");
+    assert!(has_row_with(&both, &["Quick PONG reply", " completed "]), "{both}");
+    assert!(has_row_with(&both, &["Slow 200 animal facts", " stopped "]), "{both}");
+
+    test.send(b"r");
+    test.wait_until("the transcript list is read again", |test| {
+        test.commands("list_subagents").len() == 2
+    });
+    test.wait_until("the refreshed list is applied", |test| {
+        !test.screen().contains("Checking saved transcripts")
+    });
+    let refreshed = test.screen();
+    assert_eq!(agent_rows(&refreshed), 2, "a refresh neither drops nor repeats rows:\n{refreshed}");
+    assert!(refreshed.contains("2/2"), "{refreshed}");
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+    test.shutdown();
+}
+
+#[test]
 fn footer_agents_resize_and_finish_follow_task_inventory() {
     let mut test = TerminalTest::start("footer-agents", 3);
     test.resize_and_wait_for_draw(40, 200);

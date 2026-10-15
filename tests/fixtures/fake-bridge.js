@@ -74,6 +74,8 @@ if (activityScenario) {
 // long reply streamed in small chunks, the same transcript the Rust render benchmark draws.
 const renderCorpusScenario = SCENARIO === 'render-corpus';
 const renderCorpus = renderCorpusScenario ? JSON.parse(fs.readFileSync(path.join(__dirname, 'render-corpus.json'), 'utf8')) : null;
+// The bridge's replay of a saved session with two background subagents (see resumed-agents.json).
+const resumedAgents = SCENARIO === 'agents-resumed' ? JSON.parse(fs.readFileSync(path.join(__dirname, 'resumed-agents.json'), 'utf8')) : null;
 const hooksScenario = SCENARIO === 'hold-hooks';
 if (hooksScenario) {
   preferences.hooks = { Stop: [{ hooks: [{ type: 'command', command: 'keep-original', future: 'keep' }] }] };
@@ -469,7 +471,7 @@ readline
           history_updates: SCENARIO === 'search-retained' ? [
             { type: 'user_message_chunk', content: { type: 'text', text: 'Find delta in the first prompt' }, source_message_uuid: 'search-user' },
             { type: 'agent_message_chunk', content: { type: 'text', text: 'A later delta appears here' }, source_message_uuid: 'search-assistant' },
-          ] : renderCorpusScenario ? renderCorpus.history : SCENARIO === 'background-resume' ? [
+          ] : renderCorpusScenario ? renderCorpus.history : resumedAgents ? resumedAgents.history_updates : SCENARIO === 'background-resume' ? [
             { type: 'user_message_chunk', content: { type: 'text', text: 'Resumed background launch' }, source_message_uuid: 'saved-user' },
             { type: 'tool_call', tool_call: { tool_call_id: 'background-primary', title: 'PRIMARY_TASK', kind: 'execute', status: 'in_progress', content: [], raw_input: { command: 'PRIMARY_TASK' }, locations: [], meta: { claudeCode: { toolName: 'Bash' } } } },
             { type: 'tool_call_update', tool_call_update: { tool_call_id: 'background-primary', fields: { status: 'detached' } } },
@@ -592,7 +594,9 @@ readline
           ] });
         break;
       case 'list_subagents':
-        send({ event: 'subagents_listed', session_id: SESSION, agent_ids: ['agent-done'] });
+        send({ event: 'subagents_listed', session_id: SESSION, agent_ids: resumedAgents
+          ? resumedAgents.history_updates.flatMap(update => update.type === 'task_state_update' ? update.tasks.map(task => task.task_id) : []).filter((id, index, ids) => ids.indexOf(id) === index)
+          : ['agent-done'] });
         break;
       case 'get_subagent_messages':
         send({ event: 'subagent_messages', session_id: SESSION, agent_id: message.agent_id, messages: [
