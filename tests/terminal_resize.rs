@@ -2936,10 +2936,15 @@ fn ctrl_v_attaches_the_system_clipboard_image_and_sends_it_with_the_prompt() {
     drop(clipboard);
 }
 
+/// Whether one row of `screen` contains every needle, so they are shown together.
+fn has_row_with(screen: &str, needles: &[&str]) -> bool {
+    screen.lines().any(|row| needles.iter().all(|needle| row.contains(needle)))
+}
+
 #[test]
-fn agents_view_opens_from_an_empty_composer_stops_a_running_subagent_and_returns_to_chat() {
+fn agents_view_opens_from_an_empty_composer_stops_a_subagent_and_reads_a_transcript() {
     let mut test = TerminalTest::start("agents", 3);
-    test.wait_screen("[AGENTS:1]");
+    test.wait_screen("2 running");
 
     // With a draft, Left moves the cursor: the next character lands before the last one.
     let log_offset =
@@ -2956,27 +2961,37 @@ fn agents_view_opens_from_an_empty_composer_stops_a_running_subagent_and_returns
     test.send(b"\x05\x15"); // End, then kill to line start.
     test.wait_screen("Type a message");
     test.send(b"\x1b[D");
-    let screen = test.wait_screen_with("Review parser", &["Subagents", "running", "Inspect docs"]);
+    let screen = test.wait_screen_with("Up/Down select", &["Review parser", "Inspect docs"]);
     assert!(!screen.contains("Watch logs"), "background shells are not listed:\n{screen}");
+    assert!(has_row_with(&screen, &["› ● mapper", "Sonnet 5.5"]), "{screen}");
+    assert!(has_row_with(&screen, &["Review parser", " running "]), "{screen}");
     assert_eq!(test.commands("list_subagents").len(), 1);
 
     test.send(b"s");
-    test.wait_screen("stopped");
+    let screen = test.wait_screen_with(" stopping ", &[]);
+    assert!(has_row_with(&screen, &["Review parser", " stopping "]), "{screen}");
     let stops = test.commands("stop_subagent");
     assert_eq!(stops.len(), 1);
     assert_eq!(stops[0]["task_id"], "agent-running");
+    test.signal("stop");
+    test.wait_journal("subagent-stopped");
+    let screen = test.wait_screen_with(" stopped ", &[]);
+    assert!(has_row_with(&screen, &["Review parser", " stopped "]), "{screen}");
+    assert!(has_row_with(&screen, &["› ○ mapper", "Sonnet 5.5"]), "{screen}");
 
+    // The stopped agent sorts below the running one; the finished one is last.
     test.send(b"\x1b[B");
+    test.wait_screen("saved · Enter to read");
     test.send(b"\r");
-    test.wait_screen_with("Docs path checked", &["Inspect the docs", "ls docs"]);
+    test.wait_screen_with("Docs path checked", &["Inspect the docs", "• ls docs"]);
     assert_eq!(test.commands("get_subagent_messages")[0]["agent_id"], "agent-done");
     test.send(b"\x1b");
-    test.wait_screen("Review parser");
+    test.wait_screen("Up/Down select");
     test.send(b"\x1b");
     test.wait_screen("Type a message");
 
     test.submit("/agents", "/agents");
-    test.wait_screen("Review parser");
+    test.wait_screen("Up/Down select");
     assert_eq!(test.commands("list_subagents").len(), 2);
     test.send(b"\x1b");
     test.wait_screen("Type a message");
@@ -2987,23 +3002,25 @@ fn agents_view_opens_from_an_empty_composer_stops_a_running_subagent_and_returns
 }
 
 #[test]
-fn tasks_overlay_opens_the_selected_live_agent_inspector() {
-    let mut test = TerminalTest::start("agents-inspector", 3);
+fn ctrl_t_enter_opens_the_agents_view_on_the_chosen_agent_at_80_by_24() {
+    let mut test = TerminalTest::start("agents", 3);
+    test.wait_screen("2 running");
+    test.resize_and_wait_for_draw(24, 80);
     test.send(b"\x14");
-    test.wait_screen_with("Agents", &["mapper", "Sonnet 5.5", "builder", "Opus 5.5"]);
+    test.wait_screen_with("Enter inspect", &["mapper", "Sonnet 5.5", "builder", "Opus 5.5"]);
     test.send(b"\x1b[B");
     test.wait_screen("> ● builder");
     test.send(b"\r");
-    test.wait_screen_with(
-        "Build agent inspector",
-        &["Opus 5.5", "asked for opus", "Recent", "Read agents.rs"],
+    let screen = test.wait_screen_with(
+        "builder · Opus 5.5 · asked for opus · isolated worktree",
+        &["Recent", "Read agents.rs", "Prompt of builder"],
     );
-    test.wait_until("selected live agent messages requested", |test| {
-        test.commands("get_subagent_messages")
-            .iter()
-            .any(|command| command["agent_id"] == "agent-second")
-    });
-    assert_eq!(test.commands("list_session_agents").len(), 1);
+    assert!(has_row_with(&screen, &["› ● builder", "Opus 5.5"]), "{screen}");
+    assert!(has_row_with(&screen, &["Build agent inspector", " running "]), "{screen}");
+    assert!(screen.contains("Up/Down select"), "the key hints fit at 80x24:\n{screen}");
+    assert_eq!(test.commands("list_subagents").len(), 1);
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
     test.assert_prompts(&[]);
     test.shutdown();
 }
@@ -3049,7 +3066,7 @@ fn footer_agents_resize_and_finish_follow_task_inventory() {
     test.wait_journal("footer-agents-finished");
     test.wait_until("finished agent summary replaces shelf", |test| {
         let screen = test.screen();
-        screen.contains("3 agents") && !screen.contains("ctrl+t inspect")
+        screen.contains("3 agents") && !screen.contains("ctrl+t list")
     });
     test.shutdown();
 }

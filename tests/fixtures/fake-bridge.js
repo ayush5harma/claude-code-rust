@@ -361,10 +361,15 @@ function streamReply(messageUuid) {
 }
 
 // Subagent rows as the bridge normalizes SDK task lifecycle messages.
-function agentTask(task_id, subject, status, terminal_status) {
-  return { task_id, subject, status, blocks: [], blocked_by: [], metadata: {
-    task_type: 'local_agent', subagent_type: 'general-purpose', ...(terminal_status ? { terminal_status } : {}),
+// The rows the bridge reports for the `agents` scenario, kept so a later
+// outcome carries the same subject and metadata as the bridge's merged row.
+const agentRows = new Map();
+function agentTask(task_id, subject, status, terminal_status, source_tool_call_id, metadata = {}) {
+  const row = { task_id, subject, status, blocks: [], blocked_by: [], ...(source_tool_call_id ? { source_tool_call_id } : {}), metadata: {
+    task_type: 'local_agent', subagent_type: 'general-purpose', ...metadata, ...(terminal_status ? { terminal_status } : {}),
   } };
+  agentRows.set(task_id, row);
+  return row;
 }
 function sendTasks(tasks) {
   send({ event: 'session_update', session_id: SESSION, update: {
@@ -487,24 +492,6 @@ readline
             { name: 'color', description: 'Set the session color', input_hint: '<color>' },
           ] } });
         }
-        if (SCENARIO === 'session-agents') {
-          send({ event: 'session_update', session_id: SESSION, update: { type: 'task_state_update', source: 'task_lifecycle', is_complete_snapshot: false, removed_task_ids: [], tasks: [
-            { task_id: 'agent-running', subject: 'Review parser', status: 'in_progress', owner: null, blocks: [], blocked_by: [], metadata: { subagent_type: 'general-purpose' } },
-            { task_id: 'agent-completed', subject: 'Inspect docs', status: 'completed', owner: null, blocks: [], blocked_by: [], metadata: { subagent_type: 'general-purpose', terminal_status: 'completed' } },
-          ] } });
-        }
-        if (SCENARIO === 'agents-inspector') {
-          const update = update => send({ event: 'session_update', session_id: SESSION, update });
-          for (const [id, name, model] of [['agent-running', 'mapper', 'Sonnet 5.5'], ['agent-second', 'builder', 'Opus 5.5']]) {
-            update({ type: 'tool_call', tool_call: { tool_call_id: 'parent-' + id, title: name, kind: 'other', status: 'in_progress', content: [], locations: [],
-              raw_input: { name, subagent_type: 'general-purpose', model: id === 'agent-second' ? 'opus' : 'sonnet', isolation: 'worktree', prompt: 'Inspect the Rust UI and verify the selected agent.' }, meta: { claudeCode: { toolName: 'Agent' } } } });
-          }
-          update({ type: 'task_state_update', source: 'task_lifecycle', is_complete_snapshot: false, removed_task_ids: [], tasks: [
-            { task_id: 'agent-running', source_tool_call_id: 'parent-agent-running', subject: 'Map render paths', status: 'in_progress', blocks: [], blocked_by: [], metadata: { task_type: 'local_agent', model_display: 'Sonnet 5.5', usage: { total_tokens: 12000, tool_uses: 4, duration_ms: 62000 } } },
-            { task_id: 'agent-second', source_tool_call_id: 'parent-agent-second', subject: 'Build agent inspector', status: 'in_progress', blocks: [], blocked_by: [], metadata: { task_type: 'local_agent', model_display: 'Opus 5.5', usage: { total_tokens: 34200, tool_uses: 12, duration_ms: 40000 }, summary: 'Building the details pane' } },
-          ] });
-          update({ type: 'tool_call', tool_call: { tool_call_id: 'inspector-read', title: 'Read agents.rs', kind: 'read', status: 'completed', content: [], locations: [], raw_input: { file_path: '/fixture/src/ui/config/agents.rs' }, meta: { claudeCode: { toolName: 'Read', parentToolUseId: 'parent-agent-second' } } } });
-        }
         if (SCENARIO === 'session-name') {
           // As the real bridge does after connect: the SDK-advertised commands.
           send({ event: 'session_update', session_id: SESSION, update: { type: 'available_commands_update', commands: [
@@ -543,11 +530,21 @@ readline
         }
         if (SCENARIO === 'hook-activity') startupHooks();
         if (SCENARIO === 'agents') {
+          // Two running subagents with their Agent calls (requested alias, worktree
+          // isolation, prompt), resolved models, usage and one child Read; a
+          // finished subagent with a saved transcript; a shell that is no agent.
+          const update = update => send({ event: 'session_update', session_id: SESSION, update });
+          for (const [id, name, model] of [['agent-running', 'mapper', 'sonnet'], ['agent-second', 'builder', 'opus']]) {
+            update({ type: 'tool_call', tool_call: { tool_call_id: `parent-${id}`, title: name, kind: 'other', status: 'in_progress', content: [], locations: [],
+              raw_input: { name, subagent_type: 'general-purpose', model, isolation: 'worktree', prompt: `Prompt of ${name}: inspect the Rust UI.` }, meta: { claudeCode: { toolName: 'Agent' } } } });
+          }
           sendTasks([
-            agentTask('agent-running', 'Review parser', 'in_progress', null),
+            agentTask('agent-running', 'Review parser', 'in_progress', null, 'parent-agent-running', { model_display: 'Sonnet 5.5', usage: { total_tokens: 12000, tool_uses: 4, duration_ms: 62000 } }),
+            agentTask('agent-second', 'Build agent inspector', 'in_progress', null, 'parent-agent-second', { model_display: 'Opus 5.5', usage: { total_tokens: 34200, tool_uses: 12, duration_ms: 40000 }, summary: 'Building the details pane' }),
             agentTask('agent-done', 'Inspect docs', 'completed', 'completed'),
             { task_id: 'shell-1', subject: 'Watch logs', status: 'in_progress', blocks: [], blocked_by: [], metadata: { task_type: 'local_bash' } },
           ]);
+          update({ type: 'tool_call', tool_call: { tool_call_id: 'inspector-read', title: 'Read agents.rs', kind: 'read', status: 'completed', content: [], locations: [], raw_input: { file_path: '/fixture/src/ui/agents.rs' }, meta: { claudeCode: { toolName: 'Read', parentToolUseId: 'parent-agent-second' } } } });
         }
         if (SCENARIO === 'disconnect-during-auth' && message.command === 'create_session') {
           const timer = setInterval(() => {
@@ -604,11 +601,19 @@ readline
           { role: 'assistant', text: 'Docs path checked' },
         ] });
         break;
-      case 'stop_subagent':
-        // The acknowledgement first; the lifecycle reports the outcome after it.
+      case 'stop_subagent': {
+        // The acknowledgement first. The lifecycle reports the outcome only after
+        // the test's release, so the row is seen stopping in between.
         send({ event: 'subagent_stop_result', session_id: SESSION, task_id: message.task_id });
-        sendTasks([agentTask(message.task_id, 'Review parser', 'completed', 'killed')]);
+        const timer = setInterval(() => {
+          if (!fs.existsSync(RELEASE_FILE)) return;
+          clearInterval(timer);
+          const row = agentRows.get(message.task_id);
+          sendTasks([{ ...row, status: 'completed', metadata: { ...row.metadata, terminal_status: 'killed' } }]);
+          record({ type: 'barrier', name: 'subagent-stopped' });
+        }, INTERVAL_MS);
         break;
+      }
       case 'prompt':
         if (SCENARIO === 'footer-agents') {
           const update = update => send({ event: 'session_update', session_id: SESSION, update });
