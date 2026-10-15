@@ -149,8 +149,8 @@ claude-rs --continue
 The palette has a dark and a light variant. At startup, claude-rs picks one in this order:
 
 1. `CLAUDE_RS_APPEARANCE=light` or `dark`, if set.
-2. Claude Code's own `theme` setting, if it is a light or dark theme (`light`, `dark-daltonized` and so on).
-3. The background color the terminal reports (an OSC 11 query, answered by Ghostty, iTerm2, kitty, WezTerm, Terminal.app and most others).
+2. The background color the terminal reports (an OSC 11 query, answered by Ghostty, iTerm2, kitty, WezTerm, Terminal.app and most others).
+3. Claude Code's own `theme` setting, if the terminal does not answer and the theme is a light or dark one (`light`, `dark-daltonized` and so on).
 4. Dark.
 
 The colors are Apple's system colors from the [Human Interface Guidelines](https://developer.apple.com/design/human-interface-guidelines/color). Where the default variant fell short of the contrast floor, the increased-contrast variant is used. Body text uses the terminal's own foreground color. States carry a label or an icon as well as a color, so nothing depends on telling hues apart. Set `prefersReducedMotion` in Claude Code to keep the crab still.

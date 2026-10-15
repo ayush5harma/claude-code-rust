@@ -65,8 +65,19 @@ pub struct Palette {
     /// Find-in-transcript match and the rewind picker's selection.
     pub highlight_fg: Color,
     pub highlight_bg: Color,
-    /// Badge label and fill per tone, in `Tone` declaration order.
-    badges: [(Color, Color); 6],
+    badges: Badges,
+}
+
+/// Badge (label, fill) pairs, one field per `Tone` so a new tone cannot be
+/// added without its colors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Badges {
+    neutral: (Color, Color),
+    accent: (Color, Color),
+    success: (Color, Color),
+    warning: (Color, Color),
+    danger: (Color, Color),
+    info: (Color, Color),
 }
 
 const fn rgb(value: (u8, u8, u8)) -> Color {
@@ -156,14 +167,14 @@ pub const DARK: Palette = Palette {
     fill: rgb(dark::FILL),
     highlight_fg: rgb(BLACK),
     highlight_bg: rgb(dark::WARNING),
-    badges: [
-        dark_badge(dark::SECONDARY),
-        dark_badge(dark::ACCENT),
-        dark_badge(dark::SUCCESS),
-        dark_badge(dark::WARNING),
-        dark_badge(dark::DANGER),
-        dark_badge(dark::INFO),
-    ],
+    badges: Badges {
+        neutral: dark_badge(dark::SECONDARY),
+        accent: dark_badge(dark::ACCENT),
+        success: dark_badge(dark::SUCCESS),
+        warning: dark_badge(dark::WARNING),
+        danger: dark_badge(dark::DANGER),
+        info: dark_badge(dark::INFO),
+    },
 };
 
 pub const LIGHT: Palette = Palette {
@@ -184,20 +195,27 @@ pub const LIGHT: Palette = Palette {
     fill: rgb(light::FILL),
     highlight_fg: rgb(BLACK),
     highlight_bg: rgb((255, 204, 0)), // systemYellow, light
-    badges: [
-        light_badge(light::SECONDARY),
-        light_badge(light::ACCENT),
-        light_badge(light::SUCCESS),
-        light_badge(light::WARNING),
-        light_badge(light::DANGER),
-        light_badge(light::INFO),
-    ],
+    badges: Badges {
+        neutral: light_badge(light::SECONDARY),
+        accent: light_badge(light::ACCENT),
+        success: light_badge(light::SUCCESS),
+        warning: light_badge(light::WARNING),
+        danger: light_badge(light::DANGER),
+        info: light_badge(light::INFO),
+    },
 };
 
 impl Palette {
     /// The (label, fill) pair for a badge of `tone`.
     pub const fn badge(&self, tone: Tone) -> (Color, Color) {
-        self.badges[tone as usize]
+        match tone {
+            Tone::Neutral => self.badges.neutral,
+            Tone::Accent => self.badges.accent,
+            Tone::Success => self.badges.success,
+            Tone::Warning => self.badges.warning,
+            Tone::Danger => self.badges.danger,
+            Tone::Info => self.badges.info,
+        }
     }
 }
 

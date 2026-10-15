@@ -11,11 +11,13 @@ use std::time::Duration;
 /// `light` or `dark`; overrides every other signal.
 pub const APPEARANCE_ENV: &str = "CLAUDE_RS_APPEARANCE";
 
-/// How long to wait for the terminal to report its background. A local
-/// terminal answers within a millisecond, and one without the query answers
-/// the DA1 sent with it at once, so this only runs out when nothing answers
-/// at all (a bare PTY, or a multiplexer that swallows the query).
-const QUERY_TIMEOUT: Duration = Duration::from_millis(150);
+/// How long to wait for the terminal to report its background: the library's
+/// own default, chosen for SSH. A local terminal answers within a millisecond,
+/// and one without the query answers the DA1 sent with it at once, so the wait
+/// only runs out when nothing answers at all. A shorter timeout would let a
+/// slow link's reply (an SSH round trip can pass 250 ms) arrive after the
+/// query gave up, where crossterm would read it as keystrokes.
+const QUERY_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Where the appearance came from, for the startup log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,8 +32,8 @@ pub enum Source {
 pub fn init() -> (Appearance, Source) {
     let resolved = resolve(
         std::env::var(APPEARANCE_ENV).ok().as_deref(),
-        claude_theme_setting().as_deref(),
         query_terminal,
+        claude_theme_setting,
     );
     theme::set_appearance(resolved.0);
     tracing::info!(
@@ -44,22 +46,25 @@ pub fn init() -> (Appearance, Source) {
     resolved
 }
 
-/// The explicit override first, then Claude Code's own light or dark theme,
-/// which is the user's statement of what reads well in this terminal, then
-/// the terminal's reported background, then dark.
+/// The explicit override first, then the background the terminal reports,
+/// which is what the text is actually drawn on, then Claude Code's own light
+/// or dark theme for terminals that do not answer, then dark. The theme comes
+/// second because `dark` is Claude Code's onboarding default, so it often
+/// says nothing about the terminal, and the settings are only read when the
+/// terminal stays silent.
 fn resolve(
     env_value: Option<&str>,
-    claude_theme: Option<&str>,
     query: impl FnOnce() -> Option<Appearance>,
+    claude_theme: impl FnOnce() -> Option<String>,
 ) -> (Appearance, Source) {
     if let Some(appearance) = env_value.and_then(parse_override) {
         return (appearance, Source::Environment);
     }
-    if let Some(appearance) = claude_theme.and_then(from_claude_theme) {
-        return (appearance, Source::ClaudeTheme);
-    }
     if let Some(appearance) = query() {
         return (appearance, Source::Terminal);
+    }
+    if let Some(appearance) = claude_theme().as_deref().and_then(from_claude_theme) {
+        return (appearance, Source::ClaudeTheme);
     }
     (Appearance::Dark, Source::Default)
 }
@@ -125,31 +130,46 @@ mod tests {
         None
     }
 
+    fn theme(value: &'static str) -> impl FnOnce() -> Option<String> {
+        move || Some(value.to_owned())
+    }
+
+    fn unread_theme() -> Option<String> {
+        panic!("the settings must not be read when an earlier signal decides")
+    }
+
     #[test]
     fn override_wins_over_every_other_signal() {
-        let resolved = resolve(Some(" Light "), Some("dark"), || Some(Appearance::Dark));
+        let resolved = resolve(Some(" Light "), || Some(Appearance::Dark), unread_theme);
         assert_eq!(resolved, (Appearance::Light, Source::Environment));
     }
 
     #[test]
-    fn claude_theme_wins_over_the_terminal_query() {
-        let resolved = resolve(None, Some("light-daltonized"), || Some(Appearance::Dark));
+    fn terminal_background_wins_over_the_default_claude_theme() {
+        // A light terminal with Claude Code still on its onboarding default.
+        let resolved = resolve(None, || Some(Appearance::Light), unread_theme);
+        assert_eq!(resolved, (Appearance::Light, Source::Terminal));
+    }
+
+    #[test]
+    fn claude_theme_decides_when_the_terminal_stays_silent() {
+        let resolved = resolve(None, unanswered, theme("light-daltonized"));
         assert_eq!(resolved, (Appearance::Light, Source::ClaudeTheme));
-        let resolved = resolve(None, Some("dark-ansi"), || Some(Appearance::Light));
+        let resolved = resolve(None, unanswered, theme("dark-ansi"));
         assert_eq!(resolved, (Appearance::Dark, Source::ClaudeTheme));
     }
 
     #[test]
-    fn auto_and_custom_themes_defer_to_the_terminal() {
-        for theme in ["auto", "custom:ghostty"] {
-            let resolved = resolve(None, Some(theme), || Some(Appearance::Light));
-            assert_eq!(resolved, (Appearance::Light, Source::Terminal), "{theme}");
+    fn auto_and_custom_themes_say_nothing() {
+        for value in ["auto", "custom:ghostty"] {
+            let resolved = resolve(None, unanswered, theme(value));
+            assert_eq!(resolved, (Appearance::Dark, Source::Default), "{value}");
         }
     }
 
     #[test]
     fn unknown_override_is_ignored_and_silence_means_dark() {
-        let resolved = resolve(Some("sepia"), None, unanswered);
+        let resolved = resolve(Some("sepia"), unanswered, || None);
         assert_eq!(resolved, (Appearance::Dark, Source::Default));
     }
 
