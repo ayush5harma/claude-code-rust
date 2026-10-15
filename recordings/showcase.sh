@@ -57,6 +57,7 @@ Sleep 2.5s
 Show
 Sleep 600ms
 Screenshot "$repo/assets/screenshot-$appearance-welcome.png"
+Sleep 600ms
 Hide
 Type "/mcp"
 Enter
@@ -65,7 +66,7 @@ Sleep 1s
 Show
 Sleep 600ms
 Screenshot "$repo/assets/screenshot-$appearance-mcp.png"
-Sleep 300ms
+Sleep 600ms
 TAPE
   (cd "$work" && vhs "$work/$appearance.tape" -o "$work/$appearance.gif")
 }
