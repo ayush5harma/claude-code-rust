@@ -26,13 +26,14 @@ See [Presentation and scrolling](settings.md#presentation-and-scrolling) for the
 
 The fullscreen settings surface has its own keys for tabs, panes, search and editors. See [Opening and navigating](settings.md#opening-and-navigating), [Editing a value](settings.md#editing-a-value) and [Lists and structured settings](settings.md#lists-and-structured-settings).
 
-## Subagents View
+## Agents View
 
-`/agents`, or `Left` in an empty input, opens the current session's subagents.
+`/agents`, `Left` in an empty input, or `Enter` on an agent in the `Ctrl+T` task list opens the current session's subagents with the selected agent's details.
 
 | Shortcut | Action |
 | --- | --- |
 | `Up`, `Down` | Select a subagent. |
+| `Page Up`, `Page Down` | Scroll the selected subagent's details. |
 | `Enter` | Open the selected subagent's saved transcript. |
 | `s` | Ask the selected running subagent to stop. |
 | `r` | Check again which subagents have a saved transcript. |
@@ -51,7 +52,7 @@ In a transcript, `Up` and `Down` scroll, `Page Up` and `Page Down` scroll by a p
 | `Ctrl+D` | Delete after the cursor, or quit when the draft is empty. |
 | `Ctrl+G` | Edit the draft in `$VISUAL` or `$EDITOR`. A failed editor preserves the draft. |
 | `Ctrl+O` | Show a snapshot of retained user, assistant and visible tool text; press again or `Esc` to close. Reopen to refresh. |
-| `Ctrl+T` | Show Plan, Agents and Other tasks. Up/Down selects an agent; Enter opens its inspector. Press again or `Esc` to close. |
+| `Ctrl+T` | Show Plan, Agents and Other tasks. Up/Down selects an agent; Enter opens it in the [Agents view](#agents-view). Press again or `Esc` to close. |
 | `Alt+R` | Open the rewind picker directly. |
 | `Ctrl+F` | Search retained transcript text. |
 | `Tab` | Focus prompts or accept suggestions. |

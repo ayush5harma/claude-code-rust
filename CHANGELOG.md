@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Features
+
+- The full-screen `/agents` view is the one agent inspector ([#40](https://github.com/ayush5harma/claude-code-rust/issues/40), [#34](https://github.com/ayush5harma/claude-code-rust/pull/34)). Enter on an agent in the Ctrl+T list, Left Arrow on an empty composer, or `/agents` opens it; it shows the selected agent's model, usage, activity, recent tools and prompt beside or below the list, reads saved transcripts with their tool calls, and stops a running agent, which shows stopping until the session reports it stopped. It replaces the Agents settings tab, and the shelf hint names the keys.
+
 ## [0.15.2-fork.6] - 2026-10-15
 
 ### Features

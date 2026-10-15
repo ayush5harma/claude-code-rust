@@ -418,43 +418,45 @@ fk_agents_flow() {
     FK_AGENTS_PANEL="could not submit the agent prompt"
     return 0
   }
-  if ! wait_for fkagents 'AGENTS:1' 90; then
+  # The footer shelf's header reads "agents  1 running" while it runs.
+  if ! wait_for fkagents 'agents +1 running' 90; then
     shot agents
-    FK_AGENTS_PANEL="no AGENTS:1 footer badge while the subagent ran"
+    FK_AGENTS_PANEL="no 'agents 1 running' shelf while the subagent ran"
     return 0
   fi
-  FK_AGENTS_FOOTER=$(first_match 'AGENTS:1')
+  FK_AGENTS_FOOTER=$(first_match 'agents +1 running' | squash)
   # A subagent is a lifecycle task, not a plan step.
   FK_AGENTS_PLAN=$(first_match '^[▓░]+ [0-9]+/[0-9]+ ' || true)
   enter_cmd fkagents /agents
-  if ! wait_for fkagents 'Subagents' 15; then
+  if ! wait_for fkagents 'Agents +[0-9]+/[0-9]+' 15; then
     shot agents
     FK_AGENTS_PANEL="/agents did not open"
     return 0
   fi
-  # Rows read "› <name>  <status>"; the running one is the one to stop.
+  # The selected row reads "› <glyph> <name>  <model> ..." (● running), and the
+  # selected agent's details carry its status badge (" running ", " stopped ").
   local i
   for ((i = 0; i < 8; i++)); do
-    grep -Eq '^ *› .* running' <<<"$(screen fkagents)" && break
+    grep -Eq '^ *› ● ' <<<"$(screen fkagents)" && break
     keys fkagents Down
     sleep 0.4
   done
   SCREEN=$(screen fkagents)
   shot agents
-  if ! grep -Eq '^ *› .* running' <<<"$SCREEN"; then
+  if ! grep -Eq '^ *› ● ' <<<"$SCREEN"; then
     FK_AGENTS_PANEL="/agents lists no running agent: $(grep -E 'pending|running|completed|stopped' <<<"$SCREEN" | head -3 | paste -sd'/' -)"
     keys fkagents Escape
     return 0
   fi
-  FK_AGENTS_PANEL="view row: $(first_match '^ *› .* running')"
+  FK_AGENTS_PANEL="view row: $(first_match '^ *› ● ' | squash)"
   keys fkagents s
-  if wait_for fkagents '^ *› .* stopped' 20; then
+  if wait_for fkagents ' stopped ' 20; then
     local end=$(($(now) + 20))
     while pgrep -f -- "$SUITE_DIR/fixtures/hold.mjs" >/dev/null && (($(now) < end)); do sleep 0.5; done
     if pgrep -f -- "$SUITE_DIR/fixtures/hold.mjs" >/dev/null; then
       FK_AGENTS_STOP="row showed stopped but the agent's command (hold.mjs) was still running 20 s later"
     else
-      FK_AGENTS_AFTER=$(first_match '^ *› .* stopped' | squash)
+      FK_AGENTS_AFTER=$(first_match ' stopped ' | squash)
       FK_AGENTS_STOP="row showed stopped; its command exited; row now: ${FK_AGENTS_AFTER:-?}"
     fi
   else
@@ -464,7 +466,7 @@ fk_agents_flow() {
   wait_idle fkagents 60 || true
 }
 
-def fork.agents fork "/agents" "Subagents view; stop a running subagent"
+def fork.agents fork "/agents" "Agents view; stop a running subagent"
 chk_fork_agents() {
   fk_agents_flow || { res FAIL "agents session did not start"; return; }
   if [[ $FK_AGENTS_PANEL == view\ row:* && $FK_AGENTS_STOP == row\ showed\ stopped*"its command exited"* ]]; then
@@ -474,13 +476,13 @@ chk_fork_agents() {
   fi
 }
 
-def fork.footer_agents fork "Footer: running subagents" "Running subagent count excludes plan steps"
+def fork.footer_agents fork "Footer: agent shelf" "Running subagent shelf excludes plan steps"
 chk_fork_footer_agents() {
   fk_agents_flow || { res FAIL "agents session did not start"; return; }
   if [[ -n $FK_AGENTS_FOOTER && -z $FK_AGENTS_PLAN ]]; then
     res PASS "while a subagent ran: '$FK_AGENTS_FOOTER' without a plan row"
   elif [[ -n $FK_AGENTS_FOOTER ]]; then
-    res FAIL "agent badge '$FK_AGENTS_FOOTER' also created a plan row '$FK_AGENTS_PLAN'"
+    res FAIL "agent shelf '$FK_AGENTS_FOOTER' also created a plan row '$FK_AGENTS_PLAN'"
   else
     res FAIL "$FK_AGENTS_PANEL"
   fi

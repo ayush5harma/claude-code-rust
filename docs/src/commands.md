@@ -31,7 +31,7 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/plugins` | `/plugins` | Open plugin management. |
 | `/status` | `/status` | Open session and account status. |
 | `/usage` | `/usage` | Open quota and usage information. |
-| `/agents` | `/agents` | Open this session's subagents with their live status and saved transcripts. |
+| `/agents` | `/agents` | Inspect this session's subagents: live status, the selected agent's model, usage, activity and prompt, and saved transcripts. |
 | `/login` | `/login` | Run Claude CLI authentication and reconnect the session. |
 | `/logout` | `/logout` | Run Claude CLI logout and clear the active authenticated session. |
 | `/mode` | `/mode <id>` | Switch to a mode advertised by the active session. |
@@ -122,4 +122,4 @@ If the SDK accepts `/ultracode on` but reports Ultracode unavailable, the comman
 
 `/fast` changes fast mode only for the active session. It does not rewrite the persisted Fast mode setting. Use the settings surface to choose the fast-mode preference applied when future sessions start. If an accepted change cannot be verified, the footer shows `FAST:?`; retry explicitly with `/fast on` or `/fast off`.
 
-`/agents` lists only the subagents of the active session, with the status the SDK task lifecycle reports, and is not part of the settings surface. A subagent shows "no transcript" until the SDK lists a saved transcript for its task id; a running subagent can be missing from that list for its first seconds, and `r` checks again. `s` sends a stop request; the row shows stopped only once the session reports it. The footer shows `AGENTS:<n>` while subagents run. Keys are listed in [Keyboard Shortcuts](shortcuts.md#subagents-view).
+`/agents` is the inspector for the active session's subagents and is not part of the settings surface. `Left` in an empty input opens it too, and `Enter` on an agent in the `Ctrl+T` task list opens it with that agent selected. Its list shows the status the SDK task lifecycle reports. The selected agent's details show the model its responses came from, else the model alias the session requested, else its agent definition's default; worktree isolation; tools, tokens and elapsed time; its current activity; up to eight recent child tools; and the first six lines of its prompt. A transcript is available once the SDK lists a saved transcript for the agent's task id; a running subagent can be missing from that list for its first seconds, and `r` checks again. `s` sends a stop request; the agent shows stopping until the session reports it stopped. While agents run, the footer shelf lists them. Keys are listed in [Keyboard Shortcuts](shortcuts.md#agents-view).
