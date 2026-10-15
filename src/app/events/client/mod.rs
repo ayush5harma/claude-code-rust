@@ -13,6 +13,7 @@ enum ClientEventFamily {
     Turn,
     Mcp,
     Session,
+    Subagents,
     Host,
 }
 
@@ -26,6 +27,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEventFamily::Turn => turn::handle(app, event),
         ClientEventFamily::Mcp => mcp::handle(app, event),
         ClientEventFamily::Session => session::handle(app, event),
+        ClientEventFamily::Subagents => crate::app::agents::apply_client_event(app, event),
         ClientEventFamily::Host => host::handle(app, event),
     }
     crate::app::search::refresh(app);
@@ -98,10 +100,12 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         | ClientEvent::WorkingDiffReceived { .. }
         | ClientEvent::ContextUsageReceived { .. }
         | ClientEvent::RewindTargetsReceived { .. }
-        | ClientEvent::SessionAgentsResultReceived { .. }
         | ClientEvent::SessionHistoryChunk { .. }
         | ClientEvent::RewindResultReceived { .. }
         | ClientEvent::FatalError(_) => ClientEventFamily::Session,
+        ClientEvent::SubagentsListed { .. }
+        | ClientEvent::SubagentMessagesReceived { .. }
+        | ClientEvent::SubagentStopResult { .. } => ClientEventFamily::Subagents,
         ClientEvent::UpdateCheckCompleted { .. }
         | ClientEvent::TerminalReleasedToChild { .. }
         | ClientEvent::TerminalReturnedFromChild { .. }

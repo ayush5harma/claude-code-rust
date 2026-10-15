@@ -262,7 +262,7 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> Termi
             TerminalEventOutcome::handled(true)
         }
         SurfaceMode::Fullscreen(FullscreenView::Tasks) => {
-            super::session_agents::handle_tasks_key(app, key);
+            super::agents::handle_list_key(app, key);
             TerminalEventOutcome::handled(true)
         }
         SurfaceMode::Fullscreen(FullscreenView::Verbose) => {
@@ -275,6 +275,10 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> Termi
         }
         SurfaceMode::Fullscreen(FullscreenView::Diff) => {
             super::diff_view::handle_key(app, key);
+            TerminalEventOutcome::handled(true)
+        }
+        SurfaceMode::Fullscreen(FullscreenView::Agents) => {
+            super::agents::handle_key(app, key);
             TerminalEventOutcome::handled(true)
         }
         SurfaceMode::Fullscreen(FullscreenView::Config) => {
@@ -340,7 +344,8 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
             | FullscreenView::Rewind
             | FullscreenView::Tasks
             | FullscreenView::Verbose
-            | FullscreenView::Diff,
+            | FullscreenView::Diff
+            | FullscreenView::Agents,
         ) => false,
     }
 }

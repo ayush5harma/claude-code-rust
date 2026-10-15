@@ -886,17 +886,10 @@ export function handleTaskSystemMessage(
     return true;
   }
   const fields = taskSystemToolFields(toolCall, subtype, msg);
-  if (!normalizeToolCallUpdateFields(toolCall, fields ?? {}, subtype as "task_started" | "task_progress" | "task_updated" | "task_notification")) {
-    // A finished tool call refuses further lifecycle updates so a late progress
-    // frame cannot revive it. The task row is separate state, and the SDK's
-    // task_notification is its final word: a stopTask arrives as
-    // task_updated "killed" (which finishes the tool call) and only then as
-    // task_notification "stopped" (measured, SDK 0.3.288), so dropping the
-    // notification here left the row as the earlier "killed" patch.
-    if (subtype === "task_notification") applyTaskLifecycleState(session, subtype, msg);
-    return true;
-  }
+  // The task row is separate state with its own transition rule, so a tool
+  // call that already finished does not decide whether its task settles.
   applyTaskLifecycleState(session, subtype, msg);
+  if (!normalizeToolCallUpdateFields(toolCall, fields ?? {}, subtype as "task_started" | "task_progress" | "task_updated" | "task_notification")) return true;
   const taskDuration = elapsedNumber(asRecordOrNull(msg.usage)?.duration_ms);
   if (taskDuration !== undefined && Number.isSafeInteger(Math.round(taskDuration))) {
     emitToolCallUpdate(session, toolUseId, { output_metadata: { ...toolCall.output_metadata, timing: { duration_ms: Math.round(taskDuration), source: "task" } } }, "progress");

@@ -89,6 +89,25 @@ function messageCandidates(raw: unknown): Record<string, unknown>[] {
   return candidates;
 }
 
+/**
+ * What a subagent's task_started record would have said, read from the Agent
+ * call that launched it. Claude Code 2.1.300 saves no task_started record for a
+ * background Agent call (measured 2026-10-16), so on resume this call is the
+ * only source of the row's type, subagent type and title.
+ */
+function agentLaunchFields(tool: ToolCall | undefined): Record<string, unknown> {
+  const name = toolNameFromMeta(tool?.meta);
+  if (name !== "Agent" && name !== "Task") return {};
+  const input = asRecordOrNull(tool?.raw_input);
+  const subagentType = nonEmptyTrimmed(input?.subagent_type);
+  const description = nonEmptyTrimmed(input?.description);
+  return {
+    task_type: "local_agent",
+    ...(subagentType ? { subagent_type: subagentType } : {}),
+    ...(description ? { task_description: description } : {}),
+  };
+}
+
 function pushResumeTaskSystemUpdate(
   updates: SessionUpdate[],
   tasksById: Map<string, TaskItem>,
@@ -116,6 +135,12 @@ function pushResumeTaskSystemUpdate(
   }
   const toolUseId = explicitToolUseId ?? taskToolUseIds.get(taskId);
   const tool = toolUseId ? toolCalls.get(toolUseId) : undefined;
+  // The record's own fields win over what the launching call implies.
+  const patch = taskLifecyclePatch(tasksById.get(taskId), subtype, { ...agentLaunchFields(tool), ...msg }, toolUseId);
+  if (patch) {
+    const task = upsertTask({ tasksById, taskOrder: [] }, patch);
+    updates.push({ type: "task_state_update", source: "task_lifecycle", tasks: [task], removed_task_ids: [], is_complete_snapshot: false });
+  }
   if (tool && toolUseId && toolAcceptsTaskLifecycle(tool)) {
     const fields = taskSystemToolFields(tool, subtype, msg);
     if (!normalizeToolCallUpdateFields(tool, fields ?? {}, subtype as "task_started" | "task_progress" | "task_updated" | "task_notification")) return true;
@@ -125,11 +150,6 @@ function pushResumeTaskSystemUpdate(
     }
   }
 
-  const patch = taskLifecyclePatch(tasksById.get(taskId), subtype, msg, toolUseId);
-  if (patch) {
-    const task = upsertTask({ tasksById, taskOrder: [] }, patch);
-    updates.push({ type: "task_state_update", source: "task_lifecycle", tasks: [task], removed_task_ids: [], is_complete_snapshot: false });
-  }
   return true;
 }
 
@@ -224,7 +244,7 @@ function pushResumeToolResult(
   if (taskId) {
     taskToolUseIds.set(taskId, toolUseId);
     const patch = taskLifecyclePatch(tasksById.get(taskId), "task_started", {
-      task_id: taskId, description: base?.title, is_backgrounded: true,
+      ...agentLaunchFields(base), task_id: taskId, description: base?.title, is_backgrounded: true,
     }, toolUseId);
     if (patch) updates.push({ type: "task_state_update", source: "task_lifecycle", tasks: [upsertTask({ tasksById, taskOrder: [] }, patch)], removed_task_ids: [], is_complete_snapshot: false });
   }
@@ -454,7 +474,8 @@ function resumedTaskNotification(raw: unknown): Record<string, unknown> | undefi
     const field = (name: string) => notificationTagContent(body, name)?.trim();
     const taskId = field("task-id");
     const status = field("status");
-    if (taskId && (status === "completed" || status === "failed" || status === "stopped")) {
+    // A background agent the user stopped is saved as "killed" (Claude Code 2.1.300).
+    if (taskId && (status === "completed" || status === "failed" || status === "stopped" || status === "killed")) {
       return { subtype: "task_notification", task_id: taskId, status, tool_use_id: field("tool-use-id"), summary: field("summary"), output_file: field("output-file") };
     }
   }

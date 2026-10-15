@@ -38,9 +38,6 @@ pub(crate) fn refresh_runtime_tabs_for_session_change(app: &mut App) {
     if app.config.active_tab == ConfigTab::Plugins {
         crate::app::plugins::request_inventory_refresh_if_needed(app);
     }
-    if app.config.active_tab == ConfigTab::Agents {
-        crate::app::session_agents::refresh(app);
-    }
 }
 
 pub fn close(app: &mut App) {
@@ -66,11 +63,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     }
 
     if app.config.active_tab == ConfigTab::Help && help::handle_key(app, key) {
-        return;
-    }
-    if app.config.active_tab == ConfigTab::Agents
-        && crate::app::session_agents::handle_key(app, key)
-    {
         return;
     }
     if app.config.active_tab == ConfigTab::Plugins && crate::app::plugins::handle_key(app, key) {
@@ -317,9 +309,6 @@ fn request_active_tab_side_effects(app: &mut App) {
     }
     if app.config.active_tab == ConfigTab::Plugins {
         crate::app::plugins::request_inventory_refresh_if_needed(app);
-    }
-    if app.config.active_tab == ConfigTab::Agents {
-        crate::app::session_agents::refresh(app);
     }
 }
 

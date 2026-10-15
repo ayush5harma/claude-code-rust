@@ -17,6 +17,7 @@ pub enum FullscreenView {
     Verbose,
     Search,
     Diff,
+    Agents,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +85,9 @@ pub(crate) fn dismiss_fullscreen_on_interrupt(app: &mut App) {
         | FullscreenView::Trusted
         | FullscreenView::Tasks
         | FullscreenView::Diff => {}
+        FullscreenView::Agents => {
+            app.agents.transcript = None;
+        }
         FullscreenView::SessionPicker => {
             app.startup.resolve_session_picker();
             app.session_picker.turn_session_id = None;

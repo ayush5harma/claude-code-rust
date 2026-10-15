@@ -720,4 +720,14 @@ fn agent_shelf_clock_schedules_only_visible_running_rows_once_per_second() {
     app.chat_render.terminal_height = 23;
     schedule_agent_shelf_frame(&mut app, now + Duration::from_secs(3));
     assert!(!app.surface_dirty.chat.take_repaint());
+    // The /agents view shows the same clocks whatever the shelf's room.
+    view::set_fullscreen_view(&mut app, FullscreenView::Agents);
+    app.surface_dirty.fullscreen.redraw = false;
+    schedule_agent_shelf_frame(&mut app, now + Duration::from_secs(4));
+    assert!(app.surface_dirty.fullscreen.redraw);
+    // A transcript shows no clocks, so it is not redrawn for them.
+    app.agents.transcript = Some(agents::TranscriptView::default());
+    app.surface_dirty.fullscreen.redraw = false;
+    schedule_agent_shelf_frame(&mut app, now + Duration::from_secs(5));
+    assert!(!app.surface_dirty.fullscreen.redraw);
 }

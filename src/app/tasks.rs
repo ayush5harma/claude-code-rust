@@ -148,7 +148,6 @@ pub(crate) fn is_user_plan_task(task: &model::TaskItem) -> bool {
                 || metadata.get("sdk_lifecycle_task").and_then(serde_json::Value::as_bool)
                     == Some(true)
         })
-        && !crate::app::session_agents::is_session_agent_task(task)
 }
 
 pub(super) fn refresh_task_tool_displays(app: &mut App) -> bool {
@@ -161,8 +160,7 @@ fn refresh_task_tool_displays_with_previous(
     previous_tasks: &[model::TaskItem],
 ) -> bool {
     let is_running = |task: &&model::TaskItem| {
-        task.status == model::TaskStatus::InProgress
-            && crate::app::session_agents::is_session_agent_task(task)
+        task.status == model::TaskStatus::InProgress && crate::app::agents::is_subagent_task(task)
     };
     let running = app.sdk_inventory.tasks.iter().any(|t| is_running(&t));
     if running && !previous_tasks.iter().any(|t| is_running(&t)) {
@@ -178,7 +176,7 @@ fn refresh_task_tool_displays_with_previous(
     } else if !running {
         app.sdk_inventory.agent_shelf_wave_started_at = None;
     }
-    crate::app::session_agents::sync_live(app);
+    crate::app::agents::forget_unlisted_selection(app);
     let current_tasks = app.sdk_inventory.tasks.clone();
     let mut dirty_blocks = Vec::new();
 
@@ -449,7 +447,8 @@ mod tests {
         assert!(app.footer.plan_source == crate::app::state::PlanSource::Todo);
 
         let mut agent = task("agent-1", "Review", model::TaskStatus::InProgress);
-        agent.metadata = Some(serde_json::json!({"subagent_type":"general-purpose"}));
+        agent.metadata =
+            Some(serde_json::json!({"task_type":"local_agent","subagent_type":"general-purpose"}));
         apply_task_state_update(
             &mut app,
             model::TaskStateUpdate::new(model::TaskUpdateSource::Lifecycle).tasks(vec![agent]),
@@ -549,6 +548,41 @@ mod tests {
         assert!(app.sdk_inventory.tasks.iter().any(|task| task.task_id == "task-list"));
         assert!(app.sdk_inventory.tasks.iter().any(|task| task.task_id == "bg-new"));
         assert!(!app.sdk_inventory.tasks.iter().any(|task| task.task_id == "bg-old"));
+    }
+
+    #[test]
+    fn background_snapshot_replaces_a_foreground_subagent_by_task_id() {
+        let mut app = App::test_default();
+        let mut foreground = task("agent-1", "Research", model::TaskStatus::InProgress);
+        foreground.metadata = Some(serde_json::json!({ "task_type": "local_agent" }));
+        apply_task_state_update(
+            &mut app,
+            model::TaskStateUpdate::new(model::TaskUpdateSource::Lifecycle).tasks(vec![foreground]),
+        );
+
+        let mut background = background_task("agent-1", "Research");
+        background.metadata = Some(serde_json::json!({
+            "task_type": "local_agent", "sdk_background_task": true
+        }));
+        apply_task_state_update(
+            &mut app,
+            model::TaskStateUpdate::new(model::TaskUpdateSource::BackgroundTasks)
+                .tasks(vec![background])
+                .complete_snapshot(true),
+        );
+        assert_eq!(app.sdk_inventory.tasks.len(), 1);
+        assert_eq!(app.sdk_inventory.tasks[0].task_id, "agent-1");
+
+        let mut completed = task("agent-1", "Research", model::TaskStatus::Completed);
+        completed.metadata = Some(serde_json::json!({
+            "task_type": "local_agent", "terminal_status": "completed"
+        }));
+        apply_task_state_update(
+            &mut app,
+            model::TaskStateUpdate::new(model::TaskUpdateSource::Lifecycle).tasks(vec![completed]),
+        );
+        assert_eq!(app.sdk_inventory.tasks.len(), 1);
+        assert_eq!(app.sdk_inventory.tasks[0].status, model::TaskStatus::Completed);
     }
 
     #[test]

@@ -2936,47 +2936,115 @@ fn ctrl_v_attaches_the_system_clipboard_image_and_sends_it_with_the_prompt() {
     drop(clipboard);
 }
 
+/// Whether one row of `screen` contains every needle, so they are shown together.
+fn has_row_with(screen: &str, needles: &[&str]) -> bool {
+    screen.lines().any(|row| needles.iter().all(|needle| row.contains(needle)))
+}
+
 #[test]
-fn agents_panel_shows_current_session_messages_and_stops_only_the_selected_running_agent() {
-    let mut test = TerminalTest::start("session-agents", 3);
-    test.submit_command("/agents");
-    test.wait_screen_with("Session agents", &["Review parser", "Running"]);
-    test.wait_screen("Parser path checked");
-    assert_eq!(test.commands("list_session_agents").len(), 1);
-    assert_eq!(test.commands("get_subagent_messages").len(), 1);
-    test.assert_prompts(&[]);
+fn agents_view_opens_from_an_empty_composer_stops_a_subagent_and_reads_a_transcript() {
+    let mut test = TerminalTest::start("agents", 3);
+    test.wait_screen("2 running");
+    // Left with a draft keeps moving the cursor; the unit test
+    // left_arrow_opens_agents_only_from_an_empty_composer covers that half.
+    test.send(b"\x1b[D");
+    let screen = test.wait_screen_with("Up/Down select", &["Review parser", "Inspect docs"]);
+    assert!(!screen.contains("Watch logs"), "background shells are not listed:\n{screen}");
+    assert!(has_row_with(&screen, &["› ● mapper", "Sonnet 5.5"]), "{screen}");
+    assert!(has_row_with(&screen, &["Review parser", " running "]), "{screen}");
+    assert_eq!(test.commands("list_subagents").len(), 1);
 
     test.send(b"s");
-    test.wait_screen("Stop requested for the selected agent");
-    assert_eq!(test.commands("stop_subagent_task").len(), 1);
+    let screen = test.wait_screen_with(" stopping ", &[]);
+    assert!(has_row_with(&screen, &["Review parser", " stopping "]), "{screen}");
+    let stops = test.commands("stop_subagent");
+    assert_eq!(stops.len(), 1);
+    assert_eq!(stops[0]["task_id"], "agent-running");
+    test.signal("stop");
+    test.wait_journal("subagent-stopped");
+    let screen = test.wait_screen_with(" stopped ", &[]);
+    assert!(has_row_with(&screen, &["Review parser", " stopped "]), "{screen}");
+    assert!(has_row_with(&screen, &["› ○ mapper", "Sonnet 5.5"]), "{screen}");
+
+    // The stopped agent sorts below the running one; the finished one is last.
     test.send(b"\x1b[B");
-    test.wait_screen_with("Docs path checked", &["Inspect docs", "Completed"]);
-    assert_eq!(test.commands("get_subagent_messages").len(), 2);
-    test.send(b"s");
-    test.wait_screen("no running task to stop");
-    assert_eq!(test.commands("stop_subagent_task").len(), 1);
+    test.wait_screen("saved · Enter to read");
+    test.send(b"\r");
+    test.wait_screen_with("Docs path checked", &["Inspect the docs", "• ls docs"]);
+    assert_eq!(test.commands("get_subagent_messages")[0]["agent_id"], "agent-done");
+    test.send(b"\x1b");
+    test.wait_screen("Up/Down select");
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+
+    test.submit("/agents", "/agents");
+    test.wait_screen("Up/Down select");
+    assert_eq!(test.commands("list_subagents").len(), 2);
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+    test.submit("after agents", "after agents");
+    test.wait_screen("reply 1 started");
+    test.assert_prompts(&["after agents"]);
     test.shutdown();
 }
 
 #[test]
-fn tasks_overlay_opens_the_selected_live_agent_inspector() {
-    let mut test = TerminalTest::start("agents-inspector", 3);
+fn ctrl_t_enter_opens_the_agents_view_on_the_chosen_agent_at_80_by_24() {
+    let mut test = TerminalTest::start("agents", 3);
+    test.wait_screen("2 running");
+    test.resize_and_wait_for_draw(24, 80);
     test.send(b"\x14");
-    test.wait_screen_with("Agents", &["mapper", "Sonnet 5.5", "builder", "Opus 5.5"]);
+    test.wait_screen_with("Enter inspect", &["mapper", "Sonnet 5.5", "builder", "Opus 5.5"]);
     test.send(b"\x1b[B");
     test.wait_screen("> ● builder");
     test.send(b"\r");
-    test.wait_screen_with(
-        "Build agent inspector",
-        &["Opus 5.5", "asked for opus", "Recent", "Read agents.rs"],
+    let screen = test.wait_screen_with(
+        "builder · Opus 5.5 · asked for opus · isolated worktree",
+        &["Read agents.rs", "Prompt of builder"],
     );
-    test.wait_until("selected live agent messages requested", |test| {
-        test.commands("get_subagent_messages")
-            .iter()
-            .any(|command| command["agent_id"] == "agent-second")
-    });
-    assert_eq!(test.commands("list_session_agents").len(), 1);
+    assert!(has_row_with(&screen, &["Now", "Read agents.rs"]), "{screen}");
+    assert!(has_row_with(&screen, &["› ● builder", "Opus 5.5"]), "{screen}");
+    assert!(has_row_with(&screen, &["Build agent inspector", " running "]), "{screen}");
+    assert!(screen.contains("Up/Down select"), "the key hints fit at 80x24:\n{screen}");
+    assert_eq!(test.commands("list_subagents").len(), 1);
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
     test.assert_prompts(&[]);
+    test.shutdown();
+}
+
+#[test]
+fn a_resumed_session_lists_its_finished_and_stopped_subagents_across_a_refresh() {
+    let mut test = TerminalTest::start("agents-resumed", 3);
+    test.submit("/agents", "/agents");
+    let first = test.wait_screen_with("Up/Down select", &["/2"]);
+    let agent_rows = |screen: &str| {
+        screen
+            .lines()
+            .filter(|row| has_row_with(row, &["general-purpose", "haiku", "Agent \""]))
+            .count()
+    };
+    assert_eq!(agent_rows(&first), 2, "{first}");
+    test.wait_screen("saved · Enter to read");
+    test.send(b"\x1b[B");
+    let second = test.wait_screen_with("2/2", &[]);
+    // One agent is selected on each screen; between them both carry their outcome.
+    let both = format!("{first}\n{second}");
+    assert!(has_row_with(&both, &["Quick PONG reply", " completed "]), "{both}");
+    assert!(has_row_with(&both, &["Slow 200 animal facts", " stopped "]), "{both}");
+
+    test.send(b"r");
+    test.wait_until("the transcript list is read again", |test| {
+        test.commands("list_subagents").len() == 2
+    });
+    test.wait_until("the refreshed list is applied", |test| {
+        !test.screen().contains("Checking saved transcripts")
+    });
+    let refreshed = test.screen();
+    assert_eq!(agent_rows(&refreshed), 2, "a refresh neither drops nor repeats rows:\n{refreshed}");
+    assert!(refreshed.contains("2/2"), "{refreshed}");
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
     test.shutdown();
 }
 
@@ -3021,7 +3089,7 @@ fn footer_agents_resize_and_finish_follow_task_inventory() {
     test.wait_journal("footer-agents-finished");
     test.wait_until("finished agent summary replaces shelf", |test| {
         let screen = test.screen();
-        screen.contains("3 agents") && !screen.contains("ctrl+t inspect")
+        screen.contains("3 agents") && !screen.contains("ctrl+t list")
     });
     test.shutdown();
 }

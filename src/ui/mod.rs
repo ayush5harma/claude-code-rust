@@ -3,6 +3,7 @@
 
 pub(crate) mod activity_rows;
 pub(crate) mod agent_rows;
+mod agents;
 mod ansi;
 mod autocomplete;
 mod config;
@@ -57,6 +58,7 @@ pub fn render_fullscreen_surface(frame: &mut Frame, app: &mut App) {
         SurfaceMode::Fullscreen(FullscreenView::Verbose) => verbose::render(frame, app),
         SurfaceMode::Fullscreen(FullscreenView::Search) => search::render(frame, app),
         SurfaceMode::Fullscreen(FullscreenView::Diff) => diff_view::render(frame, app),
+        SurfaceMode::Fullscreen(FullscreenView::Agents) => agents::render(frame, app),
         SurfaceMode::Chat => {
             debug_assert!(false, "chat is rendered by the inline terminal session");
         }

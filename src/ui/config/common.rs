@@ -16,7 +16,7 @@ pub(super) fn selection_style(selected: bool) -> Style {
     if selected { Style::default().bg(theme::fill()) } else { Style::default() }
 }
 
-pub(super) fn title_style() -> Style {
+pub(in crate::ui) fn title_style() -> Style {
     Style::default().fg(theme::label()).add_modifier(Modifier::BOLD)
 }
 
@@ -33,7 +33,7 @@ pub(super) fn input_style() -> Style {
 }
 
 /// Key hints are supporting text: the tint stays on what is focused or selected.
-pub(super) fn help_style() -> Style {
+pub(in crate::ui) fn help_style() -> Style {
     Style::default().fg(theme::tertiary())
 }
 
@@ -51,14 +51,14 @@ pub(super) fn overlay_line_style(selected: bool, focused: bool) -> Style {
     }
 }
 
-pub(super) fn selection_line(mut line: Line<'static>, selected: bool) -> Line<'static> {
+pub(in crate::ui) fn selection_line(mut line: Line<'static>, selected: bool) -> Line<'static> {
     line.spans.insert(0, Span::raw(" "));
     line.spans.insert(0, marker_span(selected));
     line.style = line.style.patch(selection_style(selected));
     line
 }
 
-pub(super) fn position_counter(selected: usize, total: usize) -> Span<'static> {
+pub(in crate::ui) fn position_counter(selected: usize, total: usize) -> Span<'static> {
     Span::styled(
         format!("{}/{}", if total == 0 { 0 } else { selected.min(total - 1) + 1 }, total),
         Style::default().fg(theme::tertiary()),
@@ -106,7 +106,7 @@ pub(super) fn render_selection_blocks(
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).scroll((scroll, 0)), area);
 }
 
-pub(super) fn render_message(frame: &mut Frame, area: Rect, title: &str, body: &str) {
+pub(in crate::ui) fn render_message(frame: &mut Frame, area: Rect, title: &str, body: &str) {
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled(title, title_style()),
@@ -129,7 +129,7 @@ pub(super) fn detail_kv(key: &str, value: &str, value_color: Color) -> Line<'sta
     ])
 }
 
-pub(super) fn badge_span(label: &str, tone: theme::Tone) -> Span<'static> {
+pub(in crate::ui) fn badge_span(label: &str, tone: theme::Tone) -> Span<'static> {
     Span::styled(format!(" {label} "), theme::badge_style(tone))
 }
 
@@ -179,7 +179,11 @@ pub(super) fn hint_text(hints: Vec<&str>, width: u16) -> String {
     hint_text_with_escape(hints, width, "Esc close")
 }
 
-pub(super) fn hint_text_with_escape(mut hints: Vec<&str>, width: u16, escape: &str) -> String {
+pub(in crate::ui) fn hint_text_with_escape(
+    mut hints: Vec<&str>,
+    width: u16,
+    escape: &str,
+) -> String {
     loop {
         let help = hints.iter().copied().chain([escape]).collect::<Vec<_>>().join(" | ");
         if wrapped_height(help.as_str(), width) <= 3 || hints.is_empty() {
@@ -203,7 +207,7 @@ pub(super) fn selected_scroll(
     .unwrap_or(u16::MAX)
 }
 
-pub(super) fn wrapped_height<'a>(text: impl Into<Text<'a>>, width: u16) -> u16 {
+pub(in crate::ui) fn wrapped_height<'a>(text: impl Into<Text<'a>>, width: u16) -> u16 {
     u16::try_from(Paragraph::new(text).wrap(Wrap { trim: false }).line_count(width.max(1)))
         .unwrap_or(u16::MAX)
         .max(1)

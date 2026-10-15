@@ -38,6 +38,10 @@ export type TaskTitleContext = {
 };
 
 const BACKGROUND_TASK_METADATA_KEY = "sdk_background_task";
+// Set by every lifecycle edge (start, progress, update, notification, stop):
+// the row is a runtime task the lifecycle owns, never a TaskList plan step,
+// and background inventory snapshots can no longer remove it.
+const LIFECYCLE_TASK_METADATA_KEY = "sdk_lifecycle_task";
 
 export function isTaskToolName(name: string): boolean {
   return TASK_TOOL_NAMES.has(name);
@@ -705,6 +709,18 @@ function replaceTaskSnapshot(
     emitted.push(cloneTask(task));
   }
 
+  // TaskList is the plan-task inventory. Runtime tasks are reported by their
+  // own lifecycle and must remain in the complete snapshot sent to the UI.
+  for (const taskId of previousIds) {
+    if (nextTasks.has(taskId)) continue;
+    const task = session.tasksById.get(taskId);
+    const metadata = asRecordOrNull(task?.metadata);
+    if (!task || (metadata?.[LIFECYCLE_TASK_METADATA_KEY] !== true && metadata?.[BACKGROUND_TASK_METADATA_KEY] !== true)) continue;
+    nextTasks.set(taskId, task);
+    nextIds.push(taskId);
+    emitted.push(cloneTask(task));
+  }
+
   const retained = new Set(nextIds);
   const removedTaskIds = previousIds.filter((taskId) => !retained.has(taskId));
   for (const taskId of removedTaskIds) {
@@ -995,7 +1011,7 @@ export function applyTaskToolResult(
       return;
     }
     const metadata = mergeMetadata(existing?.metadata, {
-      sdk_lifecycle_task: true,
+      [LIFECYCLE_TASK_METADATA_KEY]: true,
       [BACKGROUND_TASK_METADATA_KEY]: null,
       terminal_status: "stopped",
       task_type: output.task_type as Json,
@@ -1041,7 +1057,7 @@ function lifecycleMetadata(
   msg: Record<string, unknown>,
 ): Record<string, Json> | undefined {
   const patch = asRecordOrNull(msg.patch) ?? undefined;
-  const metadata: Record<string, Json> = { sdk_lifecycle_task: true };
+  const metadata: Record<string, Json> = { [LIFECYCLE_TASK_METADATA_KEY]: true };
   const copyValue = (
     from: Record<string, unknown> | undefined,
     key: string,
@@ -1153,6 +1169,11 @@ export function taskLifecyclePatch(
   if (!taskId) return undefined;
   const patch = asRecordOrNull(msg.patch);
   const status = lifecycleTaskStatus(subtype, msg);
+  // Progress and updates can be queued behind the outcome. Only a new start
+  // or another outcome may change a settled row.
+  if (existing?.status === "completed" && status !== "completed" && subtype !== "task_started") {
+    return undefined;
+  }
   const description =
     nonEmptyString(patch?.description) ??
     nonEmptyString(msg.description) ??
@@ -1227,6 +1248,9 @@ export function applyBackgroundTasksChanged(
     .filter((task): task is TaskPatch => Boolean(task));
 
   const nextIds = new Set(nextTasks.map((task) => task.task_id));
+  // The snapshot only says what is still in the background, so it removes
+  // only rows it alone owns. A lifecycle-owned row (a subagent that left before
+  // or after its outcome) stays until the lifecycle settles it.
   const removedTaskIds = session.taskOrder.filter((taskId) => {
     if (nextIds.has(taskId)) {
       return false;

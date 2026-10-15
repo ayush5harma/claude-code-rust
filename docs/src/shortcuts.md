@@ -26,6 +26,21 @@ See [Presentation and scrolling](settings.md#presentation-and-scrolling) for the
 
 The fullscreen settings surface has its own keys for tabs, panes, search and editors. See [Opening and navigating](settings.md#opening-and-navigating), [Editing a value](settings.md#editing-a-value) and [Lists and structured settings](settings.md#lists-and-structured-settings).
 
+## Agents View
+
+`/agents`, `Left` in an empty input, or `Enter` on an agent in the `Ctrl+T` task list opens the current session's subagents with the selected agent's details.
+
+| Shortcut | Action |
+| --- | --- |
+| `Up`, `Down` | Select a subagent. |
+| `Page Up`, `Page Down` | Scroll the selected subagent's details. |
+| `Enter` | Open the selected subagent's saved transcript. |
+| `s` | Ask the selected running subagent to stop. |
+| `r` | Check again which subagents have a saved transcript. |
+| `Esc` | Return to chat with the draft unchanged. |
+
+In a transcript, `Up` and `Down` scroll, `Page Up` and `Page Down` scroll by a page, and `Esc` or `Left` returns to the list.
+
 ## Chat Input
 
 | Shortcut | Action |
@@ -37,13 +52,14 @@ The fullscreen settings surface has its own keys for tabs, panes, search and edi
 | `Ctrl+D` | Delete after the cursor, or quit when the draft is empty. |
 | `Ctrl+G` | Edit the draft in `$VISUAL` or `$EDITOR`. A failed editor preserves the draft. |
 | `Ctrl+O` | Show a snapshot of retained user, assistant and visible tool text; press again or `Esc` to close. Reopen to refresh. |
-| `Ctrl+T` | Show Plan, Agents and Other tasks. Up/Down selects an agent; Enter opens its inspector. Press again or `Esc` to close. |
+| `Ctrl+T` | Show Plan, Agents and Other tasks. Up/Down selects an agent; Enter opens it in the [Agents view](#agents-view). Press again or `Esc` to close. |
 | `Alt+R` | Open the rewind picker directly. |
 | `Ctrl+F` | Search retained transcript text. |
 | `Tab` | Focus prompts or accept suggestions. |
 | `Shift+Tab` | Cycle mode. |
 | `Up` | Move up through text, or recall the latest user message when the input is empty. |
-| `Down`, `Left`, `Right` | Move through text. |
+| `Left` | Move left through text, or open `/agents` when the input is empty. |
+| `Down`, `Right` | Move through text. |
 | `Home`, `End` | Move to line start or line end. |
 | `Ctrl+Left`, `Ctrl+Right` | Move by word. |
 | `Alt+Left`, `Alt+Right` | Move by word. |

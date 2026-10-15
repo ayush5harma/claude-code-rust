@@ -233,20 +233,21 @@ pub enum ClientEvent {
         snapshot: Option<crate::agent::types::StructuredUsageSnapshot>,
         error: Option<String>,
     },
+    /// Subagent ids with a saved transcript in the active session.
+    SubagentsListed { session_id: String, agent_ids: Vec<String>, error: Option<String> },
+    /// Saved transcript of one subagent in the active session.
+    SubagentMessagesReceived {
+        session_id: String,
+        agent_id: String,
+        messages: Vec<crate::agent::types::SubagentMessage>,
+        error: Option<String>,
+    },
+    /// Acknowledgement or rejection of a subagent stop request; not its outcome.
+    SubagentStopResult { session_id: String, task_id: String, error: Option<String> },
     /// Rewind target candidates loaded from persisted SDK session history.
     RewindTargetsReceived {
         session_id: String,
         targets: Vec<model::RewindTarget>,
-        error: Option<String>,
-    },
-    /// Correlated current-session agent list, transcript, or stop result.
-    SessionAgentsResultReceived {
-        session_id: String,
-        request_id: Option<String>,
-        action: crate::agent::types::SessionAgentsAction,
-        agent_id: Option<String>,
-        agent_ids: Vec<String>,
-        messages: Vec<crate::agent::types::SubagentMessage>,
         error: Option<String>,
     },
     /// One chunk of the complete session history requested by /export.
@@ -320,8 +321,10 @@ impl ClientEvent {
             | Self::StatusSnapshotReceived { session_id, .. }
             | Self::ContextUsageReceived { session_id, .. }
             | Self::StructuredUsageReceived { session_id, .. }
-            | Self::SessionAgentsResultReceived { session_id, .. }
             | Self::WorkingDiffReceived { session_id, .. }
+            | Self::SubagentsListed { session_id, .. }
+            | Self::SubagentMessagesReceived { session_id, .. }
+            | Self::SubagentStopResult { session_id, .. }
             | Self::McpSnapshotReceived { session_id, .. } => Some(session_id),
             Self::SlashCommandError { session_id, .. } => session_id.as_deref(),
             Self::RewindResultReceived { result } => Some(result.session_id.as_str()),

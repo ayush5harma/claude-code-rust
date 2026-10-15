@@ -122,10 +122,10 @@ function commandSessionId(command: BridgeCommand): string | undefined {
     case "get_status_snapshot":
     case "get_context_usage":
     case "get_usage":
-    case "list_session_agents":
-    case "get_subagent_messages":
-    case "stop_subagent_task":
     case "get_working_diff":
+    case "list_subagents":
+    case "get_subagent_messages":
+    case "stop_subagent":
     case "get_rewind_targets":
     case "export_session_history":
     case "rewind":
@@ -180,10 +180,10 @@ function commandToolCallId(command: BridgeCommand): string | undefined {
     case "get_status_snapshot":
     case "get_context_usage":
     case "get_usage":
-    case "list_session_agents":
-    case "get_subagent_messages":
-    case "stop_subagent_task":
     case "get_working_diff":
+    case "list_subagents":
+    case "get_subagent_messages":
+    case "stop_subagent":
     case "get_rewind_targets":
     case "export_session_history":
     case "rewind":
@@ -242,6 +242,9 @@ function eventToolCallId(event: BridgeEvent): string | undefined {
     case "context_usage":
     case "usage_snapshot":
     case "working_diff":
+    case "subagents_listed":
+    case "subagent_messages":
+    case "subagent_stop_result":
     case "rewind_targets":
     case "session_history_export":
     case "rewind_result":
@@ -298,8 +301,10 @@ function protocolEventLevel(event: BridgeEvent): LogLevel {
     case "settings_result":
     case "context_usage":
     case "usage_snapshot":
-    case "session_agents_result":
     case "working_diff":
+    case "subagents_listed":
+    case "subagent_messages":
+    case "subagent_stop_result":
     case "rewind_targets":
     case "session_history_export":
     case "rewind_result":

@@ -288,8 +288,8 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         command: AppSlashCommand::Agents,
         name: "/agents",
         usage: "Usage: /agents",
-        short_description: "Inspect session agents",
-        long_description: "Open the current session agents panel.",
+        short_description: "Show this session's subagents",
+        long_description: "Open the fullscreen list of this session's subagents with their live status and saved transcripts.",
         args: NO_ARGS,
     },
     AppSlashCommandSpec {

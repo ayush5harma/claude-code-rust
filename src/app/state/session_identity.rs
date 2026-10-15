@@ -51,13 +51,13 @@ impl App {
         self.config.invalidate_session();
         // Side-question work belongs to this conversation scope, not the next one.
         self.btw.clear();
+        self.agents.clear_session();
     }
 
     pub fn clear_session_runtime_identity(&mut self) {
         self.session_runtime.clear_identity();
         self.footer.clear();
         self.sdk_inventory.clear_rewind_targets();
-        self.session_agents.clear();
         // Its chunks are scoped to the old session and would be dropped as stale.
         self.history_export = None;
     }

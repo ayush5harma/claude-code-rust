@@ -2,6 +2,7 @@
 // Copyright 2025 Simon Peter Rothgang
 
 pub(crate) mod activity;
+pub(crate) mod agents;
 pub(crate) mod auth;
 mod btw;
 mod cache_policy;
@@ -36,7 +37,6 @@ pub(crate) mod rewind_picker;
 pub(crate) mod search;
 mod service_status_check;
 mod session_accent;
-pub(crate) mod session_agents;
 pub(crate) mod session_picker;
 mod session_runtime;
 pub(crate) mod settings;
@@ -694,12 +694,21 @@ fn schedule_animation_frame(app: &mut App, now: Instant) -> bool {
     is_animating
 }
 
+/// Advances the elapsed clocks of running agents once a second wherever rows
+/// show them: the footer shelf, the Ctrl+T list and the `/agents` view.
 fn schedule_agent_shelf_frame(app: &mut App, now: Instant) {
-    let visible = matches!(app.surface_mode, SurfaceMode::Chat)
-        && crate::ui::footer_rows::shelf_row_capacity(app.chat_render.terminal_height) > 0
+    let shows_agent_rows = match app.surface_mode {
+        SurfaceMode::Chat => {
+            crate::ui::footer_rows::shelf_row_capacity(app.chat_render.terminal_height) > 0
+        }
+        // A transcript shows no clocks.
+        SurfaceMode::Fullscreen(FullscreenView::Agents) => app.agents.transcript.is_none(),
+        SurfaceMode::Fullscreen(FullscreenView::Tasks) => true,
+        SurfaceMode::Fullscreen(_) => false,
+    };
+    let visible = shows_agent_rows
         && app.sdk_inventory.tasks.iter().any(|task| {
-            task.status == model::TaskStatus::InProgress
-                && session_agents::is_session_agent_task(task)
+            task.status == model::TaskStatus::InProgress && agents::is_subagent_task(task)
         });
     if !visible {
         app.agent_shelf_last_redraw = None;

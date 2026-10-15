@@ -48,15 +48,10 @@ pub(crate) fn render(frame: &mut Frame, app: &App) {
     let agents = super::agent_rows::session_agent_rows(app);
     if !agents.is_empty() {
         rows.push(Line::from("Agents"));
-        let selected = app
-            .session_agents
-            .overlay_selected_id
-            .as_deref()
-            .filter(|id| agents.iter().any(|task| task.task.task_id == *id))
-            .unwrap_or(&agents[0].task.task_id);
+        let selected = app.agents.selected_index(&agents);
         let columns = super::agent_rows::AgentColumns::for_rows(&agents);
-        for row in &agents {
-            if row.task.task_id == selected {
+        for (index, row) in agents.iter().enumerate() {
+            if Some(index) == selected {
                 selected_row = Some(rows.len());
             }
             let mut line = super::agent_rows::render_agent_row(
@@ -67,7 +62,7 @@ pub(crate) fn render(frame: &mut Frame, app: &App) {
             );
             line.spans.insert(
                 0,
-                ratatui::text::Span::raw(if row.task.task_id == selected { "> " } else { "  " }),
+                ratatui::text::Span::raw(if Some(index) == selected { "> " } else { "  " }),
             );
             rows.push(line);
         }
@@ -79,7 +74,7 @@ pub(crate) fn render(frame: &mut Frame, app: &App) {
         .iter()
         .filter(|task| {
             !crate::app::tasks::is_user_plan_task(task)
-                && !crate::app::session_agents::is_session_agent_task(task)
+                && !crate::app::agents::is_subagent_task(task)
         })
         .collect();
     if !other.is_empty() {
@@ -117,6 +112,8 @@ mod tests {
         let mut shell = TaskItem::new("shell", "cargo test", TaskStatus::InProgress);
         shell.metadata = Some(serde_json::json!({"task_type": "local_bash"}));
         app.sdk_inventory.tasks.push(shell);
+        // Opening the list selects its first agent.
+        crate::app::agents::open_task_list(&mut app);
         let mut terminal = Terminal::new(TestBackend::new(120, 24)).expect("terminal");
         terminal.draw(|frame| render(frame, &app)).expect("draw overlay");
         let buffer = terminal.backend().buffer();

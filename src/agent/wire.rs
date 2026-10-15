@@ -222,19 +222,19 @@ pub enum BridgeCommand {
     GetWorkingDiff {
         session_id: String,
     },
-    GetRewindTargets {
-        session_id: String,
-    },
-    ListSessionAgents {
+    ListSubagents {
         session_id: String,
     },
     GetSubagentMessages {
         session_id: String,
         agent_id: String,
     },
-    StopSubagentTask {
+    StopSubagent {
         session_id: String,
-        agent_id: String,
+        task_id: String,
+    },
+    GetRewindTargets {
+        session_id: String,
     },
     ExportSessionHistory {
         session_id: String,
@@ -323,10 +323,10 @@ impl BridgeCommand {
             Self::GetContextUsage { .. } => "get_context_usage",
             Self::GetUsage { .. } => "get_usage",
             Self::GetWorkingDiff { .. } => "get_working_diff",
-            Self::GetRewindTargets { .. } => "get_rewind_targets",
-            Self::ListSessionAgents { .. } => "list_session_agents",
+            Self::ListSubagents { .. } => "list_subagents",
             Self::GetSubagentMessages { .. } => "get_subagent_messages",
-            Self::StopSubagentTask { .. } => "stop_subagent_task",
+            Self::StopSubagent { .. } => "stop_subagent",
+            Self::GetRewindTargets { .. } => "get_rewind_targets",
             Self::ExportSessionHistory { .. } => "export_session_history",
             Self::Rewind { .. } => "rewind",
             Self::ReloadPlugins { .. } => "reload_plugins",
@@ -373,10 +373,10 @@ impl BridgeCommand {
             | Self::GetContextUsage { session_id }
             | Self::GetUsage { session_id }
             | Self::GetWorkingDiff { session_id }
-            | Self::GetRewindTargets { session_id }
-            | Self::ListSessionAgents { session_id }
+            | Self::ListSubagents { session_id }
             | Self::GetSubagentMessages { session_id, .. }
-            | Self::StopSubagentTask { session_id, .. }
+            | Self::StopSubagent { session_id, .. }
+            | Self::GetRewindTargets { session_id }
             | Self::ExportSessionHistory { session_id }
             | Self::Rewind { session_id, .. }
             | Self::ReloadPlugins { session_id, .. }
@@ -429,10 +429,10 @@ impl BridgeCommand {
             | Self::GetContextUsage { .. }
             | Self::GetUsage { .. }
             | Self::GetWorkingDiff { .. }
-            | Self::GetRewindTargets { .. }
-            | Self::ListSessionAgents { .. }
+            | Self::ListSubagents { .. }
             | Self::GetSubagentMessages { .. }
-            | Self::StopSubagentTask { .. }
+            | Self::StopSubagent { .. }
+            | Self::GetRewindTargets { .. }
             | Self::ExportSessionHistory { .. }
             | Self::Rewind { .. }
             | Self::ReloadPlugins { .. }
@@ -666,17 +666,25 @@ pub enum BridgeEvent {
         snapshot: Option<types::StructuredUsageSnapshot>,
         error: Option<String>,
     },
+    SubagentsListed {
+        session_id: String,
+        agent_ids: Vec<String>,
+        error: Option<String>,
+    },
+    SubagentMessages {
+        session_id: String,
+        agent_id: String,
+        messages: Vec<types::SubagentMessage>,
+        error: Option<String>,
+    },
+    SubagentStopResult {
+        session_id: String,
+        task_id: String,
+        error: Option<String>,
+    },
     RewindTargets {
         session_id: String,
         targets: Vec<types::RewindTarget>,
-        error: Option<String>,
-    },
-    SessionAgentsResult {
-        session_id: String,
-        action: types::SessionAgentsAction,
-        agent_id: Option<String>,
-        agent_ids: Vec<String>,
-        messages: Vec<types::SubagentMessage>,
         error: Option<String>,
     },
     /// One chunk of a session's complete saved history, in resume order.
@@ -750,8 +758,10 @@ impl BridgeEvent {
             Self::StatusSnapshot { .. } => "status_snapshot",
             Self::ContextUsage { .. } => "context_usage",
             Self::UsageSnapshot { .. } => "usage_snapshot",
+            Self::SubagentsListed { .. } => "subagents_listed",
+            Self::SubagentMessages { .. } => "subagent_messages",
+            Self::SubagentStopResult { .. } => "subagent_stop_result",
             Self::RewindTargets { .. } => "rewind_targets",
-            Self::SessionAgentsResult { .. } => "session_agents_result",
             Self::SessionHistoryExport { .. } => "session_history_export",
             Self::RewindResult { .. } => "rewind_result",
             Self::McpSnapshot { .. } => "mcp_snapshot",
@@ -792,8 +802,10 @@ impl BridgeEvent {
             | Self::StatusSnapshot { session_id, .. }
             | Self::ContextUsage { session_id, .. }
             | Self::UsageSnapshot { session_id, .. }
+            | Self::SubagentsListed { session_id, .. }
+            | Self::SubagentMessages { session_id, .. }
+            | Self::SubagentStopResult { session_id, .. }
             | Self::RewindTargets { session_id, .. }
-            | Self::SessionAgentsResult { session_id, .. }
             | Self::SessionHistoryExport { session_id, .. }
             | Self::RewindResult { session_id, .. }
             | Self::McpSnapshot { session_id, .. }
@@ -848,8 +860,10 @@ impl BridgeEvent {
             | Self::StatusSnapshot { .. }
             | Self::ContextUsage { .. }
             | Self::UsageSnapshot { .. }
+            | Self::SubagentsListed { .. }
+            | Self::SubagentMessages { .. }
+            | Self::SubagentStopResult { .. }
             | Self::RewindTargets { .. }
-            | Self::SessionAgentsResult { .. }
             | Self::SessionHistoryExport { .. }
             | Self::RewindResult { .. }
             | Self::McpSnapshot { .. } => None,
@@ -1451,6 +1465,71 @@ mod tests {
         assert_eq!(snapshot.five_hour.map(|window| window.utilization), Some(42.0));
         assert_eq!(snapshot.session.and_then(|session| session.model_count), Some(2));
         assert_eq!(snapshot.activity_day.map(|window| window.request_count), Some(4));
+    }
+
+    #[test]
+    fn subagent_commands_and_results_match_the_bridge_contract() {
+        let commands = [
+            BridgeCommand::ListSubagents { session_id: "s1".to_owned() },
+            BridgeCommand::GetSubagentMessages {
+                session_id: "s1".to_owned(),
+                agent_id: "a1".to_owned(),
+            },
+            BridgeCommand::StopSubagent { session_id: "s1".to_owned(), task_id: "a1".to_owned() },
+        ];
+        let json: Vec<_> = commands
+            .into_iter()
+            .map(|command| serde_json::to_value(CommandEnvelope { request_id: None, command }))
+            .collect::<Result<_, _>>()
+            .expect("serialize");
+        assert_eq!(
+            json,
+            [
+                serde_json::json!({ "command": "list_subagents", "session_id": "s1" }),
+                serde_json::json!({ "command": "get_subagent_messages", "session_id": "s1", "agent_id": "a1" }),
+                serde_json::json!({ "command": "stop_subagent", "session_id": "s1", "task_id": "a1" }),
+            ]
+        );
+
+        let event = |value| serde_json::from_value::<EventEnvelope>(value).expect("event").event;
+        assert_eq!(
+            event(
+                serde_json::json!({ "event": "subagent_messages", "session_id": "s1", "agent_id": "a1",
+                "messages": [{ "role": "user", "text": "Go" }, { "role": "tool", "text": "ls" }, { "role": "assistant", "text": "Done" }] })
+            ),
+            BridgeEvent::SubagentMessages {
+                session_id: "s1".to_owned(),
+                agent_id: "a1".to_owned(),
+                messages: [
+                    (types::SubagentMessageRole::User, "Go"),
+                    (types::SubagentMessageRole::Tool, "ls"),
+                    (types::SubagentMessageRole::Assistant, "Done"),
+                ]
+                .map(|(role, text)| types::SubagentMessage { role, text: text.to_owned() })
+                .to_vec(),
+                error: None,
+            }
+        );
+        assert_eq!(
+            event(
+                serde_json::json!({ "event": "subagents_listed", "session_id": "s1", "agent_ids": [], "error": "unreadable" })
+            ),
+            BridgeEvent::SubagentsListed {
+                session_id: "s1".to_owned(),
+                agent_ids: Vec::new(),
+                error: Some("unreadable".to_owned()),
+            }
+        );
+        assert_eq!(
+            event(
+                serde_json::json!({ "event": "subagent_stop_result", "session_id": "s1", "task_id": "a1" })
+            ),
+            BridgeEvent::SubagentStopResult {
+                session_id: "s1".to_owned(),
+                task_id: "a1".to_owned(),
+                error: None,
+            }
+        );
     }
 
     #[test]

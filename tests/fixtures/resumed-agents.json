@@ -1,0 +1,387 @@
+{
+  "//": "Saved records of two background Agent calls in the shape Claude Code 2.1.300 writes them (no task_started record; one completed, one stopped by the user as killed), and the bridge's resume replay of them. Regenerate history_updates with generate-resumed-agents.mjs.",
+  "records": [
+    {
+      "session_id": "saved-agents",
+      "parent_tool_use_id": null,
+      "parent_agent_id": null,
+      "type": "assistant",
+      "uuid": "launch-a3a61211c3404cb8e",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "toolu_01HKqkdmhfts1QpVDuqaMCFh",
+            "name": "Agent",
+            "input": {
+              "description": "Quick PONG reply",
+              "prompt": "Prompt of Quick PONG reply",
+              "subagent_type": "general-purpose",
+              "model": "haiku",
+              "run_in_background": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "session_id": "saved-agents",
+      "parent_tool_use_id": null,
+      "parent_agent_id": null,
+      "type": "user",
+      "uuid": "result-a3a61211c3404cb8e",
+      "toolUseResult": {
+        "isAsync": true,
+        "status": "async_launched",
+        "agentId": "a3a61211c3404cb8e",
+        "description": "Quick PONG reply",
+        "prompt": "Prompt of Quick PONG reply",
+        "outputFile": "/tmp/tasks/a3a61211c3404cb8e.output"
+      },
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "toolu_01HKqkdmhfts1QpVDuqaMCFh",
+            "content": [
+              {
+                "type": "text",
+                "text": "Async agent launched successfully.\nagentId: a3a61211c3404cb8e (internal ID - do not mention to user.)\nThe agent is working in the background."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "session_id": "saved-agents",
+      "parent_tool_use_id": null,
+      "parent_agent_id": null,
+      "type": "assistant",
+      "uuid": "launch-ad4af714553a7784f",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "toolu_01BeXVwr9fSc5SwxmDDterdh",
+            "name": "Agent",
+            "input": {
+              "description": "Slow 200 animal facts",
+              "prompt": "Prompt of Slow 200 animal facts",
+              "subagent_type": "general-purpose",
+              "model": "haiku",
+              "run_in_background": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "session_id": "saved-agents",
+      "parent_tool_use_id": null,
+      "parent_agent_id": null,
+      "type": "user",
+      "uuid": "result-ad4af714553a7784f",
+      "toolUseResult": {
+        "isAsync": true,
+        "status": "async_launched",
+        "agentId": "ad4af714553a7784f",
+        "description": "Slow 200 animal facts",
+        "prompt": "Prompt of Slow 200 animal facts",
+        "outputFile": "/tmp/tasks/ad4af714553a7784f.output"
+      },
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "toolu_01BeXVwr9fSc5SwxmDDterdh",
+            "content": [
+              {
+                "type": "text",
+                "text": "Async agent launched successfully.\nagentId: ad4af714553a7784f (internal ID - do not mention to user.)\nThe agent is working in the background."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "session_id": "saved-agents",
+      "parent_tool_use_id": null,
+      "parent_agent_id": null,
+      "type": "user",
+      "uuid": "notification-a3a61211c3404cb8e",
+      "origin": {
+        "kind": "task-notification",
+        "producer": "session-task",
+        "runId": "run-a3a61211c3404cb8e"
+      },
+      "message": {
+        "role": "user",
+        "content": "<task-notification>\n<task-id>a3a61211c3404cb8e</task-id>\n<tool-use-id>toolu_01HKqkdmhfts1QpVDuqaMCFh</tool-use-id>\n<output-file>/tmp/tasks/a3a61211c3404cb8e.output</output-file>\n<status>completed</status>\n<summary>Agent \"Quick PONG reply\" finished</summary>\n<note>The same task-id may notify more than once.</note>\n</task-notification>"
+      }
+    },
+    {
+      "session_id": "saved-agents",
+      "parent_tool_use_id": null,
+      "parent_agent_id": null,
+      "type": "user",
+      "uuid": "notification-ad4af714553a7784f",
+      "origin": {
+        "kind": "task-notification",
+        "producer": "session-task",
+        "runId": "run-ad4af714553a7784f"
+      },
+      "message": {
+        "role": "user",
+        "content": "<task-notification>\n<task-id>ad4af714553a7784f</task-id>\n<tool-use-id>toolu_01BeXVwr9fSc5SwxmDDterdh</tool-use-id>\n<output-file>/tmp/tasks/ad4af714553a7784f.output</output-file>\n<status>killed</status>\n<summary>Agent \"Slow 200 animal facts\" was stopped by user</summary>\n<note>The same task-id may notify more than once.</note>\n</task-notification>"
+      }
+    }
+  ],
+  "history_updates": [
+    {
+      "type": "tool_call",
+      "tool_call": {
+        "tool_call_id": "toolu_01HKqkdmhfts1QpVDuqaMCFh",
+        "title": "Agent: general-purpose",
+        "kind": "think",
+        "status": "in_progress",
+        "content": [],
+        "raw_input": {
+          "description": "Quick PONG reply",
+          "prompt": "Prompt of Quick PONG reply",
+          "subagent_type": "general-purpose",
+          "model": "haiku",
+          "run_in_background": true
+        },
+        "locations": [],
+        "meta": {
+          "claudeCode": {
+            "toolName": "Agent",
+            "parentToolUseId": null
+          }
+        },
+        "source_message_uuid": "launch-a3a61211c3404cb8e"
+      }
+    },
+    {
+      "type": "task_state_update",
+      "source": "task_lifecycle",
+      "tasks": [
+        {
+          "task_id": "a3a61211c3404cb8e",
+          "subject": "Quick PONG reply",
+          "status": "in_progress",
+          "blocks": [],
+          "blocked_by": [],
+          "description": "Agent: general-purpose",
+          "metadata": {
+            "sdk_lifecycle_task": true,
+            "is_backgrounded": true,
+            "subagent_type": "general-purpose",
+            "task_description": "Quick PONG reply",
+            "task_type": "local_agent"
+          },
+          "source_tool_call_id": "toolu_01HKqkdmhfts1QpVDuqaMCFh"
+        }
+      ],
+      "removed_task_ids": [],
+      "is_complete_snapshot": false
+    },
+    {
+      "type": "tool_call_update",
+      "tool_call_update": {
+        "tool_call_id": "toolu_01HKqkdmhfts1QpVDuqaMCFh",
+        "source_message_uuid": "result-a3a61211c3404cb8e",
+        "fields": {
+          "status": "detached",
+          "raw_output": "Quick PONG reply",
+          "content": [
+            {
+              "type": "content",
+              "content": {
+                "type": "text",
+                "text": "Quick PONG reply"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "tool_call",
+      "tool_call": {
+        "tool_call_id": "toolu_01BeXVwr9fSc5SwxmDDterdh",
+        "title": "Agent: general-purpose",
+        "kind": "think",
+        "status": "in_progress",
+        "content": [],
+        "raw_input": {
+          "description": "Slow 200 animal facts",
+          "prompt": "Prompt of Slow 200 animal facts",
+          "subagent_type": "general-purpose",
+          "model": "haiku",
+          "run_in_background": true
+        },
+        "locations": [],
+        "meta": {
+          "claudeCode": {
+            "toolName": "Agent",
+            "parentToolUseId": null
+          }
+        },
+        "source_message_uuid": "launch-ad4af714553a7784f"
+      }
+    },
+    {
+      "type": "task_state_update",
+      "source": "task_lifecycle",
+      "tasks": [
+        {
+          "task_id": "ad4af714553a7784f",
+          "subject": "Slow 200 animal facts",
+          "status": "in_progress",
+          "blocks": [],
+          "blocked_by": [],
+          "description": "Agent: general-purpose",
+          "metadata": {
+            "sdk_lifecycle_task": true,
+            "is_backgrounded": true,
+            "subagent_type": "general-purpose",
+            "task_description": "Slow 200 animal facts",
+            "task_type": "local_agent"
+          },
+          "source_tool_call_id": "toolu_01BeXVwr9fSc5SwxmDDterdh"
+        }
+      ],
+      "removed_task_ids": [],
+      "is_complete_snapshot": false
+    },
+    {
+      "type": "tool_call_update",
+      "tool_call_update": {
+        "tool_call_id": "toolu_01BeXVwr9fSc5SwxmDDterdh",
+        "source_message_uuid": "result-ad4af714553a7784f",
+        "fields": {
+          "status": "detached",
+          "raw_output": "Slow 200 animal facts",
+          "content": [
+            {
+              "type": "content",
+              "content": {
+                "type": "text",
+                "text": "Slow 200 animal facts"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "task_state_update",
+      "source": "task_lifecycle",
+      "tasks": [
+        {
+          "task_id": "a3a61211c3404cb8e",
+          "subject": "Quick PONG reply",
+          "status": "completed",
+          "blocks": [],
+          "blocked_by": [],
+          "description": "Agent \"Quick PONG reply\" finished",
+          "metadata": {
+            "sdk_lifecycle_task": true,
+            "is_backgrounded": true,
+            "subagent_type": "general-purpose",
+            "task_description": "Quick PONG reply",
+            "task_type": "local_agent",
+            "output_file": "/tmp/tasks/a3a61211c3404cb8e.output",
+            "summary": "Agent \"Quick PONG reply\" finished",
+            "terminal_status": "completed"
+          },
+          "source_tool_call_id": "toolu_01HKqkdmhfts1QpVDuqaMCFh"
+        }
+      ],
+      "removed_task_ids": [],
+      "is_complete_snapshot": false
+    },
+    {
+      "type": "tool_call_update",
+      "tool_call_update": {
+        "tool_call_id": "toolu_01HKqkdmhfts1QpVDuqaMCFh",
+        "fields": {
+          "status": "completed",
+          "task_metadata": {
+            "output_file": "/tmp/tasks/a3a61211c3404cb8e.output",
+            "summary": "Agent \"Quick PONG reply\" finished",
+            "terminal_status": "completed"
+          },
+          "raw_output": "Agent \"Quick PONG reply\" finished",
+          "content": [
+            {
+              "type": "content",
+              "content": {
+                "type": "text",
+                "text": "Agent \"Quick PONG reply\" finished"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "task_state_update",
+      "source": "task_lifecycle",
+      "tasks": [
+        {
+          "task_id": "ad4af714553a7784f",
+          "subject": "Slow 200 animal facts",
+          "status": "completed",
+          "blocks": [],
+          "blocked_by": [],
+          "description": "Agent \"Slow 200 animal facts\" was stopped by user",
+          "metadata": {
+            "sdk_lifecycle_task": true,
+            "is_backgrounded": true,
+            "subagent_type": "general-purpose",
+            "task_description": "Slow 200 animal facts",
+            "task_type": "local_agent",
+            "output_file": "/tmp/tasks/ad4af714553a7784f.output",
+            "summary": "Agent \"Slow 200 animal facts\" was stopped by user",
+            "terminal_status": "killed"
+          },
+          "source_tool_call_id": "toolu_01BeXVwr9fSc5SwxmDDterdh"
+        }
+      ],
+      "removed_task_ids": [],
+      "is_complete_snapshot": false
+    },
+    {
+      "type": "tool_call_update",
+      "tool_call_update": {
+        "tool_call_id": "toolu_01BeXVwr9fSc5SwxmDDterdh",
+        "fields": {
+          "status": "failed",
+          "task_metadata": {
+            "output_file": "/tmp/tasks/ad4af714553a7784f.output",
+            "summary": "Agent \"Slow 200 animal facts\" was stopped by user",
+            "terminal_status": "killed"
+          },
+          "raw_output": "Agent \"Slow 200 animal facts\" was stopped by user",
+          "content": [
+            {
+              "type": "content",
+              "content": {
+                "type": "text",
+                "text": "Agent \"Slow 200 animal facts\" was stopped by user"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -155,6 +155,7 @@ fn resolved_submission_is_the_active_turn_policy_authority() {
         "/plugins",
         "/status",
         "/usage",
+        "/agents",
     ] {
         assert_eq!(classify(input), SubmissionClass::Fullscreen, "unexpected class for {input}");
     }

@@ -26,7 +26,7 @@ Important Rust areas:
 | `src/app/` | App state, lifecycle, sessions, config, permissions, input, slash commands, plugins, MCP, usage, and trust. |
 | `src/ui/` | Ratatui rendering for messages, markdown, diffs, tool calls, config tabs, help, autocomplete, and input. |
 
-The current runtime uses inline terminal-owned rendering rather than an older fullscreen-only model. Fullscreen views are still used for config, help, status, usage, MCP, and plugin surfaces. The reasons for that change are described in [I rebuilt Claude Code's terminal UI in Rust. Then I deleted 12,000 lines of it.](https://medium.com/@simonrothgang/i-rebuilt-claude-codes-terminal-ui-in-rust-then-i-deleted-12-000-lines-of-it-e8593a200452)
+The current runtime uses inline terminal-owned rendering rather than an older fullscreen-only model. Fullscreen views are still used for config, help, status, usage, MCP, plugin and subagent surfaces. The reasons for that change are described in [I rebuilt Claude Code's terminal UI in Rust. Then I deleted 12,000 lines of it.](https://medium.com/@simonrothgang/i-rebuilt-claude-codes-terminal-ui-in-rust-then-i-deleted-12-000-lines-of-it-e8593a200452)
 
 ## Agent SDK Bridge
 
@@ -122,15 +122,29 @@ The bridge normalizes confirmed launch results and SDK task lifecycle events int
 
 Rust keeps execution state on the original `ToolCallInfo`. Its history projection freezes the launch at its creation position with the fixed `↗` icon, allowing the transcript prefix to enter terminal history while the task runs independently. Actual completion, failure or stopping appends one separately identified result linked to that tool. The session owns pending interactions; foreground turn reset preserves background controls, which remain mutable at the end of the live region during transcript replay after resize. Cache and retention accounting include the frozen projections without adding them to the execution index or foreground activity set.
 
+A task row's lifecycle state is separate from its tool call. A notification that follows a finished tool call still settles the row, and only a new start or another outcome changes a settled row. Every lifecycle edge (start, progress, update, notification, and a `TaskStop` result) marks its row `sdk_lifecycle_task` and clears the `sdk_background_task` marker of a row the inventory created. A background snapshot removes only rows that still carry the background marker, so a subagent keeps its row when it leaves `background_tasks_changed`, whether the outcome arrives before or after that snapshot. A `TaskList` snapshot replaces plan tasks while retaining runtime rows, and Rust never counts a lifecycle-marked row as a plan step.
+
+### Agents view
+
+| Concern | Owner | Location |
+| --- | --- | --- |
+| Live subagent status, from the SDK task lifecycle | Bridge | `agent-sdk/src/bridge/tasks.ts` |
+| Saved transcript ids and messages, stop requests | Agent SDK, called by the bridge | `listSubagents()`, `getSubagentMessages()`, `Query.stopTask()` in `agent-sdk/src/bridge/subagents.ts` |
+| Which tasks are subagents, their status (with stopping), the shared selection, transcript view and sent stop requests | Rust | `src/app/agents.rs` |
+| One row projection for the footer shelf, the `Ctrl+T` list and the view | Rust | `src/ui/agent_rows.rs` |
+| The view's list, the selected agent's details and the transcript | Rust | `src/ui/agents.rs` |
+
+The view is the one agent inspector: the footer shelf is the glance, `Ctrl+T` gives the list, and `Enter` there opens the view on the same selection. It lists the active session's `local_agent` lifecycle rows from the task state Rust already holds, one per task id; there is no second task store and no polling. The footer shelf counts the rows the lifecycle reports as running. Answers for another session are ignored. A row has a transcript only when `listSubagents()` returned its task id, which is read when the view opens and on `r`. A transcript read never changes a row's status. A stop request is offered only for a running row. Once it is sent the row shows stopping, its acknowledgement does not change that, and only the lifecycle reports it stopped. A rejected request is shown as an error and leaves the row as it was. The bridge refuses to stop a task it does not hold as a running subagent, and runs the request outside the session command lane because `stopTask()` can stay pending until its query ends.
+
 The bridge announces each live top-level SDK response through the typed `agent_response_started` update before sending its text. A response triggered by a background completion receives a fresh mutable assistant owner even when no user prompt is pending; history replay does not activate live responses. The renderer groups consecutive visible assistant messages under one speaker label, carrying speaker context across content already inserted into terminal history. Streaming ownership, message identities and tool insertion order remain separate from that visual grouping.
 
 ### Agent progress and inspection
 
 The bridge normalizes task progress into the existing task metadata: `usage` (`total_tokens`, `tool_uses`, `duration_ms`), `last_tool_name`, `summary`, and the child's resolved `model` and `model_display`. Child assistant messages may precede task linkage; the bridge remembers their model by parent tool-use ID and emits a task update when the linked model changes. Background inventory snapshots preserve lifecycle-owned metadata and cannot erase a completed agent's history merely because membership changes arrive before its completion event.
 
-Rust's task inventory remains the status authority. The Agents view merges SDK-listed saved agent IDs with live task IDs, preserving selection by identity. The footer, task overlay and inspector share the same agent-row projection and renderer. Requested model aliases and agent-definition defaults remain distinguishable from a model observed in a child response. A bounded index of the last eight child tool-call IDs per parent is maintained on tool events and pruned with transcript retention; rendering reads this index without scanning the transcript or performing I/O. Local observation times extend reported running durations, and the visible shelf requests at most one redraw per second when no other animation is active.
+Rust's task inventory remains the status authority. The footer shelf, the `Ctrl+T` list and the Agents view share the same agent-row projection and renderer, and the list and view share one selection by task id. Requested model aliases and agent-definition defaults remain distinguishable from a model observed in a child response. A bounded index of the last eight child tool-call IDs per parent is maintained on tool events and pruned with transcript retention; rendering reads this index without scanning the transcript or performing I/O. Local observation times extend reported running durations, and the visible shelf requests at most one redraw per second when no other animation is active.
 
-The shelf includes running agents and agents finished during the current continuous delegation wave; the task overlay and inspector retain prior agent history.
+The shelf includes running agents and agents finished during the current continuous delegation wave; the task list and the Agents view retain prior agent history.
 
 ### Session title
 
