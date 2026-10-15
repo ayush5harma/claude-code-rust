@@ -312,7 +312,7 @@ fn execute_app_action(app: &mut App, action: AppAction) -> KeyOutcome {
         AppAction::OpenExternalEditor => KeyOutcome::Runtime(RuntimeCommand::OpenExternalEditor),
         AppAction::OpenRewindPicker => super::rewind_picker::open(app).into(),
         AppAction::ToggleTasks => {
-            super::view::set_fullscreen_view(app, super::FullscreenView::Tasks);
+            super::agents::open_task_list(app);
             true.into()
         }
         AppAction::ToggleVerbose => super::verbose_view::open(app).into(),

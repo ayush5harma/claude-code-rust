@@ -396,3 +396,62 @@ fn answers_for_another_session_change_nothing() {
     assert_eq!(app.agents.has_transcript("agent-1"), None);
     assert!(app.agents.listing, "the active session's answer is still awaited");
 }
+
+#[test]
+fn a_stop_refused_because_the_agent_just_finished_reports_no_error() {
+    let (mut app, mut commands) = connected_app();
+    lifecycle(&mut app, vec![task("agent-1", "local_agent", TaskStatus::InProgress, None)]);
+    super::open(&mut app);
+    press(&mut app, KeyCode::Char('s'));
+    let _ = sent(&mut commands);
+    // The agent finishes on its own before the bridge handles the stop.
+    lifecycle(
+        &mut app,
+        vec![task("agent-1", "local_agent", TaskStatus::Completed, Some("completed"))],
+    );
+    handle_client_event(
+        &mut app,
+        ClientEvent::SubagentStopResult {
+            session_id: SESSION.to_owned(),
+            task_id: "agent-1".to_owned(),
+            error: Some("This subagent is not running.".to_owned()),
+        },
+    );
+    assert_eq!(status_of(&app, "agent-1"), SubagentStatus::Completed);
+    assert!(app.agents.notice.is_none(), "{:?}", app.agents.notice);
+}
+
+#[test]
+fn a_selected_agent_that_leaves_the_list_is_not_replaced_by_another() {
+    let (mut app, mut commands) = connected_app();
+    lifecycle(
+        &mut app,
+        vec![
+            task("agent-1", "local_agent", TaskStatus::InProgress, None),
+            task("agent-2", "local_agent", TaskStatus::InProgress, None),
+        ],
+    );
+    super::open(&mut app);
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.agents.selected_task_id.as_deref(), Some("agent-2"));
+    let _ = sent(&mut commands);
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate {
+            session_id: SESSION.to_owned(),
+            update: model::SessionUpdate::TaskStateUpdate(
+                model::TaskStateUpdate::new(TaskUpdateSource::Lifecycle)
+                    .removed_task_ids(vec!["agent-2".to_owned()]),
+            ),
+        },
+    );
+    assert_eq!(app.agents.selected_task_id, None);
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Enter);
+    assert!(sent(&mut commands).is_empty(), "nothing acts on agent-1 unasked");
+    assert_eq!(status_of(&app, "agent-1"), SubagentStatus::Running);
+
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.agents.selected_task_id.as_deref(), Some("agent-1"));
+}

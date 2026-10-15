@@ -100,11 +100,12 @@ fn hint(app: &App, width: u16) -> String {
 fn render_agents(frame: &mut Frame, title_area: Rect, body: Rect, app: &App) -> u16 {
     let rows = session_agent_rows(app);
     let selected = app.agents.selected_index(&rows);
-    let mut title = vec![
-        Span::styled(TITLE, title_style().fg(theme::accent())),
-        Span::raw("  "),
-        position_counter(selected, rows.len()),
-    ];
+    let counter = selected.map_or_else(
+        || Span::styled(format!("-/{}", rows.len()), Style::default().fg(theme::tertiary())),
+        |index| position_counter(index, rows.len()),
+    );
+    let mut title =
+        vec![Span::styled(TITLE, title_style().fg(theme::accent())), Span::raw("  "), counter];
     let running = rows.iter().filter(|row| row.status.is_running()).count();
     if running > 0 {
         title.push(Span::styled(
@@ -122,7 +123,7 @@ fn render_agents(frame: &mut Frame, title_area: Rect, body: Rect, app: &App) -> 
         );
         return 0;
     }
-    let Some(row) = rows.get(selected) else {
+    if rows.is_empty() {
         render_message(
             frame,
             body,
@@ -130,9 +131,13 @@ fn render_agents(frame: &mut Frame, title_area: Rect, body: Rect, app: &App) -> 
             "Subagents this session starts appear here with their live status.",
         );
         return 0;
-    };
+    }
     let (list_area, detail_area) = split_body(body, rows.len());
     render_list(frame, list_area, &rows, selected);
+    let Some(row) = selected.and_then(|index| rows.get(index)) else {
+        render_message(frame, detail_area, "No agent selected", "Up/Down selects an agent.");
+        return 0;
+    };
 
     let details = Text::from(detail_lines(app, row, detail_area.width));
     let total =
@@ -165,9 +170,9 @@ fn split_body(body: Rect, row_count: usize) -> (Rect, Rect) {
     (panes[0], panes[2])
 }
 
-fn render_list(frame: &mut Frame, area: Rect, rows: &[AgentRow<'_>], selected: usize) {
+fn render_list(frame: &mut Frame, area: Rect, rows: &[AgentRow<'_>], selected: Option<usize>) {
     let columns = AgentColumns::for_rows(rows);
-    let offset = selected.saturating_sub(usize::from(area.height.saturating_sub(1)));
+    let offset = selected.unwrap_or(0).saturating_sub(usize::from(area.height.saturating_sub(1)));
     let lines: Vec<Line<'static>> = rows
         .iter()
         .enumerate()
@@ -175,7 +180,7 @@ fn render_list(frame: &mut Frame, area: Rect, rows: &[AgentRow<'_>], selected: u
         .take(usize::from(area.height))
         .map(|(index, row)| {
             let line = render_agent_row(row, area.width.saturating_sub(2), &columns, false);
-            selection_line(line, index == selected)
+            selection_line(line, Some(index) == selected)
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), area);
@@ -249,7 +254,8 @@ fn detail_lines(app: &App, row: &AgentRow<'_>, width: u16) -> Vec<Line<'static>>
         lines.push(labeled("Now", row.now.clone().into_owned()));
     }
     if let Some(parent) = row.parent_id {
-        for (index, tool) in app.recent_child_tools(parent).enumerate() {
+        // "Now" already shows the latest child tool.
+        for (index, tool) in app.recent_child_tools(parent).skip(1).enumerate() {
             let activity = tool_activity(tool).into_owned();
             lines.push(if index == 0 {
                 labeled("Recent", activity)

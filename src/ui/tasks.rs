@@ -51,7 +51,7 @@ pub(crate) fn render(frame: &mut Frame, app: &App) {
         let selected = app.agents.selected_index(&agents);
         let columns = super::agent_rows::AgentColumns::for_rows(&agents);
         for (index, row) in agents.iter().enumerate() {
-            if index == selected {
+            if Some(index) == selected {
                 selected_row = Some(rows.len());
             }
             let mut line = super::agent_rows::render_agent_row(
@@ -60,8 +60,10 @@ pub(crate) fn render(frame: &mut Frame, app: &App) {
                 &columns,
                 false,
             );
-            line.spans
-                .insert(0, ratatui::text::Span::raw(if index == selected { "> " } else { "  " }));
+            line.spans.insert(
+                0,
+                ratatui::text::Span::raw(if Some(index) == selected { "> " } else { "  " }),
+            );
             rows.push(line);
         }
         rows.push(Line::default());
@@ -110,6 +112,8 @@ mod tests {
         let mut shell = TaskItem::new("shell", "cargo test", TaskStatus::InProgress);
         shell.metadata = Some(serde_json::json!({"task_type": "local_bash"}));
         app.sdk_inventory.tasks.push(shell);
+        // Opening the list selects its first agent.
+        crate::app::agents::open_task_list(&mut app);
         let mut terminal = Terminal::new(TestBackend::new(120, 24)).expect("terminal");
         terminal.draw(|frame| render(frame, &app)).expect("draw overlay");
         let buffer = terminal.backend().buffer();

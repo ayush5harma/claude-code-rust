@@ -701,7 +701,9 @@ fn schedule_agent_shelf_frame(app: &mut App, now: Instant) {
         SurfaceMode::Chat => {
             crate::ui::footer_rows::shelf_row_capacity(app.chat_render.terminal_height) > 0
         }
-        SurfaceMode::Fullscreen(FullscreenView::Agents | FullscreenView::Tasks) => true,
+        // A transcript shows no clocks.
+        SurfaceMode::Fullscreen(FullscreenView::Agents) => app.agents.transcript.is_none(),
+        SurfaceMode::Fullscreen(FullscreenView::Tasks) => true,
         SurfaceMode::Fullscreen(_) => false,
     };
     let visible = shows_agent_rows

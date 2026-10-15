@@ -44,26 +44,31 @@ fn subagent(
     task
 }
 
-/// Puts the Agent tool call `parent` (with `input`) and one child Read of `file` in the transcript.
-fn agent_call(app: &mut App, parent: &str, input: serde_json::Value, file: &str) {
+/// Puts the Agent tool call `parent` (with `input`) and one child Read per file,
+/// oldest first, in the transcript.
+fn agent_call(app: &mut App, parent: &str, input: serde_json::Value, files: &[&str]) {
     let mut call = crate::app::test_support::tool_call_info(parent, ToolCallStatus::InProgress);
     call.sdk_tool_name = "Agent".to_owned();
     call.raw_input = Some(input);
-    let child_id = format!("{parent}-child");
-    let mut child = crate::app::test_support::tool_call_info(&child_id, ToolCallStatus::Completed);
-    child.raw_input = Some(serde_json::json!({ "file_path": file }));
+    let mut blocks = vec![MessageBlock::ToolCall(Box::new(call))];
+    let child_ids: Vec<String> =
+        (0..files.len()).map(|index| format!("{parent}-child-{index}")).collect();
+    for (child_id, file) in child_ids.iter().zip(files) {
+        let mut child =
+            crate::app::test_support::tool_call_info(child_id, ToolCallStatus::Completed);
+        child.raw_input = Some(serde_json::json!({ "file_path": file }));
+        blocks.push(MessageBlock::ToolCall(Box::new(child)));
+    }
     let index = app.transcript.messages.len();
-    app.transcript.messages.push(ChatMessage::new(
-        MessageRole::Assistant,
-        vec![MessageBlock::ToolCall(Box::new(call)), MessageBlock::ToolCall(Box::new(child))],
-        None,
-    ));
+    app.transcript.messages.push(ChatMessage::new(MessageRole::Assistant, blocks, None));
     app.index_tool_call(parent.to_owned(), index, 0);
-    app.index_tool_call(child_id.clone(), index, 1);
-    app.register_tool_call_scope(
-        child_id,
-        ToolCallScope::SubagentChild { parent_tool_use_id: parent.to_owned() },
-    );
+    for (offset, child_id) in child_ids.into_iter().enumerate() {
+        app.index_tool_call(child_id.clone(), index, offset + 1);
+        app.register_tool_call_scope(
+            child_id,
+            ToolCallScope::SubagentChild { parent_tool_use_id: parent.to_owned() },
+        );
+    }
 }
 
 fn connected_app() -> (App, CommandReceiver) {
@@ -85,13 +90,13 @@ fn app_with_subagents() -> (App, CommandReceiver) {
         &mut app,
         "parent-builder",
         serde_json::json!({ "name": "builder", "model": "opus", "isolation": "worktree", "prompt": prompt }),
-        "/src/agents.rs",
+        &["/src/model.rs", "/src/agents.rs"],
     );
     agent_call(
         &mut app,
         "parent-reviewer",
         serde_json::json!({ "name": "reviewer", "prompt": "Review the parser." }),
-        "/src/parser.rs",
+        &["/src/parser.rs"],
     );
     let mut builder = subagent(
         "agent-1",
@@ -157,10 +162,17 @@ fn the_selected_agent_shows_its_model_choice_usage_activity_prompt_and_transcrip
     assert!(lines[header + 2].contains("12 tools · 34.2k tokens"), "{}", lines[header + 2]);
     let (_, transcript) = row_with(&lines, "Transcript");
     assert!(transcript.contains("not saved yet"), "{transcript}");
+    // Now is the latest child tool; Recent lists the earlier ones without repeating it.
     let (_, now) = row_with(&lines, "Now");
     assert!(now.contains("Read agents.rs"), "{now}");
     let (recent, recent_line) = row_with(&lines, "Recent");
-    assert!(recent_line.contains("Read agents.rs"), "{recent_line}");
+    assert!(recent_line.contains("Read model.rs"), "{recent_line}");
+    assert_eq!(
+        lines[header..].iter().filter(|line| line.contains("Read agents.rs")).count(),
+        1,
+        "{}",
+        lines.join("\n")
+    );
     assert!(
         !lines[header..].iter().any(|line| line.contains("parser.rs")),
         "another agent's tools"
@@ -181,8 +193,14 @@ fn the_selected_agent_shows_its_model_choice_usage_activity_prompt_and_transcrip
     assert!(header_line.contains("Review the parser"), "{header_line}");
     let (_, transcript) = row_with(&lines, "Transcript");
     assert!(transcript.contains("saved · Enter to read"), "{transcript}");
-    let (_, recent_line) = row_with(&lines, "Recent");
-    assert!(recent_line.contains("Read parser.rs"), "{recent_line}");
+    let (reviewer_header, _) = row_with(&lines, " completed ");
+    let (_, now) = row_with(&lines, "Now");
+    assert!(now.contains("Read parser.rs"), "{now}");
+    assert!(
+        !lines[reviewer_header..].iter().any(|line| line.contains("Recent")),
+        "a single child tool is only Now:\n{}",
+        lines.join("\n")
+    );
 }
 
 #[test]

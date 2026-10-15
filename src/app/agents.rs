@@ -72,7 +72,8 @@ pub(crate) struct TranscriptView {
 
 #[derive(Debug, Default)]
 pub(crate) struct AgentsView {
-    /// The agent chosen in the Ctrl+T list or this view; the first row when `None`.
+    /// The agent chosen in the Ctrl+T list or this view. `None` selects nothing,
+    /// so `s` and Enter never act on a row the user did not choose.
     pub selected_task_id: Option<String>,
     /// Ids `listSubagents()` returned; `None` until the first answer.
     pub transcript_ids: Option<HashSet<String>>,
@@ -115,12 +116,10 @@ impl AgentsView {
         self.transcript_ids.as_ref().map(|ids| ids.contains(task_id))
     }
 
-    /// The chosen row, else the first (running agents sort first).
-    pub(crate) fn selected_index(&self, rows: &[AgentRow<'_>]) -> usize {
-        self.selected_task_id
-            .as_deref()
-            .and_then(|id| rows.iter().position(|row| row.task.task_id == id))
-            .unwrap_or(0)
+    /// The chosen row among `rows`, if one is chosen and still listed.
+    pub(crate) fn selected_index(&self, rows: &[AgentRow<'_>]) -> Option<usize> {
+        let id = self.selected_task_id.as_deref()?;
+        rows.iter().position(|row| row.task.task_id == id)
     }
 
     /// Forget everything tied to the previous session.
@@ -146,8 +145,32 @@ pub(crate) fn open(app: &mut App) {
     open_at(app, None);
 }
 
+/// Opens the Ctrl+T task list, keeping a still-listed agent selected, else the first.
+pub(crate) fn open_task_list(app: &mut App) {
+    let rows = session_agent_rows(app);
+    if app.agents.selected_index(&rows).is_none() {
+        let first = rows.first().map(|row| row.task.task_id.clone());
+        app.agents.selected_task_id = first;
+        app.agents.detail_scroll = 0;
+    }
+    crate::app::view::set_fullscreen_view(app, crate::app::FullscreenView::Tasks);
+}
+
+/// Drops a selection whose agent is no longer listed, so the selection never
+/// moves to another agent on its own.
+pub(crate) fn forget_unlisted_selection(app: &mut App) {
+    let listed = app.agents.selected_task_id.as_deref().is_none_or(|id| {
+        app.sdk_inventory.tasks.iter().any(|task| task.task_id == id && is_subagent_task(task))
+    });
+    if !listed {
+        app.agents.selected_task_id = None;
+    }
+}
+
 /// Opens the view with `selected` chosen, or the first row when `None`.
 fn open_at(app: &mut App, selected: Option<String>) {
+    let selected =
+        selected.or_else(|| session_agent_rows(app).first().map(|row| row.task.task_id.clone()));
     app.agents.transcript = None;
     app.agents.notice = None;
     app.agents.selected_task_id = selected;
@@ -231,7 +254,16 @@ fn apply_stop_result(app: &mut App, task_id: &str, error: Option<String>) {
     match error {
         Some(error) => {
             app.agents.stop_requested.remove(task_id);
-            notice(app, NoticeKind::Error, format!("Could not stop the subagent: {error}"));
+            // A stop that loses the race with the agent's own outcome is refused
+            // as not running; the row already shows how the agent ended.
+            if app
+                .sdk_inventory
+                .tasks
+                .iter()
+                .any(|task| task.task_id == task_id && task.status == TaskStatus::InProgress)
+            {
+                notice(app, NoticeKind::Error, format!("Could not stop the subagent: {error}"));
+            }
         }
         // The lifecycle can report the outcome before the acknowledgement.
         None if app.sdk_inventory.tasks.iter().any(|task| {
@@ -246,7 +278,7 @@ fn apply_stop_result(app: &mut App, task_id: &str, error: Option<String>) {
 
 fn selected_row(app: &App) -> Option<(String, SubagentStatus)> {
     let rows = session_agent_rows(app);
-    let row = rows.get(app.agents.selected_index(&rows))?;
+    let row = rows.get(app.agents.selected_index(&rows)?)?;
     Some((row.task.task_id.clone(), row.status))
 }
 
@@ -256,8 +288,11 @@ fn move_selection(app: &mut App, down: bool) {
     if rows.is_empty() {
         return;
     }
-    let current = app.agents.selected_index(&rows);
-    let next = if down { (current + 1).min(rows.len() - 1) } else { current.saturating_sub(1) };
+    let next = match app.agents.selected_index(&rows) {
+        None => 0,
+        Some(current) if down => (current + 1).min(rows.len() - 1),
+        Some(current) => current.saturating_sub(1),
+    };
     let id = rows[next].task.task_id.clone();
     if app.agents.selected_task_id.as_deref() != Some(id.as_str()) {
         app.agents.detail_scroll = 0;

@@ -24,12 +24,10 @@ pub(super) fn apply_task_state_update(app: &mut App, update: model::TaskStateUpd
 
     if update.is_complete_snapshot {
         if update.source == model::TaskUpdateSource::BackgroundTasks {
-            let incoming: HashSet<&str> =
-                update.tasks.iter().map(|task| task.task_id.as_str()).collect();
             app.sdk_inventory.tasks.retain(|task| {
                 !is_sdk_background_task(task)
                     && !removed.contains(task.task_id.as_str())
-                    && !incoming.contains(task.task_id.as_str())
+                    && !update.tasks.iter().any(|incoming| incoming.task_id == task.task_id)
             });
             for task in update.tasks {
                 if !removed.contains(task.task_id.as_str()) {
@@ -178,6 +176,7 @@ fn refresh_task_tool_displays_with_previous(
     } else if !running {
         app.sdk_inventory.agent_shelf_wave_started_at = None;
     }
+    crate::app::agents::forget_unlisted_selection(app);
     let current_tasks = app.sdk_inventory.tasks.clone();
     let mut dirty_blocks = Vec::new();
 

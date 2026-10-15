@@ -2945,21 +2945,8 @@ fn has_row_with(screen: &str, needles: &[&str]) -> bool {
 fn agents_view_opens_from_an_empty_composer_stops_a_subagent_and_reads_a_transcript() {
     let mut test = TerminalTest::start("agents", 3);
     test.wait_screen("2 running");
-
-    // With a draft, Left moves the cursor: the next character lands before the last one.
-    let log_offset =
-        std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
-    test.paste("keep this draft");
-    test.wait_composer_text(log_offset, "keep this draft");
-    test.send(b"\x1b[D");
-    // Keys that follow within the key-burst window count as pasted text.
-    std::thread::sleep(Duration::from_millis(300));
-    test.send(b"X");
-    test.wait_screen("keep this drafXt");
-    assert!(test.commands("list_subagents").is_empty(), "a draft keeps Left in the composer");
-
-    test.send(b"\x05\x15"); // End, then kill to line start.
-    test.wait_screen("Type a message");
+    // Left with a draft keeps moving the cursor; the unit test
+    // left_arrow_opens_agents_only_from_an_empty_composer covers that half.
     test.send(b"\x1b[D");
     let screen = test.wait_screen_with("Up/Down select", &["Review parser", "Inspect docs"]);
     assert!(!screen.contains("Watch logs"), "background shells are not listed:\n{screen}");
@@ -3013,8 +3000,9 @@ fn ctrl_t_enter_opens_the_agents_view_on_the_chosen_agent_at_80_by_24() {
     test.send(b"\r");
     let screen = test.wait_screen_with(
         "builder · Opus 5.5 · asked for opus · isolated worktree",
-        &["Recent", "Read agents.rs", "Prompt of builder"],
+        &["Read agents.rs", "Prompt of builder"],
     );
+    assert!(has_row_with(&screen, &["Now", "Read agents.rs"]), "{screen}");
     assert!(has_row_with(&screen, &["› ● builder", "Opus 5.5"]), "{screen}");
     assert!(has_row_with(&screen, &["Build agent inspector", " running "]), "{screen}");
     assert!(screen.contains("Up/Down select"), "the key hints fit at 80x24:\n{screen}");

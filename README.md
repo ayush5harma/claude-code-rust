@@ -54,7 +54,7 @@ The additions below are measured against upstream commit `26f9b12` (v0.15.2); or
 
 | Change | What it does |
 | --- | --- |
-| One agent inspector ([#40](https://github.com/ayush5harma/claude-code-rust/issues/40), [#34](https://github.com/ayush5harma/claude-code-rust/pull/34)) | The full-screen `/agents` view is the inspector the footer shelf and Ctrl+T lead to: Enter on an agent in the Ctrl+T list, Left Arrow on an empty composer or `/agents` opens it. Beside the list it shows the selected agent's model, usage, activity, recent tools and prompt; Enter reads its saved transcript, including tool calls, and `s` stops it, showing stopping until the session reports it stopped. |
+| One agent inspector ([#40](https://github.com/ayush5harma/claude-code-rust/issues/40), [#34](https://github.com/ayush5harma/claude-code-rust/pull/34)) | The full-screen `/agents` view is the inspector the footer shelf and Ctrl+T lead to: Enter on an agent in the Ctrl+T list, Left Arrow on an empty composer or `/agents` opens it. Beside or below the list it shows the selected agent's model, usage, activity, recent tools and prompt; Enter reads its saved transcript, including tool calls, and `s` stops it, showing stopping until the session reports it stopped. |
 
 ### v0.15.2-fork.6
 
