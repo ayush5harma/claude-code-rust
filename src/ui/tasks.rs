@@ -48,15 +48,10 @@ pub(crate) fn render(frame: &mut Frame, app: &App) {
     let agents = super::agent_rows::session_agent_rows(app);
     if !agents.is_empty() {
         rows.push(Line::from("Agents"));
-        let selected = app
-            .agents
-            .selected_task_id
-            .as_deref()
-            .filter(|id| agents.iter().any(|task| task.task.task_id == *id))
-            .unwrap_or(&agents[0].task.task_id);
+        let selected = app.agents.selected_index(&agents);
         let columns = super::agent_rows::AgentColumns::for_rows(&agents);
-        for row in &agents {
-            if row.task.task_id == selected {
+        for (index, row) in agents.iter().enumerate() {
+            if index == selected {
                 selected_row = Some(rows.len());
             }
             let mut line = super::agent_rows::render_agent_row(
@@ -65,10 +60,8 @@ pub(crate) fn render(frame: &mut Frame, app: &App) {
                 &columns,
                 false,
             );
-            line.spans.insert(
-                0,
-                ratatui::text::Span::raw(if row.task.task_id == selected { "> " } else { "  " }),
-            );
+            line.spans
+                .insert(0, ratatui::text::Span::raw(if index == selected { "> " } else { "  " }));
             rows.push(line);
         }
         rows.push(Line::default());

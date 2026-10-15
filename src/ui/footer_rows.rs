@@ -2,8 +2,8 @@
 // Copyright 2025 Simon Peter Rothgang
 
 use crate::agent::model;
+use crate::app::agents::SubagentStatus;
 use crate::app::{App, MessageBlock};
-use crate::ui::agent_rows::task_status;
 use crate::ui::theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
@@ -15,6 +15,9 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 const FOOTER_COLUMN_GAP: u16 = 1;
 const MIN_CONTEXT_LOCATION_WIDTH: usize = 10;
 const MIN_CONTEXT_BRANCH_WIDTH: usize = 4;
+/// Ctrl+T lists the agents (Enter there inspects one); Left Arrow on an empty
+/// composer opens the `/agents` inspector directly.
+const SHELF_HINT: &str = "ctrl+t list · ← inspect";
 fn footer_context_value() -> Color {
     theme::secondary()
 }
@@ -64,17 +67,15 @@ fn build_agent_shelf(app: &App, width: u16) -> Vec<Line<'static>> {
                     .is_some_and(|finished| finished >= wave)
         });
     }
-    let running = agents.iter().filter(|a| a.task.status == model::TaskStatus::InProgress).count();
+    let running = agents.iter().filter(|a| a.status.is_running()).count();
     if running == 0 {
         return Vec::new();
     }
     let listed = agents.len().min(shelf_row_capacity(app.chat_render.terminal_height));
-    let failed = agents.iter().filter(|a| task_status(a.task) == "failed").count();
+    let failed = agents.iter().filter(|a| a.status == SubagentStatus::Failed).count();
     let done = agents
         .iter()
-        .filter(|a| {
-            a.task.status == model::TaskStatus::Completed && task_status(a.task) != "failed"
-        })
+        .filter(|a| matches!(a.status, SubagentStatus::Completed | SubagentStatus::Stopped))
         .count();
     let mut header = vec![
         Span::styled("agents  ", Style::default().fg(theme::tertiary())),
@@ -97,7 +98,7 @@ fn build_agent_shelf(app: &App, width: u16) -> Vec<Line<'static>> {
     }
     let mut rows = vec![compose_footer_row(
         Line::from(header),
-        Some(("ctrl+t inspect".to_owned(), theme::tertiary())),
+        Some((SHELF_HINT.to_owned(), theme::tertiary())),
         width,
         20,
     )];
@@ -149,14 +150,9 @@ fn gauges(app: &App) -> Vec<Line<'static>> {
             _ => {}
         }
     }
-    let agents: Vec<_> = app
-        .sdk_inventory
-        .tasks
-        .iter()
-        .filter(|t| crate::app::agents::is_subagent_task(t))
-        .collect();
-    if !agents.is_empty() && !agents.iter().any(|t| t.status == model::TaskStatus::InProgress) {
-        let failed = agents.iter().filter(|t| task_status(t) == "failed").count();
+    let agents = crate::ui::agent_rows::session_agent_rows(app);
+    if !agents.is_empty() && !agents.iter().any(|a| a.status.is_running()) {
+        let failed = agents.iter().filter(|a| a.status == SubagentStatus::Failed).count();
         let mut spans = vec![Span::styled(
             format!("{} agents", agents.len()),
             Style::default().fg(theme::tertiary()),
@@ -909,6 +905,7 @@ mod tests {
         let rows = serialize_footer_rows(&app, 200).rows;
         assert_eq!(rows.len(), 5);
         assert!(text(&rows[0]).contains("2 running · 1 done"));
+        assert!(text(&rows[0]).contains("ctrl+t list · ← inspect"), "{}", text(&rows[0]));
         for (index, name, model) in [
             (1, "Explore", "Sonnet 5.5"),
             (2, "implementer", "Opus 5.5"),

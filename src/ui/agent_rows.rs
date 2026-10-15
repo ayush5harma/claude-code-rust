@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::agent::model::{TaskItem, TaskStatus};
+use crate::app::agents::{SubagentStatus, is_subagent_task, subagent_status};
 use crate::app::{App, MessageBlock, ToolCallInfo};
 use crate::ui::theme;
 use ratatui::style::{Color, Style};
@@ -8,8 +9,10 @@ use ratatui::text::{Line, Span};
 use std::borrow::Cow;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+/// One subagent as the footer shelf, the Ctrl+T list and the `/agents` view show it.
 pub(crate) struct AgentRow<'a> {
     pub task: &'a TaskItem,
+    pub status: SubagentStatus,
     pub name: &'a str,
     pub model: &'a str,
     pub model_requested: bool,
@@ -48,18 +51,20 @@ pub(crate) fn agent_row<'a>(app: &'a App, task: &'a TaskItem) -> AgentRow<'a> {
     let resolved_model = text(metadata, "model_display");
     let model = resolved_model.or(requested_model).or(definition_model).unwrap_or("");
     let parent_id = task.source_tool_call_id.as_deref();
+    let status = subagent_status(app, task);
     let now = parent_id
         .and_then(|id| app.recent_child_tools(id).next())
         .map(tool_activity)
         .or_else(|| text(metadata, "summary").map(Cow::Borrowed))
         .or_else(|| text(metadata, "last_tool_name").map(Cow::Borrowed))
-        .unwrap_or_else(|| match task_status(task) {
-            "failed" => text(metadata, "error")
+        .unwrap_or_else(|| match status {
+            SubagentStatus::Failed => text(metadata, "error")
                 .or_else(|| text(metadata, "terminal_reason"))
                 .map_or(Cow::Borrowed("failed"), |reason| Cow::Owned(format!("failed: {reason}"))),
-            "done" => Cow::Borrowed("done"),
-            "stopped" => Cow::Borrowed("stopped"),
-            _ => Cow::Borrowed(""),
+            SubagentStatus::Completed | SubagentStatus::Stopped => Cow::Borrowed(status.label()),
+            SubagentStatus::Pending | SubagentStatus::Running | SubagentStatus::Stopping => {
+                Cow::Borrowed("")
+            }
         });
     let usage = metadata.and_then(|m| m.get("usage"));
     let duration = usage.and_then(|u| u.get("duration_ms")).and_then(serde_json::Value::as_u64);
@@ -88,6 +93,7 @@ pub(crate) fn agent_row<'a>(app: &'a App, task: &'a TaskItem) -> AgentRow<'a> {
         });
     AgentRow {
         task,
+        status,
         name,
         model,
         model_requested: resolved_model.is_none() && requested_model.is_some(),
@@ -119,12 +125,8 @@ pub(crate) fn tool_activity(tool: &ToolCallInfo) -> Cow<'_, str> {
 }
 
 pub(crate) fn session_agent_rows(app: &App) -> Vec<AgentRow<'_>> {
-    let mut tasks: Vec<_> = app
-        .sdk_inventory
-        .tasks
-        .iter()
-        .filter(|t| crate::app::agents::is_subagent_task(t))
-        .collect();
+    let mut tasks: Vec<_> =
+        app.sdk_inventory.tasks.iter().filter(|t| is_subagent_task(t)).collect();
     tasks.sort_by(|a, b| {
         let running_a = a.status == TaskStatus::InProgress;
         let running_b = b.status == TaskStatus::InProgress;
@@ -154,29 +156,13 @@ impl AgentColumns {
     }
 }
 
-pub(crate) fn task_status(task: &TaskItem) -> &'static str {
-    match text(task.metadata.as_ref(), "terminal_status") {
-        Some("failed") => "failed",
-        Some("stopped" | "killed") => "stopped",
-        _ => match task.status {
-            TaskStatus::InProgress => "running",
-            TaskStatus::Completed => "done",
-            TaskStatus::Pending => "pending",
-        },
-    }
-}
-
 pub(crate) fn status_glyph(row: &AgentRow<'_>) -> (&'static str, Color) {
-    if text(row.task.metadata.as_ref(), "terminal_status") == Some("failed") {
-        return ("✗", theme::danger());
-    }
-    if task_status(row.task) == "stopped" {
-        return ("○", theme::tertiary());
-    }
-    match row.task.status {
-        TaskStatus::InProgress => ("●", row.accent),
-        TaskStatus::Completed => ("✓", theme::success()),
-        TaskStatus::Pending => ("○", theme::tertiary()),
+    match row.status {
+        SubagentStatus::Running => ("●", row.accent),
+        SubagentStatus::Stopping => ("●", theme::warning()),
+        SubagentStatus::Completed => ("✓", theme::success()),
+        SubagentStatus::Failed => ("✗", theme::danger()),
+        SubagentStatus::Pending | SubagentStatus::Stopped => ("○", theme::tertiary()),
     }
 }
 

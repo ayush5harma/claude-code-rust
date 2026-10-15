@@ -694,12 +694,19 @@ fn schedule_animation_frame(app: &mut App, now: Instant) -> bool {
     is_animating
 }
 
+/// Advances the elapsed clocks of running agents once a second wherever rows
+/// show them: the footer shelf, the Ctrl+T list and the `/agents` view.
 fn schedule_agent_shelf_frame(app: &mut App, now: Instant) {
-    let visible = matches!(app.surface_mode, SurfaceMode::Chat)
-        && crate::ui::footer_rows::shelf_row_capacity(app.chat_render.terminal_height) > 0
+    let shows_agent_rows = match app.surface_mode {
+        SurfaceMode::Chat => {
+            crate::ui::footer_rows::shelf_row_capacity(app.chat_render.terminal_height) > 0
+        }
+        SurfaceMode::Fullscreen(FullscreenView::Agents | FullscreenView::Tasks) => true,
+        SurfaceMode::Fullscreen(_) => false,
+    };
+    let visible = shows_agent_rows
         && app.sdk_inventory.tasks.iter().any(|task| {
-            task.status == model::TaskStatus::InProgress
-                && agents::is_subagent_task(task)
+            task.status == model::TaskStatus::InProgress && agents::is_subagent_task(task)
         });
     if !visible {
         app.agent_shelf_last_redraw = None;

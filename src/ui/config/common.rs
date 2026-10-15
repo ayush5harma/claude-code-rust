@@ -12,7 +12,7 @@ pub(super) const fn selection_marker(selected: bool) -> &'static str {
     if selected { "›" } else { " " }
 }
 
-pub(in crate::ui) fn selection_style(selected: bool) -> Style {
+pub(super) fn selection_style(selected: bool) -> Style {
     if selected { Style::default().bg(theme::fill()) } else { Style::default() }
 }
 

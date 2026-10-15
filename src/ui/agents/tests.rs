@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::agent::client::{AgentConnection, CommandReceiver};
-use crate::agent::model::{SessionId, TaskItem, TaskStatus};
+use crate::agent::model::{SessionId, TaskItem, TaskStatus, ToolCallStatus};
 use crate::agent::types::{SubagentMessage, SubagentMessageRole};
-use crate::app::App;
 use crate::app::agents::{TranscriptView, apply_transcript_list, handle_key, open};
+use crate::app::{App, ChatMessage, MessageBlock, MessageRole, ToolCallScope};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -28,6 +28,10 @@ fn row_with<'a>(lines: &'a [String], needle: &str) -> (usize, &'a str) {
     (index, lines[index].as_str())
 }
 
+fn press(app: &mut App, code: KeyCode) {
+    handle_key(app, KeyEvent::new(code, KeyModifiers::NONE));
+}
+
 fn subagent(
     id: &str,
     subject: &str,
@@ -40,25 +44,76 @@ fn subagent(
     task
 }
 
-fn app_with_subagents() -> (App, CommandReceiver) {
+/// Puts the Agent tool call `parent` (with `input`) and one child Read of `file` in the transcript.
+fn agent_call(app: &mut App, parent: &str, input: serde_json::Value, file: &str) {
+    let mut call = crate::app::test_support::tool_call_info(parent, ToolCallStatus::InProgress);
+    call.sdk_tool_name = "Agent".to_owned();
+    call.raw_input = Some(input);
+    let child_id = format!("{parent}-child");
+    let mut child = crate::app::test_support::tool_call_info(&child_id, ToolCallStatus::Completed);
+    child.raw_input = Some(serde_json::json!({ "file_path": file }));
+    let index = app.transcript.messages.len();
+    app.transcript.messages.push(ChatMessage::new(
+        MessageRole::Assistant,
+        vec![MessageBlock::ToolCall(Box::new(call)), MessageBlock::ToolCall(Box::new(child))],
+        None,
+    ));
+    app.index_tool_call(parent.to_owned(), index, 0);
+    app.index_tool_call(child_id.clone(), index, 1);
+    app.register_tool_call_scope(
+        child_id,
+        ToolCallScope::SubagentChild { parent_tool_use_id: parent.to_owned() },
+    );
+}
+
+fn connected_app() -> (App, CommandReceiver) {
     let mut app = App::test_default();
     let (conn, commands) = AgentConnection::test_channel();
     app.session_runtime.conn = Some(Rc::new(conn));
     app.session_runtime.session_id = Some(SessionId::new("session-1"));
+    (app, commands)
+}
+
+/// A running builder with a long prompt and a child Read, a completed reviewer, a stopped search.
+fn app_with_subagents() -> (App, CommandReceiver) {
+    let (mut app, commands) = connected_app();
+    let prompt = (1..=10)
+        .map(|n| format!("Prompt line {n} explains the work in enough words to wrap."))
+        .collect::<Vec<_>>()
+        .join(" ");
+    agent_call(
+        &mut app,
+        "parent-builder",
+        serde_json::json!({ "name": "builder", "model": "opus", "isolation": "worktree", "prompt": prompt }),
+        "/src/agents.rs",
+    );
+    agent_call(
+        &mut app,
+        "parent-reviewer",
+        serde_json::json!({ "name": "reviewer", "prompt": "Review the parser." }),
+        "/src/parser.rs",
+    );
+    let mut builder = subagent(
+        "agent-1",
+        "Build the inspector",
+        TaskStatus::InProgress,
+        serde_json::json!({
+            "model_display": "Opus 5.5",
+            "usage": { "tool_uses": 12, "total_tokens": 34200, "duration_ms": 62000 },
+        }),
+    );
+    builder.source_tool_call_id = Some("parent-builder".to_owned());
+    let mut reviewer = subagent(
+        "agent-2",
+        "Review the parser",
+        TaskStatus::Completed,
+        serde_json::json!({ "model_display": "Sonnet 5.5", "terminal_status": "completed", "summary": "Parser looks fine" }),
+    );
+    reviewer.source_tool_call_id = Some("parent-reviewer".to_owned());
     app.sdk_inventory.tasks = vec![
-        subagent(
-            "agent-1",
-            "Run the slow check",
-            TaskStatus::InProgress,
-            serde_json::json!({ "subagent_type": "general-purpose" }),
-        ),
+        builder,
         TaskItem::new("shell-1", "Background shell", TaskStatus::InProgress),
-        subagent(
-            "agent-2",
-            "Review the parser",
-            TaskStatus::Completed,
-            serde_json::json!({ "subagent_type": "reviewer", "terminal_status": "completed", "summary": "Parser looks fine" }),
-        ),
+        reviewer,
         subagent(
             "agent-3",
             "Abandoned search",
@@ -71,41 +126,97 @@ fn app_with_subagents() -> (App, CommandReceiver) {
 }
 
 #[test]
-fn rows_show_each_subagents_status_type_transcript_and_summary_under_their_own_title() {
+fn the_selected_agent_shows_its_model_choice_usage_activity_prompt_and_transcript_below_the_list() {
     let (mut app, _commands) = app_with_subagents();
     apply_transcript_list(&mut app, vec!["agent-2".to_owned()], None);
-    handle_key(&mut app, KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+    press(&mut app, KeyCode::Char('s'));
     let lines = screen(&mut app, 80, 24);
 
-    let (title, title_line) = row_with(&lines, "Subagents");
+    let (title, title_line) = row_with(&lines, "Agents");
     assert!(title_line.contains("1/3"), "{title_line}");
-    assert!(title_line.contains("1 running"), "a stopping subagent still runs: {title_line}");
+    assert!(title_line.contains("1 running"), "a stopping agent still runs: {title_line}");
+    assert!(!lines.iter().any(|line| line.contains("Background shell")), "only subagents");
+
+    let (builder, builder_line) = row_with(&lines, "builder");
+    assert!(builder > title);
+    assert!(builder_line.contains('›') && builder_line.contains("Opus 5.5"), "{builder_line}");
+    let (reviewer, reviewer_line) = row_with(&lines, "reviewer");
+    assert!(reviewer > builder && !reviewer_line.contains('›'), "{reviewer_line}");
+    assert!(reviewer_line.contains('✓') && reviewer_line.contains("Sonnet 5.5"), "{reviewer_line}");
+
+    // The details follow the list and describe the selected builder only.
+    let (header, header_line) = row_with(&lines, " stopping ");
+    assert!(header > reviewer + 1, "details sit below the list:\n{}", lines.join("\n"));
+    assert!(header_line.contains("Build the inspector"), "{header_line}");
+    assert!(header_line.contains("1m02s"), "{header_line}");
     assert!(
-        !lines.iter().any(|line| line.contains("Background shell")),
-        "only subagents are listed"
+        lines[header + 1].contains("builder · Opus 5.5 · asked for opus · isolated worktree"),
+        "{}",
+        lines[header + 1]
     );
-
-    let (running, running_line) = row_with(&lines, "Run the slow check");
-    assert!(running > title);
-    assert!(running_line.contains('›'), "the first row is selected: {running_line}");
-    assert!(running_line.contains("stopping"), "{running_line}");
-    assert!(lines[running + 1].contains("general-purpose"));
-    assert!(lines[running + 1].contains("no transcript"));
-
-    let (done, done_line) = row_with(&lines, "Review the parser");
-    assert!(done_line.contains("completed") && !done_line.contains('›'), "{done_line}");
-    assert!(lines[done + 1].contains("reviewer") && lines[done + 1].contains("· transcript"));
-    assert!(lines[done + 2].contains("Parser looks fine"));
-
-    let (_, stopped_line) = row_with(&lines, "Abandoned search");
-    assert!(stopped_line.contains("stopped"), "{stopped_line}");
+    assert!(lines[header + 2].contains("12 tools · 34.2k tokens"), "{}", lines[header + 2]);
+    let (_, transcript) = row_with(&lines, "Transcript");
+    assert!(transcript.contains("not saved yet"), "{transcript}");
+    let (_, now) = row_with(&lines, "Now");
+    assert!(now.contains("Read agents.rs"), "{now}");
+    let (recent, recent_line) = row_with(&lines, "Recent");
+    assert!(recent_line.contains("Read agents.rs"), "{recent_line}");
+    assert!(
+        !lines[header..].iter().any(|line| line.contains("parser.rs")),
+        "another agent's tools"
+    );
+    let (prompt, prompt_line) = row_with(&lines, "Prompt");
+    assert!(prompt > recent && prompt_line.contains("Prompt line 1"), "{prompt_line}");
 
     let (hint_row, _) = row_with(&lines, "Up/Down select");
-    assert!(hint_row > running, "the hint row follows the list");
+    assert!(hint_row > prompt, "the hint row follows the details");
     let hint = lines[hint_row..].join(" ");
-    for key in ["Enter transcript", "s stop", "r re-check transcripts", "Esc", "close"] {
+    for key in ["Enter transcript", "s stop", "r refresh", "Esc", "close"] {
         assert!(hint.contains(key), "{hint}");
     }
+
+    press(&mut app, KeyCode::Down);
+    let lines = screen(&mut app, 80, 24);
+    let (_, header_line) = row_with(&lines, " completed ");
+    assert!(header_line.contains("Review the parser"), "{header_line}");
+    let (_, transcript) = row_with(&lines, "Transcript");
+    assert!(transcript.contains("saved · Enter to read"), "{transcript}");
+    let (_, recent_line) = row_with(&lines, "Recent");
+    assert!(recent_line.contains("Read parser.rs"), "{recent_line}");
+}
+
+#[test]
+fn wide_screens_put_the_details_beside_the_list() {
+    let (mut app, _commands) = app_with_subagents();
+    let lines = screen(&mut app, 140, 30);
+    let (row, builder_line) = row_with(&lines, "› ● builder");
+    let header_column = builder_line.find("Build the inspector").expect("details beside the row");
+    assert!(header_column > 60, "{builder_line}");
+    assert!(lines[row + 1].contains("reviewer"), "{}", lines[row + 1]);
+    assert!(lines[row + 1].contains("asked for opus"), "{}", lines[row + 1]);
+}
+
+#[test]
+fn a_short_screen_keeps_the_list_and_scrolls_the_details() {
+    let (mut app, _commands) = app_with_subagents();
+    let lines = screen(&mut app, 80, 14);
+    row_with(&lines, "› ● builder");
+    row_with(&lines, "builder · Opus 5.5");
+    assert!(!lines.iter().any(|line| line.contains("Prompt line 1")), "{}", lines.join("\n"));
+
+    press(&mut app, KeyCode::PageDown);
+    let scrolled = screen(&mut app, 80, 14);
+    row_with(&scrolled, "› ● builder");
+    row_with(&scrolled, "Prompt line");
+    assert!(!scrolled.iter().any(|line| line.contains("builder · Opus 5.5")));
+
+    // The offset is clamped to the details, so one PageUp returns to the top.
+    for _ in 0..20 {
+        press(&mut app, KeyCode::PageDown);
+    }
+    screen(&mut app, 80, 14);
+    press(&mut app, KeyCode::PageUp);
+    row_with(&screen(&mut app, 80, 14), "builder · Opus 5.5");
 }
 
 #[test]
@@ -125,9 +236,9 @@ fn transcript_replaces_the_list_in_the_same_screen_and_scrolls() {
     });
 
     let lines = screen(&mut app, 60, 20);
-    let (_, title) = row_with(&lines, "Subagents");
+    let (_, title) = row_with(&lines, "Agents ›");
     assert!(title.contains("Review the parser"), "{title}");
-    assert!(!lines.iter().any(|line| line.contains("Run the slow check")), "the list is replaced");
+    assert!(!lines.iter().any(|line| line.contains("Build the inspector")), "the list is replaced");
     let (prompt, _) = row_with(&lines, "Prompt");
     assert!(lines[prompt + 1].contains("Inspect the parser"));
     row_with(&lines, "• ls parser");
@@ -135,13 +246,13 @@ fn transcript_replaces_the_list_in_the_same_screen_and_scrolls() {
     assert!(hint.contains("Up/Down scroll"), "{hint}");
 
     for _ in 0..200 {
-        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        press(&mut app, KeyCode::Down);
     }
     let bottom = screen(&mut app, 60, 20);
     row_with(&bottom, "finding 30");
     assert!(!bottom.iter().any(|line| line.contains("Inspect the parser")));
     // Scrolling past the end stops at the last page, so one Up moves back.
-    handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    press(&mut app, KeyCode::Up);
     assert_ne!(screen(&mut app, 60, 20), bottom);
 }
 

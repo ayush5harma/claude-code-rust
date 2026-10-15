@@ -1,30 +1,37 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! The `/agents` screen: the active session's subagents and one saved transcript.
+//! The `/agents` screen: the active session's subagents, the selected agent's
+//! details, and one saved transcript.
 
+use super::agent_rows::{
+    AgentColumns, AgentRow, elapsed_text, render_agent_row, session_agent_rows, token_text,
+    tool_activity,
+};
 use super::config::common::{
     badge_span, help_style, hint_text_with_escape, position_counter, render_message,
-    selection_line, selection_style, title_style, wrapped_height,
+    selection_line, title_style, wrapped_height,
 };
 use super::theme;
 use crate::agent::types::SubagentMessageRole;
 use crate::app::App;
-use crate::app::agents::{
-    NoticeKind, SubagentRow, SubagentStatus, TranscriptView, running_subagent_count, subagent_rows,
-};
+use crate::app::agents::{NoticeKind, SubagentStatus, TranscriptView};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 
-const TITLE: &str = "Subagents";
+const TITLE: &str = "Agents";
+/// Below this width the details sit under the list instead of beside it.
+const SIDE_BY_SIDE_MIN_WIDTH: u16 = 110;
+const DETAIL_LABEL_WIDTH: usize = 12;
+const PROMPT_PREVIEW_LINES: usize = 6;
 
 pub(crate) fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     if area.width < 30 || area.height < 8 {
         frame.render_widget(
-            Paragraph::new("Window too small. Resize to view subagents.\nEsc close")
+            Paragraph::new("Window too small. Resize to view agents.\nEsc close")
                 .wrap(Wrap { trim: false }),
             area,
         );
@@ -49,7 +56,8 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App) {
     if app.agents.transcript.is_some() {
         render_transcript(frame, chunks[0], chunks[2], app);
     } else {
-        render_list(frame, chunks[0], chunks[2], app);
+        let scroll = render_agents(frame, chunks[0], chunks[2], app);
+        app.agents.detail_scroll = scroll;
     }
     if let Some(notice) = notice {
         frame.render_widget(Paragraph::new(notice).wrap(Wrap { trim: false }), chunks[3]);
@@ -68,8 +76,9 @@ fn notice_line(app: &App) -> Option<Line<'static>> {
         };
         return Some(Line::styled(notice.text.clone(), Style::default().fg(color)));
     }
-    (app.agents.listing && app.agents.transcript.is_none())
-        .then(|| Line::styled("Checking saved transcripts...", Style::default().fg(theme::tertiary())))
+    (app.agents.listing && app.agents.transcript.is_none()).then(|| {
+        Line::styled("Checking saved transcripts...", Style::default().fg(theme::tertiary()))
+    })
 }
 
 fn hint(app: &App, width: u16) -> String {
@@ -81,23 +90,27 @@ fn hint(app: &App, width: u16) -> String {
         );
     }
     hint_text_with_escape(
-        vec!["Up/Down select", "Enter transcript", "s stop", "r re-check transcripts"],
+        vec!["Up/Down select", "Enter transcript", "s stop", "r refresh", "PgUp/PgDn details"],
         width,
         "Esc close",
     )
 }
 
-fn render_list(frame: &mut Frame, title_area: Rect, body: Rect, app: &App) {
-    let rows = subagent_rows(app);
+/// Draws the list and the selected agent's details; returns the details' clamped scroll.
+fn render_agents(frame: &mut Frame, title_area: Rect, body: Rect, app: &App) -> u16 {
+    let rows = session_agent_rows(app);
     let selected = app.agents.selected_index(&rows);
     let mut title = vec![
         Span::styled(TITLE, title_style().fg(theme::accent())),
         Span::raw("  "),
         position_counter(selected, rows.len()),
     ];
-    let running = running_subagent_count(app);
+    let running = rows.iter().filter(|row| row.status.is_running()).count();
     if running > 0 {
-        title.push(Span::styled(format!("  {running} running"), Style::default().fg(theme::tertiary())));
+        title.push(Span::styled(
+            format!("  {running} running"),
+            Style::default().fg(theme::tertiary()),
+        ));
     }
     frame.render_widget(Paragraph::new(Line::from(title)), title_area);
     if app.session_runtime.session_id.is_none() {
@@ -107,23 +120,65 @@ fn render_list(frame: &mut Frame, title_area: Rect, body: Rect, app: &App) {
             "No active session",
             "Start or resume a session to see its subagents.",
         );
-        return;
+        return 0;
     }
-    if rows.is_empty() {
+    let Some(row) = rows.get(selected) else {
         render_message(
             frame,
             body,
             "No subagents yet",
             "Subagents this session starts appear here with their live status.",
         );
-        return;
+        return 0;
+    };
+    let (list_area, detail_area) = split_body(body, rows.len());
+    render_list(frame, list_area, &rows, selected);
+
+    let details = Text::from(detail_lines(app, row, detail_area.width));
+    let total =
+        Paragraph::new(details.clone()).wrap(Wrap { trim: false }).line_count(detail_area.width);
+    let max_scroll =
+        u16::try_from(total.saturating_sub(usize::from(detail_area.height))).unwrap_or(u16::MAX);
+    let scroll = app.agents.detail_scroll.min(max_scroll);
+    frame.render_widget(
+        Paragraph::new(details).wrap(Wrap { trim: false }).scroll((scroll, 0)),
+        detail_area,
+    );
+    scroll
+}
+
+/// Beside each other when wide; otherwise the list takes at most a third of
+/// the height and the details fill the rest.
+fn split_body(body: Rect, row_count: usize) -> (Rect, Rect) {
+    if body.width >= SIDE_BY_SIDE_MIN_WIDTH {
+        let panes = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(45), Constraint::Length(2), Constraint::Min(0)])
+            .split(body);
+        return (panes[0], panes[2]);
     }
-    let items = rows.iter().enumerate().map(|(index, row)| {
-        let is_selected = index == selected;
-        ListItem::new(row_lines(app, row, is_selected)).style(selection_style(is_selected))
-    });
-    let mut state = ListState::default().with_selected(Some(selected));
-    frame.render_stateful_widget(List::new(items).highlight_symbol(""), body, &mut state);
+    let list_height = u16::try_from(row_count).unwrap_or(u16::MAX).min((body.height / 3).max(3));
+    let panes = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(list_height), Constraint::Length(1), Constraint::Min(0)])
+        .split(body);
+    (panes[0], panes[2])
+}
+
+fn render_list(frame: &mut Frame, area: Rect, rows: &[AgentRow<'_>], selected: usize) {
+    let columns = AgentColumns::for_rows(rows);
+    let offset = selected.saturating_sub(usize::from(area.height.saturating_sub(1)));
+    let lines: Vec<Line<'static>> = rows
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(usize::from(area.height))
+        .map(|(index, row)| {
+            let line = render_agent_row(row, area.width.saturating_sub(2), &columns, false);
+            selection_line(line, index == selected)
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn status_badge(status: SubagentStatus) -> Span<'static> {
@@ -138,33 +193,97 @@ fn status_badge(status: SubagentStatus) -> Span<'static> {
     badge_span(status.label(), tone)
 }
 
-fn row_lines(app: &App, row: &SubagentRow<'_>, selected: bool) -> Vec<Line<'static>> {
-    let dim = Style::default().fg(theme::tertiary());
-    let mut details = Vec::new();
-    if let Some(kind) = row.subagent_type() {
-        details.push(kind.to_owned());
+fn labeled(label: &str, value: impl Into<String>) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("{label:<DETAIL_LABEL_WIDTH$}"),
+            Style::default().fg(theme::tertiary()),
+        ),
+        Span::styled(value.into(), Style::default().fg(theme::label())),
+    ])
+}
+
+fn continuation(value: impl Into<String>) -> Line<'static> {
+    labeled("", value)
+}
+
+/// The selected agent: identity and model choice, usage, transcript, activity and prompt.
+fn detail_lines(app: &App, row: &AgentRow<'_>, width: u16) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(vec![
+        Span::styled(row.task.subject.clone(), title_style()),
+        Span::raw("  "),
+        status_badge(row.status),
+        Span::styled(
+            format!("  {}", elapsed_text(row.elapsed_ms)),
+            Style::default().fg(theme::tertiary()),
+        ),
+    ])];
+    let mut identity = vec![row.name.to_owned()];
+    if !row.model.is_empty() {
+        identity.push(row.model.to_owned());
     }
-    match app.agents.has_transcript(&row.task.task_id) {
-        Some(true) => details.push("transcript".to_owned()),
-        Some(false) => details.push("no transcript".to_owned()),
-        None => {}
+    if let Some(alias) = row.requested_model {
+        identity.push(format!("asked for {alias}"));
+    } else if row.definition_model.is_some() {
+        identity.push("agent default".to_owned());
     }
-    let mut lines = vec![selection_line(
-        Line::from(vec![
-            Span::styled(row.task.subject.clone(), title_style()),
-            Span::raw("  "),
-            status_badge(row.status),
-        ]),
-        selected,
-    )];
-    if !details.is_empty() {
-        lines.push(Line::styled(format!("  {}", details.join(" · ")), dim));
+    if row.raw_input.and_then(|input| input.get("isolation")).and_then(serde_json::Value::as_str)
+        == Some("worktree")
+    {
+        identity.push("isolated worktree".to_owned());
     }
-    if let Some(summary) = row.summary() {
-        lines.push(Line::styled(format!("  {summary}"), Style::default().fg(theme::secondary())));
+    lines.push(Line::styled(identity.join(" · "), Style::default().fg(theme::secondary())));
+    let mut metrics = Vec::new();
+    if let Some(tools) = row.tools {
+        metrics.push(format!("{tools} tools"));
+    }
+    if let Some(tokens) = row.tokens {
+        metrics.push(format!("{} tokens", token_text(tokens)));
+    }
+    if !metrics.is_empty() {
+        lines.push(Line::styled(metrics.join(" · "), Style::default().fg(theme::secondary())));
     }
     lines.push(Line::default());
+    lines.push(labeled("Transcript", transcript_state(app, &row.task.task_id)));
+    if !row.now.is_empty() {
+        lines.push(labeled("Now", row.now.clone().into_owned()));
+    }
+    if let Some(parent) = row.parent_id {
+        for (index, tool) in app.recent_child_tools(parent).enumerate() {
+            let activity = tool_activity(tool).into_owned();
+            lines.push(if index == 0 {
+                labeled("Recent", activity)
+            } else {
+                continuation(activity)
+            });
+        }
+    }
+    if let Some(prompt) =
+        row.raw_input.and_then(|input| input.get("prompt")).and_then(serde_json::Value::as_str)
+    {
+        let available = usize::from(width).saturating_sub(DETAIL_LABEL_WIDTH).max(1);
+        let wrapped = crate::ui::wrap::wrap_plain(prompt, available);
+        for (index, line) in wrapped.iter().take(PROMPT_PREVIEW_LINES).enumerate() {
+            lines.push(if index == 0 {
+                labeled("Prompt", line.clone())
+            } else {
+                continuation(line.clone())
+            });
+        }
+        if wrapped.len() > PROMPT_PREVIEW_LINES {
+            lines.push(continuation("..."));
+        }
+    }
     lines
+}
+
+fn transcript_state(app: &App, task_id: &str) -> &'static str {
+    match app.agents.has_transcript(task_id) {
+        Some(true) => "saved · Enter to read",
+        Some(false) => "not saved yet · r to check again",
+        None if app.agents.listing => "checking...",
+        None => "unknown · r to check",
+    }
 }
 
 fn render_transcript(frame: &mut Frame, title_area: Rect, body: Rect, app: &mut App) {

@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! The `/agents` view of the active session's subagents.
+//! The `/agents` view of the active session's subagents: the one inspector the
+//! footer shelf and the Ctrl+T list lead to.
 //!
 //! Rows and their live status come from the task lifecycle the bridge
-//! normalizes into `sdk_inventory.tasks`. This module holds only view state and
+//! normalizes into `sdk_inventory.tasks`, projected once by
+//! `ui::agent_rows::session_agent_rows`. This module holds only view state and
 //! the outcome of its own requests: which saved transcripts the SDK lists, the
 //! transcript being read, and the stop requests it has sent.
 
@@ -11,11 +13,12 @@ use crate::agent::events::ClientEvent;
 use crate::agent::model::{TaskItem, TaskStatus};
 use crate::agent::types::SubagentMessage;
 use crate::app::App;
+use crate::ui::agent_rows::{AgentRow, session_agent_rows};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashSet;
 
 const SUBAGENT_TASK_TYPE: &str = "local_agent";
-const TRANSCRIPT_PAGE_ROWS: u16 = 10;
+const PAGE_ROWS: u16 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SubagentStatus {
@@ -38,6 +41,11 @@ impl SubagentStatus {
             Self::Failed => "failed",
             Self::Stopped => "stopped",
         }
+    }
+
+    /// Running by the lifecycle, whether or not a stop was requested.
+    pub(crate) const fn is_running(self) -> bool {
+        matches!(self, Self::Running | Self::Stopping)
     }
 }
 
@@ -64,6 +72,7 @@ pub(crate) struct TranscriptView {
 
 #[derive(Debug, Default)]
 pub(crate) struct AgentsView {
+    /// The agent chosen in the Ctrl+T list or this view; the first row when `None`.
     pub selected_task_id: Option<String>,
     /// Ids `listSubagents()` returned; `None` until the first answer.
     pub transcript_ids: Option<HashSet<String>>,
@@ -71,36 +80,26 @@ pub(crate) struct AgentsView {
     stop_requested: HashSet<String>,
     pub transcript: Option<TranscriptView>,
     pub notice: Option<Notice>,
-}
-
-pub(crate) struct SubagentRow<'a> {
-    pub task: &'a TaskItem,
-    pub status: SubagentStatus,
-}
-
-impl SubagentRow<'_> {
-    pub(crate) fn subagent_type(&self) -> Option<&str> {
-        metadata_str(self.task, "subagent_type")
-    }
-
-    pub(crate) fn summary(&self) -> Option<&str> {
-        // The SDK often repeats the description as the summary.
-        metadata_str(self.task, "summary")
-            .filter(|summary| !summary.trim().is_empty() && *summary != self.task.subject)
-    }
+    /// Scroll offset of the selected agent's details.
+    pub detail_scroll: u16,
 }
 
 fn metadata_str<'a>(task: &'a TaskItem, key: &str) -> Option<&'a str> {
     task.metadata.as_ref()?.as_object()?.get(key)?.as_str()
 }
 
+/// The one rule for which tasks are subagents; the bridge's stop check uses the same.
 pub(crate) fn is_subagent_task(task: &TaskItem) -> bool {
     metadata_str(task, "task_type") == Some(SUBAGENT_TASK_TYPE)
 }
 
-fn lifecycle_status(task: &TaskItem) -> SubagentStatus {
+/// A subagent's status: the lifecycle's, shown as stopping once this view asked it to stop.
+pub(crate) fn subagent_status(app: &App, task: &TaskItem) -> SubagentStatus {
     match task.status {
         TaskStatus::Pending => SubagentStatus::Pending,
+        TaskStatus::InProgress if app.agents.stop_requested.contains(&task.task_id) => {
+            SubagentStatus::Stopping
+        }
         TaskStatus::InProgress => SubagentStatus::Running,
         TaskStatus::Completed => match metadata_str(task, "terminal_status") {
             Some("failed") => SubagentStatus::Failed,
@@ -110,49 +109,17 @@ fn lifecycle_status(task: &TaskItem) -> SubagentStatus {
     }
 }
 
-/// The session's subagent rows in lifecycle order, one per task id.
-pub(crate) fn subagent_rows(app: &App) -> Vec<SubagentRow<'_>> {
-    app.sdk_inventory
-        .tasks
-        .iter()
-        .filter(|task| is_subagent_task(task))
-        .map(|task| {
-            let status = match lifecycle_status(task) {
-                SubagentStatus::Running if app.agents.stop_requested.contains(&task.task_id) => {
-                    SubagentStatus::Stopping
-                }
-                status => status,
-            };
-            SubagentRow { task, status }
-        })
-        .collect()
-}
-
-/// Subagents the lifecycle reports as running, including those asked to stop.
-pub(crate) fn running_subagent_count(app: &App) -> usize {
-    app.sdk_inventory
-        .tasks
-        .iter()
-        .filter(|task| is_subagent_task(task) && task.status == TaskStatus::InProgress)
-        .count()
-}
-
 impl AgentsView {
     /// A saved transcript exists only for an id the SDK listed; nothing is inferred.
     pub(crate) fn has_transcript(&self, task_id: &str) -> Option<bool> {
         self.transcript_ids.as_ref().map(|ids| ids.contains(task_id))
     }
 
-    /// The chosen row, else the first still running, else the first.
-    pub(crate) fn selected_index(&self, rows: &[SubagentRow<'_>]) -> usize {
+    /// The chosen row, else the first (running agents sort first).
+    pub(crate) fn selected_index(&self, rows: &[AgentRow<'_>]) -> usize {
         self.selected_task_id
             .as_deref()
             .and_then(|id| rows.iter().position(|row| row.task.task_id == id))
-            .or_else(|| {
-                rows.iter().position(|row| {
-                    matches!(row.status, SubagentStatus::Running | SubagentStatus::Stopping)
-                })
-            })
             .unwrap_or(0)
     }
 
@@ -174,57 +141,19 @@ fn notice(app: &mut App, kind: NoticeKind, text: impl Into<String>) {
     app.agents.notice = Some(Notice { kind, text: text.into() });
 }
 
+/// Opens the view on the first agent (Left Arrow on an empty composer, `/agents`).
 pub(crate) fn open(app: &mut App) {
     open_at(app, None);
 }
 
-/// Opens the view with `selected` chosen, or the default row when `None`.
+/// Opens the view with `selected` chosen, or the first row when `None`.
 fn open_at(app: &mut App, selected: Option<String>) {
     app.agents.transcript = None;
     app.agents.notice = None;
     app.agents.selected_task_id = selected;
+    app.agents.detail_scroll = 0;
     crate::app::view::set_fullscreen_view(app, crate::app::FullscreenView::Agents);
     request_transcript_list(app);
-}
-
-/// Keys of the Ctrl+T task list: Up/Down choose an agent, Enter inspects it in
-/// this view, and Esc or the toggle key returns to the chat.
-pub(crate) fn handle_list_key(app: &mut App, key: KeyEvent) {
-    use crate::app::keymap::{AppAction, KeyAction, KeyContext};
-    if key.code == KeyCode::Esc
-        || app.keymap.resolve_event(KeyContext::ChatInput, key).is_some_and(|binding| {
-            binding.action == KeyAction::App(AppAction::ToggleTasks)
-        })
-    {
-        crate::app::view::set_chat_surface(app);
-        return;
-    }
-    if !key.modifiers.is_empty() {
-        return;
-    }
-    let ids: Vec<String> = crate::ui::agent_rows::session_agent_rows(app)
-        .iter()
-        .map(|row| row.task.task_id.clone())
-        .collect();
-    let current = app
-        .agents
-        .selected_task_id
-        .as_ref()
-        .and_then(|id| ids.iter().position(|candidate| candidate == id))
-        .unwrap_or(0);
-    match key.code {
-        KeyCode::Up => app.agents.selected_task_id = ids.get(current.saturating_sub(1)).cloned(),
-        KeyCode::Down => {
-            let next = (current + 1).min(ids.len().saturating_sub(1));
-            app.agents.selected_task_id = ids.get(next).cloned();
-        }
-        KeyCode::Enter => {
-            if let Some(id) = ids.get(current).cloned() {
-                open_at(app, Some(id));
-            }
-        }
-        _ => {}
-    }
 }
 
 fn close(app: &mut App) {
@@ -242,8 +171,24 @@ fn request_transcript_list(app: &mut App) {
     }
 }
 
-/// Applies the bridge's answer to one of this view's requests.
+/// Applies the bridge's answer to one of this view's requests. An answer for
+/// another session arrives after a switch and describes agents no longer shown.
 pub(crate) fn apply_client_event(app: &mut App, event: ClientEvent) {
+    let (ClientEvent::SubagentsListed { session_id, .. }
+    | ClientEvent::SubagentMessagesReceived { session_id, .. }
+    | ClientEvent::SubagentStopResult { session_id, .. }) = &event
+    else {
+        tracing::warn!("client event family routed a non-subagent event to the subagent handler");
+        return;
+    };
+    if app
+        .session_runtime
+        .session_id
+        .as_ref()
+        .is_none_or(|active| active.to_string() != *session_id)
+    {
+        return;
+    }
     match event {
         ClientEvent::SubagentsListed { agent_ids, error, .. } => {
             apply_transcript_list(app, agent_ids, error);
@@ -254,11 +199,7 @@ pub(crate) fn apply_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::SubagentStopResult { task_id, error, .. } => {
             apply_stop_result(app, &task_id, error);
         }
-        _ => {
-            tracing::warn!(
-                "client event family routed a non-subagent event to the subagent handler"
-            );
-        }
+        _ => {}
     }
 }
 
@@ -293,9 +234,9 @@ fn apply_stop_result(app: &mut App, task_id: &str, error: Option<String>) {
             notice(app, NoticeKind::Error, format!("Could not stop the subagent: {error}"));
         }
         // The lifecycle can report the outcome before the acknowledgement.
-        None if subagent_rows(app)
-            .iter()
-            .any(|row| row.task.task_id == task_id && row.status == SubagentStatus::Stopping) =>
+        None if app.sdk_inventory.tasks.iter().any(|task| {
+            task.task_id == task_id && subagent_status(app, task) == SubagentStatus::Stopping
+        }) =>
         {
             notice(app, NoticeKind::Info, "Stop requested. The status changes when it stops.");
         }
@@ -304,19 +245,23 @@ fn apply_stop_result(app: &mut App, task_id: &str, error: Option<String>) {
 }
 
 fn selected_row(app: &App) -> Option<(String, SubagentStatus)> {
-    let rows = subagent_rows(app);
+    let rows = session_agent_rows(app);
     let row = rows.get(app.agents.selected_index(&rows))?;
     Some((row.task.task_id.clone(), row.status))
 }
 
+/// Moves the shared selection; the Ctrl+T list and this view follow the same rows.
 fn move_selection(app: &mut App, down: bool) {
-    let rows = subagent_rows(app);
+    let rows = session_agent_rows(app);
     if rows.is_empty() {
         return;
     }
     let current = app.agents.selected_index(&rows);
     let next = if down { (current + 1).min(rows.len() - 1) } else { current.saturating_sub(1) };
     let id = rows[next].task.task_id.clone();
+    if app.agents.selected_task_id.as_deref() != Some(id.as_str()) {
+        app.agents.detail_scroll = 0;
+    }
     app.agents.selected_task_id = Some(id);
 }
 
@@ -350,7 +295,7 @@ fn request_stop(app: &mut App) {
         }
     }
     let Some((session_id, conn)) = active_session(app) else { return };
-    // Keep the row selected after it stops running.
+    // Keep the row selected after it stops running and sorts below the running rows.
     app.agents.selected_task_id = Some(task_id.clone());
     match conn.stop_subagent(session_id, task_id.clone()) {
         Ok(()) => {
@@ -363,6 +308,34 @@ fn request_stop(app: &mut App) {
     }
 }
 
+/// Keys of the Ctrl+T task list: Up/Down choose an agent, Enter inspects it in
+/// this view, and Esc or the toggle key returns to the chat.
+pub(crate) fn handle_list_key(app: &mut App, key: KeyEvent) {
+    use crate::app::keymap::{AppAction, KeyAction, KeyContext};
+    if key.code == KeyCode::Esc
+        || app
+            .keymap
+            .resolve_event(KeyContext::ChatInput, key)
+            .is_some_and(|binding| binding.action == KeyAction::App(AppAction::ToggleTasks))
+    {
+        crate::app::view::set_chat_surface(app);
+        return;
+    }
+    if !key.modifiers.is_empty() {
+        return;
+    }
+    match key.code {
+        KeyCode::Up => move_selection(app, false),
+        KeyCode::Down => move_selection(app, true),
+        KeyCode::Enter => {
+            if let Some((task_id, _)) = selected_row(app) {
+                open_at(app, Some(task_id));
+            }
+        }
+        _ => {}
+    }
+}
+
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
     if !matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT) {
         return;
@@ -372,12 +345,8 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
             KeyCode::Esc | KeyCode::Left => app.agents.transcript = None,
             KeyCode::Up => transcript.scroll = transcript.scroll.saturating_sub(1),
             KeyCode::Down => transcript.scroll = transcript.scroll.saturating_add(1),
-            KeyCode::PageUp => {
-                transcript.scroll = transcript.scroll.saturating_sub(TRANSCRIPT_PAGE_ROWS);
-            }
-            KeyCode::PageDown => {
-                transcript.scroll = transcript.scroll.saturating_add(TRANSCRIPT_PAGE_ROWS);
-            }
+            KeyCode::PageUp => transcript.scroll = transcript.scroll.saturating_sub(PAGE_ROWS),
+            KeyCode::PageDown => transcript.scroll = transcript.scroll.saturating_add(PAGE_ROWS),
             _ => {}
         }
         return;
@@ -386,6 +355,12 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Esc => close(app),
         KeyCode::Up => move_selection(app, false),
         KeyCode::Down => move_selection(app, true),
+        KeyCode::PageUp => {
+            app.agents.detail_scroll = app.agents.detail_scroll.saturating_sub(PAGE_ROWS);
+        }
+        KeyCode::PageDown => {
+            app.agents.detail_scroll = app.agents.detail_scroll.saturating_add(PAGE_ROWS);
+        }
         KeyCode::Enter => open_transcript(app),
         KeyCode::Char('s') => request_stop(app),
         KeyCode::Char('r') => request_transcript_list(app),

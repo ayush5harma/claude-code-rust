@@ -162,8 +162,7 @@ fn refresh_task_tool_displays_with_previous(
     previous_tasks: &[model::TaskItem],
 ) -> bool {
     let is_running = |task: &&model::TaskItem| {
-        task.status == model::TaskStatus::InProgress
-            && crate::app::agents::is_subagent_task(task)
+        task.status == model::TaskStatus::InProgress && crate::app::agents::is_subagent_task(task)
     };
     let running = app.sdk_inventory.tasks.iter().any(|t| is_running(&t));
     if running && !previous_tasks.iter().any(|t| is_running(&t)) {
