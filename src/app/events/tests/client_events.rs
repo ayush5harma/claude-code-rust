@@ -2159,3 +2159,18 @@ fn slash_error_for_a_pending_reload_is_noticed_and_releases_it() {
     };
     assert_eq!(notice.severity, SystemSeverity::Error);
 }
+
+#[test]
+fn skills_and_styles_reload_does_not_double_the_full_stop_of_an_sdk_message() {
+    let (_app, _severity, text) = reload_answered(
+        reloaded(&["deploy"]),
+        crate::agent::types::ReloadOutcome::Failed {
+            message: "style directory unreadable.".to_owned(),
+        },
+    );
+
+    assert_eq!(
+        text,
+        "Reloaded skills (1). Could not reload output styles: style directory unreadable."
+    );
+}

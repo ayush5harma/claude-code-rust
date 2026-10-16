@@ -8,7 +8,10 @@ use crate::app::{PendingCommandAck, SystemSeverity};
 fn reload_outcome_phrase(label: &str, outcome: &ReloadOutcome) -> String {
     match outcome {
         ReloadOutcome::Reloaded { names } => format!("Reloaded {label} ({})", names.len()),
-        ReloadOutcome::Failed { message } => format!("Could not reload {label}: {message}"),
+        // The notice adds its own full stop, so one the SDK message ends with is not doubled.
+        ReloadOutcome::Failed { message } => {
+            format!("Could not reload {label}: {}", message.trim_end_matches('.'))
+        }
         ReloadOutcome::TimedOut { after_ms } => {
             let mut phrase =
                 format!("{label} did not answer within {} s; it may still apply", after_ms / 1000);

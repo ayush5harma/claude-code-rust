@@ -22,8 +22,9 @@ import { FastModeVerificationError } from "./session_preferences.js";
 import { SessionObservations } from "./session_observations.js";
 
 const thinkingObservations = new SessionObservations();
-// Measured 2026-10-13 on a fresh session: the SDK applied reloadSkills() but never answered it.
-// An unbounded wait would leave the composer blocked for the rest of the session.
+// Each SDK reload request is given this long. Without a bound a request the SDK never answers
+// would keep the composer blocked for the rest of the session. Seen in the fork on 2026-10-13 on
+// a freshly started session (the SDK applied the reload and never acknowledged it); not seen since.
 const RELOAD_REQUEST_TIMEOUT_MS = 10_000;
 import {
   applyUltracode,

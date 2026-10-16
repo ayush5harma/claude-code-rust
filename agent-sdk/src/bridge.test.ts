@@ -1855,6 +1855,34 @@ test("reload_skills_and_styles reports an unanswered half after 10 seconds and i
   }
 });
 
+test("reload_skills_and_styles reports unanswered output styles next to skills that reloaded", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const { sessionId, events } = await runReloadSkillsAndStyles(
+      {
+        reloadSkills: async () => SKILLS_RELOADED,
+        reloadOutputStyles: () => new Promise(() => undefined),
+      },
+      () => {
+        // Styles are asked first and stay silent; skills are only asked once that bound ends.
+        mock.timers.tick(10_000);
+      },
+    );
+
+    assert.deepEqual(events, [
+      {
+        request_id: "req-reload",
+        event: "skills_and_styles_reloaded",
+        session_id: sessionId,
+        skills: { status: "reloaded", names: ["deploy", "lint"] },
+        output_styles: { status: "timed_out", after_ms: 10_000 },
+      },
+    ]);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
 test("handleReloadPluginsCommand holds cache-impacting reloads and sanitizes plugin names", async () => {
   const session = makeSessionState();
   const optionsSeen: unknown[] = [];
