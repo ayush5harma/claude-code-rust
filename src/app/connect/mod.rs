@@ -30,7 +30,6 @@ use crate::agent::events::ClientEvent;
 use crate::agent::wire::SessionLaunchSettings;
 use crate::error::AppError;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::rc::Rc;
 use tokio::sync::{mpsc, oneshot};
 
@@ -44,12 +43,6 @@ fn shorten_cwd(cwd: &std::path::Path) -> String {
         }
     }
     cwd_str
-}
-
-fn resolve_startup_cwd(cli: &Cli) -> PathBuf {
-    cli.dir
-        .clone()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
 fn extract_app_error(err: &anyhow::Error) -> Option<AppError> {
@@ -74,9 +67,11 @@ pub(crate) use session_start::{
 pub(crate) const CLIENT_EVENT_QUEUE_CAPACITY: usize = super::READY_EVENT_DRAIN_ROUNDS * 4;
 
 /// Create the `App` struct in `Connecting` state and load shared settings state.
+///
+/// `session_config` is the resolved [`Cli::resolve_session_config`], kept for every session.
 #[allow(clippy::too_many_lines)]
-pub fn create_app(cli: &Cli) -> App {
-    let cwd = resolve_startup_cwd(cli);
+pub fn create_app(cli: &Cli, session_config: crate::agent::wire::SessionConfig) -> App {
+    let cwd = cli.startup_cwd();
 
     let (event_tx, event_rx) = mpsc::channel(CLIENT_EVENT_QUEUE_CAPACITY);
     let (file_index_event_tx, file_index_event_rx) = super::file_index::event_channel();
@@ -185,7 +180,7 @@ pub fn create_app(cli: &Cli) -> App {
         history_retention: HistoryRetentionPolicy::default(),
         history_retention_stats: HistoryRetentionStats::default(),
         cache_metrics: CacheMetrics::default(),
-        startup: StartupState::from_cli(cli),
+        startup: StartupState::from_cli(cli).with_session_config(session_config),
         bridge_task: None,
     };
 

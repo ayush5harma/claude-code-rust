@@ -11,9 +11,11 @@ pub mod install_method;
 mod json_file;
 pub mod logging;
 pub mod permission_mode;
+pub mod session_config;
 pub mod ui;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+pub use session_config::SessionConfigArgs;
 
 #[derive(Clone, Debug, ValueEnum, PartialEq, Eq)]
 pub enum DiagnosticsPreset {
@@ -76,6 +78,9 @@ pub struct Cli {
     #[command(flatten)]
     pub session_options: SessionOptions,
 
+    #[command(flatten)]
+    pub session_config: SessionConfigArgs,
+
     /// Disable startup update checks.
     #[arg(long)]
     pub no_update_check: bool,
@@ -133,6 +138,25 @@ pub struct SessionOptions {
     /// Main-thread agent to use for this session.
     #[arg(long, global = true, value_name = "NAME", value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub agent: Option<String>,
+
+    /// Name a new session, or rename the one being resumed.
+    #[arg(long, short = 'n', global = true, value_name = "TEXT", value_parser = parse_session_name)]
+    pub name: Option<String>,
+
+    /// Resume under a new session ID, leaving the original unchanged.
+    #[arg(long, global = true)]
+    pub fork_session: bool,
+}
+
+/// Session names are shown in the terminal, so control characters are dropped, as the title
+/// converter does for titles the SDK reports.
+fn parse_session_name(value: &str) -> Result<String, String> {
+    let name: String = value.chars().filter(|ch| !ch.is_control()).collect();
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("the session name must contain visible characters".to_owned());
+    }
+    Ok(name.to_owned())
 }
 
 impl Cli {
@@ -141,7 +165,10 @@ impl Cli {
         let has_session_options = self.session_options.model.is_some()
             || self.session_options.effort.is_some()
             || self.session_options.permission_mode.is_some()
-            || self.session_options.agent.is_some();
+            || self.session_options.agent.is_some()
+            || self.session_options.name.is_some()
+            || self.session_options.fork_session
+            || self.session_config.is_set();
         let conflict = match &self.command {
             Some(Command::Resume { .. }) => {
                 self.resume.is_some() || self.continue_session || self.prompt.is_some()
@@ -160,8 +187,31 @@ impl Cli {
                 "interactive startup arguments cannot be combined with this subcommand",
             ));
         }
+        if self.session_options.fork_session && !self.startup_launch().resume_or_pick() {
+            return Err(Self::command().error(
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "--fork-session requires --resume, --continue or the resume subcommand",
+            ));
+        }
         Ok(())
     }
+
+    /// The session working directory: `--dir`, or the current directory without it.
+    #[must_use]
+    pub fn startup_cwd(&self) -> std::path::PathBuf {
+        self.dir.clone().unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        })
+    }
+
+    /// Resolve the session configuration flags against the session working directory.
+    pub fn resolve_session_config(&self) -> Result<agent::wire::SessionConfig, clap::Error> {
+        use clap::CommandFactory;
+        self.session_config.resolve(&self.startup_cwd()).map_err(|message| {
+            Self::command().error(clap::error::ErrorKind::ValueValidation, message)
+        })
+    }
+
     /// Normalize both resume spellings into one startup intent.
     #[must_use]
     pub fn startup_launch(&self) -> StartupLaunch {
@@ -209,6 +259,12 @@ impl StartupLaunch {
     #[must_use]
     pub fn resume_requested(&self) -> bool {
         matches!(self, Self::ResumeSession { .. } | Self::ContinueSession)
+    }
+
+    /// Whether the launch resumes an existing session, directly or through the picker.
+    #[must_use]
+    pub fn resume_or_pick(&self) -> bool {
+        self.resume_requested() || matches!(self, Self::SessionPicker)
     }
 }
 
@@ -382,6 +438,145 @@ mod tests {
         let flag = Cli::try_parse_from(["claude-rs", "--resume", "abc-123"]).expect("flag");
         let command = Cli::try_parse_from(["claude-rs", "resume", "abc-123"]).expect("command");
         assert_eq!(flag.startup_launch(), command.startup_launch());
+    }
+
+    #[test]
+    fn system_prompt_text_and_file_are_mutually_exclusive() {
+        for args in [
+            ["claude-rs", "--system-prompt", "a", "--system-prompt-file", "p.md"],
+            ["claude-rs", "--system-prompt-file", "p.md", "--system-prompt", "a"],
+        ] {
+            let error = Cli::try_parse_from(args).expect_err("conflicting prompt spellings");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn append_system_prompt_text_and_file_are_mutually_exclusive() {
+        for args in [
+            ["claude-rs", "--append-system-prompt", "a", "--append-system-prompt-file", "a.md"],
+            ["claude-rs", "--append-system-prompt-file", "a.md", "--append-system-prompt", "a"],
+        ] {
+            let error = Cli::try_parse_from(args).expect_err("conflicting append spellings");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn replacing_and_appending_the_system_prompt_can_be_combined() {
+        let cli = Cli::try_parse_from([
+            "claude-rs",
+            "--system-prompt",
+            "a",
+            "--append-system-prompt-file",
+            "a.md",
+        ])
+        .expect("one of each pair");
+        cli.validate().expect("valid launch");
+    }
+
+    #[test]
+    fn fork_session_is_accepted_with_every_resume_spelling() {
+        let cases: &[&[&str]] = &[
+            &["claude-rs", "--resume", "--fork-session"],
+            &["claude-rs", "-r", "session-1", "--fork-session"],
+            &["claude-rs", "--continue", "--fork-session"],
+            &["claude-rs", "resume", "--fork-session"],
+            &["claude-rs", "resume", "session-1", "--fork-session"],
+        ];
+        for args in cases {
+            let cli = Cli::try_parse_from(args.iter().copied()).expect("parse");
+            cli.validate().expect("fork with a resume");
+            assert!(cli.session_options.fork_session, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn fork_session_without_a_resume_is_rejected() {
+        for args in [
+            &["claude-rs", "--fork-session"][..],
+            &["claude-rs", "--fork-session", "explain this project"][..],
+            &["claude-rs", "--fork-session", "--name", "Experiment"][..],
+        ] {
+            let cli = Cli::try_parse_from(args.iter().copied()).expect("parse");
+            let error = cli.validate().expect_err("fork needs a resume");
+            assert!(error.to_string().contains("--fork-session requires"), "{error}");
+        }
+    }
+
+    #[test]
+    fn launch_flags_belong_to_interactive_launches_only() {
+        let cases: &[&[&str]] = &[
+            &["claude-rs", "doctor", "--name", "Experiment"],
+            &["claude-rs", "doctor", "--fork-session"],
+            &["claude-rs", "logs", "--add-dir", "src"],
+            &["claude-rs", "config", "--settings", "{}"],
+            &["claude-rs", "doctor", "--mcp-config", "{\"mcpServers\":{}}"],
+            &["claude-rs", "doctor", "--strict-mcp-config"],
+            &["claude-rs", "doctor", "--append-system-prompt", "a"],
+            &["claude-rs", "doctor", "--system-prompt-file", "p.md"],
+        ];
+        for args in cases {
+            let cli = Cli::try_parse_from(args.iter().copied()).expect("parse");
+            let error = cli.validate().expect_err("launch flag with a support command");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn launch_flags_before_and_after_resume_parse_to_the_same_launch() {
+        let before = Cli::try_parse_from([
+            "claude-rs",
+            "--add-dir",
+            "src",
+            "-n",
+            "Experiment",
+            "resume",
+            "session-1",
+        ])
+        .expect("before");
+        let after = Cli::try_parse_from([
+            "claude-rs",
+            "resume",
+            "session-1",
+            "--add-dir",
+            "src",
+            "-n",
+            "Experiment",
+        ])
+        .expect("after");
+        for cli in [&before, &after] {
+            cli.validate().expect("valid launch");
+            assert_eq!(cli.session_config.add_dirs, [std::path::PathBuf::from("src")]);
+            assert_eq!(cli.session_options.name.as_deref(), Some("Experiment"));
+        }
+    }
+
+    #[test]
+    fn session_names_lose_control_characters_and_must_keep_visible_text() {
+        let cli = Cli::try_parse_from(["claude-rs", "-n", "Release\u{7} prep "]).expect("name");
+        assert_eq!(cli.session_options.name.as_deref(), Some("Release prep"));
+        for name in ["", "\u{1b}\t "] {
+            assert!(Cli::try_parse_from(["claude-rs", "--name", name]).is_err(), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn session_configuration_resolves_against_the_working_directory_option() {
+        let project = tempfile::tempdir().expect("project");
+        std::fs::create_dir(project.path().join("docs")).expect("docs");
+        let dir = project.path().to_str().expect("UTF-8 path");
+        let cli =
+            Cli::try_parse_from(["claude-rs", "-C", dir, "--add-dir", "docs"]).expect("parse");
+        let config = cli.resolve_session_config().expect("resolved");
+        assert_eq!(
+            config.additional_directories,
+            [project.path().join("docs").to_str().expect("UTF-8 path")]
+        );
+        let cli =
+            Cli::try_parse_from(["claude-rs", "-C", dir, "--add-dir", "absent"]).expect("parse");
+        let error = cli.resolve_session_config().expect_err("missing directory");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
     }
 
     #[test]
