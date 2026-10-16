@@ -100,14 +100,14 @@ async fn rapid_edits_autosave_in_order_and_escape_waits_for_the_last_write() {
             key(&mut app, KeyCode::Down, KeyModifiers::NONE);
             key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
             key(&mut app, KeyCode::Right, KeyModifiers::NONE);
-            assert_eq!(editor(&app).selected, 7);
+            assert_eq!(editor(&app).selected, 8);
             key(&mut app, KeyCode::Up, KeyModifiers::CONTROL);
-            assert_eq!(editor(&app).selected, 6);
-            assert_eq!(editor(&app).layout().fields()[6].id, FooterFieldId::Model);
+            assert_eq!(editor(&app).selected, 7);
+            assert_eq!(editor(&app).layout().fields()[7].id, FooterFieldId::Model);
             key(&mut app, KeyCode::Down, KeyModifiers::CONTROL);
             key(&mut app, KeyCode::Left, KeyModifiers::NONE);
-            assert_eq!(editor(&app).selected, 4);
-            assert_eq!(editor(&app).layout().fields()[4].side, FooterSide::Left);
+            assert_eq!(editor(&app).selected, 5);
+            assert_eq!(editor(&app).layout().fields()[5].side, FooterSide::Left);
             key(&mut app, KeyCode::Right, KeyModifiers::NONE);
             let request = commands.recv_envelope().await.expect("save command");
             let BridgeCommand::MutateSetting { mutation, .. } = request.command else {
@@ -143,7 +143,7 @@ async fn rapid_edits_autosave_in_order_and_escape_waits_for_the_last_write() {
             };
             assert_eq!(mutation.expected_revision, "r2");
             let value = mutation.value.expect("latest layout");
-            assert_eq!(value[7], json!({"id":"model","visible":false,"side":"right"}));
+            assert_eq!(value[8], json!({"id":"model","visible":false,"side":"right"}));
             key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
             assert_eq!(editor(&app).layout(), FooterLayout::default());
             key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
@@ -342,7 +342,7 @@ fn dialog_keeps_selected_field_controls_and_preview_in_their_regions() {
         assert!(!lines.iter().any(|line| line.contains("Ctrl+S")), "autosave needs no save key");
         assert!(lines.iter().any(|line| line.contains("Esc")), "cancel control");
         let title = lines.iter().find(|line| line.contains("Footer")).expect("dialog title");
-        let counter_column = title.find("8/8").expect("selected-field counter in title");
+        let counter_column = title.find("9/9").expect("selected-field counter in title");
         let right_border = title.rfind('┐').expect("dialog top-right corner");
         assert_eq!(
             title[counter_column..right_border].chars().count(),
