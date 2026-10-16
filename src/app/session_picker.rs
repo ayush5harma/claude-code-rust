@@ -4,14 +4,69 @@
 use super::connect::{begin_resume_session, begin_resume_session_at};
 use super::events::push_system_message_with_severity;
 use super::view;
-use super::{App, AppStatus, SessionPickerMutation, SystemSeverity};
+use super::{
+    App, AppStatus, RecentSessionInfo, SessionPickerMutation, SessionPickerState, SystemSeverity,
+};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-pub(crate) const MAX_PICKER_SESSIONS: usize = 10;
+/// Sessions at least this large offer a compact-first resume.
 pub(crate) const LARGE_SESSION_BYTES: u64 = 1024 * 1024;
 
+pub(crate) fn open(app: &mut App) {
+    app.session_picker = SessionPickerState::default();
+    let current = app.session_runtime.session_id.as_ref().map(ToString::to_string);
+    reconcile_selection(app, current.as_deref());
+    view::set_fullscreen_view(app, super::FullscreenView::SessionPicker);
+}
+
+pub(crate) fn session_title(session: &RecentSessionInfo) -> &str {
+    session
+        .custom_title
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| session.first_prompt.as_deref().filter(|value| !value.trim().is_empty()))
+        .or_else(|| (!session.summary.trim().is_empty()).then_some(session.summary.as_str()))
+        .unwrap_or(&session.session_id)
+}
+
+pub(crate) fn picker_sessions(app: &App) -> impl Iterator<Item = &RecentSessionInfo> {
+    let query = app.session_picker.query.trim().to_lowercase();
+    app.recent_sessions.iter().filter(move |session| {
+        query.is_empty()
+            || session_title(session).to_lowercase().contains(&query)
+            || session.session_id.to_lowercase().contains(&query)
+            || session
+                .git_branch
+                .as_deref()
+                .is_some_and(|branch| branch.to_lowercase().contains(&query))
+    })
+}
+
+pub(crate) fn selected_session(app: &App) -> Option<&RecentSessionInfo> {
+    picker_sessions(app).nth(app.session_picker.selected)
+}
+
+pub(crate) fn reconcile_selection(app: &mut App, previous_id: Option<&str>) {
+    let selected = previous_id
+        .and_then(|id| picker_sessions(app).position(|session| session.session_id == id))
+        .unwrap_or_else(|| {
+            app.session_picker.selected.min(picker_session_count(app).saturating_sub(1))
+        });
+    app.session_picker.selected = selected;
+    app.session_picker.scroll_offset = app.session_picker.scroll_offset.min(selected);
+
+    if app
+        .session_picker
+        .turn_session_id
+        .as_ref()
+        .is_some_and(|id| !app.recent_sessions.iter().any(|session| &session.session_id == id))
+    {
+        close_turn_selection(app);
+    }
+}
+
 pub(crate) fn picker_session_count(app: &App) -> usize {
-    app.recent_sessions.len().min(MAX_PICKER_SESSIONS)
+    picker_sessions(app).count()
 }
 
 pub(crate) fn startup_picker_is_loading(app: &App) -> bool {
@@ -42,17 +97,8 @@ pub(crate) fn finish_refresh(app: &mut App, request_id: Option<&str>) {
         return;
     }
     app.session_picker.list_request = None;
-    let active =
-        app.session_runtime.session_id.as_ref().map(crate::agent::model::SessionId::as_str);
-    app.session_picker.selected = active
-        .and_then(|active| {
-            app.recent_sessions
-                .iter()
-                .take(MAX_PICKER_SESSIONS)
-                .position(|session| session.session_id == active)
-        })
-        .unwrap_or(0);
-    app.session_picker.scroll_offset = 0;
+    let active = app.session_runtime.session_id.as_ref().map(ToString::to_string);
+    reconcile_selection(app, active.as_deref());
 }
 
 /// End the picker's own refresh without discarding the most recent successful listing.
@@ -75,8 +121,36 @@ pub(crate) fn picker_turn_count(app: &App) -> usize {
     app.sdk_inventory.rewind_targets.len()
 }
 
+fn edit_query(app: &mut App, edit: impl FnOnce(&mut String)) {
+    let previous = selected_session(app).map(|session| session.session_id.clone());
+    edit(&mut app.session_picker.query);
+    app.session_picker.selected = 0;
+    app.session_picker.scroll_offset = 0;
+    reconcile_selection(app, previous.as_deref());
+}
+
+/// A paste lands in the tag draft while a session action is open, and in the search otherwise.
+pub(crate) fn handle_paste(app: &mut App, text: &str) -> bool {
+    if refresh_is_pending(app) {
+        return false;
+    }
+    if app.session_picker.mutation.is_some() {
+        paste_tag(app, text);
+        return true;
+    }
+    paste_search(app, text)
+}
+
+pub(crate) fn paste_search(app: &mut App, text: &str) -> bool {
+    if startup_picker_is_loading(app) || app.session_picker.turn_session_id.is_some() {
+        return false;
+    }
+    edit_query(app, |query| query.extend(text.chars().filter(|ch| !ch.is_control())));
+    true
+}
+
 pub fn handle_key(app: &mut App, key: KeyEvent) {
-    if is_ctrl(key, 'q') {
+    if super::keys::is_ctrl_char_shortcut(key, 'q') {
         app.request_shutdown();
         return;
     }
@@ -102,59 +176,73 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    let session_count = picker_session_count(app);
-    if session_count == 0 {
-        if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
-            close_picker(app);
-        }
+    // Session actions sit on Ctrl chords and Tab, because every printable key edits the search.
+    if super::keys::is_ctrl_char_shortcut(key, 't') {
+        open_mutation(app, false);
+        return;
+    }
+    if super::keys::is_ctrl_char_shortcut(key, 'd') {
+        open_mutation(app, true);
         return;
     }
 
+    if matches!(key.code, KeyCode::Char(ch) if !ch.is_control())
+        && super::keys::is_printable_text_modifiers(key.modifiers)
+        || matches!((key.code, key.modifiers), (KeyCode::Backspace, KeyModifiers::NONE))
+    {
+        edit_query(app, |query| match key.code {
+            KeyCode::Char(ch) => query.push(ch),
+            KeyCode::Backspace => {
+                query.pop();
+            }
+            _ => {}
+        });
+        return;
+    }
+
+    let session_count = picker_session_count(app);
     match (key.code, key.modifiers) {
-        (KeyCode::Up | KeyCode::Char('k'), KeyModifiers::NONE) => {
+        (KeyCode::Up, KeyModifiers::NONE) => {
             app.session_picker.selected = app.session_picker.selected.saturating_sub(1);
         }
-        (KeyCode::Down | KeyCode::Char('j'), KeyModifiers::NONE) => {
+        (KeyCode::Down, KeyModifiers::NONE) => {
             app.session_picker.selected =
                 (app.session_picker.selected + 1).min(session_count.saturating_sub(1));
         }
         (KeyCode::Home, _) => app.session_picker.selected = 0,
         (KeyCode::End, _) => app.session_picker.selected = session_count.saturating_sub(1),
-        (KeyCode::Enter, KeyModifiers::NONE) => activate_selection(app),
-        (KeyCode::Char('c'), KeyModifiers::NONE) => activate_compact_first(app),
+        (KeyCode::Enter, KeyModifiers::NONE) => resume_selected(app, false),
+        (KeyCode::Tab, KeyModifiers::NONE) => activate_compact_first(app),
         (KeyCode::Right, KeyModifiers::NONE) => open_turn_selection(app),
-        (KeyCode::Char('t'), KeyModifiers::NONE) => open_mutation(app, false),
-        (KeyCode::Char('d'), KeyModifiers::NONE) => open_mutation(app, true),
         (KeyCode::Esc, KeyModifiers::NONE) => close_picker(app),
         _ => {}
     }
 }
 
 fn open_mutation(app: &mut App, delete: bool) {
-    let Some(session) = app.recent_sessions.get(app.session_picker.selected) else { return };
+    let Some(session) = selected_session(app) else { return };
+    let session_id = session.session_id.clone();
+    let tag = session.tag.clone();
     if delete
         && app
             .session_runtime
             .session_id
             .as_ref()
-            .is_some_and(|active| active.as_str() == session.session_id)
+            .is_some_and(|active| active.as_str() == session_id)
     {
         app.session_picker.error =
             Some("Switch sessions before deleting the active session.".to_owned());
         return;
     }
     app.session_picker.error = None;
+    let revision = app.session_picker.list_revision;
     app.session_picker.mutation = Some(Box::new(if delete {
-        SessionPickerMutation::Delete {
-            session_id: session.session_id.clone(),
-            revision: app.session_picker.list_revision,
-            request_id: None,
-        }
+        SessionPickerMutation::Delete { session_id, revision, request_id: None }
     } else {
         SessionPickerMutation::Tag {
-            session_id: session.session_id.clone(),
-            revision: app.session_picker.list_revision,
-            draft: session.tag.clone().unwrap_or_default(),
+            session_id,
+            revision,
+            draft: tag.unwrap_or_default(),
             request_id: None,
         }
     }));
@@ -175,18 +263,16 @@ fn handle_mutation_key(app: &mut App, key: KeyEvent) {
     match mutation {
         SessionPickerMutation::Tag { draft, request_id: None, .. } => {
             match (key.code, key.modifiers) {
+                (KeyCode::Char('u'), KeyModifiers::CONTROL) => draft.clear(),
                 (KeyCode::Char(ch), modifiers)
-                    if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT =>
+                    if !ch.is_control() && super::keys::is_printable_text_modifiers(modifiers) =>
                 {
                     draft.push(ch);
                 }
                 (KeyCode::Backspace, _) => {
                     draft.pop();
                 }
-                (KeyCode::Char('u'), KeyModifiers::CONTROL) => draft.clear(),
-                (KeyCode::Enter, _) => {
-                    submit_mutation(app);
-                }
+                (KeyCode::Enter, _) => submit_mutation(app),
                 _ => {}
             }
         }
@@ -202,19 +288,18 @@ fn handle_mutation_key(app: &mut App, key: KeyEvent) {
 /// A bracketed paste into the tag field lands where typed characters land (the
 /// draft has no cursor, so the end). A tag is one line: line breaks become
 /// spaces and other control characters are dropped, because a pasted newline
-/// cannot be typed here (Enter submits). The field has no length bound for
-/// typed input, so a paste has none either. Pastes are swallowed while a
-/// delete confirmation or a pending save owns the keys.
-pub(crate) fn handle_paste(app: &mut App, text: &str) -> bool {
-    let Some(mutation) = app.session_picker.mutation.as_deref_mut() else { return false };
-    if let SessionPickerMutation::Tag { draft, request_id: None, .. } = mutation {
+/// cannot be typed here (Enter submits). Pastes are swallowed while a delete
+/// confirmation or a pending save owns the keys.
+fn paste_tag(app: &mut App, text: &str) {
+    if let Some(SessionPickerMutation::Tag { draft, request_id: None, .. }) =
+        app.session_picker.mutation.as_deref_mut()
+    {
         draft.extend(text.replace("\r\n", "\n").chars().filter_map(|pasted| match pasted {
             '\n' | '\r' => Some(' '),
             control if control.is_control() => None,
             printable => Some(printable),
         }));
     }
-    true
 }
 
 fn submit_mutation(app: &mut App) {
@@ -260,14 +345,12 @@ fn submit_mutation(app: &mut App) {
     };
     match result {
         Ok(()) => {
-            match app.session_picker.mutation.as_deref_mut() {
-                Some(
-                    SessionPickerMutation::Tag { request_id: pending, .. }
-                    | SessionPickerMutation::Delete { request_id: pending, .. },
-                ) => {
-                    *pending = Some(request_id);
-                }
-                None => {}
+            if let Some(
+                SessionPickerMutation::Tag { request_id: pending, .. }
+                | SessionPickerMutation::Delete { request_id: pending, .. },
+            ) = app.session_picker.mutation.as_deref_mut()
+            {
+                *pending = Some(request_id);
             }
             app.session_picker.error = None;
         }
@@ -287,39 +370,37 @@ pub(crate) fn apply_mutation_result(
     sessions: Option<Vec<crate::agent::types::SessionListEntry>>,
 ) {
     let Some(mutation) = app.session_picker.mutation.as_deref() else { return };
-    let matches_request = match mutation {
+    let (expected_operation, id, pending) = match mutation {
         SessionPickerMutation::Tag { session_id: id, request_id: pending, .. } => {
-            operation == "tag"
-                && id == session_id
-                && pending.as_deref() == request_id
-                && pending.is_some()
+            ("tag", id, pending)
         }
         SessionPickerMutation::Delete { session_id: id, request_id: pending, .. } => {
-            operation == "delete"
-                && id == session_id
-                && pending.as_deref() == request_id
-                && pending.is_some()
+            ("delete", id, pending)
         }
     };
-    if !matches_request {
+    if operation != expected_operation
+        || id != session_id
+        || pending.is_none()
+        || pending.as_deref() != request_id
+    {
         return;
     }
     if let Some(error) = error {
         app.session_picker.error = Some(error);
-        if let Some(mutation) = app.session_picker.mutation.as_deref_mut() {
-            match mutation {
-                SessionPickerMutation::Tag { request_id, .. }
-                | SessionPickerMutation::Delete { request_id, .. } => *request_id = None,
-            }
+        if let Some(
+            SessionPickerMutation::Tag { request_id, .. }
+            | SessionPickerMutation::Delete { request_id, .. },
+        ) = app.session_picker.mutation.as_deref_mut()
+        {
+            *request_id = None;
         }
         return;
     }
+    app.session_picker.mutation = None;
     if let Some(sessions) = sessions {
-        app.session_picker.mutation = None;
         app.session_picker.error = None;
         crate::app::events::session::handle_sessions_listed_event(app, sessions);
     } else {
-        app.session_picker.mutation = None;
         app.session_picker.error = Some(format!(
             "Session action completed, but the session list could not refresh: {}",
             refresh_error.unwrap_or_else(|| "no refreshed list received".to_owned())
@@ -328,6 +409,24 @@ pub(crate) fn apply_mutation_result(
 }
 
 fn handle_turn_key(app: &mut App, key: KeyEvent) {
+    if app.session_picker.turn_reading {
+        match (key.code, key.modifiers) {
+            (KeyCode::Esc | KeyCode::Left, KeyModifiers::NONE) => {
+                app.session_picker.turn_reading = false;
+            }
+            (KeyCode::Up, KeyModifiers::NONE) => {
+                app.session_picker.turn_read_scroll =
+                    app.session_picker.turn_read_scroll.saturating_sub(1);
+            }
+            (KeyCode::Down, KeyModifiers::NONE) => {
+                app.session_picker.turn_read_scroll =
+                    app.session_picker.turn_read_scroll.saturating_add(1);
+            }
+            (KeyCode::Enter, KeyModifiers::NONE) => activate_turn_selection(app),
+            _ => {}
+        }
+        return;
+    }
     if matches!((key.code, key.modifiers), (KeyCode::Esc | KeyCode::Left, KeyModifiers::NONE)) {
         close_turn_selection(app);
         return;
@@ -350,18 +449,16 @@ fn handle_turn_key(app: &mut App, key: KeyEvent) {
         (KeyCode::Home, _) => app.session_picker.turn_selected = 0,
         (KeyCode::End, _) => app.session_picker.turn_selected = turn_count.saturating_sub(1),
         (KeyCode::Enter, KeyModifiers::NONE) => activate_turn_selection(app),
+        (KeyCode::Right, KeyModifiers::NONE) => {
+            app.session_picker.turn_reading = true;
+            app.session_picker.turn_read_scroll = 0;
+        }
         _ => {}
     }
 }
 
 fn open_turn_selection(app: &mut App) {
-    let Some(session_id) = app
-        .recent_sessions
-        .iter()
-        .take(MAX_PICKER_SESSIONS)
-        .nth(app.session_picker.selected)
-        .map(|session| session.session_id.clone())
-    else {
+    let Some(session_id) = selected_session(app).map(|session| session.session_id.clone()) else {
         return;
     };
     let Some(conn) = app.session_runtime.conn.clone() else {
@@ -369,8 +466,7 @@ fn open_turn_selection(app: &mut App) {
     };
 
     app.session_picker.turn_session_id = Some(session_id.clone());
-    app.session_picker.turn_selected = 0;
-    app.session_picker.turn_scroll_offset = 0;
+    app.session_picker.reset_turn_navigation();
     app.sdk_inventory.rewind_targets.clear();
     app.sdk_inventory.rewind_targets_session_id = None;
     app.sdk_inventory.rewind_targets_error = None;
@@ -389,8 +485,7 @@ fn open_turn_selection(app: &mut App) {
 
 fn close_turn_selection(app: &mut App) {
     app.session_picker.turn_session_id = None;
-    app.session_picker.turn_selected = 0;
-    app.session_picker.turn_scroll_offset = 0;
+    app.session_picker.reset_turn_navigation();
     app.sdk_inventory.clear_rewind_targets();
 }
 
@@ -425,24 +520,14 @@ fn activate_turn_selection(app: &mut App) {
     view::set_chat_surface(app);
 }
 
-fn activate_selection(app: &mut App) {
-    resume_selected(app, false);
-}
-
 fn activate_compact_first(app: &mut App) {
-    let large = app
-        .recent_sessions
-        .get(app.session_picker.selected)
-        .is_some_and(|session| session.file_size_bytes >= LARGE_SESSION_BYTES);
-    if large {
+    if selected_session(app).is_some_and(|session| session.file_size_bytes >= LARGE_SESSION_BYTES) {
         resume_selected(app, true);
     }
 }
 
 fn resume_selected(app: &mut App, compact_first: bool) {
-    let Some(session) =
-        app.recent_sessions.iter().take(MAX_PICKER_SESSIONS).nth(app.session_picker.selected)
-    else {
+    let Some(session) = selected_session(app) else {
         return;
     };
     let session_id = session.session_id.clone();
@@ -472,10 +557,6 @@ fn resume_selected(app: &mut App, compact_first: bool) {
     }
 
     view::set_chat_surface(app);
-}
-
-fn is_ctrl(key: KeyEvent, ch: char) -> bool {
-    matches!(key.code, KeyCode::Char(c) if c == ch) && key.modifiers == KeyModifiers::CONTROL
 }
 
 #[cfg(test)]
@@ -529,6 +610,10 @@ mod tests {
         handle_key(app, KeyEvent::new(code, KeyModifiers::NONE));
     }
 
+    fn ctrl(app: &mut App, ch: char) {
+        handle_key(app, KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL));
+    }
+
     fn tag_draft(app: &App) -> Option<&str> {
         match app.session_picker.mutation.as_deref() {
             Some(SessionPickerMutation::Tag { draft, .. }) => Some(draft),
@@ -537,14 +622,16 @@ mod tests {
     }
 
     #[test]
-    fn paste_extends_the_tag_draft_on_one_line_and_is_ignored_elsewhere() {
+    fn paste_extends_the_tag_draft_on_one_line_and_searches_otherwise() {
         let mut app = picker_app();
-        assert!(!handle_paste(&mut app, "ignored"), "no mutation open: not consumed");
+        assert!(handle_paste(&mut app, "First"), "no action open: the paste searches");
+        assert_eq!(app.session_picker.query, "First");
 
-        key(&mut app, KeyCode::Char('t'));
+        ctrl(&mut app, 't');
         key(&mut app, KeyCode::Char('a'));
         assert!(handle_paste(&mut app, "b\r\nc\nd\x1b[31me\u{7}\u{e9}"));
         assert_eq!(tag_draft(&app), Some("ab c d[31me\u{e9}"));
+        assert_eq!(app.session_picker.query, "First", "typing into the tag leaves the search");
 
         // Enter after a paste submits the pasted tag, not a second line.
         let (connection, mut rx) = AgentConnection::test_channel();
@@ -553,7 +640,8 @@ mod tests {
         let sent = rx.try_recv().expect("tag command");
         assert!(matches!(
             sent.command,
-            BridgeCommand::TagSession { tag: Some(ref tag), .. } if tag == "ab c d[31me\u{e9}"
+            BridgeCommand::TagSession { tag: Some(ref tag), ref session_id }
+                if tag == "ab c d[31me\u{e9}" && session_id == "session-1"
         ));
         // While the save is pending the field is read-only, as for typed keys.
         assert!(handle_paste(&mut app, "late"));
@@ -561,14 +649,29 @@ mod tests {
     }
 
     #[test]
+    fn session_actions_follow_the_filtered_selection() {
+        let mut app = picker_app();
+        let (connection, mut rx) = AgentConnection::test_channel();
+        app.session_runtime.conn = Some(Rc::new(connection));
+        assert!(super::paste_search(&mut app, "Second"));
+        ctrl(&mut app, 'd');
+        key(&mut app, KeyCode::Char('y'));
+        let sent = rx.try_recv().expect("confirmed deletion");
+        assert!(
+            matches!(sent.command, BridgeCommand::DeleteSession { session_id } if session_id == "session-2")
+        );
+    }
+
+    #[test]
     fn paste_does_not_touch_a_delete_confirmation() {
         let mut app = picker_app();
-        key(&mut app, KeyCode::Char('d'));
+        ctrl(&mut app, 'd');
         assert!(handle_paste(&mut app, "y"));
         assert!(matches!(
             app.session_picker.mutation.as_deref(),
             Some(SessionPickerMutation::Delete { request_id: None, .. })
         ));
+        assert!(app.session_picker.query.is_empty());
     }
 
     #[test]
@@ -577,17 +680,18 @@ mod tests {
         let (connection, mut rx) = AgentConnection::test_channel();
         app.session_runtime.conn = Some(Rc::new(connection));
         app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-        key(&mut app, KeyCode::Char('d'));
+        ctrl(&mut app, 'd');
         assert!(app.session_picker.mutation.is_none());
         assert!(rx.try_recv().is_err());
 
         key(&mut app, KeyCode::Down);
-        key(&mut app, KeyCode::Char('d'));
+        ctrl(&mut app, 'd');
         key(&mut app, KeyCode::Esc);
         assert!(app.session_picker.mutation.is_none());
         assert!(rx.try_recv().is_err());
+        assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
 
-        key(&mut app, KeyCode::Char('d'));
+        ctrl(&mut app, 'd');
         key(&mut app, KeyCode::Char('y'));
         let sent = rx.try_recv().expect("confirmed deletion");
         assert!(
@@ -602,8 +706,8 @@ mod tests {
         app.recent_sessions[0].tag = Some("old".to_owned());
         let (connection, mut rx) = AgentConnection::test_channel();
         app.session_runtime.conn = Some(Rc::new(connection));
-        key(&mut app, KeyCode::Char('t'));
-        handle_key(&mut app, KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        ctrl(&mut app, 't');
+        ctrl(&mut app, 'u');
         key(&mut app, KeyCode::Enter);
         let sent = rx.try_recv().expect("tag clear");
         assert!(
@@ -669,12 +773,52 @@ mod tests {
         let mut app = picker_app();
         let (connection, mut rx) = AgentConnection::test_channel();
         app.session_runtime.conn = Some(Rc::new(connection));
-        key(&mut app, KeyCode::Char('d'));
+        ctrl(&mut app, 'd');
         app.session_picker.list_revision += 1;
         app.session_picker.selected = 1;
         key(&mut app, KeyCode::Char('y'));
         assert!(rx.try_recv().is_err());
         assert!(app.session_picker.mutation.is_none());
+    }
+
+    #[test]
+    fn tab_resumes_compact_first_only_for_a_large_selected_session() {
+        let mut app = picker_app();
+        let (connection, mut rx) = AgentConnection::test_channel();
+        app.session_runtime.conn = Some(Rc::new(connection));
+        key(&mut app, KeyCode::Tab);
+        assert!(rx.try_recv().is_err());
+        assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
+        app.recent_sessions[0].file_size_bytes = super::LARGE_SESSION_BYTES;
+        key(&mut app, KeyCode::Tab);
+        assert!(matches!(rx.try_recv().expect("resume command").command,
+            BridgeCommand::ResumeSession { session_id, .. } if session_id == "session-1"));
+        assert!(app.startup.pending_compact_first("session-1"));
+    }
+
+    #[test]
+    fn a_pending_refresh_holds_the_keys_until_its_listing_arrives() {
+        let mut app = picker_app();
+        let (connection, mut rx) = AgentConnection::test_channel();
+        app.session_runtime.conn = Some(Rc::new(connection));
+        app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-2"));
+        let conn = app.session_runtime.conn.clone().expect("connection");
+        super::begin_refresh(&mut app, &conn);
+        let sent = rx.try_recv().expect("listing request");
+        assert!(matches!(sent.command, BridgeCommand::ListSessions));
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('x'));
+        assert!(rx.try_recv().is_err());
+        assert!(app.session_picker.query.is_empty());
+
+        super::finish_refresh(&mut app, Some("another request"));
+        assert!(super::refresh_is_pending(&app));
+        super::finish_refresh(&mut app, sent.request_id.as_deref());
+        assert!(!super::refresh_is_pending(&app));
+        assert_eq!(
+            super::selected_session(&app).map(|session| session.session_id.as_str()),
+            Some("session-2")
+        );
     }
 
     #[test]
@@ -728,21 +872,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_first_key_resumes_only_large_selected_session() {
-        let mut app = picker_app();
-        let (connection, mut rx) = AgentConnection::test_channel();
-        app.session_runtime.conn = Some(Rc::new(connection));
-        handle_key(&mut app, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
-        assert!(rx.try_recv().is_err());
-        app.recent_sessions[0].file_size_bytes = super::LARGE_SESSION_BYTES;
-        handle_key(&mut app, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
-        assert!(matches!(rx.try_recv().expect("resume command").command,
-            BridgeCommand::ResumeSession { session_id, .. } if session_id == "session-1"));
-        assert!(app.startup.pending_compact_first("session-1"));
-    }
-
-    #[test]
-    fn space_is_ignored_to_avoid_accidental_destructive_navigation() {
+    fn space_searches_without_opening_message_navigation() {
         let mut app = picker_app();
         let (connection, mut rx) = AgentConnection::test_channel();
         app.session_runtime.conn = Some(Rc::new(connection));
@@ -752,6 +882,108 @@ mod tests {
         assert!(app.session_picker.turn_session_id.is_none());
         assert!(!app.sdk_inventory.rewind_targets_in_flight);
         assert!(rx.try_recv().is_err());
+        assert_eq!(app.session_picker.query, " ");
+    }
+
+    #[test]
+    fn search_matches_visible_title_and_id_without_losing_the_selected_session() {
+        let mut app = picker_app();
+        app.recent_sessions[0].custom_title = Some("Other".into());
+        app.recent_sessions[1].custom_title = Some("Überblick".into());
+        app.session_picker.selected = 1;
+
+        for ch in "ÜBER".chars() {
+            handle_key(&mut app, KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+        assert_eq!(
+            super::picker_sessions(&app)
+                .map(|session| session.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["session-2"]
+        );
+        assert_eq!(app.session_picker.selected, 0);
+
+        for _ in 0..4 {
+            handle_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        }
+        assert_eq!(app.session_picker.selected, 1);
+        assert!(super::paste_search(&mut app, "SESSION-2"));
+        assert_eq!(
+            super::selected_session(&app).map(|session| session.session_id.as_str()),
+            Some("session-2")
+        );
+    }
+
+    #[test]
+    fn no_matches_cannot_resume_or_fork_and_backspace_restores_results() {
+        let mut app = picker_app();
+        let (connection, mut rx) = AgentConnection::test_channel();
+        app.session_runtime.conn = Some(Rc::new(connection));
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        for code in [KeyCode::Down, KeyCode::End, KeyCode::Enter, KeyCode::Right] {
+            handle_key(&mut app, KeyEvent::new(code, KeyModifiers::NONE));
+        }
+        assert!(rx.try_recv().is_err());
+        assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
+        assert!(app.session_picker.turn_session_id.is_none());
+        handle_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(rx.try_recv().expect("resume after clearing search").command,
+            BridgeCommand::ResumeSession { session_id, .. } if session_id == "session-1"));
+    }
+
+    #[test]
+    fn filtered_message_navigation_uses_matching_session_and_restores_search() {
+        let mut app = picker_app();
+        let (connection, mut rx) = AgentConnection::test_channel();
+        app.session_runtime.conn = Some(Rc::new(connection));
+        assert!(super::paste_search(&mut app, "Second"));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert!(matches!(rx.try_recv().expect("history request").command,
+            BridgeCommand::GetRewindTargets { session_id } if session_id == "session-2"));
+        assert!(!super::paste_search(&mut app, "ignored"));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.session_picker.query, "Second");
+        assert_eq!(
+            super::selected_session(&app).map(|session| session.session_id.as_str()),
+            Some("session-2")
+        );
+    }
+
+    #[test]
+    fn search_follows_the_same_title_fallbacks_as_the_display() {
+        for (custom, prompt, summary, query) in [
+            (Some("Named"), Some("Prompt"), "Summary", "named"),
+            (Some(" "), Some("Prompt"), "Summary", "prompt"),
+            (None, Some(" "), "Summary", "summary"),
+            (None, None, " ", "session-1"),
+        ] {
+            let mut app = picker_app();
+            app.recent_sessions.truncate(1);
+            app.recent_sessions[0].custom_title = custom.map(str::to_owned);
+            app.recent_sessions[0].first_prompt = prompt.map(str::to_owned);
+            app.recent_sessions[0].summary = summary.into();
+            assert!(super::paste_search(&mut app, query));
+            assert_eq!(
+                super::selected_session(&app).map(|session| session.session_id.as_str()),
+                Some("session-1")
+            );
+        }
+    }
+
+    #[test]
+    fn german_keyboard_text_is_searchable_without_triggering_shortcuts() {
+        let mut app = picker_app();
+        for (ch, modifiers) in [
+            ('j', KeyModifiers::NONE),
+            ('k', KeyModifiers::NONE),
+            ('@', KeyModifiers::CONTROL | KeyModifiers::ALT),
+        ] {
+            handle_key(&mut app, KeyEvent::new(KeyCode::Char(ch), modifiers));
+        }
+        assert_eq!(app.session_picker.query, "jk@");
+        assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
     }
 
     #[test]
@@ -770,35 +1002,51 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_turn_sends_resume_at_without_changing_plain_resume_command() {
-        let mut app = picker_app();
-        let (connection, mut rx) = AgentConnection::test_channel();
-        app.session_runtime.conn = Some(Rc::new(connection));
-        app.session_picker.turn_session_id = Some("session-1".to_owned());
-        app.sdk_inventory.rewind_targets = vec![crate::agent::model::RewindTarget {
-            uuid: "user-2".to_owned(),
-            first_text: "second prompt".to_owned(),
-            input_text: "second prompt".to_owned(),
-            index: 3,
-            previous_assistant_uuid: Some("assistant-1".to_owned()),
-            resume_anchor_uuid: Some("assistant-1".to_owned()),
-        }];
+    fn enter_on_message_or_reader_forks_before_the_selected_message() {
+        for reading in [false, true] {
+            let mut app = picker_app();
+            let (connection, mut rx) = AgentConnection::test_channel();
+            app.session_runtime.conn = Some(Rc::new(connection));
+            app.session_picker.turn_session_id = Some("session-1".to_owned());
+            app.sdk_inventory.rewind_targets = vec![crate::agent::model::RewindTarget {
+                uuid: "user-2".to_owned(),
+                first_text: "second prompt".to_owned(),
+                input_text: "second prompt".to_owned(),
+                index: 3,
+                previous_assistant_uuid: Some("assistant-1".to_owned()),
+                resume_anchor_uuid: Some("assistant-1".to_owned()),
+            }];
 
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            app.sdk_inventory.rewind_targets.insert(
+                0,
+                crate::agent::model::RewindTarget {
+                    uuid: "other-message".into(),
+                    first_text: "Other prompt".into(),
+                    input_text: "Other prompt".into(),
+                    index: 5,
+                    previous_assistant_uuid: None,
+                    resume_anchor_uuid: None,
+                },
+            );
+            handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+            app.session_picker.turn_reading = reading;
+            handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-        assert_eq!(app.surface_mode, SurfaceMode::Chat);
-        assert_eq!(app.pending_session_resume_id(), Some("session-1"));
-        let operation_id = app.pending_resume_operation_id().expect("pending resume-at operation");
-        let envelope = rx.try_recv().expect("resume-at command");
-        assert_eq!(envelope.request_id.as_deref(), Some(operation_id));
-        assert!(matches!(
-            envelope.command,
-            BridgeCommand::ResumeSessionAt {
-                session_id,
-                target_user_message_id,
-                ..
-            } if session_id == "session-1" && target_user_message_id == "user-2"
-        ));
+            assert_eq!(app.surface_mode, SurfaceMode::Chat);
+            assert_eq!(app.pending_session_resume_id(), Some("session-1"));
+            let operation_id =
+                app.pending_resume_operation_id().expect("pending resume-at operation");
+            let envelope = rx.try_recv().expect("resume-at command");
+            assert_eq!(envelope.request_id.as_deref(), Some(operation_id));
+            assert!(matches!(
+                envelope.command,
+                BridgeCommand::ResumeSessionAt {
+                    session_id,
+                    target_user_message_id,
+                    ..
+                } if session_id == "session-1" && target_user_message_id == "user-2"
+            ));
+        }
     }
 
     #[test]

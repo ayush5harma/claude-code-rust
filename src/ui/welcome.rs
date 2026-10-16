@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
-use crate::app::{App, AppStatus, ChatMessage, MessageBlock, WelcomeBlock};
+use crate::app::{
+    App, AppStatus, ChatMessage, MessageBlock, SurfaceMode, TerminalLifecycleState, WelcomeBlock,
+};
 use crate::ui::host_tips::HOST_TIPS;
 use crate::ui::theme;
 use crate::ui::wrap::{
@@ -60,7 +62,13 @@ pub(crate) enum FerrisPhase {
 }
 
 /// The crab's phase, derived from app state and the clock; nothing is stored.
-pub(crate) fn ferris_phase(app: &App, welcome: &WelcomeBlock, now: Instant) -> FerrisPhase {
+/// `width` is the width the welcome is rendered at.
+pub(crate) fn ferris_phase(
+    app: &App,
+    welcome: &WelcomeBlock,
+    width: u16,
+    now: Instant,
+) -> FerrisPhase {
     if !motion_allowed(app) {
         return FerrisPhase::Rest;
     }
@@ -70,48 +78,62 @@ pub(crate) fn ferris_phase(app: &App, welcome: &WelcomeBlock, now: Instant) -> F
         let elapsed = now.saturating_duration_since(app.startup.timeline.origin());
         return FerrisPhase::Connecting { elapsed };
     }
-    // The preference arrives with the settings snapshot, which is requested
-    // only after the first connect; until then the hello waits at rest.
-    match hello_window(app, now) {
-        Some(elapsed) if app.config.snapshot.is_some() => FerrisPhase::Hello { elapsed },
-        Some(_) | None => FerrisPhase::Rest,
-    }
+    hello_beat(app, width, now).map_or(FerrisPhase::Rest, |elapsed| FerrisPhase::Hello { elapsed })
 }
 
-/// Whether the frame loop must keep redrawing for the hello: only while a
-/// wave can actually be seen, so not before the motion preference is known
-/// and not when the terminal is too narrow to show the crab. The window
-/// still holds the welcome back from scrollback then; it is the whole
-/// transcript, so nothing waits behind it, and the next draw for any reason
-/// after the window closes commits it. The connecting loop needs nothing
+/// Whether the frame loop must keep redrawing for the welcome hello: while
+/// its window holds the welcome back from scrollback and a chat surface shows
+/// it. The draw after the window closes is the one that commits the welcome,
+/// so the loop redraws through the window even before the motion preference
+/// is known and the hello cannot start yet. The connecting loop needs nothing
 /// here: the Connecting status already redraws.
 pub(crate) fn ferris_hello_live(app: &App, now: Instant) -> bool {
-    app.config.snapshot.is_some()
-        && ferris_column_visible(usize::from(app.chat_render.terminal_size().width))
-        && hello_window(app, now).is_some()
+    let chat_visible = matches!(
+        app.terminal_lifecycle,
+        TerminalLifecycleState::Running(SurfaceMode::Chat) | TerminalLifecycleState::Bootstrapping
+    );
+    chat_visible && hello_window(app, app.chat_render.terminal_size().width, now).is_some()
 }
 
 /// Whether the welcome rows may be committed to scrollback, where they can
 /// never be redrawn. They are held back while the hello window is open, so a
 /// committed welcome is always final and always at rest.
-pub(crate) fn welcome_commit_ready(app: &App, welcome: &WelcomeBlock, now: Instant) -> bool {
-    welcome_values_ready(welcome) && hello_window(app, now).is_none()
+pub(crate) fn welcome_commit_ready(
+    app: &App,
+    welcome: &WelcomeBlock,
+    width: u16,
+    now: Instant,
+) -> bool {
+    welcome_values_ready(welcome) && hello_window(app, width, now).is_none()
 }
 
-/// The time into the first-connect hello, while it may play: the welcome
-/// is the whole transcript (a prompt, a notice or resumed history snaps the
-/// crab to rest) and the window since the first connect has not closed.
-/// Later connects of the process never reopen it.
-fn hello_window(app: &App, now: Instant) -> Option<Duration> {
-    if !motion_allowed(app) {
+/// The time into the first-connect hello while it holds the welcome back:
+/// the crab is visible at `width`, the welcome is the whole transcript (a
+/// prompt, a notice or resumed history snaps the crab to rest) and the window
+/// since the first connection has not closed. Later connects of the process
+/// never reopen it.
+fn hello_window(app: &App, width: u16, now: Instant) -> Option<Duration> {
+    if !motion_allowed(app)
+        || !ferris_column_visible(usize::from(width))
+        || !welcome_is_whole_transcript(app)
+    {
         return None;
     }
-    let [message] = app.transcript.messages.as_slice() else {
-        return None;
-    };
-    welcome_block(message)?;
     let elapsed = now.saturating_duration_since(app.startup.timeline.connected_at()?);
     (elapsed < HELLO_WINDOW).then_some(elapsed)
+}
+
+/// The time into the hello while the crab plays it. The preference arrives
+/// with the settings snapshot, which is requested only after the first
+/// connect, so the hello starts partway through its window if the snapshot is
+/// late and is skipped if it comes after the window.
+fn hello_beat(app: &App, width: u16, now: Instant) -> Option<Duration> {
+    hello_window(app, width, now).filter(|_| app.config.snapshot.is_some())
+}
+
+/// Whether the transcript holds nothing but the welcome.
+pub(crate) fn welcome_is_whole_transcript(app: &App) -> bool {
+    matches!(app.transcript.messages.as_slice(), [message] if welcome_block(message).is_some())
 }
 
 fn motion_allowed(app: &App) -> bool {

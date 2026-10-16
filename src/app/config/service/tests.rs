@@ -528,91 +528,79 @@ async fn inline_arrows_and_space_cycle_choices_and_render_acknowledged_values() 
 async fn settings_load_automatically_after_startup_without_a_manual_refresh() {
     use crate::agent::model;
     use ratatui::{Terminal, backend::TestBackend};
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let mut app = App::test_default();
-            app.status = crate::app::AppStatus::Connecting;
-            let (connection, mut commands) = AgentConnection::test_channel();
-            app.session_runtime.conn = Some(Rc::new(connection));
-            crate::app::config::open(&mut app).expect("open during startup");
-            assert!(app.config.last_error.is_none(), "startup is not a settings error");
-            let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-            terminal
-                .draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app))
-                .expect("startup render");
-            let text: String = terminal
-                .backend()
-                .buffer()
-                .content
-                .iter()
-                .map(ratatui::buffer::Cell::symbol)
-                .collect();
-            assert!(text.contains("Loading settings"));
-            let cwd = app.cwd_raw.clone();
-            crate::app::events::handle_client_event(
-                &mut app,
-                ClientEvent::Connected {
-                    session_id: model::SessionId::new("session-1"),
-                    cwd,
-                    current_model: model::CurrentModel::new("opus", "Opus", "Opus"),
-                    available_models: Vec::new(),
-                    mode: None,
-                    fast_mode_state: model::FastModeState::Off,
-                    fast_mode_disabled_reason: None,
-                    ultracode: None,
-                    history_updates: Vec::new(),
+    Box::pin(tokio::task::LocalSet::new().run_until(async {
+        let mut app = App::test_default();
+        app.status = crate::app::AppStatus::Connecting;
+        let (connection, mut commands) = AgentConnection::test_channel();
+        app.session_runtime.conn = Some(Rc::new(connection));
+        crate::app::config::open(&mut app).expect("open during startup");
+        assert!(app.config.last_error.is_none(), "startup is not a settings error");
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
+        terminal
+            .draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app))
+            .expect("startup render");
+        let text: String =
+            terminal.backend().buffer().content.iter().map(ratatui::buffer::Cell::symbol).collect();
+        assert!(text.contains("Loading settings"));
+        let cwd = app.cwd_raw.clone();
+        crate::app::events::handle_client_event(
+            &mut app,
+            ClientEvent::Connected {
+                session_id: model::SessionId::new("session-1"),
+                cwd,
+                current_model: model::CurrentModel::new("opus", "Opus", "Opus"),
+                available_models: Vec::new(),
+                mode: None,
+                fast_mode_state: model::FastModeState::Off,
+                fast_mode_disabled_reason: None,
+                ultracode: None,
+                history_updates: Vec::new(),
+            },
+        );
+        assert!(
+            app.config.pending_settings_request.is_some(),
+            "startup must request settings automatically"
+        );
+        let inspect = loop {
+            let command = commands.recv_envelope().await.expect("startup command");
+            if matches!(command.command, BridgeCommand::InspectSettings { .. }) {
+                break command;
+            }
+        };
+        let resolved = snapshot(&app.cwd_raw, "German");
+        crate::app::events::handle_client_event(
+            &mut app,
+            ClientEvent::SettingsResultReceived {
+                session_id: "session-1".to_owned(),
+                request_id: inspect.request_id,
+                result: SettingsResult {
+                    persistence: SettingsPersistence::NotRequested,
+                    application: SettingsApplication::Blocked,
+                    snapshot: Some(resolved),
+                    error: None,
                 },
-            );
-            assert!(
-                app.config.pending_settings_request.is_some(),
-                "startup must request settings automatically"
-            );
-            let inspect = loop {
-                let command = commands.recv_envelope().await.expect("startup command");
-                if matches!(command.command, BridgeCommand::InspectSettings { .. }) {
-                    break command;
-                }
-            };
-            let resolved = snapshot(&app.cwd_raw, "German");
-            crate::app::events::handle_client_event(
-                &mut app,
-                ClientEvent::SettingsResultReceived {
-                    session_id: "session-1".to_owned(),
-                    request_id: inspect.request_id,
-                    result: SettingsResult {
-                        persistence: SettingsPersistence::NotRequested,
-                        application: SettingsApplication::Blocked,
-                        snapshot: Some(resolved),
-                        error: None,
-                    },
-                },
-            );
-            terminal
-                .draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app))
-                .expect("loaded settings");
-            let text: String = terminal
-                .backend()
-                .buffer()
-                .content
-                .iter()
-                .map(ratatui::buffer::Cell::symbol)
-                .collect();
-            assert_eq!(app.config.saved_value("language"), Some(&json!("German")));
-            let rows: Vec<String> = terminal
-                .backend()
-                .buffer()
-                .content
-                .chunks(100)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
-                .collect();
-            assert!(
-                rows.iter()
-                    .any(|row| row.contains("Language") && row.trim_end().ends_with("German")),
-                "loaded value must appear beside its setting: {text}"
-            );
-            assert!(app.config.last_error.is_none());
-        })
-        .await;
+            },
+        );
+        terminal
+            .draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app))
+            .expect("loaded settings");
+        let text: String =
+            terminal.backend().buffer().content.iter().map(ratatui::buffer::Cell::symbol).collect();
+        assert_eq!(app.config.saved_value("language"), Some(&json!("German")));
+        let rows: Vec<String> = terminal
+            .backend()
+            .buffer()
+            .content
+            .chunks(100)
+            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
+            .collect();
+        assert!(
+            rows.iter().any(|row| row.contains("Language") && row.trim_end().ends_with("German")),
+            "loaded value must appear beside its setting: {text}"
+        );
+        assert!(app.config.last_error.is_none());
+    }))
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]

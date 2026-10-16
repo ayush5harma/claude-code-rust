@@ -3,7 +3,8 @@
 
 use crate::agent::model;
 use crate::app::agents::SubagentStatus;
-use crate::app::{App, MessageBlock};
+use crate::app::footer::{FooterFieldId, FooterLayout, FooterSide, SETTING_ID};
+use crate::app::{App, MessageBlock, MessageRole};
 use crate::ui::theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
@@ -13,28 +14,30 @@ use ratatui::widgets::{Paragraph, Widget};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const FOOTER_COLUMN_GAP: u16 = 1;
-const MIN_CONTEXT_LOCATION_WIDTH: usize = 10;
-const MIN_CONTEXT_BRANCH_WIDTH: usize = 4;
+const FIELD_SEPARATOR: &str = " \u{b7} ";
 /// Ctrl+T lists the agents (Enter there inspects one); Left Arrow on an empty
 /// composer opens the `/agents` inspector directly.
-const SHELF_HINT: &str = "ctrl+t list · ← inspect";
+const SHELF_HINT: &str = "ctrl+t list \u{b7} \u{2190} inspect";
 fn footer_context_value() -> Color {
     theme::secondary()
 }
 
 type FooterItem = Option<(String, Color)>;
 
+/// The plan line and the agent shelf (when there is one), the configured status row, then
+/// the user's `statusLine` command output (when set).
 pub(crate) struct SerializedFooterRows {
     pub rows: Vec<Line<'static>>,
 }
 
 pub(crate) fn serialize_footer_rows(app: &App, total_width: u16) -> SerializedFooterRows {
+    let layout = FooterLayout::from_saved(app.config.saved_value(SETTING_ID)).unwrap_or_default();
     let mut rows = Vec::new();
     if let Some(plan) = build_plan_line(app, total_width) {
         rows.push(plan);
     }
     rows.extend(build_agent_shelf(app, total_width));
-    rows.extend(base_rows(app, total_width));
+    rows.push(serialize_footer(app, &layout, total_width));
     if let Some(status_line) = app.footer.status_line.as_ref() {
         rows.push(compose_footer_row(
             Line::from(Span::styled(
@@ -107,6 +110,192 @@ fn build_agent_shelf(app: &App, width: u16) -> Vec<Line<'static>> {
     rows
 }
 
+/// The dialog preview and chat use exactly the same formatter and width policy.
+pub(crate) fn serialize_footer(app: &App, layout: &FooterLayout, width: u16) -> Line<'static> {
+    let width = usize::from(width);
+    let notice = footer_notice(app)
+        .and_then(|(text, color)| fit_footer_right_text(&text, width).map(|text| (text, color)));
+    let notice_width = notice.as_ref().map(|(text, _)| text.width());
+    let mut fields: Vec<_> = layout
+        .fields()
+        .iter()
+        .filter(|field| field.visible)
+        .filter_map(|field| {
+            format_field(app, field.id).map(|(text, color)| RenderedField {
+                id: field.id,
+                side: field.side,
+                text,
+                color,
+            })
+        })
+        .collect();
+    let mut overflow = fields_width(&fields, notice_width).saturating_sub(width);
+    // Flexible workspace values shrink before any status badge is omitted.
+    for field in fields.iter_mut().rev() {
+        let minimum = match field.id {
+            FooterFieldId::Directory => 10,
+            FooterFieldId::GitBranch => 12,
+            _ => continue,
+        };
+        let reduction = overflow.min(field.text.width().saturating_sub(minimum));
+        let target = field.text.width().saturating_sub(reduction);
+        if reduction > 0 {
+            field.text = if field.id == FooterFieldId::Directory {
+                format!(
+                    "Loc: {}",
+                    fit_location_value(&app.cwd, target.saturating_sub(5)).unwrap_or_default()
+                )
+            } else {
+                fit_footer_right_text(&field.text, target).unwrap_or_default()
+            };
+            overflow = overflow.saturating_sub(reduction);
+        }
+    }
+    // Earlier entries take precedence; groups never overlap or wrap.
+    while fields_width(&fields, notice_width) > width {
+        fields.pop();
+    }
+    let mut left = group_spans(&fields, FooterSide::Left);
+    let mut right = group_spans(&fields, FooterSide::Right);
+    if let Some((text, color)) = notice {
+        if !right.is_empty() {
+            right.push(Span::styled(FIELD_SEPARATOR, Style::default().fg(theme::tertiary())));
+        }
+        right.push(Span::styled(text, Style::default().fg(color)));
+    }
+    let occupied: usize = left.iter().chain(&right).map(Span::width).sum();
+    if !right.is_empty() {
+        left.push(Span::raw(" ".repeat(width.saturating_sub(occupied))));
+        left.extend(right);
+    }
+    Line::from(left)
+}
+
+struct RenderedField {
+    id: FooterFieldId,
+    side: FooterSide,
+    text: String,
+    color: Color,
+}
+
+fn fields_width(fields: &[RenderedField], notice_width: Option<usize>) -> usize {
+    let left_count = fields.iter().filter(|field| field.side == FooterSide::Left).count();
+    let right_count = fields.len() - left_count + usize::from(notice_width.is_some());
+    fields.iter().map(|field| field.text.width()).sum::<usize>()
+        + notice_width.unwrap_or(0)
+        + (left_count.saturating_sub(1) + right_count.saturating_sub(1)) * FIELD_SEPARATOR.width()
+        + usize::from(left_count > 0 && right_count > 0)
+}
+
+fn group_spans(fields: &[RenderedField], side: FooterSide) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for field in fields.iter().filter(|field| field.side == side) {
+        if !spans.is_empty() {
+            spans.push(Span::styled(FIELD_SEPARATOR, Style::default().fg(theme::tertiary())));
+        }
+        spans.push(Span::styled(field.text.clone(), Style::default().fg(field.color)));
+    }
+    spans
+}
+
+fn format_field(app: &App, id: FooterFieldId) -> FooterItem {
+    let gray = footer_context_value();
+    match id {
+        FooterFieldId::SessionTitle => app
+            .session_runtime
+            .session_title
+            .as_ref()
+            .filter(|title| !title.is_empty())
+            .map(|title| (title.clone(), app.session_runtime.accent)),
+        FooterFieldId::PermissionMode => app.session_runtime.mode.as_ref().map(|mode| {
+            (format!("[{}]", mode.current_mode_name), mode_color(&mode.current_mode_id))
+        }),
+        FooterFieldId::Model => app
+            .session_runtime
+            .current_model
+            .as_ref()
+            .map(|model| (format!("[{}]", model.display_name_short), gray)),
+        FooterFieldId::Effort => app
+            .session_runtime
+            .current_model
+            .as_ref()
+            .filter(|model| model.supports_effort)
+            .and_then(|_| app.session_effort())
+            .map(|effort| (format!("[{}]", footer_effort_label(effort)), gray)),
+        FooterFieldId::Ultracode => app
+            .session_runtime
+            .ultracode
+            .filter(|state| state.effective())
+            .map(|_| ("[Ultracode]".to_owned(), theme::ultracode_accent())),
+        FooterFieldId::FastMode => {
+            let (text, color) = fast_mode_badge(app.session_runtime.fast_mode_state);
+            Some((format!("[{text}]"), color))
+        }
+        FooterFieldId::Directory => Some((format!("Loc: {}", app.cwd), gray)),
+        FooterFieldId::GitBranch => app
+            .git_branch()
+            .filter(|branch| !branch.is_empty())
+            .map(|branch| (format!("Branch: {branch}"), gray)),
+        FooterFieldId::ContextRemaining => {
+            app.session_runtime.session_usage.context_usage_percent.map(|used| {
+                (format!("Context: {}%", 100_u8.saturating_sub(used)), gauge_color(f64::from(used)))
+            })
+        }
+        FooterFieldId::RateLimits => rate_limits_field(app),
+        FooterFieldId::Agents => finished_agents_field(app),
+    }
+}
+
+/// Used share of the five-hour and seven-day windows, from the SDK usage snapshot, or from
+/// the latest rate-limit event while no snapshot has arrived. Colored by the fuller window.
+fn rate_limits_field(app: &App) -> FooterItem {
+    let snapshot =
+        app.usage.snapshot.as_ref().filter(|s| s.source == crate::app::UsageSourceKind::Sdk);
+    let mut windows: Vec<(&str, f64)> = [
+        ("5h", snapshot.and_then(|s| s.five_hour.as_ref())),
+        ("7d", snapshot.and_then(|s| s.seven_day.as_ref())),
+    ]
+    .into_iter()
+    .filter_map(|(label, window)| window.map(|window| (label, window.utilization)))
+    .collect();
+    if windows.is_empty()
+        && let Some(update) = app.session_runtime.last_rate_limit_update.as_ref()
+        && let (Some(kind), Some(value)) = (update.rate_limit_type.as_deref(), update.utilization)
+    {
+        match kind {
+            "five_hour" => windows.push(("5h", value * 100.0)),
+            "seven_day" => windows.push(("7d", value * 100.0)),
+            _ => {}
+        }
+    }
+    let fullest = windows
+        .iter()
+        .map(|(_, percent)| *percent)
+        .fold(None, |max: Option<f64>, p| Some(max.map_or(p, |max| max.max(p))))?;
+    let text = windows
+        .iter()
+        .map(|(label, percent)| format!("{label} {percent:.0}%"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some((format!("Usage: {text}"), gauge_color(fullest)))
+}
+
+/// The agents of the session once none is running; while one runs the shelf shows them.
+fn finished_agents_field(app: &App) -> FooterItem {
+    let agents = crate::ui::agent_rows::session_agent_rows(app);
+    if agents.is_empty() || agents.iter().any(|agent| agent.status.is_running()) {
+        return None;
+    }
+    let failed = agents.iter().filter(|agent| agent.status == SubagentStatus::Failed).count();
+    let count = agents.len();
+    let noun = if count == 1 { "agent" } else { "agents" };
+    Some(if failed > 0 {
+        (format!("{count} {noun}, {failed} failed"), theme::danger())
+    } else {
+        (format!("{count} {noun}"), theme::tertiary())
+    })
+}
+
 fn gauge_color(percent: f64) -> Color {
     if percent >= 90.0 {
         theme::danger()
@@ -117,417 +306,31 @@ fn gauge_color(percent: f64) -> Color {
     }
 }
 
-fn gauges(app: &App) -> Vec<Line<'static>> {
-    let mut result = Vec::new();
-    if let Some(percent) = app.session_runtime.session_usage.context_usage_percent {
-        let filled = (usize::from(percent.min(100)) * 8).div_ceil(100).min(8);
-        result.push(Line::from(vec![
-            Span::styled("ctx ", Style::default().fg(theme::tertiary())),
-            Span::styled(
-                format!("{}{} {percent}%", "▓".repeat(filled), "░".repeat(8 - filled)),
-                Style::default().fg(gauge_color(f64::from(percent))),
-            ),
-        ]));
-    }
-    let snapshot =
-        app.usage.snapshot.as_ref().filter(|s| s.source == crate::app::UsageSourceKind::Sdk);
-    for (label, window) in [
-        ("5h", snapshot.and_then(|s| s.five_hour.as_ref())),
-        ("7d", snapshot.and_then(|s| s.seven_day.as_ref())),
-    ] {
-        if let Some(window) = window {
-            result.push(rate_gauge(label, window.utilization));
-        }
-    }
-    if result.len()
-        == usize::from(app.session_runtime.session_usage.context_usage_percent.is_some())
-        && let Some(update) = app.session_runtime.last_rate_limit_update.as_ref()
-        && let (Some(kind), Some(value)) = (update.rate_limit_type.as_deref(), update.utilization)
-    {
-        match kind {
-            "five_hour" => result.push(rate_gauge("5h", value * 100.0)),
-            "seven_day" => result.push(rate_gauge("7d", value * 100.0)),
-            _ => {}
-        }
-    }
-    let agents = crate::ui::agent_rows::session_agent_rows(app);
-    if !agents.is_empty() && !agents.iter().any(|a| a.status.is_running()) {
-        let failed = agents.iter().filter(|a| a.status == SubagentStatus::Failed).count();
-        let mut spans = vec![Span::styled(
-            format!("{} agents", agents.len()),
-            Style::default().fg(theme::tertiary()),
-        )];
-        if failed > 0 {
-            spans.push(Span::styled(
-                format!(" · {failed} failed"),
-                Style::default().fg(theme::danger()),
-            ));
-        }
-        result.push(Line::from(spans));
-    }
-    result
-}
-
-fn rate_gauge(label: &str, percent: f64) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("{label} "), Style::default().fg(theme::tertiary())),
-        Span::styled(format!("{percent:.0}%"), Style::default().fg(gauge_color(percent))),
-    ])
-}
-
-fn alerts(app: &App, short: bool) -> Line<'static> {
+fn footer_notice(app: &App) -> FooterItem {
     let permissions = pending_permission_request_count(app);
-    let auth = mcp_needs_auth_count(app);
-    let mut items = Vec::new();
     if permissions > 0 {
-        items.push(Line::from(Span::styled(
-            if short {
-                format!("{permissions} perm")
-            } else {
-                format!(
-                    "{permissions} permission{} waiting",
-                    if permissions == 1 { "" } else { "s" }
-                )
-            },
-            Style::default().fg(theme::warning()),
-        )));
+        return Some((format!("{permissions} PEND. PERM."), theme::warning()));
     }
-    if auth > 0 {
-        items.push(Line::from(Span::styled(
-            if short {
-                format!("{auth} MCP auth")
-            } else {
-                format!("{auth} MCP server{} need auth", if auth == 1 { "" } else { "s" })
-            },
-            Style::default().fg(theme::warning()),
-        )));
+    let auth = mcp_needs_auth_count(app);
+    if auth > 0 && should_show_startup_mcp_hint(app) {
+        return Some((format!("{auth} MCP NEEDS AUTH"), theme::warning()));
     }
-    join_items(items)
-}
-
-fn join_items(items: impl IntoIterator<Item = Line<'static>>) -> Line<'static> {
-    let mut spans = Vec::new();
-    for item in items {
-        if item.width() == 0 {
-            continue;
-        }
-        if !spans.is_empty() {
-            spans.push(Span::raw("  "));
-        }
-        spans.extend(item.spans);
-    }
-    Line::from(spans)
-}
-
-fn pair(left: Line<'static>, right: Line<'static>, width: usize) -> Line<'static> {
-    if right.width() == 0 {
-        return left;
-    }
-    let mut spans = left.spans;
-    let used: usize = spans.iter().map(|s| s.content.width()).sum();
-    spans.push(Span::raw(" ".repeat(width.saturating_sub(used + right.width()))));
-    spans.extend(right.spans);
-    Line::from(spans)
-}
-
-fn base_rows(app: &App, width: u16) -> Vec<Line<'static>> {
-    let width = usize::from(width);
-    let mut identity = identity_line(app, usize::MAX, true, false);
-    let location = build_context_line(app, usize::MAX);
-    let mut gauge_items = gauges(app);
-    let right = join_items([alerts(app, false), location.clone(), join_items(gauge_items.clone())]);
-    if identity.width() + right.width() + 3 <= width {
-        return vec![pair(identity, right, width)];
-    }
-    let mut alerts = alerts(app, false);
-    if join_items(gauge_items.clone()).width() + alerts.width() + 3 > width {
-        alerts = self::alerts(app, true);
-    }
-    for label in ["7d ", "5h "] {
-        if join_items(gauge_items.clone()).width() + alerts.width() + 3 <= width {
-            break;
-        }
-        gauge_items.retain(|item| {
-            !item.spans.first().is_some_and(|s| s.content.starts_with(label))
-                || item.spans.iter().any(|s| s.style.fg == Some(theme::danger()))
-        });
-    }
-    if join_items(gauge_items.clone()).width() + alerts.width() + 3 > width {
-        gauge_items.retain(|item| {
-            !item.spans.first().is_some_and(|span| span.content.contains(" agents"))
-        });
-    }
-    let mut gauges = join_items(gauge_items.clone());
-    if gauges.width() + alerts.width() + 3 > width {
-        gauges = Line::from(
-            gauges
-                .spans
-                .into_iter()
-                .map(|mut span| {
-                    if span.content.contains('▓') || span.content.contains('░') {
-                        span.content =
-                            span.content.split_whitespace().last().unwrap_or("").to_owned().into();
-                    }
-                    span
-                })
-                .collect::<Vec<_>>(),
-        );
-    }
-    if gauges.width() + alerts.width() + 3 > width {
-        for label in ["7d ", "5h "] {
-            gauge_items.retain(|item| {
-                !item.spans.first().is_some_and(|span| span.content.starts_with(label))
-            });
-            gauges = join_items(gauge_items.clone());
-            if gauges.width() + alerts.width() + 3 <= width {
-                break;
-            }
-        }
-    }
-    let mut location = build_context_line(app, width.saturating_sub(identity.width() + 3));
-    if location.width() < MIN_CONTEXT_LOCATION_WIDTH {
-        location = Line::default();
-    }
-    if identity.width() + location.width() + 3 > width {
-        location = Line::default();
-    }
-    if identity.width() > width {
-        identity = identity_line(app, 12, true, false);
-    }
-    if identity.width() > width {
-        identity = identity_line(app, 12, false, false);
-    }
-    if identity.width() > width {
-        let fixed = identity_line(app, 0, false, true).width();
-        identity = identity_line(app, width.saturating_sub(fixed + 2).min(12), false, true);
-    }
-    vec![pair(identity, location, width), pair(gauges, alerts, width)]
-}
-
-fn build_plan_line(app: &App, width: u16) -> Option<Line<'static>> {
-    let task_steps = app
-        .sdk_inventory
-        .tasks
-        .iter()
-        .filter(|task| crate::app::tasks::is_user_plan_task(task))
-        .map(|task| (task.status, task.active_form.as_deref().unwrap_or(&task.subject)))
-        .collect::<Vec<_>>();
-    let steps = match app.footer.plan_source {
-        crate::app::PlanSource::Todo => app
-            .footer
-            .todo_plan
-            .iter()
-            .map(|item| (item.status, item.active_form.as_deref().unwrap_or(&item.content)))
-            .collect(),
-        crate::app::PlanSource::None if task_steps.is_empty() => app
-            .footer
-            .todo_plan
-            .iter()
-            .map(|item| (item.status, item.active_form.as_deref().unwrap_or(&item.content)))
-            .collect(),
-        crate::app::PlanSource::None | crate::app::PlanSource::Tasks => task_steps,
-    };
-    if steps.is_empty() {
-        return None;
-    }
-    let completed =
-        steps.iter().filter(|(status, _)| *status == model::TaskStatus::Completed).count();
-    let active = steps
-        .iter()
-        .find(|(status, _)| *status == model::TaskStatus::InProgress)
-        .or_else(|| steps.iter().find(|(status, _)| *status == model::TaskStatus::Pending));
-    let cells = steps.len().min(8);
-    let filled = (completed * cells + steps.len() / 2) / steps.len();
-    let meter = format!("{}{}", "▓".repeat(filled), "░".repeat(cells - filled));
-    let label = active.map_or("Done", |(_, label)| *label);
-    Some(compose_footer_row(
-        Line::from(Span::styled(
-            format!("{meter} {completed}/{} {label}", steps.len()),
-            Style::default().fg(app.session_runtime.accent),
-        )),
-        None,
-        width,
-        0,
-    ))
-}
-
-fn footer_row_widths(
-    total_width: u16,
-    right_text: Option<&str>,
-    left_min_width: u16,
-) -> (u16, u16) {
-    if total_width == 0 {
-        return (0, 0);
-    }
-
-    let Some(right_text) = right_text else {
-        return (total_width, 0);
-    };
-
-    let left_min_width = left_min_width.min(total_width);
-    let available_right =
-        total_width.saturating_sub(left_min_width).saturating_sub(FOOTER_COLUMN_GAP);
-    if available_right == 0 {
-        return (total_width, 0);
-    }
-
-    let natural_right_width = u16::try_from(UnicodeWidthStr::width(right_text)).unwrap_or(u16::MAX);
-    let right_width = natural_right_width.min(available_right);
-    if right_width == 0 {
-        return (total_width, 0);
-    }
-
-    let left_width = total_width.saturating_sub(right_width).saturating_sub(FOOTER_COLUMN_GAP);
-    (left_width, right_width)
-}
-
-fn compose_footer_row(
-    left: Line<'static>,
-    right: FooterItem,
-    total_width: u16,
-    left_min_width: u16,
-) -> Line<'static> {
-    if total_width == 0 {
-        return Line::default();
-    }
-
-    let (left_width, right_width) = footer_row_widths(
-        total_width,
-        right.as_ref().map(|(text, _)| text.as_str()),
-        left_min_width,
-    );
-
-    let area = Rect::new(0, 0, total_width, 1);
-    let mut buf = Buffer::empty(area);
-    let left_area = Rect::new(0, 0, left_width, 1);
-    Paragraph::new(left).render(left_area, &mut buf);
-
-    if let Some((right_text, right_color)) = right
-        && right_width > 0
-        && let Some(fitted) = fit_footer_right_text(&right_text, usize::from(right_width))
-    {
-        let right_x = left_width.saturating_add(FOOTER_COLUMN_GAP);
-        let right_area = Rect::new(right_x, 0, right_width, 1);
-        let line = Line::from(Span::styled(fitted, Style::default().fg(right_color)));
-        Paragraph::new(line).alignment(Alignment::Right).render(right_area, &mut buf);
-    }
-
-    buffer_row_to_line(&buf, area, 0)
-}
-
-fn identity_line(app: &App, title_width: usize, effort: bool, compact: bool) -> Line<'static> {
-    use crate::ui::agent_rows::clip;
-    let mut items = Vec::new();
-    if let Some(title) = app.session_runtime.session_title.as_ref().filter(|s| !s.is_empty()) {
-        items.push(Line::from(Span::styled(
-            clip(title, title_width),
-            Style::default().fg(app.session_runtime.accent).bold(),
-        )));
-    }
-    if let Some(model) = app.session_runtime.current_model.as_ref() {
-        let mut spans = vec![Span::styled(
-            if compact {
-                clip(&model.display_name_short, 12)
-            } else {
-                model.display_name_short.clone()
-            },
-            Style::default().fg(footer_context_value()),
-        )];
-        if effort
-            && model.supports_effort
-            && let Some(level) = app.session_effort()
-        {
-            spans.push(Span::styled(
-                format!(" {}", footer_effort_label(level)),
-                Style::default().fg(theme::tertiary()),
-            ));
-        }
-        items.push(Line::from(spans));
-    }
-    if app.session_runtime.ultracode.is_some_and(model::UltracodeState::effective) {
-        items.push(Line::from(Span::styled(
-            if compact { "Ultra" } else { "Ultracode" },
-            Style::default().fg(theme::ultracode_accent()),
-        )));
-    }
-    if let Some(mode) = app.session_runtime.mode.as_ref().filter(|m| m.current_mode_id != "default")
-    {
-        items.push(Line::from(Span::styled(
-            if compact {
-                let label = match mode.current_mode_id.as_str() {
-                    "bypassPermissions" => "Bypass",
-                    "acceptEdits" => "Accept",
-                    "dontAsk" => "Don't ask",
-                    "auto" => "Auto",
-                    "plan" => "Plan",
-                    _ => &mode.current_mode_name,
-                };
-                clip(label, 8)
-            } else {
-                mode.current_mode_name.clone()
-            },
-            Style::default().fg(mode_color(&mode.current_mode_id)),
-        )));
-    }
-    match app.session_runtime.fast_mode_state {
-        model::FastModeState::On => {
-            items.push(Line::from(Span::styled("fast", Style::default().fg(theme::accent()))));
-        }
-        model::FastModeState::Cooldown => items.push(Line::from(Span::styled(
-            if compact { "cooldown" } else { "fast cooldown" },
-            Style::default().fg(theme::warning()),
-        ))),
-        _ => {}
-    }
-    join_items(items)
+    app.session_runtime
+        .mode
+        .is_none()
+        .then(|| startup_status_badge(app))
+        .flatten()
+        .map(|(text, color)| (format!("[{text}]"), color))
 }
 
 const fn footer_effort_label(effort: model::EffortLevel) -> &'static str {
     match effort {
-        model::EffortLevel::Low => "low",
-        model::EffortLevel::Medium => "med",
-        model::EffortLevel::High => "high",
-        model::EffortLevel::XHigh => "xhigh",
-        model::EffortLevel::Max => "max",
+        model::EffortLevel::Low => "Low",
+        model::EffortLevel::Medium => "Med",
+        model::EffortLevel::High => "High",
+        model::EffortLevel::XHigh => "XHigh",
+        model::EffortLevel::Max => "Max",
     }
-}
-
-fn build_context_line(app: &App, max_width: usize) -> Line<'static> {
-    let Some((location, branch)) = context_values(app, max_width) else {
-        return Line::default();
-    };
-    let mut spans = vec![Span::styled(location, Style::default().fg(footer_context_value()))];
-    if let Some(branch) = branch {
-        spans.push(Span::styled(" · ", Style::default().fg(theme::tertiary())));
-        spans.push(Span::styled(branch, Style::default().fg(footer_context_value())));
-    }
-    Line::from(spans)
-}
-
-fn context_values(app: &App, max_width: usize) -> Option<(String, Option<String>)> {
-    const LOCATION_LABEL_WIDTH: usize = 0;
-    const BRANCH_WRAP_WIDTH: usize = 3;
-
-    let location_only_width = max_width.saturating_sub(LOCATION_LABEL_WIDTH);
-    let branch = app.git_branch().filter(|branch| !branch.is_empty());
-
-    if let Some(branch) = branch {
-        let fixed_width = LOCATION_LABEL_WIDTH + BRANCH_WRAP_WIDTH;
-        let available_values = max_width.saturating_sub(fixed_width);
-        if available_values >= MIN_CONTEXT_LOCATION_WIDTH + MIN_CONTEXT_BRANCH_WIDTH {
-            let branch_width = UnicodeWidthStr::width(branch)
-                .min(available_values.saturating_sub(MIN_CONTEXT_LOCATION_WIDTH));
-            let branch_value = fit_footer_right_text(branch, branch_width);
-            let branch_display_width =
-                branch_value.as_ref().map_or(0, |value| UnicodeWidthStr::width(value.as_str()));
-            let location_width = available_values.saturating_sub(branch_display_width);
-            if let Some(location_value) = fit_location_value(&app.cwd, location_width) {
-                return Some((location_value, branch_value));
-            }
-        }
-    }
-
-    fit_location_value(&app.cwd, location_only_width).map(|location_value| (location_value, None))
 }
 
 fn fit_location_value(cwd: &str, max_width: usize) -> Option<String> {
@@ -661,6 +464,13 @@ fn mcp_needs_auth_count(app: &App) -> usize {
         .count()
 }
 
+fn should_show_startup_mcp_hint(app: &App) -> bool {
+    !app.transcript
+        .messages
+        .iter()
+        .any(|message| matches!(message.role, MessageRole::User | MessageRole::Assistant))
+}
+
 fn mode_color(mode_id: &str) -> Color {
     match mode_id {
         "default" => theme::tertiary(),
@@ -669,6 +479,137 @@ fn mode_color(mode_id: &str) -> Color {
         "bypassPermissions" | "dontAsk" => theme::danger(),
         _ => theme::purple(),
     }
+}
+
+fn fast_mode_badge(state: model::FastModeState) -> (&'static str, Color) {
+    match state {
+        model::FastModeState::Unknown => ("FAST:?", theme::tertiary()),
+        model::FastModeState::Off => ("FAST:OFF", theme::tertiary()),
+        model::FastModeState::Cooldown => ("FAST:CD", theme::warning()),
+        model::FastModeState::On => ("FAST:ON", theme::accent()),
+    }
+}
+
+fn startup_status_badge(app: &App) -> Option<(&'static str, Color)> {
+    match app.status {
+        crate::app::AppStatus::Connecting => None,
+        crate::app::AppStatus::Ready => Some(("READY", theme::tertiary())),
+        crate::app::AppStatus::CommandPending
+        | crate::app::AppStatus::Thinking
+        | crate::app::AppStatus::Running => Some(("WORKING", theme::warning())),
+        crate::app::AppStatus::Error => Some(("ERROR", theme::danger())),
+    }
+}
+
+fn build_plan_line(app: &App, width: u16) -> Option<Line<'static>> {
+    let task_steps = app
+        .sdk_inventory
+        .tasks
+        .iter()
+        .filter(|task| crate::app::tasks::is_user_plan_task(task))
+        .map(|task| (task.status, task.active_form.as_deref().unwrap_or(&task.subject)))
+        .collect::<Vec<_>>();
+    let steps = match app.footer.plan_source {
+        crate::app::PlanSource::Todo => app
+            .footer
+            .todo_plan
+            .iter()
+            .map(|item| (item.status, item.active_form.as_deref().unwrap_or(&item.content)))
+            .collect(),
+        crate::app::PlanSource::None if task_steps.is_empty() => app
+            .footer
+            .todo_plan
+            .iter()
+            .map(|item| (item.status, item.active_form.as_deref().unwrap_or(&item.content)))
+            .collect(),
+        crate::app::PlanSource::None | crate::app::PlanSource::Tasks => task_steps,
+    };
+    if steps.is_empty() {
+        return None;
+    }
+    let completed =
+        steps.iter().filter(|(status, _)| *status == model::TaskStatus::Completed).count();
+    let active = steps
+        .iter()
+        .find(|(status, _)| *status == model::TaskStatus::InProgress)
+        .or_else(|| steps.iter().find(|(status, _)| *status == model::TaskStatus::Pending));
+    let cells = steps.len().min(8);
+    let filled = (completed * cells + steps.len() / 2) / steps.len();
+    let meter = format!("{}{}", "▓".repeat(filled), "░".repeat(cells - filled));
+    let label = active.map_or("Done", |(_, label)| *label);
+    Some(compose_footer_row(
+        Line::from(Span::styled(
+            format!("{meter} {completed}/{} {label}", steps.len()),
+            Style::default().fg(app.session_runtime.accent),
+        )),
+        None,
+        width,
+        0,
+    ))
+}
+
+fn footer_row_widths(
+    total_width: u16,
+    right_text: Option<&str>,
+    left_min_width: u16,
+) -> (u16, u16) {
+    if total_width == 0 {
+        return (0, 0);
+    }
+
+    let Some(right_text) = right_text else {
+        return (total_width, 0);
+    };
+
+    let left_min_width = left_min_width.min(total_width);
+    let available_right =
+        total_width.saturating_sub(left_min_width).saturating_sub(FOOTER_COLUMN_GAP);
+    if available_right == 0 {
+        return (total_width, 0);
+    }
+
+    let natural_right_width = u16::try_from(UnicodeWidthStr::width(right_text)).unwrap_or(u16::MAX);
+    let right_width = natural_right_width.min(available_right);
+    if right_width == 0 {
+        return (total_width, 0);
+    }
+
+    let left_width = total_width.saturating_sub(right_width).saturating_sub(FOOTER_COLUMN_GAP);
+    (left_width, right_width)
+}
+
+fn compose_footer_row(
+    left: Line<'static>,
+    right: FooterItem,
+    total_width: u16,
+    left_min_width: u16,
+) -> Line<'static> {
+    if total_width == 0 {
+        return Line::default();
+    }
+
+    let (left_width, right_width) = footer_row_widths(
+        total_width,
+        right.as_ref().map(|(text, _)| text.as_str()),
+        left_min_width,
+    );
+
+    let area = Rect::new(0, 0, total_width, 1);
+    let mut buf = Buffer::empty(area);
+    let left_area = Rect::new(0, 0, left_width, 1);
+    Paragraph::new(left).render(left_area, &mut buf);
+
+    if let Some((right_text, right_color)) = right
+        && right_width > 0
+        && let Some(fitted) = fit_footer_right_text(&right_text, usize::from(right_width))
+    {
+        let right_x = left_width.saturating_add(FOOTER_COLUMN_GAP);
+        let right_area = Rect::new(right_x, 0, right_width, 1);
+        let line = Line::from(Span::styled(fitted, Style::default().fg(right_color)));
+        Paragraph::new(line).alignment(Alignment::Right).render(right_area, &mut buf);
+    }
+
+    buffer_row_to_line(&buf, area, 0)
 }
 
 fn buffer_row_to_line(buf: &Buffer, area: Rect, row: u16) -> Line<'static> {
@@ -722,39 +663,167 @@ fn buffer_row_to_line(buf: &Buffer, area: Rect, row: u16) -> Line<'static> {
 mod tests {
     use super::*;
     use crate::agent::model::{McpServerConnectionStatus, McpServerStatus};
-    use crate::app::{BlockCache, ChatMessage, InlinePermission, ModeState, ToolCallInfo};
+    use crate::app::{
+        AppStatus, BlockCache, ChatMessage, InlinePermission, MessageBlock, MessageRole, ModeState,
+        ToolCallInfo,
+    };
     use tokio::sync::oneshot;
 
-    fn text(line: &Line<'_>) -> String {
-        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|span| span.content.as_ref()).collect()
     }
-    fn fixture() -> App {
+
+    fn app_with_mode() -> App {
         let mut app = App::test_default();
-        app.cwd = "~/Github/system-config".to_owned();
-        app.session_runtime.session_title = Some("system-config@main-2".to_owned());
-        app.session_runtime.current_model =
-            Some(model::CurrentModel::new("opus", "Opus 5.5", "Opus 5.5").supports_effort(true));
         app.session_runtime.mode = Some(ModeState {
-            current_mode_id: "auto".to_owned(),
-            current_mode_name: "Auto".to_owned(),
-            available_modes: vec![],
+            current_mode_id: "default".to_owned(),
+            current_mode_name: "default".to_owned(),
+            available_modes: Vec::new(),
         });
-        app.session_runtime.session_usage.context_usage_percent = Some(6);
-        app.set_git_branch_for_test(Some("main"));
         app
     }
-    fn permission(app: &mut App) {
-        let (response_tx, _) = oneshot::channel();
+
+    #[test]
+    fn fit_footer_right_text_truncates_when_needed() {
+        let text = "Update available: v9.9.9 (current v0.2.0)";
+        let fitted = fit_footer_right_text(text, 12).expect("fitted text");
+        assert!(fitted.ends_with("..."));
+        assert!(UnicodeWidthStr::width(fitted.as_str()) <= 12);
+    }
+
+    #[test]
+    fn fit_footer_suffix_text_keeps_path_tail() {
+        let text = "~/work/company/claude_rust";
+        let fitted = fit_footer_suffix_text(text, 14).expect("fitted text");
+        assert!(fitted.starts_with("..."));
+        assert!(fitted.ends_with("claude_rust"));
+        assert!(UnicodeWidthStr::width(fitted.as_str()) <= 14);
+    }
+
+    #[test]
+    fn serialize_footer_rows_produces_exactly_one_row() {
+        let app = App::test_default();
+        let serialized = serialize_footer_rows(&app, 80);
+
+        assert_eq!(serialized.rows.len(), 1);
+    }
+
+    #[test]
+    fn first_row_preserves_mode_and_fast_mode_badges() {
+        let app = app_with_mode();
+        let serialized = serialize_footer_rows(&app, 80);
+        let text = line_text(&serialized.rows[0]);
+
+        assert!(text.contains("[default]"));
+        assert!(text.contains("[FAST:OFF]"));
+    }
+
+    #[test]
+    fn reported_session_effort_updates_the_independent_effort_field() {
+        let mut app = app_with_mode();
+        app.session_runtime.session_id = Some("sess-1".into());
+        app.session_runtime.current_model =
+            Some(model::CurrentModel::new("opus", "Opus", "Opus").supports_effort(true));
+        for (value, label) in [
+            ("low", "Low"),
+            ("medium", "Med"),
+            ("high", "High"),
+            ("xhigh", "XHigh"),
+            ("max", "Max"),
+        ] {
+            crate::app::handle_client_event(
+                &mut app,
+                crate::agent::events::ClientEvent::SessionUpdate {
+                    session_id: "sess-1".to_owned(),
+                    update: model::SessionUpdate::ConfigOptionUpdate(model::ConfigOptionUpdate {
+                        option_id: "effortLevel".to_owned(),
+                        value: serde_json::json!(value),
+                    }),
+                },
+            );
+            let footer = serialize_footer_rows(&app, 120);
+            assert!(line_text(&footer.rows[0]).contains(&format!("[{label}]")));
+            assert!(line_text(&footer.rows[0]).contains("[Opus]"));
+        }
+        crate::app::handle_client_event(
+            &mut app,
+            crate::agent::events::ClientEvent::SessionUpdate {
+                session_id: "sess-1".to_owned(),
+                update: model::SessionUpdate::ConfigOptionUpdate(model::ConfigOptionUpdate {
+                    option_id: "effortLevel".to_owned(),
+                    value: serde_json::Value::Null,
+                }),
+            },
+        );
+        assert!(line_text(&serialize_footer_rows(&app, 120).rows[0]).contains("[Opus]"));
+    }
+
+    #[test]
+    fn ultracode_badge_appears_only_for_verified_effective_state() {
+        for state in [
+            None,
+            model::UltracodeState::new(true, false, false),
+            model::UltracodeState::new(false, true, false),
+            model::UltracodeState::new(false, false, false),
+            model::UltracodeState::new(true, true, true),
+        ] {
+            let mut app = app_with_mode();
+            app.session_runtime.ultracode = state;
+            let footer = serialize_footer_rows(&app, 120);
+            assert_eq!(
+                line_text(&footer.rows[0]).contains("Ultracode"),
+                state.is_some_and(model::UltracodeState::effective)
+            );
+            if state.is_some_and(model::UltracodeState::effective) {
+                let label = footer.rows[0]
+                    .spans
+                    .iter()
+                    .find(|span| span.content == "[Ultracode]")
+                    .expect("Ultracode label");
+                assert_eq!(label.style.fg, Some(theme::ultracode_accent()));
+                assert!(
+                    footer.rows[0].spans.iter().any(|span| span.content.contains("test-model")
+                        && span.style.fg == Some(footer_context_value()))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn first_row_omits_connecting_badge_when_mode_is_unset() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Connecting;
+
+        let serialized = serialize_footer_rows(&app, 80);
+        let text = line_text(&serialized.rows[0]);
+
+        assert!(!text.contains("[CONNECTING]"));
+        assert!(text.contains("[FAST:OFF]"));
+    }
+
+    #[test]
+    fn footer_preserves_directory_when_space_allows() {
+        let app = App::test_default();
+        let serialized = serialize_footer_rows(&app, 160);
+        let text = line_text(&serialized.rows[0]);
+
+        assert!(text.contains("Loc:"));
+    }
+
+    #[test]
+    fn pending_permission_hint_wins_on_first_row() {
+        let mut app = App::test_default();
+        let (response_tx, _response_rx) = oneshot::channel();
         app.transcript.messages.push(ChatMessage::new(
-            crate::app::MessageRole::Assistant,
+            MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
-                id: "permission".into(),
-                source_message_uuids: vec![],
+                id: "perm-1".into(),
+                source_message_uuids: Vec::new(),
                 title: "Read".into(),
                 sdk_tool_name: "Read".into(),
                 raw_input: None,
                 raw_input_bytes: 0,
-                locations: vec![],
+                locations: Vec::new(),
                 output_metadata: None,
                 task_metadata: None,
                 status: model::ToolCallStatus::Pending,
@@ -778,8 +847,168 @@ mod tests {
             }))],
             None,
         ));
-        app.index_tool_call("permission".into(), 0, 0);
-        app.pending_interaction_ids.push("permission".into());
+        app.index_tool_call("perm-1".into(), 0, 0);
+        app.pending_interaction_ids.push("perm-1".into());
+
+        let serialized = serialize_footer_rows(&app, 80);
+        let text = line_text(&serialized.rows[0]);
+        assert!(text.ends_with("1 PEND. PERM."));
+        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+            SETTING_ID,
+            serde_json::json!([]),
+        ));
+        let text = line_text(&serialize_footer_rows(&app, 80).rows[0]);
+        assert!(text.ends_with("1 PEND. PERM."));
+        assert!(!text.contains("FAST:"));
+        assert!(!text.contains("Loc:"));
+    }
+
+    #[test]
+    fn mcp_auth_notice_and_context_are_both_visible_when_space_allows() {
+        let mut app = App::test_default();
+        app.session_runtime.session_usage.context_usage_percent = Some(62);
+        app.mcp.servers.push(McpServerStatus {
+            name: "filesystem".to_owned(),
+            status: McpServerConnectionStatus::NeedsAuth,
+            server_info: None,
+            error: None,
+            config: None,
+            scope: None,
+            source: None,
+            tools: Vec::new(),
+        });
+
+        let serialized = serialize_footer_rows(&app, 160);
+        let text = line_text(&serialized.rows[0]);
+        assert!(text.contains("1 MCP NEEDS AUTH"));
+        assert!(text.contains("Context: 38%"));
+    }
+
+    #[test]
+    fn narrow_width_preserves_notice_before_configured_fields() {
+        let mut app = App::test_default();
+        app.mcp.servers.push(McpServerStatus {
+            name: "filesystem".to_owned(),
+            status: McpServerConnectionStatus::NeedsAuth,
+            server_info: None,
+            error: None,
+            config: None,
+            scope: None,
+            source: None,
+            tools: Vec::new(),
+        });
+
+        let serialized = serialize_footer_rows(&app, 36);
+        let text = line_text(&serialized.rows[0]);
+        assert!(text.ends_with("1 MCP NEEDS AUTH"));
+        assert!(text.width() <= 36);
+        let layout = FooterLayout::from_saved(Some(&serde_json::json!([
+            {"id":"fastMode","visible":true,"side":"left"}
+        ])))
+        .expect("layout");
+        let exact_fit = line_text(&serialize_footer(&app, &layout, 27));
+        assert!(exact_fit.starts_with("[FAST:OFF]"));
+        assert!(exact_fit.ends_with("1 MCP NEEDS AUTH"));
+        assert_eq!(exact_fit.width(), 27);
+    }
+
+    #[test]
+    fn directory_and_branch_render_without_each_other() {
+        let mut app = app_with_mode();
+        app.cwd = "~/work/claude_rust".into();
+        app.set_git_branch_for_test(Some("feature/footer"));
+        for (id, expected, hidden) in [
+            ("directory", "Loc: ~/work/claude_rust", "Branch:"),
+            ("gitBranch", "Branch: feature/footer", "Loc:"),
+        ] {
+            let layout = FooterLayout::from_saved(Some(&serde_json::json!([
+                {"id":id,"visible":true,"side":"left"}
+            ])))
+            .expect("layout");
+            let text = line_text(&serialize_footer(&app, &layout, 80));
+            assert!(text.contains(expected), "{text}");
+            assert!(!text.contains(hidden), "{text}");
+        }
+    }
+
+    #[test]
+    fn effort_and_ultracode_do_not_require_a_visible_model() {
+        let mut app = app_with_mode();
+        app.session_runtime.current_model =
+            Some(model::CurrentModel::new("opus", "Opus", "Opus").supports_effort(true));
+        app.session_runtime.config_options.insert("effortLevel".into(), serde_json::json!("high"));
+        app.session_runtime.ultracode = model::UltracodeState::new(true, true, true);
+        let layout = FooterLayout::from_saved(Some(&serde_json::json!([
+            {"id":"effort","visible":true,"side":"left"},
+            {"id":"ultracode","visible":true,"side":"right"}
+        ])))
+        .expect("layout");
+        let text = line_text(&serialize_footer(&app, &layout, 80));
+        assert!(text.starts_with("[High]"));
+        assert!(text.ends_with("[Ultracode]"));
+        assert!(!text.contains("Opus"));
+        app.session_runtime.current_model.as_mut().expect("model").supports_effort = false;
+        assert!(!line_text(&serialize_footer(&app, &layout, 80)).contains("High"));
+    }
+
+    #[test]
+    fn configured_groups_preserve_order_and_anchor_to_opposite_edges() {
+        let mut app = app_with_mode();
+        app.set_git_branch_for_test(Some("main"));
+        app.session_runtime.session_usage.context_usage_percent = Some(28);
+        let layout = FooterLayout::from_saved(Some(&serde_json::json!([
+            {"id":"fastMode","visible":true,"side":"left"},
+            {"id":"permissionMode","visible":true,"side":"left"},
+            {"id":"contextRemaining","visible":true,"side":"right"},
+            {"id":"gitBranch","visible":true,"side":"right"}
+        ])))
+        .expect("layout");
+        let text = line_text(&serialize_footer(&app, &layout, 100));
+        assert!(text.starts_with("[FAST:OFF] · [default]"));
+        assert!(text.ends_with("Context: 72% · Branch: main"));
+        assert_eq!(text.width(), 100);
+    }
+
+    #[test]
+    fn unicode_values_never_overlap_or_exceed_the_single_row() {
+        let mut app = app_with_mode();
+        app.cwd = "~/工作/项目/claude_rust".into();
+        app.set_git_branch_for_test(Some("feature/日本語の長いブランチ"));
+        let layout = FooterLayout::default();
+        for width in 0..=160 {
+            let line = serialize_footer(&app, &layout, width);
+            assert!(line.width() <= usize::from(width), "width {width}: {}", line_text(&line));
+        }
+    }
+
+    #[test]
+    fn shortened_branch_retains_part_of_its_name_or_is_omitted() {
+        let mut app = app_with_mode();
+        app.set_git_branch_for_test(Some("feature/configurable-footer"));
+        let layout = FooterLayout::from_saved(Some(&serde_json::json!([
+            {"id":"gitBranch","visible":true,"side":"left"}
+        ])))
+        .expect("layout");
+        assert!(line_text(&serialize_footer(&app, &layout, 11)).is_empty());
+        let shortened = line_text(&serialize_footer(&app, &layout, 12));
+        assert!(shortened.contains("f..."));
+        assert_eq!(shortened.width(), 12);
+    }
+
+    fn fixture() -> App {
+        let mut app = App::test_default();
+        app.cwd = "~/Github/system-config".to_owned();
+        app.session_runtime.session_title = Some("system-config@main-2".to_owned());
+        app.session_runtime.current_model =
+            Some(model::CurrentModel::new("opus", "Opus 5.5", "Opus 5.5").supports_effort(true));
+        app.session_runtime.mode = Some(ModeState {
+            current_mode_id: "auto".to_owned(),
+            current_mode_name: "Auto".to_owned(),
+            available_modes: vec![],
+        });
+        app.session_runtime.session_usage.context_usage_percent = Some(6);
+        app.set_git_branch_for_test(Some("main"));
+        app
     }
     fn agent(id: &str, status: model::TaskStatus, name: &str, model: &str) -> model::TaskItem {
         let mut task = model::TaskItem::new(id, "Map the footer code", status);
@@ -787,111 +1016,6 @@ mod tests {
             serde_json::json!({"task_type":"local_agent","subagent_type":name,"model_display":model,"summary":"Analyzing render path","usage":{"total_tokens":34000,"tool_uses":12,"duration_ms":62000}}),
         );
         task
-    }
-    #[test]
-    fn responsive_base_rows_keep_unique_facts_and_alerts() {
-        let mut app = fixture();
-        permission(&mut app);
-        let wide = serialize_footer_rows(&app, 200).rows;
-        assert_eq!(wide.len(), 1);
-        let row = text(&wide[0]);
-        for fact in [
-            "system-config@main-2",
-            "Opus 5.5",
-            "Auto",
-            "~/Github/system-config · main",
-            "ctx ▓░░░░░░░ 6%",
-            "1 permission waiting",
-        ] {
-            assert_eq!(row.matches(fact).count(), 1, "{row}");
-        }
-        let medium = serialize_footer_rows(&app, 100).rows;
-        assert_eq!(medium.len(), 2);
-        assert!(text(&medium[0]).contains("Opus 5.5"));
-        assert!(text(&medium[0]).contains("system-config"));
-        assert!(text(&medium[1]).contains("1 permission waiting"));
-        let narrow = serialize_footer_rows(&app, 50).rows;
-        assert_eq!(narrow.len(), 2);
-        assert!(text(&narrow[0]).contains("Opus 5.5"));
-        assert!(text(&narrow[0]).contains("Auto"));
-        assert!(text(&narrow[1]).contains("ctx"));
-        assert!(text(&narrow[1]).contains("1 permission waiting"));
-        for line in narrow {
-            assert!(line.width() <= 50, "{}", text(&line));
-        }
-    }
-    #[test]
-    fn alerts_coexist_with_context_and_rate_thresholds() {
-        let mut app = fixture();
-        permission(&mut app);
-        app.session_runtime.session_usage.context_usage_percent = Some(90);
-        app.mcp.servers.push(McpServerStatus {
-            name: "filesystem".into(),
-            status: McpServerConnectionStatus::NeedsAuth,
-            server_info: None,
-            error: None,
-            config: None,
-            scope: None,
-            source: None,
-            tools: vec![],
-        });
-        let rows = serialize_footer_rows(&app, 50).rows;
-        assert!(text(&rows[1]).contains("ctx"));
-        assert!(text(&rows[1]).contains("1 perm"));
-        assert!(text(&rows[1]).contains("1 MCP auth"));
-        assert!(
-            rows[1]
-                .spans
-                .iter()
-                .any(|s| s.content.contains("90%") && s.style.fg == Some(theme::danger()))
-        );
-        assert_eq!(gauge_color(69.0), footer_context_value());
-        assert_eq!(gauge_color(70.0), theme::warning());
-        assert_eq!(gauge_color(89.0), theme::warning());
-        assert_eq!(gauge_color(90.0), theme::danger());
-    }
-    #[test]
-    fn defaults_hidden_effective_states_and_effort_shown() {
-        let mut app = fixture();
-        app.session_runtime.mode.as_mut().expect("mode").current_mode_id = "default".into();
-        app.session_runtime.session_id = Some("session".into());
-        for (value, label) in [
-            ("low", "low"),
-            ("medium", "med"),
-            ("high", "high"),
-            ("xhigh", "xhigh"),
-            ("max", "max"),
-        ] {
-            crate::app::handle_client_event(
-                &mut app,
-                crate::agent::events::ClientEvent::SessionUpdate {
-                    session_id: "session".into(),
-                    update: model::SessionUpdate::ConfigOptionUpdate(model::ConfigOptionUpdate {
-                        option_id: "effortLevel".into(),
-                        value: serde_json::json!(value),
-                    }),
-                },
-            );
-            let rows = serialize_footer_rows(&app, 200).rows;
-            let row = text(&rows[0]);
-            assert!(row.contains(&format!("Opus 5.5 {label}")));
-            assert!(!row.contains("Auto"));
-            assert!(!row.contains("fast"));
-        }
-        for state in [
-            None,
-            model::UltracodeState::new(true, false, false),
-            model::UltracodeState::new(true, true, true),
-        ] {
-            app.session_runtime.ultracode = state;
-            let row = serialize_footer_rows(&app, 200).rows.remove(0);
-            assert_eq!(
-                text(&row).contains("Ultracode"),
-                state.is_some_and(model::UltracodeState::effective)
-            );
-        }
-        app.session_runtime.fast_mode_state = model::FastModeState::Cooldown;
-        assert!(text(&serialize_footer_rows(&app, 200).rows[0]).contains("fast cooldown"));
     }
     #[test]
     fn shelf_caps_rows_and_leaves_finished_count_in_base() {
@@ -904,28 +1028,28 @@ mod tests {
         ];
         let rows = serialize_footer_rows(&app, 200).rows;
         assert_eq!(rows.len(), 5);
-        assert!(text(&rows[0]).contains("2 running · 1 done"));
-        assert!(text(&rows[0]).contains("ctrl+t list · ← inspect"), "{}", text(&rows[0]));
+        assert!(line_text(&rows[0]).contains("2 running · 1 done"));
+        assert!(line_text(&rows[0]).contains("ctrl+t list · ← inspect"), "{}", line_text(&rows[0]));
         for (index, name, model) in [
             (1, "Explore", "Sonnet 5.5"),
             (2, "implementer", "Opus 5.5"),
             (3, "verifier", "Sonnet 5.5"),
         ] {
-            let row = text(&rows[index]);
+            let row = line_text(&rows[index]);
             assert!(row.contains(name) && row.contains(model), "{row}");
             assert!(row.contains("12 tools  34k  1m02s"));
         }
         app.chat_render.terminal_height = 23;
         let rows = serialize_footer_rows(&app, 200).rows;
         assert_eq!(rows.len(), 2);
-        assert!(text(&rows[0]).contains("+3 more"));
+        assert!(line_text(&rows[0]).contains("+3 more"));
         for task in &mut app.sdk_inventory.tasks {
             task.status = model::TaskStatus::Completed;
         }
         let rows = serialize_footer_rows(&app, 200).rows;
         assert_eq!(rows.len(), 1);
-        assert!(text(&rows[0]).contains("3 agents"));
-        assert!(!text(&rows[0]).contains("ctrl+t"));
+        assert!(line_text(&rows[0]).contains("3 agents"));
+        assert!(!line_text(&rows[0]).contains("ctrl+t"));
     }
     #[test]
     fn plan_precedes_shelf_and_status_command_stays_last() {
@@ -944,11 +1068,13 @@ mod tests {
             "Sonnet 5.5",
         ));
         let rows = serialize_footer_rows(&app, 100).rows;
-        assert!(text(&rows[0]).contains("0/1 Current step"));
-        assert!(text(&rows[1]).contains("agents"));
-        assert_eq!(text(rows.last().expect("status")), "owner command output");
+        assert!(line_text(&rows[0]).contains("0/1 Current step"));
+        assert!(line_text(&rows[1]).contains("agents"));
+        assert_eq!(line_text(rows.last().expect("status")), "owner command output");
         app.footer.apply_todo_plan(vec![]);
-        assert!(!serialize_footer_rows(&app, 100).rows.iter().any(|r| text(r).contains("0/1")));
+        assert!(
+            !serialize_footer_rows(&app, 100).rows.iter().any(|r| line_text(r).contains("0/1"))
+        );
     }
     #[test]
     fn test_backend_preserves_agent_column_associations_under_resize() {
@@ -981,74 +1107,6 @@ mod tests {
             }
         }
     }
-    #[test]
-    fn critical_windows_finished_agents_and_alerts_fit_narrow_terminal() {
-        let mut app = fixture();
-        permission(&mut app);
-        app.session_runtime.session_usage.context_usage_percent = Some(90);
-        app.mcp.servers.push(McpServerStatus {
-            name: "filesystem".into(),
-            status: McpServerConnectionStatus::NeedsAuth,
-            server_info: None,
-            error: None,
-            config: None,
-            scope: None,
-            source: None,
-            tools: vec![],
-        });
-        let mut task = agent("failed", model::TaskStatus::Completed, "verifier", "Sonnet 5.5");
-        task.metadata.as_mut().expect("metadata")["terminal_status"] = serde_json::json!("failed");
-        app.sdk_inventory.tasks.push(task);
-        app.session_runtime.last_rate_limit_update = Some(model::RateLimitUpdate {
-            status: model::RateLimitStatus::Allowed,
-            error_code: None,
-            resets_at: None,
-            utilization: Some(0.95),
-            rate_limit_type: Some("five_hour".into()),
-            limit_scope: None,
-            overage_status: None,
-            overage_resets_at: None,
-            overage_disabled_reason: None,
-            is_using_overage: None,
-            surpassed_threshold: None,
-            can_user_purchase_credits: None,
-            has_chargeable_saved_payment_method: None,
-        });
-        app.session_runtime.session_id = Some("session".into());
-        crate::app::handle_client_event(&mut app,crate::agent::events::ClientEvent::StructuredUsageReceived {session_id:"session".into(),snapshot:Some(serde_json::from_value(serde_json::json!({"five_hour":{"utilization":95,"resets_at":null},"seven_day":{"utilization":95,"resets_at":null}})).expect("SDK snapshot")),error:None});
-        assert!(
-            app.usage.snapshot.as_ref().is_some_and(
-                |snapshot| snapshot.five_hour.is_some() && snapshot.seven_day.is_some()
-            )
-        );
-        let rows = serialize_footer_rows(&app, 50).rows;
-        assert!(rows.iter().all(|row| row.width() <= 50));
-        let gauge = text(&rows[1]);
-        assert!(gauge.contains("ctx"));
-        assert!(gauge.contains("1 perm"));
-        assert!(gauge.contains("1 MCP auth"), "{gauge}");
-    }
-    #[test]
-    fn required_model_mode_and_effective_states_fit_fifty_columns() {
-        use ratatui::{Terminal, backend::TestBackend};
-        let mut app = fixture();
-        let mode = app.session_runtime.mode.as_mut().expect("mode");
-        mode.current_mode_id = "bypassPermissions".into();
-        mode.current_mode_name = "Bypass Permissions".into();
-        app.session_runtime.ultracode = model::UltracodeState::new(true, true, true);
-        app.session_runtime.fast_mode_state = model::FastModeState::Cooldown;
-        let rows = serialize_footer_rows(&app, 50).rows;
-        assert!(rows.iter().all(|row| row.width() <= 50), "{rows:?}");
-        let mut terminal = Terminal::new(TestBackend::new(50, 2)).expect("terminal");
-        terminal
-            .draw(|frame| frame.render_widget(Paragraph::new(rows), frame.area()))
-            .expect("draw");
-        let row: String = (0..50).map(|x| terminal.backend().buffer()[(x, 0)].symbol()).collect();
-        for value in ["Opus 5.5", "Bypass", "Ultra", "cooldown"] {
-            assert!(row.contains(value), "{row}");
-        }
-    }
-
     #[test]
     fn shelf_excludes_agents_from_finished_previous_waves() {
         let mut app = fixture();
@@ -1083,31 +1141,58 @@ mod tests {
         );
         let shelf = build_agent_shelf(&app, 200);
         assert_eq!(shelf.len(), 2);
-        assert!(text(&shelf[1]).contains("new-worker"));
-        assert!(!shelf.iter().any(|row| text(row).contains("old-worker")));
+        assert!(line_text(&shelf[1]).contains("new-worker"));
+        assert!(!shelf.iter().any(|row| line_text(row).contains("old-worker")));
         assert_eq!(crate::ui::agent_rows::session_agent_rows(&app).len(), 2);
     }
+
     #[test]
-    fn all_permission_modes_preserve_model_and_state_at_fifty_columns() {
-        for (id, name, label) in [
-            ("auto", "Auto", "Auto"),
-            ("acceptEdits", "Accept Edits", "Accept"),
-            ("plan", "Plan", "Plan"),
-            ("bypassPermissions", "Bypass Permissions", "Bypass"),
-            ("dontAsk", "Don't ask", "Don't"),
-        ] {
-            let mut app = fixture();
-            let mode = app.session_runtime.mode.as_mut().expect("mode");
-            mode.current_mode_id = id.into();
-            mode.current_mode_name = name.into();
-            app.session_runtime.ultracode = model::UltracodeState::new(true, true, true);
-            app.session_runtime.fast_mode_state = model::FastModeState::Cooldown;
-            let rows = serialize_footer_rows(&app, 50).rows;
-            assert!(rows.iter().all(|row| row.width() <= 50), "{id}: {rows:?}");
-            let identity = text(&rows[0]);
-            assert!(identity.contains("Opus 5.5"));
-            assert!(identity.contains(label), "{identity}");
-            assert!(identity.contains("cooldown"));
-        }
+    fn fork_fields_render_title_usage_windows_and_finished_agents() {
+        let mut app = fixture();
+        app.session_runtime.session_id = Some("session".into());
+        crate::app::handle_client_event(
+            &mut app,
+            crate::agent::events::ClientEvent::StructuredUsageReceived {
+                session_id: "session".into(),
+                snapshot: Some(
+                    serde_json::from_value(serde_json::json!({
+                        "five_hour": {"utilization": 72, "resets_at": null},
+                        "seven_day": {"utilization": 12, "resets_at": null}
+                    }))
+                    .expect("SDK snapshot"),
+                ),
+                error: None,
+            },
+        );
+        let mut task = agent("failed", model::TaskStatus::Completed, "verifier", "Sonnet 5.5");
+        task.metadata.as_mut().expect("metadata")["terminal_status"] = serde_json::json!("failed");
+        app.sdk_inventory.tasks.push(task);
+        let layout = FooterLayout::from_saved(Some(&serde_json::json!([
+            {"id":"sessionTitle","visible":true,"side":"left"},
+            {"id":"rateLimits","visible":true,"side":"right"},
+            {"id":"agents","visible":true,"side":"right"}
+        ])))
+        .expect("layout");
+        let row = serialize_footer(&app, &layout, 120);
+        let text = line_text(&row);
+        assert!(text.starts_with("system-config@main-2"), "{text}");
+        assert!(text.ends_with("Usage: 5h 72% 7d 12% \u{b7} 1 agent, 1 failed"), "{text}");
+        let title = row.spans.iter().find(|span| span.content == "system-config@main-2");
+        assert_eq!(title.and_then(|span| span.style.fg), Some(app.session_runtime.accent));
+        let usage = row.spans.iter().find(|span| span.content.starts_with("Usage:"));
+        assert_eq!(usage.and_then(|span| span.style.fg), Some(theme::warning()));
+    }
+
+    #[test]
+    fn context_remaining_turns_warning_then_danger_as_the_window_fills() {
+        assert_eq!(gauge_color(69.0), footer_context_value());
+        assert_eq!(gauge_color(70.0), theme::warning());
+        assert_eq!(gauge_color(89.0), theme::warning());
+        assert_eq!(gauge_color(90.0), theme::danger());
+        let mut app = fixture();
+        app.session_runtime.session_usage.context_usage_percent = Some(92);
+        let row = serialize_footer_rows(&app, 200).rows.remove(0);
+        let context = row.spans.iter().find(|span| span.content == "Context: 8%");
+        assert_eq!(context.and_then(|span| span.style.fg), Some(theme::danger()));
     }
 }

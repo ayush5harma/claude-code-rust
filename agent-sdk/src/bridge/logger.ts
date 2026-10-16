@@ -122,7 +122,6 @@ function commandSessionId(command: BridgeCommand): string | undefined {
     case "get_status_snapshot":
     case "get_context_usage":
     case "get_usage":
-    case "get_working_diff":
     case "list_subagents":
     case "get_subagent_messages":
     case "stop_subagent":
@@ -180,7 +179,6 @@ function commandToolCallId(command: BridgeCommand): string | undefined {
     case "get_status_snapshot":
     case "get_context_usage":
     case "get_usage":
-    case "get_working_diff":
     case "list_subagents":
     case "get_subagent_messages":
     case "stop_subagent":
@@ -241,7 +239,6 @@ function eventToolCallId(event: BridgeEvent): string | undefined {
     case "interaction_cancelled":
     case "context_usage":
     case "usage_snapshot":
-    case "working_diff":
     case "subagents_listed":
     case "subagent_messages":
     case "subagent_stop_result":
@@ -301,7 +298,6 @@ function protocolEventLevel(event: BridgeEvent): LogLevel {
     case "settings_result":
     case "context_usage":
     case "usage_snapshot":
-    case "working_diff":
     case "subagents_listed":
     case "subagent_messages":
     case "subagent_stop_result":

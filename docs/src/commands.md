@@ -19,7 +19,7 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/hooks` | `/hooks` | Inspect and edit saved hook configuration without executing hooks. |
 | `/copy` | `/copy` | Copy the last completed response, or choose a code block from it. |
 | `/search` | `/search [query]` | Search retained user, assistant, and visible tool text. |
-| `/diff` | `/diff` | Browse retained session tool diffs and current Git working-tree changes. |
+| `/diff` | `/diff` | Review Git changes and full file contents without changing files or the index. |
 | `/docs` | `/docs <mode\|models\|shortcuts\|commands\|agents>` | Render command, shortcut, model, mode, or subagent help into chat. |
 | `/agent` | `/agent <name\|reset>` | Change the main-thread agent for the active session. Applies on the next turn. |
 | `/effort` | `/effort <low\|medium\|high\|xhigh\|max\|reset>` | Change thinking effort for the active session. |
@@ -37,7 +37,7 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/mode` | `/mode <id>` | Switch to a mode advertised by the active session. |
 | `/model` | `/model <id>` | Switch to a model advertised by the active session. |
 | `/new-session` | `/new-session` | Start a fresh bridge session in the current folder. |
-| `/resume` | `/resume [session_id_or_title]` | Open the session picker (refreshed from the SDK each time it opens, with the active session marked `[current]`), or resume an exact ID or displayed title. |
+| `/resume` | `/resume` | Search and select a session in the fullscreen picker, refreshed from the SDK each time it opens. Tab resumes a large session compact-first; Ctrl+T tags and Ctrl+D deletes the selected session. |
 | `/rewind` | `/rewind <user_message_uuid> <both\|conversation\|code>` | Restore conversation, code, or both to a previous user message. |
 | `/reload` | `/reload` | Re-read skills and output styles from disk for the active session. |
 | `/export` | `/export [path]` | Save the complete conversation as a Markdown file. |
@@ -48,11 +48,45 @@ Enter completes the selected slash command or argument and submits it when ready
 
 Editing the draft cancels a pending submission. Editing, completion, and submission keys cannot change or send the draft while pasted text is awaiting insertion, including when suggestions are open or keys are remapped. Suggestions refresh after the pasted text is inserted.
 
-Completing the name of a command with no arguments or optional arguments closes the popup and returns focus to the draft. Optional arguments remain supported: `/resume` opens the session picker, and `/resume <session_id_or_title>` resumes directly. A title must match the displayed title exactly; if it names more than one session, or none, the app shows a notice that lists the candidate IDs or says the session is unknown, and the composer stays usable. Pressing Tab again requests argument completion explicitly. When the SDK provides only an argument hint, Tab displays that hint without changing or sending the draft; Enter sends the typed command for SDK validation. SDK hints are descriptive text, so their brackets never determine whether the app allows submission. Empty hints and `none` or `[none]` do not produce argument help.
+Completing the name of a command with no arguments or optional arguments closes the popup and returns focus to the draft. For commands accepting arguments, pressing Tab again requests argument completion explicitly. When the SDK provides only an argument hint, Tab displays that hint without changing or sending the draft; Enter sends the typed command for SDK validation. SDK hints are descriptive text, so their brackets never determine whether the app allows submission. Empty hints and `none` or `[none]` do not produce argument help.
 
 Space inserts a literal separator without accepting the highlighted suggestion. It ends command-name completion and continues argument assistance only when the app requires arguments, or when you explicitly requested argument help. There is no special Space dismissal state. Escape dismisses the current menu; argument edits, cursor movement within arguments, and metadata refreshes keep it closed. Tab requests completion again, and editing the command name starts a new completion interaction. A command is recognized only at the start of the draft, allowing leading whitespace; slashes on later lines remain literal prompt or argument text.
 
 The command menu includes the full merged inventory and scrolls as you move through it. SDK commands remain available after `/clear` changes the session identifier. In SDK sessions that advertise `/clear [name]`, `/new` and `/reset` are aliases; the optional name labels the conversation you are leaving. `/new-session` is the separate app command that starts a fresh bridge session. App command definitions take precedence when the SDK advertises the same name.
+
+## Resuming sessions
+
+`/resume` opens the same fullscreen session picker used by `claude-rs resume` at startup. Type to filter by session name, session ID, or branch name; search matches partial text without case sensitivity, and pasted text also searches. Up/Down selects a matching session, Enter resumes it, and Escape closes the picker without switching sessions. Backspace edits the search. The scrollable list shows the SDK-provided title, last activity, branch when available, session ID, and a marker for the current session. All available sessions for the project directory are searchable.
+
+Refreshing session metadata keeps the selected session by ID when it still matches. If it disappears or stops matching, the next result at that position is selected, or the previous result at the end. An empty result list stays open and cannot resume an unrelated session; edit the search or press Escape. Right activates the `fork` action and opens the message picker; Left/Escape returns to the filtered session list. Message previews wrap to the terminal width, preserve paragraph breaks, and show up to four text lines with a `more` indicator for longer messages. Up/Down selects a message, and Enter forks before it. Right opens the selected message for full-text reading with Up/Down scrolling; Left/Escape returns to the message list.
+
+`/resume` asks the SDK for the session list each time it opens, so the active session and sessions other processes wrote are listed; until that answer arrives only Escape works. Each row shows the session's saved size and its SDK tag. Tab resumes a session of 1 MiB or more and compacts it before the first prompt. Ctrl+T edits the selected session's tag (Enter saves, an empty tag clears it, Ctrl+U empties the field) and Ctrl+D deletes the selected session after `y` confirms; the active session cannot be deleted.
+
+Session selection happens inside the picker; `/resume` has no inline session suggestions or chat arguments. Ordinary command-name completion still completes `/resu` to `/resume`. For direct resume from the terminal, use `claude-rs resume <session_id>`, or an exact session title; a title that names several sessions is refused with their IDs.
+
+Resumed history displays saved Claude command records as readable commands, such as `/rename review-444`, and command output as notices. Internal command context, compaction summaries, and background-task notifications are excluded from the fork list. Ordinary conversation XML remains literal, and saved session content is unchanged.
+
+## Reviewing Git changes
+
+`/diff` opens a fullscreen, read-only Git viewer for the repository containing the current directory. The left pane shows changed files in an expanded tree; folders are not selectable. Each file shows its status and line counts, with additions in green and removals in red; zero counts are hidden. Totals appear above the tree. The right pane previews the selected file. Binary files, submodules, unavailable files, clean repositories, and Git read failures are shown explicitly. Repositories without a first commit are supported.
+
+Press `s` to choose a comparison with Up/Down and Enter; Escape cancels. HEAD compares the last commit with current files, Staged compares the last commit with the Git index, and Unstaged compares the index with current files. HEAD and Unstaged also include untracked files that Git does not ignore. This view shows repository changes, not session or turn history.
+
+Refresh keeps the current pane focused and retains the selected change when it remains available. If that change disappears, the next remaining file takes its place, or the previous file when the selection was at the end. If no changes remain, the viewer clears the old preview and stays open with an empty-state message.
+
+| Key | Action |
+| --- | --- |
+| Up/Down | Select files in the left pane or scroll content in the right pane. |
+| Enter or Right | Focus the content pane. |
+| Left or Escape in the content pane | Return focus to the file tree. |
+| Tab / Shift+Tab | Select the next/previous file without changing the focused pane. |
+| `v` | Toggle the diff and full file contents. Staged shows the indexed version; deleted files show their contents before deletion. |
+| `[` | Jump to the previous diff hunk (changed block). |
+| `]` | Jump to the next diff hunk (changed block). |
+| `r` | Refresh, retaining the selected file when it remains in the comparison. |
+| Escape in the file tree | Return to the conversation. |
+| Ctrl+C | Close the viewer and return to the conversation. |
+| Ctrl+Q | Quit the app. |
 
 ## Copying responses
 
@@ -92,7 +126,7 @@ Commands that Claude Code runs locally, such as `/rename`, `/color` or `/context
 
 `/search` and the remappable `Ctrl+F` shortcut open a local search viewer. Type or paste a query, use Enter or Down for the next match and Shift+Enter or Up for the previous match, and press Esc to return to chat. The highlighted excerpt is from retained session content only; older content evicted by the app's history limit and archived transcripts are not searched.
 
-Rewinding a conversation keeps the model, effort and permission mode currently selected in the session. On resume, the public Agent SDK can return a local command as XML-like user text without identifying its origin. The history preserves that text exactly, so a command such as `/rename` may appear in its raw record form until the SDK exposes a reliable command marker.
+Rewinding a conversation keeps the model, effort and permission mode currently selected in the session.
 
 ## Status Tab
 

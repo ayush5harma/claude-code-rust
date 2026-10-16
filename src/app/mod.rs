@@ -18,6 +18,7 @@ mod events;
 pub(crate) mod export;
 pub(crate) mod file_index;
 mod focus;
+pub(crate) mod footer;
 mod git_context;
 mod inline_interactions;
 pub(crate) mod input;
@@ -80,6 +81,7 @@ pub use settings::{AppSettings, UpdatePrompt};
 pub(crate) use state::PlanSource;
 #[cfg(test)]
 pub(crate) use state::StartupTimeline;
+pub(crate) use state::TranscriptUpdateSource;
 pub(crate) use state::format_elapsed;
 pub use state::{
     ActiveCompaction, App, AppStatus, AutocompleteKind, BlockCache, BtwExchangeBlock, CacheMetrics,
@@ -257,6 +259,7 @@ async fn run_tui_loop(
 
         if !app.shutdown_requested() {
             app.tick_git_context(now);
+            diff_view::poll(app);
             session_runtime::tick_context_usage_refresh(app, now);
             questions::tick_idle_timeout(app, now);
             app.tick_activity(now);
@@ -680,15 +683,18 @@ fn frame_is_animating(app: &App, now: Instant) -> bool {
 }
 
 /// Advances the spinner and requests the next draw while the frame animates.
-/// When an animation stops it requests one more draw even if nothing else
-/// changed: the welcome crab's hello ends on the clock alone, and that draw
-/// is the one that commits the rested welcome. Returns whether it animates.
+/// While the welcome is the whole transcript, an animation that stops
+/// requests one more draw even if nothing else changed: the welcome crab's
+/// hello ends on the clock alone, and that draw is the one that commits the
+/// rested welcome. Returns whether the frame animates.
 fn schedule_animation_frame(app: &mut App, now: Instant) -> bool {
     let is_animating = frame_is_animating(app, now);
     if is_animating {
         advance_spinner_frame(app, now);
         app.request_active_surface_repaint();
-    } else if app.spinner_last_advance_at.take().is_some() {
+    } else if app.spinner_last_advance_at.take().is_some()
+        && crate::ui::welcome_is_whole_transcript(app)
+    {
         app.request_active_surface_repaint();
     }
     is_animating

@@ -507,13 +507,6 @@ readline
           ] } });
           send({ event: 'session_update', session_id: SESSION, update: { type: 'status_line_update', text: 'FIXTURE_STATUS_ROW [READY]' } });
         }
-        if (SCENARIO === 'native-diff') {
-          send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call', tool_call: {
-            tool_call_id: 'session-edit', title: 'Edited session-only.txt', kind: 'edit', status: 'completed',
-            content: [{ type: 'diff', old_path: 'session-only.txt', new_path: 'session-only.txt', old: 'before\n', new: 'Session line\n' }],
-            raw_input: { file_path: 'session-only.txt' }, locations: [], meta: { claudeCode: { toolName: 'Edit' } },
-          } } });
-        }
         if (SCENARIO === 'read-result') {
           // What the bridge sends for a successful text Read: the file's own lines and the
           // number of the first, never the numbered text the model sees.
@@ -686,11 +679,6 @@ readline
         send({ event: 'session_mutation_result', request_id: message.request_id, session_id: message.session_id, operation, sessions: managedSessions() });
         break;
       }
-      case 'get_working_diff':
-        send({ event: 'working_diff', session_id: SESSION, request_id: message.request_id, files: SCENARIO === 'native-diff'
-          ? [{ path: 'tracked file.txt', status: 'MM', diff: 'diff --git a/tracked file.txt b/tracked file.txt\n--- a/tracked file.txt\n+++ b/tracked file.txt\n@@ -1 +1 @@\n-before\n+Working line\n' }]
-          : [], });
-        break;
       case 'export_session_history': {
         // The bridge's resume translation of a saved session, split into two chunks.
         const tool = { tool_call_id: 'bash-1', title: 'ls', kind: 'execute', status: 'in_progress', content: [], raw_input: { command: 'ls -la' }, locations: [], meta: { claudeCode: { toolName: 'Bash' } } };

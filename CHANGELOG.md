@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Upstream sync
+
+- Upstream main at `1c25754`: the live session name in Status (#445), the top-level bridge test glob (#471), issue triage CI (#474), the fullscreen Git diff viewer (#476), unified session picking with normalized saved history (#477), the unified chat layout and Markdown lists (#478), the composer prompt glyph on sent messages (#480) and the configurable single-row footer (#481). The welcome crab keeps this fork's pixel art and clock; #479's review fixes to its scheduling are kept.
+- `/diff` is upstream's Git viewer (HEAD, staged and unstaged comparisons). The fork's `/diff`, which also listed the session's Edit and Write diffs, is removed.
+- The session picker is upstream's searchable picker. Printable keys now search, so compact-first resume moved to Tab, tagging to Ctrl+T and deletion to Ctrl+D; `/resume` takes no argument (resume by exact title stays available as `claude-rs resume <title>`). Rows show upstream's title fallback (name, first prompt, summary).
+- The footer is upstream's configurable row. The fork's session name, usage-limit windows and finished-agent count are new fields in it; the plan row, agent shelf and `statusLine` row stay around it. The fork's two-row responsive footer is removed.
+- Code blocks inside lists and quotes use the fork's shaded code style, and links in lists are shortened like other links.
+
 ## [0.15.2-fork.7] - 2026-10-16
 
 ### Features

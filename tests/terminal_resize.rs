@@ -9,6 +9,15 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+fn assistant_marker(row: &str) -> bool {
+    row.trim_start().starts_with('\u{25cf}')
+}
+
+fn assistant_body(row: &str) -> &str {
+    let text = row.trim();
+    text.strip_prefix("\u{25cf} ").unwrap_or(text)
+}
+
 const COLS: u16 = 87;
 const SHORT_ROWS: u16 = 38;
 const TALL_ROWS: u16 = 55;
@@ -422,14 +431,18 @@ impl TerminalTest {
 
     fn diagnostics(&self) -> String {
         let output = self.output.lock().expect("output lock");
+        let log = std::fs::read_to_string(self.temp.path().join("runtime.log")).unwrap_or_default();
+        let paste = log
+            .lines()
+            .filter(|line| line.contains("\"target\":\"app.paste\""))
+            .collect::<Vec<_>>()
+            .join("\n");
         format!(
-            "{}\nRaw output tail:\n{}\nRuntime log tail:\n{}",
+            "{}\nRaw output tail:\n{}\nRuntime log tail:\n{}\nPaste events:\n{}",
             output.parser.screen().contents(),
             tail(&String::from_utf8_lossy(&output.raw), 2000),
-            tail(
-                &std::fs::read_to_string(self.temp.path().join("runtime.log")).unwrap_or_default(),
-                6000
-            )
+            tail(&log, 6000),
+            tail(&paste, 6000),
         )
     }
 
@@ -975,7 +988,8 @@ fn large_session_picker_compacts_only_after_explicit_choice_before_initial_promp
     });
     test.wait_journal("settings_result");
     assert!(test.prompts().is_empty());
-    test.send(b"c");
+    // Tab resumes compact-first; printable keys search.
+    test.send(b"\t");
     test.wait_for("compaction then initial prompt", |test| {
         (test.prompts().len() == 2).then_some(())
     });
@@ -997,7 +1011,8 @@ fn failed_compact_first_keeps_launch_prompt_unsent() {
         test.screen().contains("Large saved conversation").then_some(())
     });
     test.wait_journal("settings_result");
-    test.send(b"c");
+    // Tab resumes compact-first; printable keys search.
+    test.send(b"\t");
     test.wait_for("compaction failure", |test| {
         test.screen().contains("fixture compaction failed").then_some(())
     });
@@ -1110,7 +1125,11 @@ fn auth_child_owns_stdin_and_output_and_returns_a_resized_usable_terminal() {
         if mode == "failure" {
             test.wait_screen("/login failed (exit code: 7)");
         }
-        test.wait_screen("[READY]");
+        // The configurable footer shows `[READY]` beside its fields once the app owns the
+        // terminal again; a `[READY]` left over from before the child ran sits elsewhere.
+        test.wait_until("the footer is ready again", |test| {
+            test.screen().lines().any(|row| row.contains("[FAST:OFF]") && row.contains("[READY]"))
+        });
         test.resize(38, 87);
         test.send("AFTER_AUTH 界".as_bytes());
         test.wait_screen("AFTER_AUTH 界");
@@ -1153,8 +1172,9 @@ fn background_permission_remains_interactive_after_launch_enters_history() {
         );
         assert!(test.commands("permission_response").is_empty());
         test.signal("turn-end");
-        test.wait_screen_with("[READY]", &["Allow once", "Deny once"]);
-        test.resize_keeping(TALL_ROWS, 120, &["Allow once", "Deny once"]);
+        // The pending-permission notice owns the footer slot after completion.
+        test.wait_journal("turn_complete");
+        test.resize_keeping(TALL_ROWS, 120, &["Allow once", "Deny once", "1 PEND. PERM."]);
         test.send(keys);
         test.wait_journal("background-permission-answered");
         test.wait_until(
@@ -1194,9 +1214,9 @@ fn background_result_labels_follow_the_visible_speaker_through_replay_and_cancel
     }
     let assert_group = |test: &TerminalTest| {
         let rows = test.transcript_rows();
-        let first = rows.iter().position(|row| row.trim() == "Claude").expect("speaker label");
+        let first = rows.iter().position(|row| assistant_marker(row)).expect("speaker label");
         let last = rows.iter().position(|row| row.contains("OUTPUT_2")).expect("second result");
-        assert_eq!(rows[first..=last].iter().filter(|row| row.trim() == "Claude").count(), 1);
+        assert_eq!(rows[first..=last].iter().filter(|row| assistant_marker(row)).count(), 1);
         let positions: Vec<_> =
             ["LAUNCH_1", "LAUNCH_2", "LAUNCH_3", "Foreground reply", "RESULT_1", "RESULT_2"]
                 .into_iter()
@@ -1235,8 +1255,8 @@ fn background_result_labels_follow_the_visible_speaker_through_replay_and_cancel
         .position(|row| row.contains("CANCEL_EMPTY_REPLY"))
         .expect("cancelled user message");
     let result = rows.iter().position(|row| row.contains("RESULT_3")).expect("later result");
-    assert_eq!(rows[normal..cancelled].iter().filter(|row| row.trim() == "Claude").count(), 1);
-    assert_eq!(rows[cancelled..=result].iter().filter(|row| row.trim() == "Claude").count(), 1);
+    assert_eq!(rows[normal..cancelled].iter().filter(|row| assistant_marker(row)).count(), 1);
+    assert_eq!(rows[cancelled..=result].iter().filter(|row| assistant_marker(row)).count(), 1);
     test.assert_prompts(&["BACKGROUND_LABELS", "NORMAL_FOLLOWUP", "CANCEL_EMPTY_REPLY"]);
     test.shutdown();
 }
@@ -1275,8 +1295,8 @@ fn background_completion_replies_keep_streamed_tails_mutable_and_preserve_normal
         test.wait_journal(&format!("finish-{number}"));
         test.wait_turn_finished(full);
         let rows = test.transcript_rows();
-        assert_eq!(rows.iter().filter(|row| row.trim() == full).count(), 1);
-        assert!(!rows.iter().any(|row| row.trim() == prefix));
+        assert_eq!(rows.iter().filter(|row| assistant_body(row) == full).count(), 1);
+        assert!(!rows.iter().any(|row| assistant_body(row) == prefix));
     }
     test.submit_draft();
     test.wait_turn_finished("Normal conversation continues completely.");
@@ -1288,7 +1308,7 @@ fn background_completion_replies_keep_streamed_tails_mutable_and_preserve_normal
         "Short task 2 (task-two) finished with exit code 0.",
         "Normal conversation continues completely.",
     ] {
-        assert_eq!(rows.iter().filter(|row| row.trim() == full).count(), 1);
+        assert_eq!(rows.iter().filter(|row| assistant_body(row) == full).count(), 1);
     }
     test.assert_prompts(&["BACKGROUND_STREAM", "NORMAL_AFTER_COMPLETIONS"]);
     test.shutdown();
@@ -1450,21 +1470,21 @@ fn concurrent_resize_typing_and_paste_deliver_every_prompt_exactly_once() {
 }
 
 #[test]
-fn tips_setting_preserves_immediate_activity_and_heading_through_real_config_saves() {
+fn tips_setting_preserves_activity_without_empty_messages_through_real_config_saves() {
     let mut test = TerminalTest::start("hold-activity-off", 3);
     test.submit("NO_OUTPUT_YET", "NO_OUTPUT_YET");
     test.wait_journal("reply-held");
-    test.wait_until("disabled tips retain immediate activity and assistant heading", |test| {
+    test.wait_until("disabled tips retain activity without an empty assistant frame", |test| {
         let screen = test.screen();
         screen.contains("NO_OUTPUT_YET")
-            && screen.lines().filter(|line| line.trim() == "Claude").count() == 1
-            && screen.lines().any(|line| line.starts_with("│ ◆ "))
+            && !screen.lines().any(assistant_marker)
+            && screen.lines().any(|line| line.trim_start().starts_with("│ ◆ "))
             && !screen.contains("│ Tip:")
     });
     let activity_header = test
         .screen()
         .lines()
-        .find(|line| line.starts_with("│ ◆ "))
+        .find(|line| line.trim_start().starts_with("│ ◆ "))
         .expect("immediate activity header")
         .trim_end()
         .to_owned();
@@ -1483,35 +1503,38 @@ fn tips_setting_preserves_immediate_activity_and_heading_through_real_config_sav
         test.send(b"\x1b");
         test.wait_until("only tips follow the acknowledged setting", |test| {
             let screen = test.screen();
-            screen.lines().any(|line| line.trim() == "NO_OUTPUT_YET")
-                && screen.lines().filter(|line| line.trim() == "Claude").count() == 1
+            screen.lines().any(|line| line.trim().strip_prefix("❯ ") == Some("NO_OUTPUT_YET"))
+                && !screen.lines().any(assistant_marker)
                 && screen.lines().any(|line| line.trim_end() == activity_header)
                 && screen.contains("│ Tip:") == enabled
         });
         test.resize_and_wait_for_draw(25, 61);
         test.resize_and_wait_for_draw(SHORT_ROWS, COLS);
-        test.wait_until("resize retains activity and heading independently of tips", |test| {
-            let screen = test.screen();
-            screen.lines().filter(|line| line.trim() == "Claude").count() == 1
-                && screen.lines().any(|line| line.trim_end() == activity_header)
-                && screen.contains("│ Tip:") == enabled
-        });
+        test.wait_until(
+            "resize retains activity without an empty response independently of tips",
+            |test| {
+                let screen = test.screen();
+                !screen.lines().any(assistant_marker)
+                    && screen.lines().any(|line| line.trim_end() == activity_header)
+                    && screen.contains("│ Tip:") == enabled
+            },
+        );
     }
     test.signal("requires_action");
-    test.wait_until("waiting hides activity and its empty heading", |test| {
+    test.wait_until("waiting hides activity", |test| {
         let screen = test.screen();
-        !screen.lines().any(|line| line.trim() == "Claude")
+        !screen.lines().any(assistant_marker)
             && !screen.contains(&activity_header)
             && !screen.contains("│ Tip:")
     });
     test.signal("running");
     let resumed = test.wait_screen_with("│ Tip:", &[&activity_header]);
-    assert_eq!(resumed.lines().filter(|line| line.trim() == "Claude").count(), 1);
+    assert!(!resumed.lines().any(assistant_marker));
     test.signal("done");
-    test.wait_until("completion removes the temporary heading", |test| {
+    test.wait_until("completion removes transient activity", |test| {
         let screen = test.screen();
         screen.contains("[READY]")
-            && !screen.lines().any(|line| line.trim() == "Claude")
+            && !screen.lines().any(assistant_marker)
             && !screen.contains(&activity_header)
             && !screen.contains("│ Tip:")
     });
@@ -1538,21 +1561,23 @@ fn activity_stays_above_queue_and_out_of_scrollback_through_wait_resize_and_comp
     test.wait_journal("reply-held");
     let initial_screen = test.wait_screen_with("│ ◆ ", &["│ Tip:", "START_ACTIVITY"]);
     let initial_rows: Vec<_> = initial_screen.lines().map(str::trim_end).collect();
-    let heading =
-        initial_rows.iter().position(|line| *line == "Claude").expect("assistant heading");
-    let activity = initial_rows.iter().position(|line| line.starts_with("│ ◆ ")).expect("activity");
-    assert_eq!(initial_rows.iter().filter(|line| **line == "Claude").count(), 1);
+    assert!(!initial_rows.iter().any(|line| assistant_marker(line)));
+    let activity = initial_rows
+        .iter()
+        .position(|line| line.trim_start().starts_with("\u{2502} \u{25c6} "))
+        .expect("activity");
     assert!(
         initial_rows.iter().position(|line| line.contains("START_ACTIVITY")).expect("user message")
-            < heading
+            < activity
     );
-    assert!(heading < activity, "tip text mentioning Claude must not count as the heading");
     assert!(!initial_screen.contains("Thinking…"));
     let activity_header = initial_rows[activity].to_owned();
     test.signal("thinking");
     // Thinking retains the activity verb.
     let thinking = test.wait_screen_with("◆ Thinking…", &[&activity_header]);
     assert_eq!(thinking.matches("Thinking…").count(), 1);
+    let thinking_row = thinking.lines().find(|line| line.contains("Thinking\u{2026}")).unwrap();
+    assert!(assistant_marker(thinking_row));
     test.submit("QUEUED_ACTIVITY", "QUEUED_ACTIVITY");
     test.paste("DRAFT_ACTIVITY");
     let screen = test.wait_screen_with(
@@ -1788,8 +1813,13 @@ fn resizing_a_streamed_reply_preserves_rendering_and_clean_shutdown() {
     // whole transcript. Terminal padding can leave spaces on visually blank rows.
     test.wait_until("submitted paragraph gap", |test| {
         let transcript = test.transcript_rows();
-        let rows: Vec<_> = transcript.iter().map(|row| row.trim_end()).collect();
-        rows.windows(3).any(|rows| rows == ["hello", "", "how are you"])
+        let Some(first) = transcript.iter().position(|row| row.trim() == "❯ hello") else {
+            return false;
+        };
+        let Some(second) = transcript.iter().position(|row| row.trim() == "how are you") else {
+            return false;
+        };
+        second > first + 1 && transcript[first + 1..second].iter().all(|row| row.trim().is_empty())
     });
     test.assert_prompts(&["hello\n\nhow are you"]);
 
@@ -1836,6 +1866,83 @@ fn width_and_height_resizes_preserve_unicode_multiline_draft_and_exact_submissio
     test.submit_draft();
     test.wait_screen("reply 2 started");
     test.assert_prompts(&["go", draft]);
+    test.shutdown();
+}
+
+#[test]
+fn git_diff_loads_refreshes_and_returns_to_chat_without_submitting_a_prompt() {
+    let mut test = TerminalTest::start("hold-success", 8);
+    test.submit("go", "go");
+    test.wait_journal("reply-held");
+    test.wait_screen("streamed line 8");
+    let project = test.temp.path().join("project");
+    let initialized = std::process::Command::new("git")
+        .current_dir(&project)
+        .args(["init", "-q"])
+        .output()
+        .expect("initialize Git fixture");
+    assert!(initialized.status.success());
+    std::fs::create_dir(project.join("src")).expect("source directory");
+    for (name, content) in
+        [("a", "DIFF_A_CONTENT\n"), ("b", "DIFF_B_CONTENT\n"), ("d", "DIFF_D_CONTENT\n")]
+    {
+        std::fs::write(project.join(format!("src/{name}.txt")), content)
+            .expect("untracked fixture");
+    }
+    std::fs::write(
+        project.join("src/c.txt"),
+        format!("DIFF_C_FIRST\n{}DIFF_C_LAST\n", "middle line\n".repeat(80)),
+    )
+    .expect("long fixture");
+    let right_pane = |test: &TerminalTest, first_col: usize, rows: usize| {
+        let output = test.output.lock().expect("output lock");
+        let screen = output.parser.screen();
+        let (height, width) = screen.size();
+        (3..height.min(u16::try_from(rows + 3).expect("test rows")))
+            .map(|row| {
+                (u16::try_from(first_col).expect("test column")..width - 1)
+                    .filter_map(|col| screen.cell(row, col))
+                    .map(vt100::Cell::contents)
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    test.submit("/diff", "/diff");
+    test.wait_until("selected file A loaded in the diff pane", |test| {
+        right_pane(test, 30, 32).contains("DIFF_A_CONTENT")
+    });
+    assert!(test.output.lock().expect("output lock").parser.screen().alternate_screen());
+    test.send(b"\x1b[B\x1b[C"); // Select B and focus its content.
+    test.wait_until("selected file B loaded in the diff pane", |test| {
+        right_pane(test, 30, 32).contains("DIFF_B_CONTENT")
+    });
+    std::fs::remove_file(project.join("src/b.txt")).expect("undo file B addition");
+    test.send(b"r");
+    test.wait_until("refresh selects C and removes B's preview", |test| {
+        let content = right_pane(test, 30, 32);
+        content.contains("DIFF_C_FIRST") && !content.contains("DIFF_B_CONTENT")
+    });
+    // Down must scroll C, not select D: content focus must survive the refresh.
+    test.send("\x1b[B".repeat(90).as_bytes());
+    test.wait_until("file C scrolled to its last line", |test| {
+        right_pane(test, 30, 32).contains("DIFF_C_LAST")
+    });
+    test.resize_and_wait_for_draw(25, 120);
+    test.send("\x1b[B".repeat(90).as_bytes());
+    test.wait_until("file C remains navigable after resize", |test| {
+        right_pane(test, 41, 19).contains("DIFF_C_LAST")
+    });
+    assert!(!project.join(".git/index").exists(), "review must not create the Git index");
+    test.send(b"\x03");
+    test.wait_screen("streamed line 8");
+    assert!(!test.output.lock().expect("output lock").parser.screen().alternate_screen());
+    test.assert_prompts(&["go"]);
+    test.release();
+    test.wait_journal("turn_complete");
+    test.submit("after diff", "after diff");
+    test.wait_screen("reply 2 started");
+    test.assert_prompts(&["go", "after diff"]);
     test.shutdown();
 }
 
@@ -1975,7 +2082,16 @@ fn guided_hook_creation_survives_resize_and_saves_a_complete_hook_with_existing_
 
 #[test]
 fn unicode_pastes_cross_the_placeholder_boundary_without_payload_loss() {
-    let mut test = TerminalTest::start("stream", 3);
+    let mut test = TerminalTest::start_with_options(
+        "stream",
+        3,
+        None,
+        &[
+            "--log-filter",
+            "warn,app.lifecycle=debug,app.render=debug,bridge.protocol=debug,app.paste=debug",
+        ],
+        false,
+    );
     let mut expected = Vec::new();
     for chars in [999, 1000, 1001] {
         let prefix = "Unicode 界 🦀\n";
@@ -2454,24 +2570,6 @@ fn resume_picker_loads_a_fresh_list_and_marks_the_active_session() {
 }
 
 #[test]
-fn resume_by_an_ambiguous_or_unknown_title_reports_why_and_returns_the_composer() {
-    let mut test = TerminalTest::start("resume-failure", 3);
-    test.submit_command("/resume Shared title");
-    let screen =
-        test.wait_screen_with("ambiguous session title", &["first-id", "second-id", "[READY]"]);
-    assert!(!screen.contains("Resuming session"), "{screen}");
-
-    test.submit_command("/resume Missing title");
-    test.wait_screen_with("unknown session: Missing title", &["[READY]"]);
-
-    // The composer works again: the next prompt reaches the bridge.
-    test.submit("after the failed resumes", "after the failed resumes");
-    test.wait_journal("turn_complete");
-    test.assert_prompts(&["after the failed resumes"]);
-    test.shutdown();
-}
-
-#[test]
 fn launch_resume_by_an_ambiguous_title_exits_with_the_candidates() {
     let mut test =
         TerminalTest::start_with_options("resume-failure", 3, None, &["-r", "Shared title"], false);
@@ -2487,7 +2585,7 @@ fn session_picker_confirms_exact_id_before_delete_and_shows_acknowledged_tag() {
     test.submit("/resume", "/resume");
     test.wait_screen_with("Resume Session", &["Saved project work"]);
 
-    test.send(b"d");
+    test.send(b"\x04");
     test.wait_screen("Switch sessions before deleting the active session.");
     assert!(test.commands("delete_session").is_empty());
     test.send(b"\x1b[A");
@@ -2495,13 +2593,13 @@ fn session_picker_confirms_exact_id_before_delete_and_shows_acknowledged_tag() {
         test.screen().contains("> just now - Saved project work")
     });
 
-    test.send(b"d");
+    test.send(b"\x04");
     test.wait_screen_with("Delete session saved-session?", &["Press y to confirm"]);
     test.send(b"\x1b");
     test.wait_screen("Resume Session");
     assert!(test.commands("delete_session").is_empty());
 
-    test.send(b"t");
+    test.send(b"\x14");
     test.wait_screen("Tag:");
     test.send(b"fail");
     test.wait_screen("Tag: fail");
@@ -2520,7 +2618,7 @@ fn session_picker_confirms_exact_id_before_delete_and_shows_acknowledged_tag() {
     });
     assert_eq!(test.commands("tag_session")[1]["session_id"], "saved-session");
 
-    test.send(b"d");
+    test.send(b"\x04");
     test.wait_screen("Delete session saved-session?");
     test.send(b"y");
     test.wait_until("confirmed deletion and refreshed picker", |test| {
@@ -2547,7 +2645,7 @@ fn session_picker_tag_field_takes_a_bracketed_paste_appended_on_one_line() {
     });
 
     // Seed an existing tag so the field opens pre-filled, as it does for a tagged session.
-    test.send(b"t");
+    test.send(b"\x14");
     test.wait_screen("Tag:");
     test.send(b"work");
     test.wait_screen("Tag: work");
@@ -2556,7 +2654,7 @@ fn session_picker_tag_field_takes_a_bracketed_paste_appended_on_one_line() {
         test.commands("tag_session").len() == 1 && test.screen().contains("[tag: work]")
     });
 
-    test.send(b"t");
+    test.send(b"\x14");
     test.wait_screen("Tag: work");
     test.paste("-a\nb\r\nc");
     test.wait_screen("Tag: work-a b c");
@@ -2581,31 +2679,6 @@ fn detailed_transcript_shows_a_bash_result_once() {
     );
     test.send(b"\x0f");
     test.wait_screen("Type a message");
-    test.shutdown();
-}
-
-#[test]
-fn native_diff_browses_session_and_working_tree_files() {
-    let mut test = TerminalTest::start("native-diff", 3);
-    test.submit("/diff", "/diff");
-    test.wait_for("session diff and both file rows", |test| {
-        let screen = test.screen();
-        (screen.contains("session-only.txt")
-            && screen.contains("tracked file.txt")
-            && screen.lines().any(|line| line.contains("Session line") && line.contains('+')))
-        .then_some(())
-    });
-    assert_eq!(test.commands("get_working_diff").len(), 1);
-
-    test.send(b"\x1b[B");
-    test.wait_for("selected working-tree diff", |test| {
-        let screen = test.screen();
-        (screen.contains("+Working line") && !screen.contains("Session line")).then_some(())
-    });
-    test.send(b"r");
-    test.wait_until("refresh command", |test| test.commands("get_working_diff").len() == 2);
-    test.send(b"\x1b");
-    test.wait_until("return to chat", |test| test.screen().contains("[READY]"));
     test.shutdown();
 }
 
@@ -3062,19 +3135,17 @@ fn footer_agents_resize_and_finish_follow_task_inventory() {
         let rows: Vec<_> = wide.lines().filter(|r| r.contains(name) && r.contains(model)).collect();
         assert_eq!(rows.len(), 1, "{wide}");
     }
+    // The configurable footer row sits under the shelf with the session name and context.
     assert!(
         wide.lines().any(|row| row.contains("system-config@main-2")
-            && row.contains("Fake")
-            && row.contains("ctx")),
+            && row.contains("[Fake]")
+            && row.contains("Context:")),
         "{wide}"
     );
     test.resize_and_wait_for_draw(40, 100);
     let medium = test.screen();
-    let identity = medium
-        .lines()
-        .position(|row| row.contains("system-config@main-2") && row.contains("Fake"))
-        .expect("identity row");
-    assert!(medium.lines().nth(identity + 1).expect("gauge row").contains("ctx"), "{medium}");
+    let status_row = medium.lines().find(|row| row.contains("[Fake]")).expect("status row");
+    assert!(status_row.chars().count() <= 100, "{medium}");
     test.resize_and_wait_for_draw(40, 50);
     let narrow = test.screen();
     assert!(
@@ -3085,6 +3156,8 @@ fn footer_agents_resize_and_finish_follow_task_inventory() {
         narrow.lines().any(|row| row.contains("implementer") && row.contains("Opus 5.5")),
         "{narrow}"
     );
+    // The footer drops its last fields first when narrow, so read the summary wide.
+    test.resize_and_wait_for_draw(40, 200);
     test.signal("finish");
     test.wait_journal("footer-agents-finished");
     test.wait_until("finished agent summary replaces shelf", |test| {

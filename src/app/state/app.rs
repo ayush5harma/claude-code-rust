@@ -13,7 +13,7 @@ pub struct App {
     pub surface_mode: SurfaceMode,
     pub(crate) copy_picker: Option<crate::app::copy::CopyPicker>,
     pub(crate) search: Option<Box<crate::app::search::SearchState>>,
-    pub(crate) diff_view: Option<Box<crate::app::diff_view::DiffViewState>>,
+    pub(crate) diff_view: Option<Box<crate::app::diff_view::DiffView>>,
     /// The `/export` waiting for its history from the bridge.
     pub(crate) history_export: Option<crate::app::export::PendingExport>,
     /// `/agents` view state; subagent status itself stays in `sdk_inventory.tasks`.

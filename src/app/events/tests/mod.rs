@@ -19,6 +19,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 
+mod assistant_lifecycle;
 mod client_events;
 mod clipboard_paste;
 mod slash_input;
@@ -48,6 +49,7 @@ fn autonomous_response_owns_fresh_text_and_preserves_an_existing_live_owner() {
     assert_eq!(app.active_turn_assistant_idx(), Some(1));
     let active_id = app.transcript.messages[1].id;
     assert!(app.turn.activity.is_some());
+    assistant_lifecycle::assert_owner_has_no_rows(&mut app, 1);
     for text in ["The", " background task finished completely."] {
         handle_client_event(
             &mut app,
@@ -1246,16 +1248,6 @@ fn startup_resume_history_renders_from_canonical_messages() {
     assert!(canonical_messages_contain_text(&app, "startup assistant reply"));
     assert!(live_rows_contain_text(&mut app, "startup user line"));
     assert!(live_rows_contain_text(&mut app, "startup assistant reply"));
-    let rows = crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding(
-        &mut app,
-        80,
-        &std::collections::BTreeSet::new(),
-    );
-    let texts: Vec<_> =
-        rows.rows().iter().map(|line| line.to_string().trim_end().to_owned()).collect();
-    assert!(
-        texts.windows(4).any(|rows| rows == ["User", "startup user line", "", "second paragraph"])
-    );
     let user = app
         .transcript
         .messages
@@ -1286,6 +1278,92 @@ fn startup_resume_history_renders_from_canonical_messages() {
     );
 
     assert!(!session_overview_has_welcome(&app));
+}
+
+#[test]
+fn resume_history_preserves_user_message_boundaries_and_joins_only_same_source_chunks() {
+    for startup in [true, false] {
+        let mut app = make_test_app();
+        let history_updates = [
+            ("rename", "/rename "),
+            ("rename", "review-444"),
+            ("color", "/color blue"),
+            ("prompt", "Explain <example>literal XML</example>"),
+        ]
+        .into_iter()
+        .map(|(uuid, text)| {
+            model::SessionUpdate::UserMessageChunk(
+                model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(text)))
+                    .source_message_uuid(Some(uuid.to_owned())),
+            )
+        })
+        .collect();
+        let event = if startup {
+            ClientEvent::Connected {
+                session_id: model::SessionId::new("resumed"),
+                cwd: "/resumed".into(),
+                current_model: test_current_model("new-model"),
+                available_models: Vec::new(),
+                mode: None,
+                fast_mode_state: model::FastModeState::Off,
+                fast_mode_disabled_reason: None,
+                ultracode: None,
+                history_updates,
+            }
+        } else {
+            ClientEvent::SessionReplaced {
+                session_id: model::SessionId::new("resumed"),
+                cwd: "/resumed".into(),
+                current_model: test_current_model("new-model"),
+                available_models: Vec::new(),
+                mode: None,
+                fast_mode_state: model::FastModeState::Off,
+                fast_mode_disabled_reason: None,
+                ultracode: None,
+                history_updates,
+                restored_input: None,
+            }
+        };
+        handle_client_event(&mut app, event);
+        let users = app
+            .transcript
+            .messages
+            .iter()
+            .filter(|message| matches!(message.role, MessageRole::User))
+            .map(|message| match message.blocks.as_slice() {
+                [MessageBlock::Text(text)] => {
+                    (text.source_message_uuids.clone(), text.text.clone())
+                }
+                _ => panic!("expected one complete user text block"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            users,
+            vec![
+                (vec!["rename".to_owned()], "/rename review-444".to_owned()),
+                (vec!["color".to_owned()], "/color blue".to_owned()),
+                (vec!["prompt".to_owned()], "Explain <example>literal XML</example>".to_owned()),
+            ]
+        );
+        let rows = crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding(
+            &mut app,
+            80,
+            &std::collections::BTreeSet::new(),
+        );
+        let text = rows
+            .rows()
+            .iter()
+            .map(|line| line.to_string().trim_end().to_owned())
+            .collect::<Vec<_>>();
+        for message in
+            ["/rename review-444", "/color blue", "Explain <example>literal XML</example>"]
+        {
+            assert!(
+                text.iter().any(|row| row == &format!(" ❯ {message}")),
+                "separate user marker and text for {message}, startup={startup}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -3670,14 +3748,16 @@ fn trusted_view_ignores_paste_events() {
 }
 
 #[test]
-fn session_picker_ignores_paste_events() {
+fn session_picker_paste_edits_search_without_changing_the_chat_draft() {
     let mut app = make_test_app();
     app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::SessionPicker);
 
-    handle_terminal_event(&mut app, Event::Paste("blocked".into()));
+    app.input.set_text("unfinished question");
+    handle_terminal_event(&mut app, Event::Paste("session-id".into()));
 
     assert!(app.paste.pending_text.is_empty());
-    assert!(app.input.is_empty());
+    assert_eq!(app.input.text(), "unfinished question");
+    assert_eq!(app.session_picker.query, "session-id");
 }
 
 #[test]

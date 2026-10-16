@@ -343,6 +343,7 @@ pub fn badge_style(tone: Tone) -> Style {
 }
 
 pub const PROMPT_CHAR: &str = "\u{276f}";
+pub const ASSISTANT_MESSAGE_MARKER: &str = "\u{25cf}";
 pub const SEPARATOR_CHAR: &str = "\u{2500}";
 
 // Tool status icons

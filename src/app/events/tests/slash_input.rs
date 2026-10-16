@@ -319,7 +319,7 @@ fn invalid_arguments_reach_usage_feedback_without_dispatch_or_input_capture() {
 }
 
 #[test]
-fn optional_resume_opens_the_picker_without_selecting_a_suggested_session() {
+fn resume_opens_the_picker_without_selecting_a_session() {
     for input in ["/resume", "/resume "] {
         let (mut app, mut rx) = app_with_bridge_connection();
         app.recent_sessions = vec![RecentSessionInfo {
@@ -344,9 +344,9 @@ fn optional_resume_opens_the_picker_without_selecting_a_suggested_session() {
     let (mut app, mut rx) = app_with_bridge_connection();
     draft(&mut app, "/resume manually-supplied-id");
     enter(&mut app);
-    assert!(matches!(commands(&mut rx).as_slice(),
-        [BridgeCommand::ResumeSession { session_id, .. }] if session_id == "manually-supplied-id"
-    ));
+    assert!(commands(&mut rx).is_empty());
+    assert_eq!(app.surface_mode, SurfaceMode::Chat);
+    assert!(canonical_messages_contain_text(&app, "Usage: /resume"));
 }
 
 #[test]
@@ -652,40 +652,31 @@ fn optional_sdk_command_completion_and_named_execution_preserve_exact_input() {
 }
 
 #[test]
-fn optional_resume_completion_opens_picker_and_explicit_tab_can_resume_a_suggestion() {
-    for explicit_id in [false, true] {
-        let (mut app, mut rx) = app_with_bridge_connection();
-        app.recent_sessions = vec![RecentSessionInfo {
-            session_id: "recent-session".into(),
-            summary: "Recent".into(),
-            last_modified_ms: 1,
-            file_size_bytes: 1,
-            cwd: None,
-            git_branch: None,
-            custom_title: None,
-            first_prompt: None,
-            tag: None,
-        }];
-        draft(&mut app, "/resu");
-        key(&mut app, KeyCode::Tab);
-        assert_eq!(app.input.text(), "/resume ");
-        assert!(app.slash.visible().is_none());
-        assert!(commands(&mut rx).is_empty());
-        if explicit_id {
-            key(&mut app, KeyCode::Tab);
-            assert_eq!(app.input.text(), "/resume recent-session ");
-            assert!(app.pending_submit.is_none());
-        }
-        enter(&mut app);
-        if explicit_id {
-            assert!(
-                matches!(commands(&mut rx).as_slice(), [BridgeCommand::ResumeSession { session_id, .. }] if session_id == "recent-session")
-            );
-        } else {
-            assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
-            assert!(matches!(commands(&mut rx).as_slice(), [BridgeCommand::ListSessions]));
-        }
-    }
+fn resume_command_completion_never_inserts_a_session_id() {
+    let (mut app, mut rx) = app_with_bridge_connection();
+    app.recent_sessions = vec![RecentSessionInfo {
+        session_id: "recent-session".into(),
+        summary: "Recent".into(),
+        last_modified_ms: 1,
+        file_size_bytes: 1,
+        cwd: None,
+        git_branch: None,
+        custom_title: None,
+        first_prompt: None,
+        tag: None,
+    }];
+    draft(&mut app, "/resu");
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(app.input.text(), "/resume ");
+    assert!(app.slash.visible().is_none());
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(app.input.text().trim(), "/resume");
+    assert!(app.slash.visible().is_none());
+    assert!(commands(&mut rx).is_empty());
+    enter(&mut app);
+    assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
+    // Opening the picker asks for a fresh listing, never a resume.
+    assert!(matches!(commands(&mut rx).as_slice(), [BridgeCommand::ListSessions]));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -825,4 +816,61 @@ fn custom_space_and_tab_bindings_take_precedence_over_default_completion() {
         assert!(app.pending_submit.is_none());
         assert!(commands(&mut rx).is_empty());
     }
+}
+
+#[test]
+fn resume_window_searches_names_ids_and_branches_and_dispatches_only_the_selected_session() {
+    for query in ["FEATURE", "MATCH-", "LEASE/"] {
+        let (mut app, mut rx) = app_with_bridge_connection();
+        app.recent_sessions = [
+            ("hidden", "Other conversation", None),
+            ("empty-branch", "Another conversation", Some("")),
+            ("match-a", "Feature alpha", Some("release/alpha")),
+            ("match-b", "Feature beta", Some("Release/beta")),
+        ]
+        .into_iter()
+        .map(|(id, title, branch)| RecentSessionInfo {
+            session_id: id.into(),
+            summary: title.into(),
+            last_modified_ms: 0,
+            file_size_bytes: 0,
+            cwd: None,
+            git_branch: branch.map(str::to_owned),
+            custom_title: Some(title.into()),
+            first_prompt: None,
+            tag: None,
+        })
+        .collect();
+        draft(&mut app, "/resume");
+        enter(&mut app);
+        // The picker asks for a fresh listing first; its answer releases the keys.
+        assert!(matches!(commands(&mut rx).as_slice(), [BridgeCommand::ListSessions]));
+        let listing = app.session_picker.list_request.clone();
+        crate::app::session_picker::finish_refresh(&mut app, listing.as_deref());
+        type_text(&mut app, query);
+        key(&mut app, KeyCode::Down);
+        assert!(commands(&mut rx).is_empty(), "{query}");
+        assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
+        enter(&mut app);
+        assert!(
+            matches!(commands(&mut rx).as_slice(),
+            [BridgeCommand::ResumeSession { session_id, .. }] if session_id == "match-b"),
+            "{query}"
+        );
+        assert_eq!(app.surface_mode, SurfaceMode::Chat);
+    }
+}
+
+#[test]
+fn cancelling_resume_search_preserves_the_current_session_and_draft() {
+    let (mut app, mut rx) = app_with_bridge_connection();
+    let session_id = app.session_runtime.session_id.clone();
+    crate::app::session_picker::open(&mut app);
+    app.input.set_text("unfinished question");
+    handle_terminal_event(&mut app, Event::Paste("missing-session".into()));
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.surface_mode, SurfaceMode::Chat);
+    assert_eq!(app.session_runtime.session_id, session_id);
+    assert_eq!(app.input.text(), "unfinished question");
+    assert!(commands(&mut rx).is_empty());
 }

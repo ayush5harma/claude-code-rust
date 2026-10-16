@@ -76,7 +76,9 @@ pub struct RecentSessionInfo {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SessionPickerState {
-    /// Index of the currently highlighted session in `app.recent_sessions`.
+    /// Search text for session titles, IDs, and branch names.
+    pub query: String,
+    /// Index of the currently highlighted session in the filtered results.
     pub selected: usize,
     /// Scroll offset for when the list exceeds the visible area.
     pub scroll_offset: usize,
@@ -92,6 +94,19 @@ pub struct SessionPickerState {
     pub list_request: Option<String>,
     pub mutation: Option<Box<SessionPickerMutation>>,
     pub error: Option<String>,
+    /// Whether the selected message is open for full-text reading.
+    pub turn_reading: bool,
+    /// Wrapped line offset within the message reader.
+    pub turn_read_scroll: usize,
+}
+
+impl SessionPickerState {
+    pub(crate) fn reset_turn_navigation(&mut self) {
+        self.turn_selected = 0;
+        self.turn_scroll_offset = 0;
+        self.turn_reading = false;
+        self.turn_read_scroll = 0;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

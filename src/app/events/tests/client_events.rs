@@ -2,48 +2,6 @@ use super::*;
 use pretty_assertions::assert_eq;
 
 #[test]
-fn diff_result_from_another_session_is_ignored_and_replacement_closes_pending_view() {
-    let (mut app, mut commands) = app_with_bridge_connection();
-    crate::app::diff_view::open(&mut app);
-    let request = commands.try_recv().expect("working diff request");
-    let request_id = request.request_id.expect("correlated request");
-    assert!(app.diff_view.as_ref().is_some_and(|view| view.loading));
-
-    let response = |session_id: &str| ClientEvent::WorkingDiffReceived {
-        session_id: session_id.to_owned(),
-        request_id: Some(request_id.clone()),
-        files: vec![crate::agent::wire::WorkingDiffFile {
-            path: "stale.txt".to_owned(),
-            status: " M".to_owned(),
-            diff: "+stale".to_owned(),
-        }],
-        error: None,
-    };
-    handle_client_event(&mut app, response("other-session"));
-    assert!(app.diff_view.as_ref().is_some_and(|view| view.loading && view.entries.is_empty()));
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionReplaced {
-            session_id: model::SessionId::new("replacement"),
-            cwd: "/replacement".into(),
-            current_model: test_current_model("new-model"),
-            available_models: Vec::new(),
-            mode: None,
-            fast_mode_state: model::FastModeState::Off,
-            fast_mode_disabled_reason: None,
-            ultracode: None,
-            history_updates: Vec::new(),
-            restored_input: None,
-        },
-    );
-    assert!(app.diff_view.is_none());
-    assert_eq!(app.surface_mode, SurfaceMode::Chat);
-    handle_client_event(&mut app, response("test-session"));
-    assert!(app.diff_view.is_none());
-}
-
-#[test]
 fn connected_updates_welcome_session_id_while_pristine() {
     let mut app = make_test_app();
     app.transcript.messages.push(ChatMessage::welcome(
@@ -180,6 +138,27 @@ fn connected_updates_cwd_and_clears_resuming_marker() {
         panic!("expected welcome block");
     };
     assert_eq!(welcome.cwd, "/changed");
+}
+
+#[test]
+fn the_first_connection_of_the_process_is_recorded_for_the_welcome_hello() {
+    let mut app = make_test_app();
+    assert!(app.startup.timeline.connected_at().is_none());
+
+    handle_client_event(&mut app, connected_event("claude-first"));
+
+    assert!(app.startup.timeline.connected_at().is_some());
+}
+
+#[test]
+fn a_later_connection_leaves_the_recorded_first_connection_unchanged() {
+    let mut app = make_test_app();
+    let first = std::time::Instant::now();
+    app.startup.timeline.mark_connected(first);
+
+    handle_client_event(&mut app, connected_event("claude-later"));
+
+    assert_eq!(app.startup.timeline.connected_at(), Some(first));
 }
 
 #[test]
@@ -2152,4 +2131,143 @@ fn history_chunk(request_id: Option<&str>, last: bool, error: Option<&str>) -> C
             error: error.map(str::to_owned),
         },
     }
+}
+
+#[test]
+fn filtered_picker_refresh_preserves_identity_and_handles_disappearing_results() {
+    let (mut app, mut rx) = app_with_bridge_connection();
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionsListed {
+            sessions: vec![
+                listed_session("hidden", "Other"),
+                listed_session("a", "Feature alpha"),
+                listed_session("b", "Feature beta"),
+                listed_session("c", "Feature gamma"),
+            ],
+            request_id: None,
+        },
+    );
+    crate::app::session_picker::open(&mut app);
+    handle_terminal_event(&mut app, Event::Paste("feature".into()));
+    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+    assert_eq!(
+        crate::app::session_picker::selected_session(&app).expect("selected beta").session_id,
+        "b"
+    );
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionsListed {
+            sessions: vec![
+                listed_session("c", "Feature gamma"),
+                listed_session("hidden", "Other"),
+                listed_session("a", "Feature alpha"),
+                listed_session("b", "Feature beta renamed"),
+            ],
+            request_id: None,
+        },
+    );
+    assert_eq!(app.session_picker.selected, 2);
+    assert_eq!(
+        crate::app::session_picker::selected_session(&app)
+            .expect("same beta after refresh")
+            .session_id,
+        "b"
+    );
+    assert_eq!(app.session_picker.query, "feature");
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionsListed {
+            sessions: vec![
+                listed_session("hidden", "Other"),
+                listed_session("a", "Feature alpha"),
+                listed_session("c", "Feature gamma"),
+            ],
+            request_id: None,
+        },
+    );
+    assert_eq!(
+        crate::app::session_picker::selected_session(&app)
+            .expect("previous result at end")
+            .session_id,
+        "c"
+    );
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionsListed {
+            sessions: vec![listed_session("hidden", "Other")],
+            request_id: None,
+        },
+    );
+    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+    assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
+    assert_eq!(app.session_picker.selected, 0);
+    assert_eq!(app.session_picker.scroll_offset, 0);
+    assert!(rx.try_recv().is_err(), "no nonmatching session may be resumed");
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionsListed {
+            sessions: vec![listed_session("new", "Feature new")],
+            request_id: None,
+        },
+    );
+    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+    assert!(matches!(rx.try_recv().expect("resume new match").command,
+        crate::agent::wire::BridgeCommand::ResumeSession { session_id, .. } if session_id == "new"));
+}
+
+#[test]
+fn removing_the_inspected_session_returns_to_the_session_list() {
+    let (mut app, mut rx) = app_with_bridge_connection();
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionsListed {
+            sessions: vec![listed_session("old", "Old session")],
+            request_id: None,
+        },
+    );
+    crate::app::session_picker::open(&mut app);
+    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)));
+    rx.try_recv().expect("history request");
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionsListed { sessions: Vec::new(), request_id: None },
+    );
+    assert!(app.session_picker.turn_session_id.is_none());
+    assert!(!app.sdk_inventory.rewind_targets_in_flight);
+    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn live_title_update_preserves_filtered_selection_when_an_earlier_result_stops_matching() {
+    let (mut app, mut rx) = app_with_bridge_connection();
+    app.session_runtime.session_id = Some(model::SessionId::new("active"));
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionsListed {
+            sessions: vec![
+                listed_session("active", "Feature active"),
+                listed_session("chosen", "Feature chosen"),
+            ],
+            request_id: None,
+        },
+    );
+    crate::app::session_picker::open(&mut app);
+    handle_terminal_event(&mut app, Event::Paste("feature".into()));
+    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate {
+            session_id: "active".into(),
+            update: model::SessionUpdate::SessionTitleUpdate(Some("Unrelated title".into())),
+        },
+    );
+    assert_eq!(app.session_picker.selected, 0);
+    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+    assert!(matches!(rx.try_recv().expect("resume selected match").command,
+        crate::agent::wire::BridgeCommand::ResumeSession { session_id, .. } if session_id == "chosen"));
 }

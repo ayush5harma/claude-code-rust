@@ -76,11 +76,18 @@ update that also carries a security fix, which takes `type: dependencies` and
 `good first issue` and `help wanted` stay unprefixed because GitHub uses them to
 populate the repository contribution page.
 
-Issue templates apply `type:` and `status: triage` automatically, Dependabot
-applies `type: dependencies` plus the matching `area:` label from
-`.github/dependabot.yml`, and the weekly `Dependency Monitor` workflow applies
-`type: security` to the advisory issue it opens. Renaming any of those labels
-requires updating that config in the same change.
+`status: triage` means an issue awaits initial maintainer assessment. Remove it after assessing the report and deciding its scope and classification; assignment and other labels do not establish that review is complete.
+
+The `Issue Triage` workflow adds `status: triage` when an issue opens or reopens, including issues created through the CLI or API, and removes it on closure. Repository workflows using `GITHUB_TOKEN` apply that lifecycle themselves because those events do not trigger another workflow. Refreshing an existing issue does not restore triage.
+
+Collaborators with write access can use these standalone issue comments:
+
+- `/triaged`: Remove `status: triage` after assessment. This does not assign the issue or approve an implementation.
+- `/duplicate #123`: Close the current issue as a duplicate of issue #123 in this repository, record GitHub's duplicate relationship, and remove triage. The target must be an existing issue, not a PR or the current issue; it may already be closed.
+
+These commands ignore quoted text, code blocks, bot comments and PR threads. They make no changes for users without write access. Duplicate handling requires an explicit maintainer decision; the bot does not infer similarity or post acknowledgement comments.
+
+Issue templates apply `type:` automatically, Dependabot applies `type: dependencies` plus the matching `area:` label from `.github/dependabot.yml`, and the weekly `Dependency Monitor` workflow applies `type: security` to the advisory issue it opens. `status: triage` is named in `.github/scripts/issue-triage.cjs` and `.github/workflows/dependency-monitor.yml`. Renaming any of those labels requires updating that config in the same change.
 
 ## Development Setup
 
@@ -112,7 +119,11 @@ runtime layout, and manual bridge overrides.
 
 `node scripts/dev/check-all.mjs` runs the PR-gating checks from `.github/workflows/pr.yml` and `_agent-sdk.yml` and prints a PASS/FAIL table (`--rust`, `--bridge`, `--quick`, `--audit`; `--quick` skips the serial terminal-tests re-run, the fake-bridge syntax check and the audits; see its header). `nix develop` provides CI's Rust channel (from `rust-toolchain.toml`), Node 24, Bun, `cargo-deny`, `jq`, `tmux` and `shellcheck`; it leaves the one-job build limit below alone.
 
-The repository's `.cargo/config.toml` limits compilation to one job to reduce peak compiler and linker memory. Test execution remains parallel by default. Run checks sequentially; override compilation concurrency explicitly with `-j N` when needed.
+The repository's `.cargo/config.toml` allows up to eight concurrent compilation jobs for builds, Clippy, and test compilation. This is a starting point for balancing speed and peak compiler/linker memory use, not a measured optimum or a universal Cargo recommendation. Without a configured limit, Cargo defaults to the number of logical CPUs. See [Cargo's build job settings](https://doc.rust-lang.org/cargo/reference/config.html#buildjobs).
+
+Override the default per command with `-j N`, for example `cargo clippy -j 4 --all-targets --all-features -- -D warnings`, or set `CARGO_BUILD_JOBS` in your environment to override the repository setting. Lower the limit if builds exhaust memory or cause swapping; increase it if memory and CPU capacity allow, and compare timings for the same workload. Run checks sequentially to avoid competing builds.
+
+Compilation jobs do not control test execution threads. Tests run in parallel by default; use `cargo test --all-features -- --test-threads=1` when serial test execution is required. The terminal regression CI job sets this explicitly. See [Cargo's test options](https://doc.rust-lang.org/cargo/commands/cargo-test.html#miscellaneous-options).
 
 The individual commands, which match the core checks in `.github/workflows/pr.yml`:
 

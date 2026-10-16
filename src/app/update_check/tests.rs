@@ -107,7 +107,7 @@ async fn checks_in_both_modes_persist_results_and_choose_manual_or_exit_installa
 
 #[tokio::test(flavor = "current_thread")]
 async fn check_results_preserve_revocation_and_reset_before_exit() {
-    tokio::task::LocalSet::new().run_until(async {
+    Box::pin(tokio::task::LocalSet::new().run_until(async {
         let (_directory, mut app) = fixture(Some(true));
         let path = app.global_settings_path.clone().expect("settings path");
         let (endpoint, server) = release_server("200 OK");
@@ -137,7 +137,7 @@ async fn check_results_preserve_revocation_and_reset_before_exit() {
         std::fs::write(&path, "{broken").expect("invalid external edit");
         assert!(automatic_update_action_with(&app, &cli, || InstallMethod::Npm).is_none());
         assert_eq!(std::fs::read_to_string(path).expect("read"), "{broken");
-    }).await;
+    })).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
