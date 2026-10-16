@@ -542,7 +542,7 @@ fn handle_reload_submit(app: &mut App) -> bool {
 
     set_command_pending(
         app,
-        "Reloading skills and output styles...",
+        Some("Reloading skills and output styles..."),
         Some(crate::app::PendingCommandAck::SkillsAndStylesReload),
     );
 
