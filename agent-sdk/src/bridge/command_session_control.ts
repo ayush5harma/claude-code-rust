@@ -1,5 +1,5 @@
 import type { Query, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { BridgeCommand, EffortLevel, FastModeSnapshot } from "../types.js";
+import type { BridgeCommand, EffortLevel, FastModeSnapshot, ReloadOutcome } from "../types.js";
 import {
   buildModeState,
   markModeUnavailableForSession,
@@ -546,7 +546,12 @@ async function reloadPlugins(
 }
 
 // The SDK pushes `commands_changed` after a skills reload, which the existing inventory path
-// applies; this command only reports what was reloaded.
+// applies; this command only reports how each half ended.
+//
+// Output styles go first: the SDK documents that reloadOutputStyles() also drops the shared
+// markdown-file scan cache, so skills read afterwards are re-scanned. Each half is settled on its
+// own, so one that fails or never answers does not hide what the other did, and exactly one
+// event answers the command.
 async function reloadSkillsAndStyles(
   command: Extract<SessionControlCommand, { command: "reload_skills_and_styles" }>,
   requestId: string | undefined,
@@ -555,52 +560,74 @@ async function reloadSkillsAndStyles(
   if (!session) {
     return;
   }
-  try {
-    const [{ skills }, { available_output_styles: outputStyles }] = await Promise.all([
-      boundedReloadRequest("skills", session.query.reloadSkills()),
-      boundedReloadRequest("output styles", session.query.reloadOutputStyles()),
-    ]);
-    writeEvent(
-      {
-        event: "skills_and_styles_reloaded",
-        session_id: session.sessionId,
-        skills: skills.map((skill) => skill.name),
-        output_styles: outputStyles,
-      },
-      requestId,
-    );
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    bridgeLogger.warn({
-      target: LOG_TARGETS.APP_SESSION,
-      eventName: "reload_skills_and_styles_failed",
-      message: "failed to reload skills and output styles",
-      outcome: "failure",
-      ...(requestId ? { requestId } : {}),
-      sessionId: session.sessionId,
-      fields: { error_message: message },
-    });
-    slashError(
-      command.session_id,
-      `failed to reload skills and output styles: ${message}`,
-      requestId,
-    );
-  }
+  const outputStyles = await settleReload(
+    "output_styles",
+    () => session.query.reloadOutputStyles(),
+    (result) => result.available_output_styles,
+    session.sessionId,
+    requestId,
+  );
+  const skills = await settleReload(
+    "skills",
+    () => session.query.reloadSkills(),
+    (result) => result.skills.map((skill) => skill.name),
+    session.sessionId,
+    requestId,
+  );
+  writeEvent(
+    {
+      event: "skills_and_styles_reloaded",
+      session_id: session.sessionId,
+      skills,
+      output_styles: outputStyles,
+    },
+    requestId,
+  );
 }
 
-async function boundedReloadRequest<T>(what: string, request: Promise<T>): Promise<T> {
+async function settleReload<T>(
+  what: "skills" | "output_styles",
+  start: () => Promise<T>,
+  names: (result: T) => string[],
+  sessionId: string,
+  requestId: string | undefined,
+): Promise<ReloadOutcome> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`reloading ${what} timed out`)),
-      RELOAD_REQUEST_TIMEOUT_MS,
-    );
+  const timedOut = new Promise<"timed_out">((resolve) => {
+    timer = setTimeout(() => resolve("timed_out"), RELOAD_REQUEST_TIMEOUT_MS);
   });
   try {
-    return await Promise.race([request, timeout]);
+    const result = await Promise.race([start(), timedOut]);
+    if (result === "timed_out") {
+      logReloadOutcome(what, "timeout", "did not answer", sessionId, requestId);
+      return { status: "timed_out", after_ms: RELOAD_REQUEST_TIMEOUT_MS };
+    }
+    return { status: "reloaded", names: names(result) };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logReloadOutcome(what, "failure", message, sessionId, requestId);
+    return { status: "failed", message };
   } finally {
     clearTimeout(timer);
   }
+}
+
+function logReloadOutcome(
+  what: string,
+  outcome: "failure" | "timeout",
+  detail: string,
+  sessionId: string,
+  requestId: string | undefined,
+): void {
+  bridgeLogger.warn({
+    target: LOG_TARGETS.APP_SESSION,
+    eventName: "reload_skills_and_styles_incomplete",
+    message: `reload of ${what} did not complete`,
+    outcome,
+    ...(requestId ? { requestId } : {}),
+    sessionId,
+    fields: { what, detail },
+  });
 }
 
 function requireSession(

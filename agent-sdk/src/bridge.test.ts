@@ -1721,16 +1721,26 @@ type ReloadQueryStub = {
   reloadOutputStyles: () => Promise<unknown>;
 };
 
+const SKILLS_RELOADED = {
+  skills: [
+    { name: "deploy", description: "d", argumentHint: "" },
+    { name: "lint", description: "l", argumentHint: "" },
+  ],
+};
+const STYLES_RELOADED = { available_output_styles: ["default", "Explanatory", "mine"] };
+
+// Runs the command against a stubbed query; `during` runs while the reload is in flight.
 async function runReloadSkillsAndStyles(
   query: ReloadQueryStub,
   during?: () => void | Promise<void>,
-): Promise<Array<Record<string, unknown>>> {
+  after?: () => void | Promise<void>,
+): Promise<{ sessionId: string; events: Array<Record<string, unknown>> }> {
   sessions.clear();
   const session = makeSessionState();
   session.query = query as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
   sessions.set(session.sessionId, session);
   try {
-    return await captureBridgeEventsAsync(async () => {
+    const events = await captureBridgeEventsAsync(async () => {
       const reload = handleSessionControlCommand(
         { command: "reload_skills_and_styles", session_id: session.sessionId },
         "req-reload",
@@ -1738,90 +1748,108 @@ async function runReloadSkillsAndStyles(
       );
       await during?.();
       await reload;
+      await after?.();
     });
+    return { sessionId: session.sessionId, events };
   } finally {
     sessions.clear();
   }
 }
 
-test("reload_skills_and_styles starts both SDK reloads together and reports the names they returned", async () => {
+test("reload_skills_and_styles reloads output styles before skills and reports both names", async () => {
   const calls: string[] = [];
-  let resolveSkills!: (value: unknown) => void;
-  let resolveStyles!: (value: unknown) => void;
-  const events = await runReloadSkillsAndStyles(
-    {
-      reloadSkills: () => {
-        calls.push("skills");
-        return new Promise((resolve) => {
-          resolveSkills = resolve;
-        });
-      },
-      reloadOutputStyles: () => {
-        calls.push("styles");
-        return new Promise((resolve) => {
-          resolveStyles = resolve;
-        });
-      },
+  const { sessionId, events } = await runReloadSkillsAndStyles({
+    reloadSkills: async () => {
+      calls.push("skills");
+      return SKILLS_RELOADED;
     },
-    () => {
-      // Both requests are in flight before either answers.
-      assert.deepEqual(calls, ["skills", "styles"]);
-      resolveStyles({ available_output_styles: ["default", "Explanatory", "mine"] });
-      resolveSkills({
-        skills: [
-          { name: "deploy", description: "d", argumentHint: "" },
-          { name: "lint", description: "l", argumentHint: "" },
-        ],
-      });
+    reloadOutputStyles: async () => {
+      calls.push("styles");
+      return STYLES_RELOADED;
     },
-  );
-
-  assert.equal(events.length, 1);
-  assert.deepEqual(events[0], {
-    request_id: "req-reload",
-    event: "skills_and_styles_reloaded",
-    session_id: events[0]?.session_id,
-    skills: ["deploy", "lint"],
-    output_styles: ["default", "Explanatory", "mine"],
   });
+
+  // reloadOutputStyles() drops the SDK's markdown scan cache, so skills are read after it.
+  assert.deepEqual(calls, ["styles", "skills"]);
+  assert.deepEqual(events, [
+    {
+      request_id: "req-reload",
+      event: "skills_and_styles_reloaded",
+      session_id: sessionId,
+      skills: { status: "reloaded", names: ["deploy", "lint"] },
+      output_styles: { status: "reloaded", names: ["default", "Explanatory", "mine"] },
+    },
+  ]);
 });
 
-test("reload_skills_and_styles answers an SDK failure with a slash error and no reload event", async () => {
-  const events = await runReloadSkillsAndStyles({
-    reloadSkills: async () => ({ skills: [] }),
+test("reload_skills_and_styles reports a failed half next to the half that reloaded", async () => {
+  const { sessionId, events } = await runReloadSkillsAndStyles({
+    reloadSkills: async () => SKILLS_RELOADED,
     reloadOutputStyles: async () => {
       throw new Error("style directory unreadable");
     },
   });
 
-  assert.equal(events.length, 1);
-  assert.equal(events[0]?.event, "slash_error");
-  assert.equal(events[0]?.request_id, "req-reload");
-  assert.equal(
-    events[0]?.message,
-    "failed to reload skills and output styles: style directory unreadable",
-  );
+  assert.deepEqual(events, [
+    {
+      request_id: "req-reload",
+      event: "skills_and_styles_reloaded",
+      session_id: sessionId,
+      skills: { status: "reloaded", names: ["deploy", "lint"] },
+      output_styles: { status: "failed", message: "style directory unreadable" },
+    },
+  ]);
 });
 
-test("reload_skills_and_styles answers a request the SDK never acknowledges after 10 seconds", async () => {
+test("reload_skills_and_styles reports a synchronous SDK throw as a failed half", async () => {
+  const { events } = await runReloadSkillsAndStyles({
+    reloadSkills: () => {
+      throw new Error("query closed");
+    },
+    reloadOutputStyles: async () => STYLES_RELOADED,
+  });
+
+  assert.equal(events.length, 1);
+  assert.deepEqual(events[0]?.skills, { status: "failed", message: "query closed" });
+  assert.deepEqual(events[0]?.output_styles, {
+    status: "reloaded",
+    names: ["default", "Explanatory", "mine"],
+  });
+});
+
+test("reload_skills_and_styles reports an unanswered half after 10 seconds and ignores its late answer", async () => {
   mock.timers.enable({ apis: ["setTimeout"] });
   try {
-    const events = await runReloadSkillsAndStyles(
+    let answerLate!: (value: unknown) => void;
+    const { sessionId, events } = await runReloadSkillsAndStyles(
       {
-        reloadSkills: () => new Promise(() => undefined),
-        reloadOutputStyles: async () => ({ available_output_styles: ["default"] }),
+        reloadSkills: () =>
+          new Promise((resolve) => {
+            answerLate = resolve;
+          }),
+        reloadOutputStyles: async () => STYLES_RELOADED,
       },
-      () => {
+      async () => {
+        // Styles answer at once; the skills request is then the one left waiting.
+        await new Promise<void>((resolve) => setImmediate(resolve));
         mock.timers.tick(10_000);
+      },
+      async () => {
+        // The SDK answers after the bound: it must not produce a second event.
+        answerLate(SKILLS_RELOADED);
+        await new Promise<void>((resolve) => setImmediate(resolve));
       },
     );
 
-    assert.equal(events.length, 1);
-    assert.equal(events[0]?.event, "slash_error");
-    assert.equal(
-      events[0]?.message,
-      "failed to reload skills and output styles: reloading skills timed out",
-    );
+    assert.deepEqual(events, [
+      {
+        request_id: "req-reload",
+        event: "skills_and_styles_reloaded",
+        session_id: sessionId,
+        skills: { status: "timed_out", after_ms: 10_000 },
+        output_styles: { status: "reloaded", names: ["default", "Explanatory", "mine"] },
+      },
+    ]);
   } finally {
     mock.timers.reset();
   }

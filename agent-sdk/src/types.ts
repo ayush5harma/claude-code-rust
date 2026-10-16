@@ -714,6 +714,12 @@ export interface McpServerStatus {
   tools: McpTool[];
 }
 
+/** How one half of a skills-and-styles reload ended. */
+export type ReloadOutcome =
+  | { status: "reloaded"; names: string[] }
+  | { status: "failed"; message: string }
+  | { status: "timed_out"; after_ms: number };
+
 export interface McpSetServersResult {
   added: string[];
   removed: string[];
@@ -1225,8 +1231,8 @@ export type BridgeEvent =
   | {
       event: "skills_and_styles_reloaded";
       session_id: string;
-      skills: string[];
-      output_styles: string[];
+      skills: ReloadOutcome;
+      output_styles: ReloadOutcome;
     }
   | {
       event: "session_replaced";
