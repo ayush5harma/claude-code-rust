@@ -15,7 +15,7 @@ use crate::agent::model::{
     ToolCallUpdateFields,
 };
 use crate::agent::notifications::SdkNotification;
-use crate::ui::highlight::strip_ansi;
+use crate::ui::terminal_output::strip_ansi;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path;
