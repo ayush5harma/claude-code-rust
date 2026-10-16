@@ -195,6 +195,8 @@ export type SessionState = {
   resumeDropsTurn?: string;
   resumeGuardFenceComplete?: boolean;
   deferredBridgeEvents?: Array<{ event: BridgeEvent; requestId?: string }>;
+  /** Hook failure notices waiting for the connect event, oldest first. */
+  pendingHookNotices?: string[];
   deferredAuthRequired?: { detail?: string };
   input: AsyncQueue<SDKUserMessage>;
   connected: boolean;
@@ -1141,6 +1143,9 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     // otherwise ignores the JSON preference. Claude still applies environment restrictions.
     enableFileCheckpointing: params.resolvedSettings.fileCheckpointingEnabled ?? true,
     agentProgressSummaries: true,
+    // Without it the SDK reports only SessionStart and Setup hooks, so a failed
+    // PreToolUse, PostToolUse or Stop hook would leave no trace.
+    includeHookEvents: true,
     // Proposal tools require native review and lifecycle surfaces that the
     // public headless SDK does not currently expose to this host.
     disallowedTools: ["ProposeSkills", "ProposeGoal"],

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { replaceProtocolEventWriter } from "./events.js";
+import { emitConnectEvent, replaceProtocolEventWriter } from "./events.js";
 import { handleSdkMessage } from "./message_handlers.js";
 import type { SessionState } from "./session_lifecycle.js";
 
@@ -169,4 +169,150 @@ test("SDK context usage Markdown is shown even without a response ID", () => {
   }).map((chunk) => (chunk.content as Record<string, unknown>).text);
 
   assert.deepEqual(texts, ["## Context Usage"]);
+});
+
+/** Every `system_notice_update` the bridge wrote while `run` ran. */
+function noticesWritten(run: () => void): Array<{ severity: unknown; message: unknown }> {
+  const writes: string[] = [];
+  const restore = replaceProtocolEventWriter((line) => {
+    writes.push(line);
+  });
+  try {
+    run();
+  } finally {
+    restore();
+  }
+  return writes
+    .map((line) => (JSON.parse(line) as Record<string, unknown>).update as Record<string, unknown> | undefined)
+    .filter((update): update is Record<string, unknown> => update?.type === "system_notice_update")
+    .map((update) => ({ severity: update.severity, message: update.message }));
+}
+
+function hookResponse(
+  hookEvent: string,
+  fields: Record<string, unknown>,
+  hookId = "hook-1",
+): SDKMessage {
+  return {
+    type: "system",
+    subtype: "hook_response",
+    hook_id: hookId,
+    hook_name: `${hookEvent}:Bash`,
+    hook_event: hookEvent,
+    output: "",
+    stdout: "",
+    stderr: "",
+    session_id: "session-1",
+    uuid: `uuid-${hookId}`,
+    ...fields,
+  } as unknown as SDKMessage;
+}
+
+// Measured on SDK 0.3.288 with a PreToolUse command hook that exits 1: the
+// tool still runs and nothing else reports the failure.
+test("a failed hook with no other feedback is one warning, once", () => {
+  const session = makeSession();
+  const failed = hookResponse("PreToolUse", {
+    outcome: "error",
+    exit_code: 1,
+    stderr: "lint gate: forbidden pattern found\n",
+  });
+  const notices = noticesWritten(() => {
+    handleSdkMessage(session, failed);
+    handleSdkMessage(session, failed);
+  });
+
+  assert.deepEqual(notices, [
+    {
+      severity: "warning",
+      message: "Hook PreToolUse:Bash failed (exit 1): lint gate: forbidden pattern found",
+    },
+  ]);
+});
+
+test("a hook that blocked a tool or a prompt is not reported a second time", () => {
+  const session = makeSession();
+  const notices = noticesWritten(() => {
+    // The SDK reports these itself: the tool's error result and an informational warning.
+    handleSdkMessage(session, hookResponse("PreToolUse", { outcome: "error", exit_code: 2, stderr: "protected file" }, "a"));
+    handleSdkMessage(session, hookResponse("UserPromptSubmit", { outcome: "error", exit_code: 2, stderr: "blocked" }, "b"));
+  });
+
+  assert.deepEqual(notices, []);
+});
+
+test("routine hook activity and a cancelled hook never become notices", () => {
+  const session = makeSession();
+  const notices = noticesWritten(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "hook_started",
+      hook_id: "hook-1",
+      hook_name: "PreToolUse:Bash",
+      hook_event: "PreToolUse",
+      session_id: "session-1",
+    } as unknown as SDKMessage);
+    handleSdkMessage(session, hookResponse("PreToolUse", { outcome: "success", exit_code: 0, output: "ok" }, "ok"));
+    handleSdkMessage(session, hookResponse("Stop", { outcome: "cancelled" }, "cancelled"));
+  });
+
+  assert.deepEqual(notices, []);
+});
+
+test("a hook failure notice carries a bounded, redacted excerpt", () => {
+  const session = makeSession();
+  const notices = noticesWritten(() => {
+    handleSdkMessage(
+      session,
+      hookResponse("PostToolUse", {
+        outcome: "error",
+        exit_code: 1,
+        stderr: `deploy failed api_key=sk-ant-verysecret ${"x".repeat(1_000)}`,
+      }),
+    );
+  });
+
+  const message = String(notices[0]?.message);
+  assert.ok(!message.includes("verysecret"));
+  assert.ok(message.includes("api_key=[redacted]"));
+  assert.ok(message.length < 300, `notice was ${message.length} characters`);
+});
+
+// SessionStart hooks finish before the connect event, and the app ignores
+// updates for a session it has not been told about.
+test("a hook failure before the session connects is held, not written", () => {
+  const session = makeSession();
+  session.connected = false;
+  const notices = noticesWritten(() => {
+    handleSdkMessage(
+      session,
+      hookResponse("SessionStart", { outcome: "error", exit_code: 1, stderr: "missing env" }),
+    );
+  });
+
+  assert.deepEqual(notices, []);
+  assert.deepEqual(session.pendingHookNotices, ["Hook SessionStart:Bash failed (exit 1): missing env"]);
+});
+
+test("held hook failures are written after the connect event, then cleared", () => {
+  const session = makeSession();
+  session.connected = false;
+  session.pendingHookNotices = ["Hook SessionStart:Bash failed (exit 1): missing env"];
+  const writes: string[] = [];
+  const restore = replaceProtocolEventWriter((line) => {
+    writes.push(line);
+  });
+  try {
+    emitConnectEvent(session);
+  } finally {
+    restore();
+  }
+
+  const events = writes.map((line) => JSON.parse(line) as Record<string, unknown>);
+  const connected = events.findIndex((event) => event.event === "connected");
+  const notice = events.findIndex(
+    (event) => (event.update as Record<string, unknown> | undefined)?.type === "system_notice_update",
+  );
+  assert.ok(connected >= 0 && notice > connected, JSON.stringify(events.map((event) => event.event)));
+  assert.equal(session.pendingHookNotices, undefined);
 });

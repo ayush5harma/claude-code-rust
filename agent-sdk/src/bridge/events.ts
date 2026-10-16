@@ -390,6 +390,14 @@ export function emitConnectEvent(session: SessionState): void {
     }
   }
   emitAvailableAgentsSnapshot(session);
+  for (const message of session.pendingHookNotices ?? []) {
+    emitSessionUpdate(session.sessionId, {
+      type: "system_notice_update",
+      severity: "warning",
+      message,
+    });
+  }
+  session.pendingHookNotices = undefined;
   void emitSessionTitle(session);
   session.resumeUpdates = undefined;
   session.restoredInput = undefined;

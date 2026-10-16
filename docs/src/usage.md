@@ -74,6 +74,10 @@ Use support commands when you need a repeatable snapshot of the local environmen
 | `claude-rs config show` | Show a concise redacted config summary. |
 | `claude-rs config export --output <PATH>` | Write a redacted config export without overwriting existing files. |
 
+Every run writes a default log of warnings and errors, including failures reported by the bridge and the SDK, without any flag. `claude-rs logs --latest` prints its path, and `--enable-logs` adds the detailed records.
+
+A hook that fails shows one warning in the transcript with its exit code and the start of its output. A hook that blocks a tool call or a prompt is reported where that block is shown, not again as a warning, and a hook cancelled by an interrupted turn is not reported at all. Every failure is also in the default log.
+
 See [Diagnostics](diagnostics.md) for full options, logging presets, bundle contents, and sharing guidance.
 
 ## CLI Options
@@ -91,7 +95,7 @@ The installed `claude-rs --help` command exposes these options:
 | `--no-update-check` | Disable startup update checks. |
 | `-C, --dir <DIR>` | Run in a specific working directory. |
 | `--bridge-script <PATH>` | Use a specific Agent SDK bridge script. |
-| `--enable-logs` | Expand the always-on baseline to detailed info-level diagnostics. |
+| `--enable-logs` | Add detailed info-level diagnostics to the always-on warning and error log. |
 | `--diagnostics-preset <runtime|session|render|bridge|full>` | Use a named diagnostics filter. |
 | `--log-file <PATH>` | Write tracing diagnostics to a specific file. |
 | `--log-filter <FILTER>` | Use explicit tracing filter directives. |

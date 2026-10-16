@@ -475,6 +475,128 @@ function handleInformationalSystemMessage(
   }
 }
 
+/** Longest hook output excerpt in a log record or a notice, in characters. */
+const HOOK_OUTPUT_EXCERPT_LIMIT = 240;
+/** Most hook notices held for a session that has not connected yet. */
+const PENDING_HOOK_NOTICE_LIMIT = 20;
+/**
+ * A hook that exits 2 on these events blocks the action, and the SDK already
+ * reports it: a PreToolUse block comes back as the tool's error result and a
+ * UserPromptSubmit block as a warning informational message (measured on SDK
+ * 0.3.288). Any other failure, including exit 1 on those events, has no other
+ * feedback.
+ */
+const BLOCKING_EXIT_CODE = 2;
+const HOOK_EVENTS_WITH_BLOCK_FEEDBACK = new Set(["PreToolUse", "UserPromptSubmit"]);
+
+function hookOutputExcerpt(msg: Record<string, unknown>): string | undefined {
+  for (const field of ["stderr", "output", "stdout"]) {
+    const text = trimmedStringField(msg, field);
+    if (text) {
+      return Array.from(redactStartupDetail(text))
+        .slice(0, HOOK_OUTPUT_EXCERPT_LIMIT)
+        .join("");
+    }
+  }
+  return undefined;
+}
+
+function hookFailureNotice(
+  hookName: string,
+  exitCode: number | undefined,
+  excerpt: string | undefined,
+): string {
+  const exit = exitCode === undefined ? "" : ` (exit ${exitCode})`;
+  return `Hook ${hookName} failed${exit}${excerpt ? `: ${excerpt}` : "."}`;
+}
+
+function emitHookFailureNotice(session: SessionState, notice: string): void {
+  if (session.connected) {
+    emitSystemNoticeUpdate(session, "warning", notice);
+    return;
+  }
+  // SessionStart hooks finish before the SDK answers its initialize request,
+  // and the app ignores updates for a session it has not been told about.
+  const pending = session.pendingHookNotices ?? [];
+  if (pending.length < PENDING_HOOK_NOTICE_LIMIT) {
+    pending.push(notice);
+  }
+  session.pendingHookNotices = pending;
+}
+
+/**
+ * Handle the SDK's structured hook events. Started and progress messages are
+ * routine and stay in the detailed log. A finished hook is logged at its real
+ * severity, and a failure the user has no other way to learn about becomes one
+ * warning notice. A cancelled hook is ordinary (an interrupted turn cancels
+ * its hooks) and is never a notice.
+ */
+function handleHookSystemMessage(
+  session: SessionState,
+  subtype: string,
+  msg: Record<string, unknown>,
+): boolean {
+  if (subtype !== "hook_started" && subtype !== "hook_progress" && subtype !== "hook_response") {
+    return false;
+  }
+  const hookId = trimmedStringField(msg, "hook_id");
+  const hookName = trimmedStringField(msg, "hook_name");
+  const hookEvent = trimmedStringField(msg, "hook_event");
+  if (!hookId || !hookName || !hookEvent) {
+    return true;
+  }
+  const common = {
+    target: LOG_TARGETS.BRIDGE_SDK,
+    sessionId: session.sessionId,
+    fields: { hook_id: hookId, hook_name: hookName, hook_event: hookEvent },
+  };
+  if (subtype !== "hook_response") {
+    bridgeLogger.debug({
+      ...common,
+      eventName: `sdk_${subtype}`,
+      message: `SDK ${subtype.replace("_", " ")} received`,
+      outcome: "success",
+    });
+    return true;
+  }
+
+  const outcome = msg.outcome;
+  const exitCode =
+    typeof msg.exit_code === "number" && Number.isInteger(msg.exit_code)
+      ? msg.exit_code
+      : undefined;
+  if (outcome !== "error") {
+    bridgeLogger.debug({
+      ...common,
+      eventName: "sdk_hook_finished",
+      message: "SDK hook finished",
+      outcome: outcome === "cancelled" ? "cancelled" : "success",
+      fields: { ...common.fields, exit_code: exitCode },
+    });
+    return true;
+  }
+
+  const excerpt = hookOutputExcerpt(msg);
+  bridgeLogger.warn({
+    ...common,
+    eventName: "sdk_hook_failed",
+    message: "SDK hook failed",
+    outcome: "failure",
+    fields: { ...common.fields, exit_code: exitCode, output_excerpt: excerpt },
+  });
+  if (
+    exitCode === BLOCKING_EXIT_CODE &&
+    HOOK_EVENTS_WITH_BLOCK_FEEDBACK.has(hookEvent)
+  ) {
+    return true;
+  }
+  const notice = hookFailureNotice(hookName, exitCode, excerpt);
+  if (shouldEmitInformationalMessage(session, "warning", notice, hookId)) {
+    emitHookFailureNotice(session, notice);
+  }
+  return true;
+}
+
 function trimmedStringField(
   msg: Record<string, unknown>,
   field: string,
@@ -506,6 +628,14 @@ function emitPluginLoadErrors(session: SessionState, value: unknown): void {
     const category = boundedDiagnosticString(error?.type) ?? "generic-error";
     const message = boundedDiagnosticString(error?.message) ?? "Unknown plugin load failure";
     const path = boundedDiagnosticString(error?.path);
+    bridgeLogger.warn({
+      target: LOG_TARGETS.APP_SESSION,
+      eventName: "plugin_load_failed",
+      message: "plugin failed to load",
+      outcome: "failure",
+      sessionId: session.sessionId,
+      fields: { plugin, category, error_message: message },
+    });
     emitSystemNoticeUpdate(
       session,
       "warning",
@@ -1781,6 +1911,10 @@ export function handleSdkMessage(
 
     if (subtype === "informational") {
       handleInformationalSystemMessage(session, msg);
+      return;
+    }
+
+    if (handleHookSystemMessage(session, subtype, msg)) {
       return;
     }
 
