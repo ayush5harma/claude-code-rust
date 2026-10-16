@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 pub(crate) mod activity_rows;
 mod agents;
@@ -7,7 +6,6 @@ mod autocomplete;
 mod config;
 mod copy;
 mod diff;
-mod document_table;
 pub(crate) mod footer_rows;
 mod git_diff;
 pub(crate) mod help;
@@ -23,6 +21,7 @@ pub(crate) mod message_layout;
 mod message_rows;
 mod session_picker;
 pub(crate) mod spinner_verbs;
+mod terminal_output;
 pub mod theme;
 mod tool_call;
 pub(crate) mod tool_display;

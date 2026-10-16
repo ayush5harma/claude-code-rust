@@ -101,7 +101,8 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         ClientEvent::SubagentsListed { .. }
         | ClientEvent::SubagentMessagesReceived { .. }
         | ClientEvent::SubagentStopResult { .. } => ClientEventFamily::Subagents,
-        ClientEvent::UpdateCheckCompleted { .. }
+        ClientEvent::FooterSaved { .. }
+        | ClientEvent::UpdateCheckCompleted { .. }
         | ClientEvent::TerminalReleasedToChild { .. }
         | ClientEvent::TerminalReturnedFromChild { .. }
         | ClientEvent::RuntimeReloadCompleted { .. }

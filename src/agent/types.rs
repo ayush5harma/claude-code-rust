@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -476,6 +475,7 @@ pub struct ToolOutputMetadata {
     pub agent: Option<AgentOutputMetadata>,
     pub web_fetch: Option<WebFetchOutputMetadata>,
     pub skill: Option<SkillOutputMetadata>,
+    pub read: Option<ReadOutputMetadata>,
     pub non_execution: Option<ToolNonExecutionMetadata>,
 }
 
@@ -500,6 +500,12 @@ pub struct WebFetchArtifactReadMetadata {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct SkillOutputMetadata {
     pub background: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadOutputMetadata {
+    pub file_path: String,
+    pub start_line: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
