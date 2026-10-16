@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 mod browse;
 mod controller;
@@ -35,6 +34,7 @@ pub(crate) use mcp::{
 // Used by the binary UI target, but not by the library target in isolation.
 pub use browse::{SettingsBrowse, SettingsFocus};
 pub use footer::FooterOverlayState;
+pub(crate) use footer::complete_save as complete_footer_save;
 #[allow(unused_imports)]
 pub(crate) use mcp::McpCallbackUrlOverlayState;
 pub use overlays::*;
