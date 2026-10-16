@@ -258,7 +258,10 @@ impl TerminalTest {
         };
         // "> Yes" is drawn after everything above it, so seeing it means the
         // whole prompt, directory included, is on screen.
-        test.trust_prompt = test.wait_screen_with("Trust this project", &["> Yes"]);
+        test.wait_screen_with("Trust this project", &["> Yes"]);
+        // One string per visible row: `contents()` joins rows the terminal
+        // marks as wrapped, which ConPTY does for full-width box rows.
+        test.trust_prompt = test.screen_rows().join("\n");
         test.send(b"y");
         if has_initial_prompt {
             test.wait_until("initial prompt", |test| !test.prompts().is_empty());
@@ -333,6 +336,12 @@ impl TerminalTest {
 
     fn screen(&self) -> String {
         self.output.lock().expect("output lock").parser.screen().contents()
+    }
+
+    fn screen_rows(&self) -> Vec<String> {
+        let output = self.output.lock().expect("output lock");
+        let screen = output.parser.screen();
+        screen.rows(0, screen.size().1).collect()
     }
 
     fn transcript_rows(&self) -> Vec<String> {
