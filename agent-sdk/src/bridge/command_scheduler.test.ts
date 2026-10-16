@@ -140,6 +140,27 @@ test("interactive responses bypass a blocked session operation", async () => {
   assert.deepEqual(order, ["parent:start", "response", "parent:end"]);
 });
 
+test("a pending subagent stop does not hold back later session commands", async () => {
+  const scheduler = new BridgeCommandScheduler();
+  const stopAnswered = deferred();
+  const order: string[] = [];
+
+  const stop = scheduler.schedule(command("stop_subagent"), async () => {
+    order.push("stop:start");
+    await stopAnswered.promise;
+    order.push("stop:end");
+  });
+  const next = scheduler.schedule(command("set_effort"), async () => {
+    order.push("next");
+  });
+
+  await next;
+  assert.deepEqual(order, ["stop:start", "next"]);
+  stopAnswered.resolve();
+  await stop;
+  assert.deepEqual(order, ["stop:start", "next", "stop:end"]);
+});
+
 test("shutdown drains prior work and drops later ordinary commands", async () => {
   const scheduler = new BridgeCommandScheduler();
   const inFlight = deferred();
