@@ -2291,3 +2291,55 @@ fn ctrl_v_attaches_the_system_clipboard_image_and_sends_it_with_the_prompt() {
     test.shutdown();
     drop(clipboard);
 }
+
+#[test]
+#[allow(clippy::expect_used)]
+fn a_bad_dir_or_bridge_script_exits_before_the_terminal_is_touched() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let profile = temp.path().join("profile");
+    std::fs::create_dir_all(&profile).expect("profile");
+    let file = temp.path().join("notes.txt");
+    std::fs::write(&file, "").expect("file");
+    let cases = [
+        ("--dir", temp.path().join("missing")),
+        ("--dir", file),
+        ("--bridge-script", temp.path().join("missing-bridge.js")),
+    ];
+    for (flag, path) in cases {
+        let pair = native_pty_system().openpty(pty_size(SHORT_ROWS, COLS)).expect("open pty");
+        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_claude-rs"));
+        command.arg("--no-update-check");
+        command.arg(flag);
+        command.arg(&path);
+        command.cwd(temp.path());
+        command.env("CLAUDE_CONFIG_DIR", &profile);
+        let writer = Arc::new(Mutex::new(pair.master.take_writer().expect("pty writer")));
+        let reader = pair.master.try_clone_reader().expect("pty reader");
+        let process = pair.slave.spawn_command(command).expect("spawn claude-rs");
+        let mut child = TestChild { process, writer: Arc::clone(&writer) };
+        drop(pair.slave);
+        let output = capture_output(reader, writer);
+
+        let status = child.wait_for_exit(WAIT_LIMIT).expect("claude-rs exits on its own");
+        assert_eq!(status.exit_code(), 2, "{flag}");
+        let started = Instant::now();
+        while !output.lock().expect("output lock").ended {
+            assert!(started.elapsed() < WAIT_LIMIT, "PTY stayed open after exit");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let output = output.lock().expect("output lock");
+        let screen = output.parser.screen().contents();
+        assert!(screen.contains(flag) && screen.contains(&path.display().to_string()), "{screen}");
+        assert!(!screen.contains("Trust this project"), "{screen}");
+        // Mode changes (alternate screen, focus reporting, keyboard enhancement) are CSI
+        // sequences with a `?`, `<` or `>` marker. ConPTY writes its own on Windows.
+        #[cfg(unix)]
+        {
+            let raw = String::from_utf8_lossy(&output.raw);
+            for marker in ["\x1b[?", "\x1b[<", "\x1b[>"] {
+                assert!(!raw.contains(marker), "{flag}: {}", tail(&raw, 400));
+            }
+        }
+        assert_eq!(std::fs::read_dir(&profile).expect("profile").count(), 0, "{flag}");
+    }
+}

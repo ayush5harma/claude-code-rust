@@ -144,3 +144,142 @@ fn executable_generates_manuals_without_a_bridge() {
     assert!(output_dir.join("claude-rs-completions.1").is_file());
     assert!(!output_dir.join("claude-rs-man.1").exists());
 }
+
+/// Runs the real binary with a scratch profile and returns it with its output.
+#[allow(clippy::expect_used)]
+fn run_with_scratch_profile(
+    args: &[&std::ffi::OsStr],
+    cwd: &std::path::Path,
+) -> (tempfile::TempDir, std::process::Output) {
+    let profile = tempfile::tempdir().expect("profile directory");
+    let output = Command::new(env!("CARGO_BIN_EXE_claude-rs"))
+        .args(args)
+        .current_dir(cwd)
+        .env("CLAUDE_CONFIG_DIR", profile.path())
+        .output()
+        .expect("run claude-rs");
+    (profile, output)
+}
+
+#[test]
+fn executable_refuses_a_bad_dir_or_bridge_script_before_startup() {
+    let scratch = tempfile::tempdir().expect("scratch directory");
+    let file = scratch.path().join("notes.txt");
+    std::fs::write(&file, "").expect("file");
+    let missing_dir = scratch.path().join("missing-dir");
+    let missing_script = scratch.path().join("missing-bridge.js");
+    let scratch_dir = scratch.path().to_path_buf();
+    let cases = [
+        ("--dir", &missing_dir, "directory does not exist"),
+        ("--dir", &file, "not a directory"),
+        ("--bridge-script", &missing_script, "bridge script does not exist"),
+        ("--bridge-script", &scratch_dir, "bridge script is not a file"),
+    ];
+    for (flag, path, reason) in cases {
+        let (profile, output) =
+            run_with_scratch_profile(&[flag.as_ref(), path.as_os_str()], scratch.path());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{flag} {}: {error}", path.display());
+        assert!(output.stdout.is_empty(), "{flag}: {}", String::from_utf8_lossy(&output.stdout));
+        assert!(error.contains(flag), "{error}");
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        assert!(error.contains(reason), "{error}");
+        // The trust prompt and settings are never reached.
+        let saved = std::fs::read_dir(profile.path()).expect("profile").count();
+        assert_eq!(saved, 0, "{flag} left files in the profile");
+    }
+}
+
+#[test]
+fn executable_resolves_a_relative_dir_against_the_current_directory() {
+    let scratch = tempfile::tempdir().expect("scratch directory");
+    std::fs::create_dir(scratch.path().join("project")).expect("project");
+    // `project` exists next to the working directory, so only the script is wrong.
+    let (_profile, output) = run_with_scratch_profile(
+        &["-C".as_ref(), "project".as_ref(), "--bridge-script".as_ref(), "missing.js".as_ref()],
+        scratch.path(),
+    );
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{error}");
+    assert!(error.contains("--bridge-script"), "{error}");
+    assert!(!error.contains("--dir"), "{error}");
+
+    let (_profile, output) =
+        run_with_scratch_profile(&["-C".as_ref(), "elsewhere".as_ref()], scratch.path());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{error}");
+    assert!(error.contains("--dir"), "{error}");
+}
+
+#[test]
+fn doctor_still_reports_a_bad_bridge_script_instead_of_refusing_it() {
+    let scratch = tempfile::tempdir().expect("scratch directory");
+    let missing = scratch.path().join("missing-bridge.js");
+    let (_profile, output) = run_with_scratch_profile(
+        &["--bridge-script".as_ref(), missing.as_os_str(), "doctor".as_ref(), "--json".as_ref()],
+        scratch.path(),
+    );
+    assert_ne!(output.status.code(), Some(2), "{}", String::from_utf8_lossy(&output.stderr));
+    let report = String::from_utf8_lossy(&output.stdout);
+    assert!(report.contains("bridge script does not exist"), "{report}");
+}
+
+#[test]
+fn launch_paths_that_exist_are_accepted_for_every_interactive_launch() {
+    let scratch = tempfile::tempdir().expect("scratch directory");
+    let script = scratch.path().join("bridge.js");
+    std::fs::write(&script, "").expect("script");
+    let paths: [&std::ffi::OsStr; 4] =
+        ["-C".as_ref(), scratch.path().as_os_str(), "--bridge-script".as_ref(), script.as_os_str()];
+    for selection in [&[][..], &["--resume"][..], &["--continue"][..], &["resume", "session-1"][..]]
+    {
+        let mut args: Vec<&std::ffi::OsStr> = vec!["claude-rs".as_ref()];
+        if selection.first() == Some(&"resume") {
+            args.extend(paths);
+            args.extend(selection.iter().map(std::ffi::OsStr::new));
+        } else {
+            args.extend(selection.iter().map(std::ffi::OsStr::new));
+            args.extend(paths);
+        }
+        let cli = Cli::try_parse_from(&args).expect("parse");
+        cli.validate().unwrap_or_else(|error| panic!("{args:?}: {error}"));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_dir_and_bridge_script_are_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let scratch = tempfile::tempdir().expect("scratch directory");
+    let dir = scratch.path().join("locked-dir");
+    let script = scratch.path().join("locked.js");
+    std::fs::create_dir(&dir).expect("dir");
+    std::fs::write(&script, "").expect("script");
+    let locked = std::fs::Permissions::from_mode(0o000);
+    std::fs::set_permissions(&dir, locked.clone()).expect("lock dir");
+    std::fs::set_permissions(&script, locked).expect("lock script");
+    // Root reads through mode 000, which leaves nothing to refuse.
+    let enforced = std::fs::read_dir(&dir).is_err() && std::fs::File::open(&script).is_err();
+    let results = [
+        Cli::try_parse_from(["claude-rs".as_ref(), "-C".as_ref(), dir.as_os_str()])
+            .expect("parse")
+            .validate(),
+        Cli::try_parse_from(["claude-rs".as_ref(), "--bridge-script".as_ref(), script.as_os_str()])
+            .expect("parse")
+            .validate(),
+    ];
+    // Let the scratch directory be removed.
+    let open = std::fs::Permissions::from_mode(0o755);
+    std::fs::set_permissions(&dir, open.clone()).expect("unlock dir");
+    std::fs::set_permissions(&script, open).expect("unlock script");
+    if enforced {
+        let [dir_result, script_result] = results;
+        let dir_error = dir_result.expect_err("unreadable dir").to_string();
+        let script_error = script_result.expect_err("unreadable script").to_string();
+        assert!(dir_error.contains("--dir") && dir_error.contains("cannot be read"), "{dir_error}");
+        assert!(
+            script_error.contains("--bridge-script") && script_error.contains("cannot be read"),
+            "{script_error}"
+        );
+    }
+}

@@ -160,8 +160,33 @@ impl Cli {
                 "interactive startup arguments cannot be combined with this subcommand",
             ));
         }
+        if matches!(self.command, None | Some(Command::Resume { .. })) {
+            self.validate_launch_paths()?;
+        }
         Ok(())
     }
+
+    /// Checks `--dir` and `--bridge-script` before the terminal, trust prompt or bridge
+    /// exist, so a bad path is a usage error instead of a failure further in. Only
+    /// interactive launches use them: `doctor` reports on a bad bridge script rather
+    /// than refusing it, and the other support commands never start the bridge.
+    fn validate_launch_paths(&self) -> Result<(), clap::Error> {
+        use clap::CommandFactory;
+        let usage_error = |flag: &str, reason: String| {
+            Self::command().error(
+                clap::error::ErrorKind::ValueValidation,
+                format!("invalid value for '{flag}': {reason}"),
+            )
+        };
+        if let Some(reason) = self.dir.as_deref().and_then(working_dir_problem) {
+            return Err(usage_error("--dir <DIR>", reason));
+        }
+        if let Some(reason) = self.bridge_script.as_deref().and_then(bridge_script_problem) {
+            return Err(usage_error("--bridge-script <BRIDGE_SCRIPT>", reason));
+        }
+        Ok(())
+    }
+
     /// Normalize both resume spellings into one startup intent.
     #[must_use]
     pub fn startup_launch(&self) -> StartupLaunch {
@@ -184,6 +209,31 @@ impl Cli {
             _ => self.prompt.as_deref(),
         }
     }
+}
+
+/// Why `dir` cannot be the session's working directory, judged the way the session will
+/// use it: relative to the current directory, with no `~` expansion of its own.
+fn working_dir_problem(dir: &std::path::Path) -> Option<String> {
+    match std::fs::metadata(dir) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            Some(format!("directory does not exist: {}", dir.display()))
+        }
+        Err(err) => Some(format!("directory cannot be accessed: {}: {err}", dir.display())),
+        Ok(metadata) if !metadata.is_dir() => Some(format!("not a directory: {}", dir.display())),
+        Ok(_) => std::fs::read_dir(dir)
+            .err()
+            .map(|err| format!("directory cannot be read: {}: {err}", dir.display())),
+    }
+}
+
+/// Why `script` cannot be the bridge script. Existence and file type come from the
+/// bridge resolver's own inspection, so they are worded as the bridge words them.
+fn bridge_script_problem(script: &std::path::Path) -> Option<String> {
+    agent::bridge::inspect_bridge_script(Some(script)).error.or_else(|| {
+        std::fs::File::open(script)
+            .err()
+            .map(|err| format!("bridge script cannot be read: {}: {err}", script.display()))
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
