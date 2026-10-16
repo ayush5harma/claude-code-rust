@@ -655,7 +655,9 @@ pub(super) fn handle_turn_error_event(
 
     if exit.cancel_requested {
         let summary = summarize_internal_error(msg);
-        tracing::warn!(
+        // The user asked for the cancellation, so this is routine and stays out of the
+        // default log; a genuine turn error below is still logged as an error.
+        tracing::debug!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "turn_error_suppressed",
             message = "turn error suppressed after cancellation request",

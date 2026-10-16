@@ -55,3 +55,39 @@ test("detailed diagnostics keep every level and the full fields", () => {
 test("an unset mode writes nothing", () => {
   assert.deepEqual(stderrLines(undefined), []);
 });
+
+/** Send one turn_error through the logger in the given mode and return what reached stderr. */
+function turnErrorLines(mode: string, terminalReason: string | undefined) {
+  const script = `
+    const { logBridgeEventSent } = await import(${JSON.stringify(loggerModuleUrl)});
+    const event = { event: "turn_error", session_id: "s1", message: "turn failed", error_kind: "other" };
+    ${terminalReason ? `event.terminal_reason = ${JSON.stringify(terminalReason)};` : ""}
+    logBridgeEventSent(event, undefined, 10);
+  `;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+    cwd: fileURLToPath(new URL(".", import.meta.url)),
+    env: { ...process.env, CLAUDE_RS_BRIDGE_DIAGNOSTICS: mode },
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stderr
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+test("a turn error from an interrupted turn is not a warning in the default log", () => {
+  assert.deepEqual(turnErrorLines("0", "aborted_streaming"), []);
+  assert.deepEqual(turnErrorLines("0", "aborted_tools"), []);
+  const detailed = turnErrorLines("1", "aborted_streaming");
+  assert.equal(detailed.length, 1);
+  assert.equal(detailed[0].level, "debug");
+});
+
+test("a real turn error stays a warning in the default log", () => {
+  for (const reason of [undefined, "model_error"]) {
+    const records = turnErrorLines("0", reason);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].level, "warn");
+  }
+});

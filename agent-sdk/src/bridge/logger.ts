@@ -273,6 +273,14 @@ function protocolCommandLevel(command: BridgeCommand): LogLevel {
 }
 
 function protocolEventLevel(event: BridgeEvent): LogLevel {
+  // An interrupted turn ends with an abort reason, and the user asked for that:
+  // it is routine, not a warning in the default log.
+  if (
+    event.event === "turn_error" &&
+    (event.terminal_reason === "aborted_streaming" || event.terminal_reason === "aborted_tools")
+  ) {
+    return "debug";
+  }
   switch (event.event) {
     case "initialized":
     case "connected":

@@ -1740,6 +1740,55 @@ fn turn_error_clears_manual_compaction_without_success_message() {
     assert!(block.text.contains("Press Ctrl+Q to quit and try again"));
 }
 
+fn turn_error_log_levels(cancelled: bool) -> Vec<(String, String)> {
+    let mut app = make_test_app();
+    app.transcript.messages.push(user_msg("hello"));
+    if cancelled {
+        handle_local_cancel_enqueued(&mut app);
+    }
+    let records = crate::logging::test_capture::capture(|| {
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnError {
+                session_id: "test-session".to_owned(),
+                message: "turn failed".into(),
+                queued_turn_count: None,
+                api_error_status: None,
+                terminal_reason: None,
+            },
+        );
+    });
+    records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record["event_name"].as_str(),
+                Some("turn_error_suppressed" | "turn_error_received")
+            )
+        })
+        .map(|record| {
+            (
+                record["event_name"].as_str().unwrap_or_default().to_owned(),
+                record["level"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect()
+}
+
+// The default log keeps warnings and errors only, so an ordinary user cancellation must be
+// below warn while a real turn error stays an error.
+#[test]
+fn cancelled_turn_error_is_not_a_warning_but_a_real_one_is_an_error() {
+    assert_eq!(
+        turn_error_log_levels(true),
+        vec![("turn_error_suppressed".to_owned(), "DEBUG".to_owned())]
+    );
+    assert_eq!(
+        turn_error_log_levels(false),
+        vec![("turn_error_received".to_owned(), "ERROR".to_owned())]
+    );
+}
+
 #[test]
 fn turn_cancel_keeps_manual_compaction_active_until_exit() {
     let mut app = make_test_app();
