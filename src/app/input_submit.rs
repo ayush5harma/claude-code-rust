@@ -128,7 +128,9 @@ pub(crate) fn submit_session_command(app: &mut App, text: &str) -> Result<String
         return Err("The session is not ready for commands".to_owned());
     }
     let submission = slash::ResolvedSubmission::resolve(text.to_owned());
-    if let Some(refusal) = idle_turn_refusal(app, &submission) {
+    if let Some(refusal) = slash::unsupported_command_refusal(app, &submission)
+        .or_else(|| idle_turn_refusal(app, &submission))
+    {
         return Err(refusal);
     }
     send_prompt_turn(app, &submission.into_text(), Vec::new(), Vec::new())

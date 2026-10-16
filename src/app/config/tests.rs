@@ -699,6 +699,19 @@ fn status_tab_rename_with_a_pasted_tab_settles_on_the_title_the_session_reports(
 }
 
 #[test]
+fn status_tab_rename_is_refused_when_the_session_offers_no_rename_like_the_composer() {
+    let (mut app, mut rx) = app_with_status_connection();
+    app.status = AppStatus::Ready;
+
+    type_status_rename(&mut app, "Renamed session");
+
+    assert!(rx.try_recv().is_err(), "nothing reaches the session");
+    let message = app.config.overlay_message.as_ref().expect("refusal shown in the editor");
+    assert!(message.text.contains("/rename is not yet supported"), "{}", message.text);
+    assert!(app.config.pending_session_title_change.is_none());
+}
+
+#[test]
 fn status_tab_rename_during_a_turn_is_refused_like_the_composer_rename() {
     for (case, status, pending_prompt) in
         [("running turn", AppStatus::Running, false), ("queued prompt", AppStatus::Ready, true)]
