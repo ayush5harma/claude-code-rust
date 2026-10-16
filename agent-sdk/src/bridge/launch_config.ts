@@ -2,9 +2,11 @@ import type { McpServerConfig, Settings } from "@anthropic-ai/claude-agent-sdk";
 import type { SessionLaunchSettings } from "../types.js";
 
 /**
- * The only place that turns the launch configuration flags into Agent SDK options. The app
- * has already resolved paths and checked that files were readable and JSON parsed, so these
- * functions only map and layer.
+ * Maps the launch configuration flags to Agent SDK query options and layers them over the
+ * saved settings. The fork flag and the resume rename live in command_lifecycle.ts, and
+ * session_lifecycle.ts wires the file-checkpointing setting. The app has already resolved
+ * paths and checked that files were readable and JSON parsed, so these functions only map and
+ * layer.
  */
 
 /**
@@ -79,7 +81,8 @@ export function buildSystemPrompt(launchSettings: SessionLaunchSettings, runtime
 
 /**
  * Query options for the launch name, added directories and MCP servers. The SDK applies
- * `title` to a new or forked session only; a resumed session keeps its persisted title, so the
+ * `title` to a new or forked session only (measured against Claude Code: a forked session
+ * stores it as its custom title and the original keeps its own); a resumed session keeps its persisted title, so the
  * resume path renames it instead. `renameSession` cannot name a new session, because its
  * transcript file does not exist before the first turn (measured on the pinned SDK:
  * "Session ... not found in project directory").

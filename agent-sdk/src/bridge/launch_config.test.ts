@@ -89,6 +89,8 @@ test("the system prompt keeps the runtime guard whichever flags are given", () =
   );
 });
 
+// sdk.d.ts documents `title` for a new session; a real `--continue --fork-session -n` run
+// stored it as the fork's custom title, so the option is passed for forks too.
 test("the SDK title option names a new or forked session, never a plain resume", () => {
   const launch = { name: "Experiment" };
   assert.deepEqual(buildLaunchQueryOptions(launch, {}), { title: "Experiment" });

@@ -23,7 +23,9 @@ import {
   createSession,
   detachSessionForClose,
   sessions,
+  type SessionState,
 } from "./session_lifecycle.js";
+import { emitSessionTitle } from "./session_title.js";
 import type { RewindConversationPlan } from "../bridge.js";
 
 type LifecycleCommand = Extract<
@@ -288,7 +290,6 @@ async function resume(
       return;
     }
     setSessionListingDir(matched.cwd ?? process.cwd());
-    const renameError = await renameResumedSession(command, matched.cwd, requestId);
     const historyMessages = await getSessionTranscriptMessages(
       command.session_id,
       matched.cwd
@@ -323,6 +324,9 @@ async function resume(
         ? { sessionsToCloseAfterConnect: staleSessions }
         : {}),
     });
+    // Renamed only now: the SDK validates MCP servers and settings, and checks sign-in, when the
+    // session starts, so a resume that fails there leaves the saved title untouched.
+    const renameError = await renameResumedSession(command, matched.cwd, requestId, session);
     if (renameError !== undefined) {
       // A slash error ends the app's pending resume, so it is sent once the session connects.
       session.deferredBridgeEvents = [
@@ -357,8 +361,8 @@ async function resume(
 }
 
 /**
- * Apply a launch name to the session being resumed, before it connects, so the connect-time
- * title read already reports it. A fork is a new conversation and takes the SDK `title`
+ * Apply a launch name to the session being resumed, once it has connected, and report the new
+ * title. A fork is a new conversation and takes the SDK `title`
  * option instead (buildLaunchQueryOptions), leaving the original's title alone. The app has
  * validated the launch flags before this runs, so a rename failure is an SDK or disk
  * failure: it does not block the resume, because the conversation matters more than its label,
@@ -368,6 +372,7 @@ async function renameResumedSession(
   command: Extract<LifecycleCommand, { command: "resume_session" }>,
   cwd: string | undefined,
   requestId: string | undefined,
+  session: SessionState,
 ): Promise<string | undefined> {
   const name = command.launch_settings.name;
   if (name === undefined || command.launch_settings.fork_session) {
@@ -375,6 +380,7 @@ async function renameResumedSession(
   }
   try {
     await renameSession(command.session_id, name, cwd ? { dir: cwd } : undefined);
+    await emitSessionTitle(session);
     return undefined;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

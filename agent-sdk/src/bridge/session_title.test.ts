@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import readline from "node:readline";
@@ -50,6 +50,7 @@ function writeSdkFixture(fixturePath: string, cwd: string): void {
     }
     export async function renameSession(sessionId, title) {
       titles.set(sessionId, title);
+      if (process.env.RENAME_JOURNAL) appendFileSync(process.env.RENAME_JOURNAL, title + "\\n");
     }
     export async function importSessionToStore() {}
     export async function getSessionMessages() {
@@ -60,6 +61,7 @@ function writeSdkFixture(fixturePath: string, cwd: string): void {
     }
     export function query({ prompt, options }) {
       appendFileSync(process.env.QUERY_JOURNAL, JSON.stringify({ resume: options.resume }) + "\\n");
+      if (process.env.QUERY_FAIL) throw new Error("MCP server definition is invalid");
       const input = prompt[Symbol.asyncIterator]();
       const pending = [];
       let sessionId = options.resume;
@@ -245,6 +247,73 @@ test("the bridge sends the session API's title through resume, turns, renames, r
       clearTimeout(timeout);
       output.close();
       diagnostics.close();
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill();
+        await new Promise<void>((resolve) => child.once("exit", () => resolve()));
+      }
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test("a launch name renames the resumed session only after it has connected", async () => {
+  for (const failing of [false, true]) {
+    const directory = realpathSync(mkdtempSync(join(tmpdir(), "bridge-launch-name-")));
+    const cwd = join(directory, "project");
+    mkdirSync(cwd);
+    const renames = join(directory, "renames.txt");
+    const fixturePath = join(directory, "sdk-fixture.mjs");
+    const sdkPackage = join(dirname(fileURLToPath(import.meta.resolve("@anthropic-ai/claude-agent-sdk"))), "package.json");
+    writeFileSync(join(directory, "package.json"), JSON.stringify({ version: JSON.parse(readFileSync(sdkPackage, "utf8")).version }));
+    writeSdkFixture(fixturePath, cwd);
+    const loaderPath = join(directory, "loader.mjs");
+    writeFileSync(loaderPath, `
+      import { registerHooks } from "node:module";
+      registerHooks({ resolve(specifier, context, nextResolve) {
+        return specifier === "@anthropic-ai/claude-agent-sdk"
+          ? { url: ${JSON.stringify(pathToFileURL(fixturePath).href)}, shortCircuit: true }
+          : nextResolve(specifier, context);
+      } });
+    `);
+    const bridgePath = join(dirname(fileURLToPath(import.meta.url)), "../bridge.js");
+    const child = spawn(process.execPath, ["--import", pathToFileURL(loaderPath).href, bridgePath], {
+      env: {
+        ...process.env,
+        CLAUDE_CONFIG_DIR: join(directory, "config"),
+        CLAUDE_CODE_PROJECT_DIR_NAME: undefined,
+        QUERY_JOURNAL: join(directory, "query.jsonl"),
+        RENAME_JOURNAL: renames,
+        ...(failing ? { QUERY_FAIL: "1" } : {}),
+        CLAUDE_CODE_EXECUTABLE: "",
+      },
+      stdio: "pipe",
+    });
+    const output = readline.createInterface({ input: child.stdout });
+    const timeout = setTimeout(() => child.kill(), 10_000);
+    const events: Envelope[] = [];
+    const lines = output[Symbol.asyncIterator]();
+    try {
+      child.stdin.write(`${JSON.stringify({
+        command: "resume_session", session_id: SESSION_ID, request_id: "launch-name",
+        launch_settings: { name: "Launch rename" },
+      })}\n`);
+      for (;;) {
+        const next = await lines.next();
+        assert.ok(!next.done, `bridge closed: ${JSON.stringify(events)}`);
+        const event = JSON.parse(next.value) as Envelope;
+        events.push(event);
+        if (failing ? event.event === "slash_error" : events.some((e) => e.event === "connected") && events.some((e) => isTitleUpdate(e) && titleOf(e) === "Launch rename")) break;
+      }
+      const names = events.map((event) => event.event);
+      if (failing) {
+        assert.equal(existsSync(renames), false, "a resume that failed must not rename the saved session");
+        assert.ok(!names.includes("connected"), JSON.stringify(events));
+      } else {
+        assert.equal(readFileSync(renames, "utf8"), "Launch rename\n");
+      }
+    } finally {
+      clearTimeout(timeout);
+      output.close();
       if (child.exitCode === null && child.signalCode === null) {
         child.kill();
         await new Promise<void>((resolve) => child.once("exit", () => resolve()));
