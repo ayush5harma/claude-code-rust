@@ -148,15 +148,10 @@ pub struct SessionOptions {
     pub fork_session: bool,
 }
 
-/// Session names are shown in the terminal, so control characters are dropped, as the title
-/// converter does for titles the SDK reports.
+/// Session names are shown in the terminal, so they go through the one title sanitiser.
 fn parse_session_name(value: &str) -> Result<String, String> {
-    let name: String = value.chars().filter(|ch| !ch.is_control()).collect();
-    let name = name.trim();
-    if name.is_empty() {
-        return Err("the session name must contain visible characters".to_owned());
-    }
-    Ok(name.to_owned())
+    session_config::sanitize_session_title(value)
+        .ok_or_else(|| "the session name must contain visible characters".to_owned())
 }
 
 impl Cli {

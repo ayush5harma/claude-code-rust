@@ -104,6 +104,15 @@ impl SessionConfigArgs {
 }
 
 /// A prompt with no visible text would silently do nothing, so text and files share one rule.
+/// Session titles and names are user text that the Status tab writes to the terminal, so
+/// control characters are stripped and the result trimmed, here, once. `None` means nothing
+/// visible is left.
+pub(crate) fn sanitize_session_title(text: &str) -> Option<String> {
+    let text: String = text.chars().filter(|ch| !ch.is_control()).collect();
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
 fn is_blank(text: &str) -> bool {
     text.trim().is_empty()
 }
@@ -193,6 +202,7 @@ fn mcp_servers(base: &Path, value: &str) -> Result<Map<String, Value>, String> {
 
 #[cfg(test)]
 mod tests {
+    use super::sanitize_session_title;
     use crate::Cli;
     use clap::Parser;
     use serde_json::json;
@@ -235,13 +245,13 @@ mod tests {
     #[test]
     fn settings_come_from_inline_json_or_a_file_and_must_be_an_object() {
         let project = tempfile::tempdir().expect("project");
-        std::fs::write(project.path().join("ci.json"), "{ \"spinnerTipsEnabled\": false }\n")
+        std::fs::write(project.path().join("ci.json"), "{ \"cleanupPeriodDays\": 7 }\n")
             .expect("settings file");
         std::fs::write(project.path().join("list.json"), "[1]").expect("array file");
         std::fs::write(project.path().join("broken.json"), "{ \"a\": ").expect("broken file");
 
         let from_file = resolve(project.path(), &["--settings", "ci.json"]).expect("file");
-        assert_eq!(from_file.settings, json!({"spinnerTipsEnabled": false}).as_object().cloned());
+        assert_eq!(from_file.settings, json!({"cleanupPeriodDays": 7}).as_object().cloned());
         let inline =
             resolve(project.path(), &["--settings", "  {\"model\": \"haiku\"}"]).expect("inline");
         assert_eq!(inline.settings, json!({"model": "haiku"}).as_object().cloned());
@@ -330,6 +340,15 @@ mod tests {
         let missing = resolve(project.path(), &["--append-system-prompt-file", "absent.md"])
             .expect_err("missing prompt file");
         assert!(missing.starts_with("--append-system-prompt-file: cannot read "), "{missing}");
+    }
+
+    #[test]
+    fn session_titles_lose_control_characters_and_surrounding_space() {
+        assert_eq!(
+            sanitize_session_title("  Re\x1b[31mlease\n prep \t").as_deref(),
+            Some("Re[31mlease prep")
+        );
+        assert_eq!(sanitize_session_title(" \x07\n "), None);
     }
 
     #[test]
