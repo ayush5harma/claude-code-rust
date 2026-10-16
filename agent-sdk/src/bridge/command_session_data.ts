@@ -30,7 +30,10 @@ import {
   slashError,
   writeEvent,
 } from "./events.js";
-import { exportSessionHistory } from "./history_export.js";
+import {
+  emitHistoryExportFailure,
+  exportSessionHistory,
+} from "./history_export.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import { emitSessionTitle } from "./session_title.js";
 import {
@@ -96,10 +99,16 @@ export async function handleSessionDataCommand(
       await getRewindTargets(command, requestId, deps);
       return;
     case "export_session_history": {
-      const session = requireSession(command.session_id, requestId);
-      if (session) {
-        await exportSessionHistory(session.sessionId, session.cwd, requestId);
+      const session = sessionById(command.session_id);
+      if (!session) {
+        emitHistoryExportFailure(
+          command.session_id,
+          `unknown session: ${command.session_id}`,
+          requestId,
+        );
+        return;
       }
+      await exportSessionHistory(session.sessionId, session.cwd, requestId);
       return;
     }
     case "rewind":
