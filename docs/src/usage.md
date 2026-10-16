@@ -57,6 +57,8 @@ claude-rs resume <session_id> --model sonnet --effort medium
 
 An initial prompt whose text matches a subcommand name can be passed after `--`, for example `claude-rs -- "doctor"`. Startup arguments cannot be combined with support commands such as `doctor`, `logs`, `config`, or `completions`.
 
+`--dir` and `--bridge-script` are checked before the terminal, trust prompt, or bridge start. A missing path, a file where a directory is expected, a directory where the script is expected, or a path that cannot be read prints an error naming the flag and exits with status 2. Nothing is saved. Support commands do not check them: `claude-rs doctor` reports a bad bridge script as a failed check instead.
+
 After the TUI exits, the app prints a resume hint whenever a session was established, using the active or most recently established session id.
 
 ## Support And Diagnostics
@@ -89,8 +91,8 @@ The installed `claude-rs --help` command exposes these options:
 | `--permission-mode <MODE>` | Set the initial session permission mode without changing saved preferences. |
 | `--agent <NAME>` | Select the main-thread agent for the initial session. |
 | `--no-update-check` | Disable startup update checks. |
-| `-C, --dir <DIR>` | Run in a specific working directory. |
-| `--bridge-script <PATH>` | Use a specific Agent SDK bridge script. |
+| `-C, --dir <DIR>` | Run in a specific working directory, which must exist and be readable. |
+| `--bridge-script <PATH>` | Use a specific Agent SDK bridge script, which must be a readable file. |
 | `--enable-logs` | Expand the always-on baseline to detailed info-level diagnostics. |
 | `--diagnostics-preset <runtime|session|render|bridge|full>` | Use a named diagnostics filter. |
 | `--log-file <PATH>` | Write tracing diagnostics to a specific file. |
