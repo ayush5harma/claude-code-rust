@@ -405,11 +405,16 @@ readline
         } else streamReply(message.message_uuid);
         break;
       case 'reload_skills_and_styles':
-        // First reload succeeds; the second fails the way the bridge reports an SDK error.
+        // First reload succeeds; the second reloads skills and fails the output styles half.
         reloads++;
-        send(reloads === 1
-          ? { event: 'skills_and_styles_reloaded', session_id: SESSION, skills: ['deploy', 'lint'], output_styles: ['default', 'Explanatory', 'mine'] }
-          : { event: 'slash_error', session_id: SESSION, message: 'failed to reload skills and output styles: style directory unreadable' });
+        send({
+          event: 'skills_and_styles_reloaded',
+          session_id: SESSION,
+          skills: { status: 'reloaded', names: ['deploy', 'lint'] },
+          output_styles: reloads === 1
+            ? { status: 'reloaded', names: ['default', 'Explanatory', 'mine'] }
+            : { status: 'failed', message: 'style directory unreadable' },
+        });
         break;
       case 'inspect_settings':
         if (notificationScenario) {

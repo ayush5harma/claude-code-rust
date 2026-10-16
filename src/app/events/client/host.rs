@@ -2,19 +2,68 @@
 
 use super::super::{App, notices, session};
 use crate::agent::events::ClientEvent;
+use crate::agent::types::ReloadOutcome;
 use crate::app::{PendingCommandAck, SystemSeverity};
 
+fn reload_outcome_phrase(label: &str, outcome: &ReloadOutcome) -> String {
+    match outcome {
+        ReloadOutcome::Reloaded { names } => format!("Reloaded {label} ({})", names.len()),
+        ReloadOutcome::Failed { message } => format!("Could not reload {label}: {message}"),
+        ReloadOutcome::TimedOut { after_ms } => {
+            let mut phrase =
+                format!("{label} did not answer within {} s; it may still apply", after_ms / 1000);
+            if let Some(first) = phrase.get_mut(..1) {
+                first.make_ascii_uppercase();
+            }
+            phrase
+        }
+    }
+}
+
+/// One line for the whole `/reload`: the plain success wording when both halves reloaded,
+/// otherwise each half on its own, so a half that worked is never reported as failed.
+fn reload_notice(
+    skills: &ReloadOutcome,
+    output_styles: &ReloadOutcome,
+) -> (SystemSeverity, String) {
+    if let (
+        ReloadOutcome::Reloaded { names: skill_names },
+        ReloadOutcome::Reloaded { names: styles },
+    ) = (skills, output_styles)
+    {
+        return (
+            SystemSeverity::Info,
+            format!("Reloaded skills ({}) and output styles ({})", skill_names.len(), styles.len()),
+        );
+    }
+    let any_reloaded = [skills, output_styles]
+        .iter()
+        .any(|outcome| matches!(outcome, ReloadOutcome::Reloaded { .. }));
+    let any_failed = [skills, output_styles]
+        .iter()
+        .any(|outcome| matches!(outcome, ReloadOutcome::Failed { .. }));
+    let severity =
+        if any_failed && !any_reloaded { SystemSeverity::Error } else { SystemSeverity::Warning };
+    let text = format!(
+        "{}. {}.",
+        reload_outcome_phrase("skills", skills),
+        reload_outcome_phrase("output styles", output_styles)
+    );
+    (severity, text)
+}
+
 /// The SDK's own `commands_changed` message refreshes the command inventory;
-/// this only acknowledges /reload and says what was re-read.
-fn apply_skills_and_styles_reloaded(app: &mut App, skills: usize, output_styles: usize) {
+/// this only acknowledges /reload and says how each half ended.
+fn apply_skills_and_styles_reloaded(
+    app: &mut App,
+    skills: &ReloadOutcome,
+    output_styles: &ReloadOutcome,
+) {
     if matches!(app.turn.pending_command_ack, Some(PendingCommandAck::SkillsAndStylesReload)) {
         session::clear_pending_command(app);
     }
-    notices::emit_system_notice(
-        app,
-        SystemSeverity::Info,
-        &format!("Reloaded skills ({skills}) and output styles ({output_styles})"),
-    );
+    let (severity, text) = reload_notice(skills, output_styles);
+    notices::emit_system_notice(app, severity, &text);
 }
 
 pub(super) fn handle(app: &mut App, event: ClientEvent) {
@@ -58,8 +107,8 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
                     Some(format!("Failed to reload MCP server snapshot: {message}"));
             }
         }
-        ClientEvent::SkillsAndStylesReloaded { session_id: _, skill_names, output_style_names } => {
-            apply_skills_and_styles_reloaded(app, skill_names.len(), output_style_names.len());
+        ClientEvent::SkillsAndStylesReloaded { session_id: _, skills, output_styles } => {
+            apply_skills_and_styles_reloaded(app, &skills, &output_styles);
         }
         ClientEvent::UsageRefreshStarted { epoch } => {
             if app.session_runtime.session_scope_epoch == epoch {

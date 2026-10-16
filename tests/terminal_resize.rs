@@ -2228,13 +2228,14 @@ fn status_tab_shows_the_session_name_after_rename() {
 }
 
 #[test]
-fn reload_reports_the_reloaded_counts_and_then_a_bridge_failure() {
+fn reload_reports_the_reloaded_counts_and_then_a_half_that_failed() {
     let mut test = TerminalTest::start("reload", 3);
     test.submit_command("/reload");
     test.wait_turn_finished("Reloaded skills (2) and output styles (3)");
 
+    // The skills half still reports as reloaded next to the output styles that failed.
     test.submit_command("/reload");
-    test.wait_turn_finished("style directory unreadable");
+    test.wait_turn_finished("Could not reload output styles: style directory unreadable");
 
     // /reload is app-owned: it reaches the bridge as its own command, never as a prompt.
     assert_eq!(test.commands("reload_skills_and_styles").len(), 2);

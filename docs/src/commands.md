@@ -86,7 +86,7 @@ Refresh keeps the current pane focused and retains the selected change when it r
 
 ## Reloading skills and output styles
 
-`/reload` asks the active session to re-read skills and output styles from disk, so a skill or style you just edited applies without restarting. The input is blocked until the SDK answers, then a notice reports how many skills and output styles it found, or the error. Each SDK request is given 10 seconds; a request that does not answer in time ends as an error and releases the input. The slash command list picks up new or changed skills through the SDK's own command-list update. `/reload` does not reload plugins; use the Plugins tab for that.
+`/reload` asks the active session to re-read skills and output styles from disk, so a skill or style you just edited applies without restarting. The input is blocked until the SDK has answered both reloads, output styles first, then a single notice reports how many skills and output styles it found. The two halves are reported separately: one that fails shows its error next to the count for the other, and one that does not answer within 10 seconds is reported as unanswered (it may still apply) instead of as a failure. Either way the input is released. The slash command list picks up new or changed skills through the SDK's own command-list update. `/reload` does not reload plugins; use the Plugins tab for that.
 
 ## Side Questions
 

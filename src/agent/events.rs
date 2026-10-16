@@ -164,11 +164,11 @@ pub enum ClientEvent {
     },
     /// Session runtime plugin reload failed after dispatch.
     RuntimeReloadFailed { session_id: String, message: String },
-    /// Skills and output styles were re-read from disk (names the SDK reported).
+    /// How the skills and the output styles halves of a `/reload` each ended.
     SkillsAndStylesReloaded {
         session_id: String,
-        skill_names: Vec<String>,
-        output_style_names: Vec<String>,
+        skills: crate::agent::types::ReloadOutcome,
+        output_styles: crate::agent::types::ReloadOutcome,
     },
     /// Custom slash command replaced the active session.
     SessionReplaced {

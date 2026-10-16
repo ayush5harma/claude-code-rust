@@ -511,8 +511,8 @@ pub enum BridgeEvent {
     },
     SkillsAndStylesReloaded {
         session_id: String,
-        skills: Vec<String>,
-        output_styles: Vec<String>,
+        skills: types::ReloadOutcome,
+        output_styles: types::ReloadOutcome,
     },
     SessionReplaced {
         session_id: String,
@@ -1184,8 +1184,8 @@ mod tests {
         let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
             "event": "skills_and_styles_reloaded",
             "session_id": "s1",
-            "skills": ["deploy", "lint"],
-            "output_styles": ["default", "Explanatory", "mine"]
+            "skills": { "status": "reloaded", "names": ["deploy", "lint"] },
+            "output_styles": { "status": "timed_out", "after_ms": 10000 }
         }))
         .expect("deserialize reload result");
 
@@ -1193,15 +1193,26 @@ mod tests {
             decoded.event,
             BridgeEvent::SkillsAndStylesReloaded {
                 session_id: "s1".to_owned(),
-                skills: vec!["deploy".to_owned(), "lint".to_owned()],
-                output_styles: vec![
-                    "default".to_owned(),
-                    "Explanatory".to_owned(),
-                    "mine".to_owned()
-                ],
+                skills: types::ReloadOutcome::Reloaded {
+                    names: vec!["deploy".to_owned(), "lint".to_owned()]
+                },
+                output_styles: types::ReloadOutcome::TimedOut { after_ms: 10_000 },
             }
         );
         assert_eq!(decoded.event.session_id(), Some("s1"));
+    }
+
+    #[test]
+    fn failed_reload_outcome_deserializes_the_bridge_message() {
+        let decoded: types::ReloadOutcome = serde_json::from_value(
+            serde_json::json!({ "status": "failed", "message": "style directory unreadable" }),
+        )
+        .expect("deserialize outcome");
+
+        assert_eq!(
+            decoded,
+            types::ReloadOutcome::Failed { message: "style directory unreadable".to_owned() }
+        );
     }
 
     #[test]

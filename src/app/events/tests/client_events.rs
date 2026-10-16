@@ -2019,34 +2019,99 @@ fn live_title_update_preserves_filtered_selection_when_an_earlier_result_stops_m
         crate::agent::wire::BridgeCommand::ResumeSession { session_id, .. } if session_id == "chosen"));
 }
 
-#[test]
-fn skills_and_styles_reload_result_is_noticed_and_releases_the_pending_reload() {
+fn reloaded(names: &[&str]) -> crate::agent::types::ReloadOutcome {
+    crate::agent::types::ReloadOutcome::Reloaded {
+        names: names.iter().map(|name| (*name).to_owned()).collect(),
+    }
+}
+
+/// Runs a `/reload` that is waiting for its answer and returns the app and the one notice
+/// that answer produced.
+fn reload_answered(
+    skills: crate::agent::types::ReloadOutcome,
+    output_styles: crate::agent::types::ReloadOutcome,
+) -> (App, SystemSeverity, String) {
     let mut app = make_test_app();
     app.status = AppStatus::CommandPending;
     app.turn.pending_command_label = Some("Reloading skills and output styles...".into());
     app.turn.pending_command_ack = Some(PendingCommandAck::SkillsAndStylesReload);
+    let before = app.transcript.messages.len();
 
     handle_client_event(
         &mut app,
         ClientEvent::SkillsAndStylesReloaded {
             session_id: "test-session".to_owned(),
-            skill_names: vec!["deploy".to_owned(), "lint".to_owned()],
-            output_style_names: vec![
-                "default".to_owned(),
-                "Explanatory".to_owned(),
-                "mine".to_owned(),
-            ],
+            skills,
+            output_styles,
         },
     );
 
-    assert!(matches!(app.status, AppStatus::Ready));
+    assert!(matches!(app.status, AppStatus::Ready), "the composer is released");
     assert!(app.turn.pending_command_ack.is_none());
-    let last = app.transcript.messages.last().expect("reload notice");
-    let Some(MessageBlock::Notice(notice)) = last.blocks.first() else {
+    assert_eq!(app.transcript.messages.len(), before + 1, "exactly one notice");
+    let Some(MessageBlock::Notice(notice)) =
+        app.transcript.messages.last().and_then(|message| message.blocks.first())
+    else {
         panic!("expected a notice block");
     };
-    assert_eq!(notice.severity, SystemSeverity::Info);
-    assert_eq!(notice.text.text, "Reloaded skills (2) and output styles (3)");
+    let (severity, text) = (notice.severity, notice.text.text.clone());
+    (app, severity, text)
+}
+
+#[test]
+fn skills_and_styles_reload_when_both_halves_reloaded_reports_both_counts() {
+    let (_app, severity, text) = reload_answered(
+        reloaded(&["deploy", "lint"]),
+        reloaded(&["default", "Explanatory", "mine"]),
+    );
+
+    assert_eq!(severity, SystemSeverity::Info);
+    assert_eq!(text, "Reloaded skills (2) and output styles (3)");
+}
+
+#[test]
+fn skills_and_styles_reload_reports_an_unanswered_half_without_calling_it_a_failure() {
+    let (_app, severity, text) = reload_answered(
+        crate::agent::types::ReloadOutcome::TimedOut { after_ms: 10_000 },
+        reloaded(&["default", "Explanatory", "mine"]),
+    );
+
+    assert_eq!(severity, SystemSeverity::Warning);
+    assert_eq!(
+        text,
+        "Skills did not answer within 10 s; it may still apply. Reloaded output styles (3)."
+    );
+    assert!(!text.to_lowercase().contains("fail"), "{text}");
+}
+
+#[test]
+fn skills_and_styles_reload_reports_a_failed_half_next_to_the_half_that_reloaded() {
+    let (_app, severity, text) = reload_answered(
+        reloaded(&["deploy", "lint"]),
+        crate::agent::types::ReloadOutcome::Failed {
+            message: "style directory unreadable".to_owned(),
+        },
+    );
+
+    assert_eq!(severity, SystemSeverity::Warning);
+    assert_eq!(
+        text,
+        "Reloaded skills (2). Could not reload output styles: style directory unreadable."
+    );
+}
+
+#[test]
+fn skills_and_styles_reload_is_an_error_when_nothing_reloaded_and_a_half_failed() {
+    let (_app, severity, text) = reload_answered(
+        crate::agent::types::ReloadOutcome::Failed { message: "query closed".to_owned() },
+        crate::agent::types::ReloadOutcome::TimedOut { after_ms: 10_000 },
+    );
+
+    assert_eq!(severity, SystemSeverity::Error);
+    assert_eq!(
+        text,
+        "Could not reload skills: query closed. Output styles did not answer within 10 s; it may still apply."
+    );
 }
 
 #[test]
@@ -2060,8 +2125,8 @@ fn skills_and_styles_reload_result_leaves_an_unrelated_pending_command_alone() {
         &mut app,
         ClientEvent::SkillsAndStylesReloaded {
             session_id: "test-session".to_owned(),
-            skill_names: Vec::new(),
-            output_style_names: Vec::new(),
+            skills: reloaded(&[]),
+            output_styles: reloaded(&[]),
         },
     );
 
@@ -2070,7 +2135,8 @@ fn skills_and_styles_reload_result_leaves_an_unrelated_pending_command_alone() {
 }
 
 #[test]
-fn skills_and_styles_reload_failure_is_noticed_and_releases_the_pending_reload() {
+fn slash_error_for_a_pending_reload_is_noticed_and_releases_it() {
+    // The bridge answers an unknown session with a slash error instead of a reload result.
     let mut app = make_test_app();
     app.status = AppStatus::CommandPending;
     app.turn.pending_command_label = Some("Reloading skills and output styles...".into());
@@ -2080,17 +2146,16 @@ fn skills_and_styles_reload_failure_is_noticed_and_releases_the_pending_reload()
         &mut app,
         ClientEvent::SlashCommandError {
             session_id: Some("test-session".to_owned()),
-            message: "failed to reload skills and output styles: reloading skills timed out"
-                .to_owned(),
+            message: "unknown session: test-session".to_owned(),
         },
     );
 
     assert!(matches!(app.status, AppStatus::Ready));
     assert!(app.turn.pending_command_ack.is_none());
-    let last = app.transcript.messages.last().expect("failure notice");
-    let Some(MessageBlock::Notice(notice)) = last.blocks.first() else {
+    let Some(MessageBlock::Notice(notice)) =
+        app.transcript.messages.last().and_then(|message| message.blocks.first())
+    else {
         panic!("expected a notice block");
     };
     assert_eq!(notice.severity, SystemSeverity::Error);
-    assert!(notice.text.text.contains("reloading skills timed out"), "{}", notice.text.text);
 }

@@ -252,11 +252,7 @@ pub(super) async fn handle_bridge_event(
             output_styles,
         } => {
             let _ = event_tx
-                .send(ClientEvent::SkillsAndStylesReloaded {
-                    session_id,
-                    skill_names: skills,
-                    output_style_names: output_styles,
-                })
+                .send(ClientEvent::SkillsAndStylesReloaded { session_id, skills, output_styles })
                 .await;
         }
         crate::agent::wire::BridgeEvent::SessionReplaced {
