@@ -8,7 +8,7 @@ mod diff;
 pub(crate) mod footer_rows;
 mod git_diff;
 pub(crate) mod help;
-pub(crate) mod highlight;
+mod highlight;
 pub(crate) mod host_tips;
 pub(crate) mod inline_chat_rows;
 pub(crate) mod input;
