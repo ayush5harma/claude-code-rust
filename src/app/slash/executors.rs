@@ -554,7 +554,7 @@ fn handle_export_submit(app: &mut App, text: &str) -> bool {
 
     set_command_pending(
         app,
-        "Exporting conversation...",
+        Some("Exporting conversation..."),
         Some(crate::app::PendingCommandAck::HistoryExport),
     );
 
