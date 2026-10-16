@@ -256,11 +256,9 @@ impl TerminalTest {
             settled: true,
             trust_prompt: String::new(),
         };
-        let project_tail = format!(
-            "{}/project",
-            test.temp.path().file_name().expect("temp directory name").to_string_lossy()
-        );
-        test.trust_prompt = test.wait_screen_with("Trust this project", &[&project_tail]);
+        // "> Yes" is drawn after everything above it, so seeing it means the
+        // whole prompt, directory included, is on screen.
+        test.trust_prompt = test.wait_screen_with("Trust this project", &["> Yes"]);
         test.send(b"y");
         if has_initial_prompt {
             test.wait_until("initial prompt", |test| !test.prompts().is_empty());
@@ -1397,16 +1395,33 @@ fn activity_stays_above_queue_and_out_of_scrollback_through_wait_resize_and_comp
 fn trust_prompt_names_the_directory_that_yes_will_save() {
     let test = TerminalTest::start("hold-success", 1);
 
+    // `start` answered Yes, so the profile now holds the key the prompt was
+    // about. The harness starts with an absolute `--dir`, which a temp
+    // directory behind a symlink (macOS) spells differently from its key.
+    let saved: Value = serde_json::from_slice(
+        &std::fs::read(test.temp.path().join("profile").join(".claude.json")).expect("saved trust"),
+    )
+    .expect("trust json");
+    let keys: Vec<&String> = saved["projects"].as_object().expect("projects").keys().collect();
+    assert_eq!(keys.len(), 1, "{keys:?}");
+
     let rows: Vec<&str> = test.trust_prompt.lines().collect();
+    let content = |row: &str| {
+        let inside = row.trim_start_matches('\u{2502}').trim_end_matches('\u{2502}');
+        inside.strip_prefix(' ').unwrap_or(inside).trim_end().to_owned()
+    };
     let question = rows
         .iter()
         .position(|row| row.contains("Trust this project directory?"))
         .expect("question row");
-    let directory = rows[question + 1].trim_matches(|c: char| c == '\u{2502}' || c == ' ');
-    assert!(directory.ends_with("/project"), "{}", test.trust_prompt);
-    // The key is absolute and resolved, so it never repeats a relative or
-    // symlinked spelling of the start directory.
-    assert!(Path::new(directory).is_absolute(), "{directory}");
+    // The path may wrap; its rows end where the explanatory text starts.
+    let shown: String = rows[question + 1..]
+        .iter()
+        .map(|row| content(row))
+        .take_while(|row| !row.starts_with("Claude Rust will wait"))
+        .collect();
+    assert_eq!(&shown, keys[0], "{}", test.trust_prompt);
+    assert!(Path::new(keys[0]).is_absolute(), "{}", keys[0]);
     assert!(!test.trust_prompt.contains("Unknown Project"), "{}", test.trust_prompt);
 }
 
