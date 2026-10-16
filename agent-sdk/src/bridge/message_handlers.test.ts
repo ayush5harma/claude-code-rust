@@ -248,6 +248,7 @@ test("a backgrounded subagent keeps its lifecycle row after it leaves the backgr
     task_type: "local_agent",
     subagent_type: "general-purpose",
     sdk_lifecycle_task: true,
+    is_backgrounded: true,
     output_file: "",
     summary: "ok",
     terminal_status: "completed",
@@ -256,7 +257,7 @@ test("a backgrounded subagent keeps its lifecycle row after it leaves the backgr
   assert.equal(session.tasksById.has("shell-1"), false);
 });
 
-test("a subagent remains visible when it leaves the background snapshot before its outcome", () => {
+test("a subagent that leaves the background snapshot before its outcome stops counting as running, then takes its real outcome", () => {
   const session = makeSession();
   const emit = (message: Record<string, unknown>) =>
     handleSdkMessage(session, { session_id: "session-1", uuid: crypto.randomUUID(), ...message } as unknown as SDKMessage);
@@ -268,10 +269,11 @@ test("a subagent remains visible when it leaves the background snapshot before i
       { task_id: "agent-1", task_type: "local_agent", description: "Background sleep" },
       { task_id: "snapshot-only", task_type: "local_agent", description: "No lifecycle start" },
     ] });
+    assert.equal(session.tasksById.get("agent-1")?.status, "in_progress", "listed rows keep running");
     emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });
-    const waiting = session.tasksById.get("agent-1");
-    assert.equal(waiting?.status, "in_progress", "snapshot departure does not infer completion");
-    assert.deepEqual(waiting?.metadata, { task_type: "local_agent", sdk_lifecycle_task: true });
+    const unlisted = session.tasksById.get("agent-1");
+    assert.equal(unlisted?.status, "completed", "a running row the snapshot no longer lists is not running");
+    assert.deepEqual(unlisted?.metadata, { task_type: "local_agent", sdk_lifecycle_task: true, is_backgrounded: true, terminal_status: "interrupted" }, "no outcome is invented");
     assert.equal(session.tasksById.has("snapshot-only"), false, "a background-only row leaves with the snapshot");
     emit({ type: "system", subtype: "task_notification", task_id: "agent-1", status: "completed", summary: "ok" });
   } finally {
@@ -283,7 +285,21 @@ test("a subagent remains visible when it leaves the background snapshot before i
   assert.ok(!updates.some(update => update?.removed_task_ids?.includes("agent-1")));
   const final = updates.flatMap(update => update?.tasks ?? []).filter(task => task.task_id === "agent-1").at(-1);
   assert.equal(final?.status, "completed");
-  assert.deepEqual(final?.metadata, { task_type: "local_agent", sdk_lifecycle_task: true, summary: "ok", terminal_status: "completed" });
+  assert.deepEqual(final?.metadata, { task_type: "local_agent", sdk_lifecycle_task: true, is_backgrounded: true, summary: "ok", terminal_status: "completed" });
+});
+
+test("a foreground subagent the snapshot never listed keeps running when a snapshot arrives", () => {
+  const session = makeSession();
+  const emit = (message: Record<string, unknown>) =>
+    handleSdkMessage(session, { session_id: "session-1", uuid: crypto.randomUUID(), ...message } as unknown as SDKMessage);
+  const restore = replaceProtocolEventWriter(() => {});
+  try {
+    emit({ type: "system", subtype: "task_started", task_id: "agent-fg", task_type: "local_agent", description: "Foreground" });
+    emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });
+  } finally {
+    restore();
+  }
+  assert.equal(session.tasksById.get("agent-fg")?.status, "in_progress");
 });
 
 test("SDK context usage Markdown is shown even without a response ID", () => {

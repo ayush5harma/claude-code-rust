@@ -278,3 +278,25 @@ test("resume display maps plain string messages and hides internal compact summa
   ]);
   assert.ok(!updates.some(update => update.type === "message_metadata" && update.source_message_uuid === "summary"));
 });
+
+// A background subagent still running when the CLI exited has a launch and no
+// notification. On resume nothing owns its process.
+test("a background subagent with no recorded outcome is rebuilt as interrupted, not running", () => {
+  const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
+  const saved = (toolUseId: string, agentId: string, withOutcome: boolean) => [
+    { ...base, type: "assistant" as const, uuid: `launch-${agentId}`, message: { role: "assistant", content: [{ type: "tool_use", id: toolUseId, name: "Agent", input: { description: agentId, prompt: "p", subagent_type: "general-purpose", run_in_background: true } }] } },
+    { ...base, type: "user" as const, uuid: `result-${agentId}`, ...{ toolUseResult: { isAsync: true, status: "async_launched", agentId, description: agentId, prompt: "p", outputFile: `/tmp/tasks/${agentId}.output` } }, message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolUseId, content: [{ type: "text", text: `Async agent launched successfully.\nagentId: ${agentId}` }] }] } },
+    ...(withOutcome ? [{ ...base, type: "user" as const, uuid: `notification-${agentId}`, ...{ origin: { kind: "task-notification", producer: "session-task" } }, message: { role: "user", content: `<task-notification><task-id>${agentId}</task-id><tool-use-id>${toolUseId}</tool-use-id><status>completed</status><summary>ok</summary></task-notification>` } }] : []),
+  ];
+  const rows = new Map<string, { status: string; metadata?: unknown }>();
+  for (const update of mapSessionMessagesToUpdates([...saved("t-open", "a-open", false), ...saved("t-done", "a-done", true)])) {
+    if (update.type === "task_state_update") for (const task of update.tasks) rows.set(task.task_id, task);
+  }
+  const open = rows.get("a-open");
+  assert.ok(open, "the launched subagent still gets a row");
+  assert.notEqual(open.status, "in_progress", "nothing owns the process after a resume");
+  const metadata = open.metadata as Record<string, unknown>;
+  assert.equal(metadata.terminal_status, "interrupted");
+  assert.equal(metadata.task_type, "local_agent");
+  assert.equal((rows.get("a-done")?.metadata as Record<string, unknown>).terminal_status, "completed", "a recorded outcome is kept");
+});

@@ -16,7 +16,7 @@ import type {
 import { asRecordOrNull } from "./shared.js";
 import { messageCandidates, transcriptPresentation } from "./transcript_presentation.js";
 import { applyFieldsToBase, normalizeToolCallUpdateFields, toolAcceptsTaskLifecycle, toolNameFromMeta } from "./tool_calls.js";
-import { taskLifecyclePatch, upsertTask } from "./tasks.js";
+import { interruptedTaskPatch, taskLifecyclePatch, upsertTask } from "./tasks.js";
 import { linkTaskToolUse } from "./task_links.js";
 import type { SessionState } from "./session_lifecycle.js";
 import { taskSystemToolFields } from "./message_handlers.js";
@@ -419,6 +419,14 @@ export function mapSessionMessagesToUpdates(
     const metadata = messageMetadata({ ...entry, ...asRecordOrNull(entry.message) }, fallbackRole);
     if (metadata) updates.push(metadata);
   }
+
+  // History records starts and outcomes, never a live process. A task still
+  // running here lost its process when the CLI exited, so it is not rebuilt as
+  // running; no outcome is claimed for it.
+  const interrupted = [...tasksById.values()]
+    .filter((task) => task.status === "in_progress")
+    .map((task) => upsertTask({ tasksById, taskOrder: [] }, interruptedTaskPatch(task)));
+  if (interrupted.length > 0) updates.push({ type: "task_state_update", source: "task_lifecycle", tasks: interrupted, removed_task_ids: [], is_complete_snapshot: false });
 
   return updates;
 }

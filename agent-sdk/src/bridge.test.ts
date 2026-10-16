@@ -9327,7 +9327,14 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
   const taskUpdates = updates.filter(
     (update) => update.type === "task_state_update",
   );
-  assert.equal(taskUpdates.length, 4);
+  // The three starts, then one update settling those with no saved outcome.
+  assert.equal(taskUpdates.length, 5);
+  const settled = taskUpdates.at(4);
+  assert.ok(settled?.type === "task_state_update");
+  assert.deepEqual(
+    settled.tasks.map((task) => [task.task_id, task.status, (task.metadata as Record<string, unknown>).terminal_status]),
+    [["task-bg", "completed", "interrupted"], ["task-remote", "completed", "interrupted"], ["task-mcp", "completed", "interrupted"]],
+  );
   assert.deepEqual(taskUpdates.at(1), {
     type: "task_state_update",
     source: "task_lifecycle",
