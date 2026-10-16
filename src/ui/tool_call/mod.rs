@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 //! Tool-call rendering: entry points, caching, and shared helpers.
 //!
 //! Submodules handle specific rendering concerns:
@@ -17,6 +16,7 @@ mod interactions;
 mod monitor;
 mod projects;
 mod push_notification;
+mod read;
 mod remote_trigger;
 mod repl;
 mod schedule_wakeup;
