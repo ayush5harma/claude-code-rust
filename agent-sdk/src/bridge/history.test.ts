@@ -298,5 +298,7 @@ test("a background subagent with no recorded outcome is rebuilt as interrupted, 
   const metadata = open.metadata as Record<string, unknown>;
   assert.equal(metadata.terminal_status, "interrupted");
   assert.equal(metadata.task_type, "local_agent");
-  assert.equal((rows.get("a-done")?.metadata as Record<string, unknown>).terminal_status, "completed", "a recorded outcome is kept");
+  const done = rows.get("a-done");
+  assert.ok(done, "the finished subagent has a row");
+  assert.equal((done.metadata as Record<string, unknown>).terminal_status, "completed", "a recorded outcome is kept");
 });
