@@ -562,11 +562,19 @@ fn handle_export_submit(app: &mut App, text: &str) -> bool {
 
     let tx = app.event_tx.clone();
     tokio::task::spawn_local(async move {
-        if let Err(e) = conn.export_session_history(session_id.clone(), request_id) {
+        if let Err(e) = conn.export_session_history(session_id.clone(), request_id.clone()) {
+            // Fail the export itself: only its own request-scoped event may end it.
             let _ = tx
-                .send(ClientEvent::SlashCommandError {
-                    session_id: Some(session_id),
-                    message: format!("Failed to run /export: {e}"),
+                .send(ClientEvent::SessionHistoryChunk {
+                    session_id,
+                    chunk: crate::agent::events::HistoryChunk {
+                        request_id: Some(request_id),
+                        updates: Vec::new(),
+                        last: true,
+                        omitted_updates: 0,
+                        unmapped_updates: 0,
+                        error: Some(format!("Failed to run /export: {e}")),
+                    },
                 })
                 .await;
         }

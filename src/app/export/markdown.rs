@@ -3,14 +3,18 @@
 //! Markdown rendering of a session's complete history for `/export`.
 //!
 //! The input is the bridge's resume translation of the saved transcript, so this
-//! module owns only presentation: message text is kept verbatim, tool calls get a
-//! heading with a compact input summary, and results and diffs go into fenced
-//! blocks that are truncated with a note. Terminal control sequences never reach
-//! the file.
+//! module owns only presentation: message text is kept as written but cannot
+//! change the file's structure (see `contain_message`), tool calls get a heading
+//! with a compact input summary, and results and diffs go into fenced blocks that
+//! are truncated with a note. Saved notices and notifications become quoted notes,
+//! and what is left out is named in the header and in closing notes. Terminal
+//! control sequences never reach the file.
 
 use crate::agent::model::{
-    ContentBlock, SessionUpdate, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdateFields,
+    ContentBlock, SessionUpdate, SystemNoticeSeverity, ToolCall, ToolCallContent, ToolCallStatus,
+    ToolCallUpdateFields,
 };
+use crate::agent::notifications::SdkNotification;
 use crate::ui::highlight::strip_ansi;
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -39,10 +43,15 @@ enum Role {
     Assistant,
 }
 
+/// What the export leaves out by design, stated in the header so a reader never has to guess.
+const NOT_INCLUDED: &str = "thinking blocks, images inside tool results, background task state, \
+     timing and other session metadata";
+
 pub(super) fn render(
     header: &Header<'_>,
     updates: &[SessionUpdate],
     omitted_updates: u64,
+    unmapped_updates: u64,
 ) -> String {
     let tools = final_tool_states(updates);
     let mut out = String::new();
@@ -62,16 +71,47 @@ pub(super) fn render(
                     write_tool(&mut out, call);
                 }
             }
+            SessionUpdate::SystemNoticeUpdate { severity, message } => {
+                let label = match severity {
+                    SystemNoticeSeverity::Info => "Notice",
+                    SystemNoticeSeverity::Warning => "Warning",
+                    SystemNoticeSeverity::Error => "Error",
+                };
+                write_note(&mut out, label, message);
+            }
+            SessionUpdate::NotificationUpdate { notification, .. } => {
+                let (SdkNotification::SdkNotice { text, .. }
+                | SdkNotification::ModelTool { text, .. }) = notification;
+                write_note(&mut out, "Notification", text);
+            }
+            SessionUpdate::ExternalMessageUpdate(message) => {
+                let label = format!("Message from {}", clean_line(&message.origin.kind));
+                write_note(&mut out, &label, &message.content);
+            }
             _ => {}
         }
+    }
+    write_footer(&mut out, omitted_updates, unmapped_updates);
+    out
+}
+
+fn write_footer(out: &mut String, omitted_updates: u64, unmapped_updates: u64) {
+    if unmapped_updates == 0 && omitted_updates == 0 {
+        return;
+    }
+    out.push_str("---\n\n");
+    if unmapped_updates > 0 {
+        let _ = writeln!(
+            out,
+            "_{unmapped_updates} saved history entries could not be shown by this app and are not included._\n"
+        );
     }
     if omitted_updates > 0 {
         let _ = writeln!(
             out,
-            "---\n\n_Export truncated: {omitted_updates} later history entries were left out because the session is very large._"
+            "_Export truncated: {omitted_updates} later history entries were left out because the session is very large._"
         );
     }
-    out
 }
 
 /// Each tool call as the session ended: its call merged with every later update.
@@ -119,7 +159,8 @@ fn write_header(out: &mut String, header: &Header<'_>) {
     if let Some(model) = header.model {
         let _ = writeln!(out, "- Model: {}", clean_line(model));
     }
-    let _ = writeln!(out, "- Exported: {}\n", clean_line(header.exported_at));
+    let _ = writeln!(out, "- Exported: {}", clean_line(header.exported_at));
+    let _ = writeln!(out, "- Not included: {NOT_INCLUDED}\n");
 }
 
 fn enter_role(out: &mut String, current: &mut Option<Role>, role: Role) {
@@ -136,7 +177,7 @@ fn enter_role(out: &mut String, current: &mut Option<Role>, role: Role) {
 
 fn write_text(out: &mut String, current: &mut Option<Role>, role: Role, block: &ContentBlock) {
     let text = match block {
-        ContentBlock::Text(text) => clean(&text.text),
+        ContentBlock::Text(text) => contain_message(&clean(&text.text)),
         ContentBlock::Image(_) => "[image]".to_owned(),
     };
     let text = text.trim_end_matches('\n');
@@ -146,6 +187,129 @@ fn write_text(out: &mut String, current: &mut Option<Role>, role: Role, block: &
     enter_role(out, current, role);
     out.push_str(text);
     out.push_str("\n\n");
+}
+
+/// A saved notice or notification, quoted so it reads as a note and not as speech.
+fn write_note(out: &mut String, label: &str, text: &str) {
+    let text = contain_message(&clean(text));
+    let text = text.trim_end_matches('\n');
+    if text.trim().is_empty() {
+        return;
+    }
+    for (index, line) in text.split('\n').enumerate() {
+        if index == 0 {
+            let _ = write!(out, "> **{label}:**");
+        } else {
+            out.push('>');
+        }
+        if !line.is_empty() {
+            out.push(' ');
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    out.push('\n');
+}
+
+/// An open code fence: the character and length that must close it.
+struct Fence {
+    marker: char,
+    len: usize,
+}
+
+/// The fence a line opens, if any (up to three spaces of indent, three or more
+/// backticks or tildes; a backtick fence's info string has no backtick).
+fn fence_opener(line: &str) -> Option<Fence> {
+    let trimmed = line.trim_start_matches(' ');
+    if line.len() - trimmed.len() > 3 {
+        return None;
+    }
+    let marker = trimmed.chars().next().filter(|ch| matches!(ch, '`' | '~'))?;
+    let len = trimmed.chars().take_while(|ch| *ch == marker).count();
+    if len < 3 || (marker == '`' && trimmed[len..].contains('`')) {
+        return None;
+    }
+    Some(Fence { marker, len })
+}
+
+fn closes_fence(line: &str, fence: &Fence) -> bool {
+    let trimmed = line.trim_start_matches(' ');
+    if line.len() - trimmed.len() > 3 {
+        return false;
+    }
+    let run = trimmed.chars().take_while(|ch| *ch == fence.marker).count();
+    run >= fence.len && trimmed[run..].trim().is_empty()
+}
+
+/// Whether the text after this line is inside an HTML comment.
+fn inside_html_comment(line: &str, mut open: bool) -> bool {
+    let mut rest = line;
+    loop {
+        let (marker, opens) = if open { ("-->", false) } else { ("<!--", true) };
+        let Some(index) = rest.find(marker) else { return open };
+        rest = &rest[index + marker.len()..];
+        open = opens;
+    }
+}
+
+/// A heading the export itself writes: `# `..`### ` followed by a role or a tool label.
+fn forges_export_heading(line: &str) -> bool {
+    let trimmed = line.trim_start_matches(' ');
+    if line.len() - trimmed.len() > 3 {
+        return false;
+    }
+    let hashes = trimmed.chars().take_while(|ch| *ch == '#').count();
+    let Some(rest) = trimmed[hashes..].strip_prefix([' ', '\t']) else { return false };
+    let title = rest.trim().trim_end_matches('#').trim();
+    (1..=3).contains(&hashes)
+        && (title == "User" || title == "Assistant" || title.starts_with("Tool:"))
+}
+
+/// Message text that cannot change the file's structure: a fence or HTML comment
+/// the message leaves open is closed at its end, and a line that would read as one
+/// of the export's own role or tool headings gets its first `#` escaped.
+fn contain_message(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut fence: Option<Fence> = None;
+    let mut in_comment = false;
+    for (index, line) in text.split('\n').enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        if let Some(open) = &fence {
+            if closes_fence(line, open) {
+                fence = None;
+            }
+            out.push_str(line);
+            continue;
+        }
+        if !in_comment {
+            if let Some(open) = fence_opener(line) {
+                fence = Some(open);
+                out.push_str(line);
+                continue;
+            }
+            if forges_export_heading(line)
+                && let Some(position) = line.find('#')
+            {
+                out.push_str(&line[..position]);
+                out.push('\\');
+                out.push_str(&line[position..]);
+                in_comment = inside_html_comment(line, in_comment);
+                continue;
+            }
+        }
+        in_comment = inside_html_comment(line, in_comment);
+        out.push_str(line);
+    }
+    if let Some(open) = fence {
+        out.push('\n');
+        out.push_str(&open.marker.to_string().repeat(open.len));
+    }
+    if in_comment {
+        out.push_str("\n-->");
+    }
+    out
 }
 
 fn write_tool(out: &mut String, call: &ToolCall) {
@@ -175,6 +339,19 @@ fn write_tool(out: &mut String, call: &ToolCall) {
         let label = if call.status == ToolCallStatus::Failed { "Error" } else { "Result" };
         let _ = writeln!(out, "{label}:\n");
         write_fenced(out, "", &result, MAX_RESULT_LINES, MAX_RESULT_CHARS);
+    }
+
+    let images = call
+        .content
+        .iter()
+        .filter(|content| {
+            matches!(content, ToolCallContent::Content(content)
+                if matches!(content.content, ContentBlock::Image(_)))
+        })
+        .count();
+    if images > 0 {
+        let noun = if images == 1 { "image" } else { "images" };
+        let _ = writeln!(out, "_Not included: {images} {noun} in this result._\n");
     }
 }
 
@@ -290,9 +467,16 @@ fn longest_backtick_run(text: &str) -> usize {
 }
 
 /// Remove terminal control sequences and stray control characters, keeping text as written.
+///
+/// Sequences are stripped one line at a time: `strip_ansi` runs an operating-system
+/// command until BEL or ESC, so a stray `ESC ]` would otherwise swallow every later
+/// line before truncation could say anything. A real sequence never spans a line.
 fn clean(text: &str) -> String {
-    strip_ansi(text)
-        .replace("\r\n", "\n")
+    text.replace("\r\n", "\n")
+        .split('\n')
+        .map(strip_ansi)
+        .collect::<Vec<_>>()
+        .join("\n")
         .chars()
         .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
         .collect()

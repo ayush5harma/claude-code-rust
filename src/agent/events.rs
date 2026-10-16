@@ -35,6 +35,8 @@ pub struct HistoryChunk {
     pub last: bool,
     /// History entries left out of the whole export because the session is very large.
     pub omitted_updates: u64,
+    /// Updates of this chunk the app could not map to something it can show.
+    pub unmapped_updates: u64,
     pub error: Option<String>,
 }
 

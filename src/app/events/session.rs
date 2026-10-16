@@ -315,7 +315,6 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
     }
     super::notices::emit_system_notice(app, SystemSeverity::Error, msg);
     clear_pending_command(app);
-    app.history_export = None;
     app.clear_pending_session_resume();
 }
 
