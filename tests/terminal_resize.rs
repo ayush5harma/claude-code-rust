@@ -2305,7 +2305,16 @@ fn a_bad_dir_or_bridge_script_exits_before_the_terminal_is_touched() {
 
         let status = child.wait_for_exit(WAIT_LIMIT).expect("claude-rs exits on its own");
         assert_eq!(status.exit_code(), 2, "{flag}");
+        // The child's exit is the signal. ConPTY keeps the pseudo console open after the
+        // child exits, so the PTY never reaches EOF on Windows; wait for the error text the
+        // reader thread has not yet drained instead.
+        let expected = path.display().to_string();
         let started = Instant::now();
+        while !output.lock().expect("output lock").parser.screen().contents().contains(&expected) {
+            assert!(started.elapsed() < WAIT_LIMIT, "{flag}: error text never reached the screen");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        #[cfg(unix)]
         while !output.lock().expect("output lock").ended {
             assert!(started.elapsed() < WAIT_LIMIT, "PTY stayed open after exit");
             std::thread::sleep(Duration::from_millis(20));
