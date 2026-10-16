@@ -1,0 +1,50 @@
+name: Temporary Windows check
+
+# Pushed only on throwaway ci-win/* branches of the fork, then deleted with the
+# branch. Mirrors upstream pr.yml's Windows jobs and adds the full test suite,
+# which upstream CI runs on Ubuntu only.
+on:
+  push:
+    branches: ["ci-win/**"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-Dwarnings"
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "24"
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      # Single-threaded as upstream AGENTS.md prescribes: run in parallel on
+      # windows-latest, bridge_lifecycle's btw_workflow test timed out in about
+      # half the runs on unrelated branches (2026-10-17).
+      - name: Tests
+        if: ${{ !cancelled() }}
+        run: cargo test --all-features -- --test-threads=1
+      - name: Terminal tests
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          node --check tests/fixtures/fake-bridge.js
+          cargo test --locked --all-features --test terminal_resize -- --test-threads=1
+      # Upstream's "Agent SDK / Check agent-sdk (windows-latest)" job; added after
+      # #494 failed it on a Windows-only path difference this workflow missed.
+      - name: Agent SDK tests
+        if: ${{ !cancelled() }}
+        run: |
+          npm ci --prefix agent-sdk
+          npm --prefix agent-sdk test
