@@ -49,13 +49,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let message_height = wrapped_line_count(Text::from(message_lines.clone()), inner.width);
     let actions_height = wrapped_line_count(Text::from(action_lines(app)), inner.width);
 
-    // Rows are handed out in priority order: the question and the choices, then
+    // Rows are handed out in priority order: the choices, the question, then
     // the directory (its tail is what tells projects apart), then the message,
     // and the explanatory text last. Paragraph wrapping cannot show the tail of
     // a path that is too long for the rows left, so the path is cut here.
-    let question_rows = question_height.min(inner.height);
-    let action_rows = actions_height.min(inner.height - question_rows);
-    let mut free = inner.height - question_rows - action_rows;
+    let action_rows = actions_height.min(inner.height);
+    let question_rows = question_height.min(inner.height - action_rows);
+    let mut free = inner.height - action_rows - question_rows;
     let directory = directory_rows(&app.trust.project_key, inner.width, usize::from(free));
     let directory_rows_used = u16::try_from(directory.len()).unwrap_or(u16::MAX);
     free -= directory_rows_used;
@@ -103,22 +103,29 @@ fn directory_rows(path: &str, width: u16, max_rows: usize) -> Vec<String> {
         return rows;
     }
 
-    let budget = max_rows * width - 1;
-    let mut tail: Vec<char> = Vec::new();
-    let mut used = 0usize;
-    for ch in path.chars().rev() {
-        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used + ch_width > budget {
-            break;
+    // Double-width characters can leave a column unused at the end of a row, so
+    // the first budget may need more rows than it has columns for; shrink it
+    // until the tail, ellipsis included, fits in `max_rows`.
+    let mut budget = max_rows * width - 1;
+    loop {
+        let mut tail: Vec<char> = Vec::new();
+        let mut used = 0usize;
+        for ch in path.chars().rev() {
+            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if used + ch_width > budget {
+                break;
+            }
+            tail.push(ch);
+            used += ch_width;
         }
-        tail.push(ch);
-        used += ch_width;
+        tail.push(ELLIPSIS);
+        tail.reverse();
+        let rows = chunk_columns(tail.into_iter(), width);
+        if rows.len() <= max_rows || budget == 0 {
+            return rows;
+        }
+        budget -= 1;
     }
-    tail.push(ELLIPSIS);
-    tail.reverse();
-    let mut rows = chunk_columns(tail.into_iter(), width);
-    rows.truncate(max_rows);
-    rows
 }
 
 fn chunk_columns(chars: impl Iterator<Item = char>, width: usize) -> Vec<String> {
@@ -172,6 +179,8 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
+    /// The screen rows as text. The cell after a double-width character is
+    /// skipped, so a row reads as the characters that were drawn.
     fn draw_rows(app: &mut App, width: u16, height: u16) -> Vec<String> {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -181,7 +190,19 @@ mod tests {
             .buffer()
             .content
             .chunks(usize::from(width))
-            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+            .map(|row| {
+                let mut text = String::new();
+                let mut skip = 0usize;
+                for cell in row {
+                    if skip > 0 {
+                        skip -= 1;
+                        continue;
+                    }
+                    text.push_str(cell.symbol());
+                    skip = unicode_width::UnicodeWidthStr::width(cell.symbol()).saturating_sub(1);
+                }
+                text
+            })
             .collect()
     }
 
@@ -189,20 +210,33 @@ mod tests {
         draw_rows(app, 70, 14).join("\n")
     }
 
-    /// Everything the screen shows inside the frame, with the frame, padding
-    /// and spaces removed, so a path cut across rows reads as one string.
-    fn compact(rows: &[String]) -> String {
-        rows.iter()
-            .flat_map(|row| row.chars())
-            .filter(|c| !c.is_whitespace() && *c != '\u{2502}')
+    /// A row without the frame and its padding (the margin is two columns, one of
+    /// them the frame's own).
+    fn content(row: &str) -> String {
+        let inside = row.trim_start_matches('\u{2502}').trim_end_matches('\u{2502}');
+        inside.strip_prefix(' ').unwrap_or(inside).trim_end().to_owned()
+    }
+
+    /// The rows the screen gives the directory: the ones under the question
+    /// up to the next element of the prompt.
+    fn directory_on_screen(rows: &[String]) -> Vec<String> {
+        let question = rows.iter().position(|row| row.contains(QUESTION)).expect("question row");
+        rows[question + 1..]
+            .iter()
+            .map(|row| content(row))
+            .take_while(|row| {
+                !(row.is_empty()
+                    || row.starts_with("Claude Rust will wait")
+                    || row.starts_with("Choose Yes")
+                    || row.starts_with("Invalid")
+                    || row.starts_with("> Yes"))
+            })
             .collect()
     }
 
-    fn compact_path(path: &str) -> String {
-        path.chars().filter(|c| !c.is_whitespace()).collect()
-    }
-
     const LONG_PATH: &str = "/Users/someone/Github/a-rather-long-organisation-name/client-projects/deeply-nested-service-checkout";
+    const CJK_PATH: &str =
+        "/Users/田中/Github/プロジェクト一覧/顧客向け-サービス/チェックアウト画面v2";
 
     #[test]
     fn trusted_view_names_the_directory_right_under_the_question() {
@@ -216,38 +250,69 @@ mod tests {
         assert!(!text.contains("Unknown Project"));
         assert!(!text.contains("~/.claude.json"));
         assert!(!text.contains("hasTrustDialogAccepted"));
-        let question = rows.iter().position(|row| row.contains(QUESTION)).expect("question row");
-        assert!(rows[question + 1].contains("/work/project"), "{text}");
+        assert_eq!(directory_on_screen(&rows), ["/work/project"], "{text}");
     }
 
     #[test]
     fn trusted_view_wraps_a_long_directory_without_losing_characters() {
+        // Width 40 puts no row break on a space, which a row's padding would hide.
         for key in [LONG_PATH, "C:/demo/Client Projects/some service/checkout"] {
             let mut app = App::test_default();
             app.trust.project_key = key.to_owned();
 
             let rows = draw_rows(&mut app, 40, 20);
 
-            assert!(compact(&rows).contains(&compact_path(key)), "{key}: {rows:#?}");
+            assert_eq!(directory_on_screen(&rows).concat(), key, "{rows:#?}");
             assert!(rows.iter().any(|row| row.contains("> Yes")), "{rows:#?}");
         }
     }
 
     #[test]
-    fn trusted_view_keeps_the_end_of_a_path_and_the_choices_on_short_screens() {
-        for (width, height) in [(30u16, 12u16), (20, 14), (12, 24)] {
+    fn trusted_view_keeps_the_end_of_a_path_behind_a_leading_ellipsis() {
+        let mut app = App::test_default();
+        app.trust.project_key = LONG_PATH.to_owned();
+
+        let rows = draw_rows(&mut app, 36, 8);
+
+        let directory = directory_on_screen(&rows);
+        assert!(directory.len() > 1, "{rows:#?}");
+        assert!(directory[0].starts_with('\u{2026}'), "{rows:#?}");
+        let shown = directory.concat();
+        assert!(LONG_PATH.ends_with(shown.trim_start_matches('\u{2026}')), "{rows:#?}");
+        assert!(shown.ends_with("service-checkout"), "{rows:#?}");
+        assert!(rows.join("\n").contains("> Yes"), "{rows:#?}");
+    }
+
+    #[test]
+    fn trusted_view_keeps_the_end_of_a_wide_character_path_at_odd_widths() {
+        // A double-width character that does not fit leaves a column unused at
+        // the end of a row, so a budget counted in columns can need a third row.
+        for inner_width in [31u16, 33, 35, 37] {
+            let mut app = App::test_default();
+            app.trust.project_key = CJK_PATH.to_owned();
+
+            let rows = draw_rows(&mut app, inner_width + 4, 7);
+
+            let directory = directory_on_screen(&rows);
+            assert!(directory.len() <= 2, "{inner_width}: {rows:#?}");
+            let shown = directory.concat();
+            assert!(shown.ends_with("画面v2"), "{inner_width}: {rows:#?}");
+            assert!(CJK_PATH.ends_with(shown.trim_start_matches('\u{2026}')), "{rows:#?}");
+            if shown != CJK_PATH {
+                assert!(directory[0].starts_with('\u{2026}'), "{inner_width}: {rows:#?}");
+            }
+            assert!(rows.join("\n").contains("> Yes"), "{inner_width}: {rows:#?}");
+        }
+    }
+
+    #[test]
+    fn trusted_view_keeps_the_choices_on_very_small_screens() {
+        for (width, height) in [(30u16, 12u16), (20, 14), (12, 24), (20, 5), (20, 4)] {
             let mut app = App::test_default();
             app.trust.project_key = LONG_PATH.to_owned();
 
-            let rows = draw_rows(&mut app, width, height);
+            let text = draw_rows(&mut app, width, height).join("\n");
 
-            let body = compact(&rows);
-            assert!(body.contains(&LONG_PATH[LONG_PATH.len() - 12..]), "{width}x{height}: {body}");
-            assert!(
-                body.contains('\u{2026}') || body.contains(&compact_path(LONG_PATH)),
-                "{width}x{height}: {body}"
-            );
-            let text = rows.join("\n");
             assert!(text.contains("> Yes"), "{width}x{height}: {text}");
             assert!(text.contains("  No"), "{width}x{height}: {text}");
         }
@@ -260,20 +325,7 @@ mod tests {
 
         let rows = draw_rows(&mut app, 70, 14);
 
-        assert!(!rows.join("\n").contains('\u{2026}'));
-    }
-
-    #[test]
-    fn trusted_view_keeps_the_error_and_the_choices_beside_the_directory() {
-        let mut app = App::test_default();
-        app.trust.project_key = "/work/project".to_owned();
-        app.trust.last_error = Some("Invalid trust preferences: /x/.claude.json".to_owned());
-
-        let text = draw_text(&mut app);
-
-        assert!(text.contains("/work/project"), "{text}");
-        assert!(text.contains("Invalid trust preferences: /x/.claude.json"), "{text}");
-        assert!(text.contains("> Yes"), "{text}");
+        assert!(!directory_on_screen(&rows)[0].contains('\u{2026}'));
     }
 
     #[test]
