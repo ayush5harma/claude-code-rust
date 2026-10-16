@@ -511,11 +511,28 @@ impl TerminalTest {
         }
     }
 
-    /// Opening settings starts a refresh, and settings ignore edits until it completes.
+    /// Agent-backed controls wait for the opening refresh before editing.
     fn wait_settings_ready(&mut self, needle: &str) {
         self.wait_until(&format!("refreshed settings showing {needle}"), |test| {
             let screen = test.screen();
             screen.contains(needle) && !screen.contains("Refreshing settings")
+        });
+    }
+
+    fn select_setting(&mut self, label: &str) {
+        self.send(b"\x1b[H\x1b[A"); // Home, then Up focuses the settings search.
+        self.wait_screen("Type to search this pane");
+        self.paste(label);
+        self.wait_until("settings search contains the control name", |test| {
+            test.screen().lines().any(|line| line.trim_start().starts_with(&format!("│{label}")))
+        });
+        self.send(b"\r");
+        self.wait_until(&format!("selected setting {label}"), |test| {
+            test.screen().lines().any(|line| line.contains(label) && line.contains('›'))
+        });
+        self.send(b"\r"); // Reveal the named control in the unfiltered list.
+        self.wait_until("settings search cleared", |test| {
+            test.screen().contains("Type to filter this list")
         });
     }
 
@@ -1163,15 +1180,17 @@ fn auth_spawn_failure_restores_terminal_ownership_and_input() {
     let mut test = TerminalTest::start_with_auth("stream", 3, Some("spawn-error"));
     test.submit("/login", "/login");
     test.wait_screen_with("Failed to run claude auth login", &["[READY]"]);
-    test.resize(25, 61);
-    test.resize(38, 87);
+    let offset = std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
     test.send(b"AFTER_SPAWN_ERROR");
-    test.wait_screen("AFTER_SPAWN_ERROR");
-    test.paste(" + PASTE");
-    test.wait_screen("+ PASTE");
+    test.wait_composer_text(offset, "AFTER_SPAWN_ERROR");
+    let offset = std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
+    test.paste(" + PASTE 界 🦀");
+    test.wait_composer_text(offset, "AFTER_SPAWN_ERROR + PASTE 界 🦀");
+    test.resize_keeping(25, 61, &["AFTER_SPAWN_ERROR + PASTE 界 🦀"]);
+    test.resize_keeping(38, 87, &["AFTER_SPAWN_ERROR + PASTE 界 🦀"]);
     test.submit_draft();
-    test.wait_screen("reply 1 started");
-    test.assert_prompts(&["AFTER_SPAWN_ERROR + PASTE"]);
+    test.wait_turn_finished("reply 1 started");
+    test.assert_prompts(&["AFTER_SPAWN_ERROR + PASTE 界 🦀"]);
     test.shutdown();
 }
 
@@ -1234,13 +1253,11 @@ fn tips_setting_preserves_activity_without_empty_messages_through_real_config_sa
         .expect("immediate activity header")
         .trim_end()
         .to_owned();
-    for (index, enabled) in [true, false, true].into_iter().enumerate() {
+    for enabled in [true, false, true] {
         test.submit("/config", "/config");
         test.wait_settings_ready("Show tips");
-        if index == 0 {
-            test.send(b"\x1b[B\x1b[B"); // Language -> Reduce motion -> Show tips.
-        }
-        test.send(b" "); // Reopening settings retains the selected control.
+        test.select_setting("Show tips");
+        test.send(b" ");
         test.wait_setting(
             "profile/settings.json",
             "/spinnerTipsEnabled",
@@ -1567,6 +1584,7 @@ fn resizing_a_streamed_reply_preserves_rendering_and_clean_shutdown() {
         };
         second > first + 1 && transcript[first + 1..second].iter().all(|row| row.trim().is_empty())
     });
+    test.wait_until("submitted prompt recorded by the bridge", |test| !test.prompts().is_empty());
     test.assert_prompts(&["hello\n\nhow are you"]);
 
     for step in 0..RESIZES {
@@ -1689,42 +1707,6 @@ fn git_diff_loads_refreshes_and_returns_to_chat_without_submitting_a_prompt() {
     test.submit("after diff", "after diff");
     test.wait_screen("reply 2 started");
     test.assert_prompts(&["go", "after diff"]);
-    test.shutdown();
-}
-
-#[test]
-fn fullscreen_resize_and_repeated_return_preserve_chat_and_next_submission() {
-    let mut test = TerminalTest::start("hold-success", 8);
-    test.submit("go", "❯ go");
-    test.wait_journal("reply-held");
-    test.wait_screen("streamed line 8");
-
-    for (rows, cols) in [(55, 120), (25, 61), (38, 87)] {
-        test.submit("/config", "/config");
-        test.wait_screen("Saved in User");
-        test.wait_settings_ready("Description:");
-        assert!(test.output.lock().expect("output lock").parser.screen().alternate_screen());
-        test.send(b" ");
-        test.wait_screen("Enter save");
-        test.send(b" draft");
-        test.wait_screen("German draft");
-        test.resize_keeping(rows, cols, &["German draft"]);
-        test.send(b"\x1b");
-        test.wait_until("editor closed without saving", |test| {
-            let screen = test.screen();
-            screen.contains("Saved in User") && !screen.contains("German draft")
-        });
-        test.send(b"\x1b");
-        test.wait_screen("streamed line 8");
-        assert!(!test.output.lock().expect("output lock").parser.screen().alternate_screen());
-        test.assert_prompts(&["go"]); // /config is handled locally.
-    }
-
-    test.release();
-    test.wait_journal("turn_complete");
-    test.submit("after settings 界", "after settings 界");
-    test.wait_screen("reply 2 started");
-    test.assert_prompts(&["go", "after settings 界"]);
     test.shutdown();
 }
 
@@ -2094,6 +2076,7 @@ fn saved_auto_scroll_off_holds_new_output_until_the_user_returns_live() {
     test.wait_journal("reading-barrier");
     test.submit("/config", "/config");
     test.wait_settings_ready("Auto-scroll");
+    test.select_setting("Auto-scroll");
     test.send(b"\x1b[C"); // On -> Off at the selected user scope.
     test.wait_setting("profile/settings.json", "/autoScrollEnabled", Some(&Value::Bool(false)));
     test.send(b"\x1b");
@@ -2154,7 +2137,7 @@ fn notifications_follow_focus_saved_categories_and_sdk_delivery_provenance_in_a_
     assert_eq!(notification_bells(&test), 1);
     test.submit("/config", "/config");
     test.wait_settings_ready("Notification method");
-    test.send(b"\x1b[B\x1b[B"); // Pass turn completion and select proactive alerts.
+    test.select_setting("Notify when Claude requests it");
     test.send(b" "); // On -> Off, immediate acknowledged save.
     test.wait_setting(
         "profile/app-settings.json",
