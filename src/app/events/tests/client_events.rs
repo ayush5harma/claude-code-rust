@@ -1425,64 +1425,158 @@ fn terminal_return_event_restores_chat_lifecycle_and_rebuilds_chat() {
     assert!(app.surface_dirty.chat.repaint);
 }
 
-fn pending_status_rename(app: &mut App, session_id: &str, requested_title: &str) {
-    app.session_runtime.session_id = Some(model::SessionId::new(session_id));
+fn pending_status_rename(app: &mut App, message_uuid: &str) {
+    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
     app.config.pending_session_title_change =
         Some(crate::app::config::PendingSessionTitleChangeState {
-            session_id: session_id.to_owned(),
+            session_id: "session-1".to_owned(),
             kind: crate::app::config::PendingSessionTitleChangeKind::Rename {
-                requested_title: requested_title.to_owned(),
+                message_uuid: message_uuid.to_owned(),
+                stage: crate::app::config::RenameStage::Sent,
             },
         });
     app.config.status_message = Some("Renaming session...".to_owned());
 }
 
-#[test]
-fn status_rename_completes_only_when_the_session_reports_the_requested_title() {
-    let mut app = make_test_app();
-    pending_status_rename(&mut app, "session-1", "demo-469");
-    let title = |title: &str| ClientEvent::SessionUpdate {
+fn rename_events_title(title: &str) -> ClientEvent {
+    ClientEvent::SessionUpdate {
         session_id: "session-1".to_owned(),
         update: model::SessionUpdate::SessionTitleUpdate(Some(title.to_owned())),
-    };
+    }
+}
 
-    // A listing is not the session's answer to /rename, and a read that
-    // started before the rename turn still carries the old title.
-    let mut listed = listed_session("session-1", "summary");
-    listed.custom_title = Some("demo-469".to_owned());
-    handle_client_event(&mut app, ClientEvent::SessionsListed { sessions: vec![listed] });
-    handle_client_event(&mut app, title("old name"));
-    assert!(app.config.pending_session_title_change.is_some());
+fn result_started(message_uuid: &str) -> ClientEvent {
+    ClientEvent::UserMessageStarted {
+        session_id: "session-1".to_owned(),
+        message_uuid: message_uuid.to_owned(),
+        source: crate::agent::types::UserMessageStartSource::Result,
+    }
+}
+
+fn turn_complete() -> ClientEvent {
+    ClientEvent::TurnComplete {
+        session_id: "session-1".to_owned(),
+        queued_turn_count: None,
+        terminal_reason: None,
+    }
+}
+
+fn turn_error(message: &str) -> ClientEvent {
+    ClientEvent::TurnError {
+        session_id: "session-1".to_owned(),
+        message: message.to_owned(),
+        queued_turn_count: None,
+        api_error_status: None,
+        terminal_reason: None,
+    }
+}
+
+#[test]
+fn status_rename_reports_the_name_its_turn_returned_even_when_it_differs() {
+    let mut app = make_test_app();
+    pending_status_rename(&mut app, "rename-uuid");
+
+    // A title read from before the rename turn's result, and the command's
+    // own start, do not settle it.
+    handle_client_event(&mut app, rename_events_title("old name"));
+    handle_client_event(
+        &mut app,
+        ClientEvent::UserMessageStarted {
+            session_id: "session-1".to_owned(),
+            message_uuid: "rename-uuid".to_owned(),
+            source: crate::agent::types::UserMessageStartSource::CommandLifecycle,
+        },
+    );
+    handle_client_event(&mut app, result_started("another-prompt"));
+    handle_client_event(&mut app, rename_events_title("old name"));
     assert_eq!(app.config.status_message.as_deref(), Some("Renaming session..."));
 
-    handle_client_event(&mut app, title("demo-469"));
+    // Claude Code gave another name than the draft, for example because
+    // another live session holds the requested one.
+    handle_client_event(&mut app, result_started("rename-uuid"));
+    handle_client_event(&mut app, rename_events_title("demo-469-2"));
     assert!(app.config.pending_session_title_change.is_none());
-    assert_eq!(app.config.status_message.as_deref(), Some("Renamed session to demo-469"));
+    assert_eq!(app.config.status_message.as_deref(), Some("Renamed session to demo-469-2"));
     assert!(app.config.last_error.is_none());
-    assert_eq!(app.active_session_custom_title(), Some("demo-469"));
+
+    handle_client_event(&mut app, turn_complete());
+    assert_eq!(app.config.status_message.as_deref(), Some("Renamed session to demo-469-2"));
+}
+
+#[test]
+fn status_rename_turn_that_ends_before_its_title_still_reports_the_title() {
+    let mut app = make_test_app();
+    pending_status_rename(&mut app, "rename-uuid");
+
+    handle_client_event(&mut app, result_started("rename-uuid"));
+    handle_client_event(&mut app, turn_complete());
+    let neutral = app.config.status_message.clone().expect("turn end replaces the spinner text");
+    assert_ne!(neutral, "Renaming session...");
+    assert!(!neutral.starts_with("Renamed session to"), "{neutral}");
+    assert!(app.config.last_error.is_none());
+
+    handle_client_event(&mut app, rename_events_title("demo-469"));
+    assert_eq!(app.config.status_message.as_deref(), Some("Renamed session to demo-469"));
+    assert!(app.config.pending_session_title_change.is_none());
+}
+
+#[test]
+fn status_rename_turn_without_any_title_ends_neutrally_and_later_turns_are_not_its_outcome() {
+    let mut app = make_test_app();
+    pending_status_rename(&mut app, "rename-uuid");
+
+    handle_client_event(&mut app, result_started("rename-uuid"));
+    handle_client_event(&mut app, turn_complete());
+    let neutral = app.config.status_message.clone().expect("neutral message");
+    assert_ne!(neutral, "Renaming session...");
+
+    // The next turn fails; that is not the rename's failure.
+    handle_client_event(&mut app, turn_error("an unrelated turn failed"));
+    assert!(app.config.pending_session_title_change.is_none());
+    assert!(app.config.last_error.is_none(), "{:?}", app.config.last_error);
+    assert_eq!(app.config.status_message.as_deref(), Some(neutral.as_str()));
 }
 
 #[test]
 fn failed_rename_turn_reports_in_status_feedback() {
     let mut app = make_test_app();
-    pending_status_rename(&mut app, "session-1", "demo-469");
+    pending_status_rename(&mut app, "rename-uuid");
 
-    handle_client_event(
-        &mut app,
-        ClientEvent::TurnError {
-            session_id: "session-1".to_owned(),
-            message: "bridge stopped".to_owned(),
-            queued_turn_count: None,
-            api_error_status: None,
-            terminal_reason: None,
-        },
-    );
+    handle_client_event(&mut app, turn_error("bridge stopped"));
 
     assert!(app.config.pending_session_title_change.is_none());
     assert!(app.config.status_message.is_none());
     let error = app.config.last_error.as_deref().expect("rename failure in Status");
     assert!(error.starts_with("Failed to rename session"), "{error}");
     assert!(error.contains("bridge stopped"), "{error}");
+}
+
+#[test]
+fn rejected_rename_prompt_reports_in_status_feedback() {
+    let mut app = make_test_app();
+    pending_status_rename(&mut app, "rename-uuid");
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::UserMessageRejected {
+            session_id: "session-1".to_owned(),
+            message_uuid: "another-prompt".to_owned(),
+            reason: "closed".to_owned(),
+        },
+    );
+    assert!(app.config.pending_session_title_change.is_some());
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::UserMessageRejected {
+            session_id: "session-1".to_owned(),
+            message_uuid: "rename-uuid".to_owned(),
+            reason: "input stream closed".to_owned(),
+        },
+    );
+    assert!(app.config.pending_session_title_change.is_none());
+    let error = app.config.last_error.as_deref().expect("rename failure in Status");
+    assert!(error.contains("input stream closed"), "{error}");
 }
 
 #[test]

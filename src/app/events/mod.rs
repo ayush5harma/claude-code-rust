@@ -523,7 +523,7 @@ fn handle_session_update(
                 listed.custom_title.clone_from(&title);
             }
             app.session_runtime.session_title = title;
-            crate::app::config::complete_session_rename(app);
+            crate::app::config::session_rename_title_reported(app);
             super::session_picker::reconcile_selection(app, selected.as_deref());
         }
         model::SessionUpdate::PromptSuggestionUpdate(suggestion) => {

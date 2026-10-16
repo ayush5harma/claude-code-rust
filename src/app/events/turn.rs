@@ -605,6 +605,7 @@ pub(super) fn handle_turn_complete_event(
     terminal_reason: Option<crate::agent::types::TerminalReason>,
 ) {
     log_queued_turn_count(app, queued_turn_count, "success");
+    crate::app::config::session_rename_turn_ended(app, None);
     let exit = begin_turn_exit(app, true);
     let turn_was_active = exit.turn_was_active;
     if let Some(reason) = terminal_reason {
@@ -652,7 +653,7 @@ pub(super) fn handle_turn_error_event(
     terminal_reason: Option<crate::agent::types::TerminalReason>,
 ) {
     log_queued_turn_count(app, queued_turn_count, "error");
-    crate::app::config::fail_session_rename(app, &summarize_internal_error(msg));
+    crate::app::config::session_rename_turn_ended(app, Some(&summarize_internal_error(msg)));
     let exit = begin_turn_exit(app, false);
 
     if exit.cancel_requested {
@@ -726,6 +727,7 @@ pub(super) fn handle_user_message_started_event(
     message_uuid: &str,
     source: crate::agent::types::UserMessageStartSource,
 ) {
+    crate::app::config::session_rename_message_started(app, message_uuid, source);
     let started = app.pending_user_messages.take_started_prefix(message_uuid);
     if started.is_empty() {
         tracing::debug!(
@@ -766,6 +768,7 @@ pub(super) fn handle_user_message_started_event(
 }
 
 pub(super) fn handle_user_message_rejected_event(app: &mut App, message_uuid: &str, reason: &str) {
+    crate::app::config::session_rename_message_rejected(app, message_uuid, reason);
     let Some(message) = app.pending_user_messages.remove(message_uuid) else {
         tracing::debug!(
             target: crate::logging::targets::APP_INPUT,

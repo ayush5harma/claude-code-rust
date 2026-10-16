@@ -610,6 +610,14 @@ fn type_status_rename(app: &mut App, title: &str) {
     handle_key(app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 }
 
+/// Claude Code advertises /rename once a session connects.
+fn advertise_rename(app: &mut App) {
+    app.sdk_inventory.available_commands = vec![crate::agent::model::AvailableCommand::new(
+        "/rename",
+        "Rename the current conversation",
+    )];
+}
+
 /// The text a prompt command carries, if the command is a prompt.
 fn prompt_text(command: &BridgeCommand) -> Option<String> {
     let BridgeCommand::Prompt { chunks, .. } = command else { return None };
@@ -620,6 +628,7 @@ fn prompt_text(command: &BridgeCommand) -> Option<String> {
 fn status_tab_rename_runs_rename_in_the_live_session() {
     let (mut app, mut rx) = app_with_status_connection();
     app.status = AppStatus::Ready;
+    advertise_rename(&mut app);
     app.input.set_text("draft the user is writing");
 
     type_status_rename(&mut app, "Renamed session");
@@ -633,6 +642,9 @@ fn status_tab_rename_runs_rename_in_the_live_session() {
         envelope.command
     );
     assert_eq!(prompt_text(&envelope.command).as_deref(), Some("/rename Renamed session"));
+    let BridgeCommand::Prompt { message_uuid: sent_uuid, .. } = &envelope.command else {
+        unreachable!("checked above")
+    };
     while let Ok(next) = rx.try_recv() {
         assert!(!matches!(next.command, BridgeCommand::Prompt { .. }), "one rename turn");
     }
@@ -644,9 +656,46 @@ fn status_tab_rename_runs_rename_in_the_live_session() {
         Some(pending)
             if pending.session_id == "session-1"
                 && pending.kind == PendingSessionTitleChangeKind::Rename {
-                    requested_title: "Renamed session".to_owned(),
+                    message_uuid: sent_uuid.clone(),
+                    stage: RenameStage::Sent,
                 }
     ));
+}
+
+#[test]
+fn status_tab_rename_with_a_pasted_tab_settles_on_the_title_the_session_reports() {
+    let (mut app, mut rx) = app_with_status_connection();
+    app.status = AppStatus::Ready;
+    advertise_rename(&mut app);
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+    for _ in 0.."Current custom title".chars().count() {
+        handle_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    }
+    handle_paste(&mut app, "a\tb");
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let envelope = rx.try_recv().expect("rename turn");
+    assert_eq!(prompt_text(&envelope.command).as_deref(), Some("/rename a\tb"));
+    let BridgeCommand::Prompt { message_uuid, .. } = envelope.command else {
+        unreachable!("checked above")
+    };
+    // The app strips control characters from every title it receives.
+    for event in [
+        crate::agent::events::ClientEvent::UserMessageStarted {
+            session_id: "session-1".to_owned(),
+            message_uuid,
+            source: crate::agent::types::UserMessageStartSource::Result,
+        },
+        crate::agent::events::ClientEvent::SessionUpdate {
+            session_id: "session-1".to_owned(),
+            update: crate::agent::model::SessionUpdate::SessionTitleUpdate(Some("ab".to_owned())),
+        },
+    ] {
+        crate::app::events::handle_client_event(&mut app, event);
+    }
+
+    assert!(app.config.pending_session_title_change.is_none());
+    assert_eq!(app.config.status_message.as_deref(), Some("Renamed session to ab"));
 }
 
 #[test]
@@ -656,6 +705,7 @@ fn status_tab_rename_during_a_turn_is_refused_like_the_composer_rename() {
     {
         let (mut app, mut rx) = app_with_status_connection();
         app.status = status;
+        advertise_rename(&mut app);
         if pending_prompt {
             app.pending_user_messages
                 .try_push_sending(crate::app::PendingUserMessage::sending(

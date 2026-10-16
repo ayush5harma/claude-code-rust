@@ -126,7 +126,7 @@ The bridge announces each live top-level SDK response through the typed `agent_r
 
 The bridge reads `getSessionInfo().customTitle` after a connect, a replacement, a conversation reset, each top-level turn and each title generation it performs, and sends every title it reads; a read that a later one overtakes is dropped. Rust keeps the active title as one value, strips control characters once in the converter, stores a repeated title idempotently, and clears it when the session id changes or the conversation resets. Neither side derives a title of its own. The session listing is a separate snapshot of all sessions, refreshed by `listSessions()` on connect, replacement and the Status-tab generate action; the Status tab falls back to it only while the active session has no title. `customTitle` falls back to a generated title, so an unnamed session shows that title after its first turn.
 
-The Status tab renames through Claude Code's `/rename`, submitted under the composer's rules, rather than `renameSession()`, which only appends to a saved transcript and so failed for a session that had not run a turn yet. The rename completes when the session reports the requested title.
+The Status tab renames through Claude Code's `/rename`, submitted under the composer's rules, rather than `renameSession()`, which only appends to a saved transcript and so failed for a session that had not run a turn yet. Rust follows that one prompt by its message UUID: the first title read after its turn's result is the outcome, whatever name Claude Code chose; an error ending that turn is the rename's failure; later turns are not attributed to it.
 
 ### Notifications
 

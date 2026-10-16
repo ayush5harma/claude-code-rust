@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 use super::{
     AddMarketplaceOverlayState, ConfigOverlayState, ConfirmationAction,
-    PendingSessionTitleChangeKind, PendingSessionTitleChangeState, SessionRenameOverlayState,
-    SettingOverlayState,
+    PendingSessionTitleChangeKind, PendingSessionTitleChangeState, RenameStage,
+    SessionRenameOverlayState, SettingOverlayState,
 };
 use crate::agent::settings::{SettingDescriptor, SettingKind, SettingsMutation, SettingsOperation};
 use crate::app::App;
@@ -555,10 +555,13 @@ fn confirm_session_rename_overlay(app: &mut App) {
         app,
         &format!("/rename {requested_title}"),
     ) {
-        Ok(()) => {
+        Ok(message_uuid) => {
             app.config.pending_session_title_change = Some(PendingSessionTitleChangeState {
                 session_id,
-                kind: PendingSessionTitleChangeKind::Rename { requested_title },
+                kind: PendingSessionTitleChangeKind::Rename {
+                    message_uuid,
+                    stage: RenameStage::Sent,
+                },
             });
             app.config.clear_overlay();
             app.config.last_error = None;
@@ -568,43 +571,78 @@ fn confirm_session_rename_overlay(app: &mut App) {
     }
 }
 
-/// A Status rename is done once the session reports the requested title. A
-/// title read from before the rename turn can still arrive, so only the
-/// requested title completes it.
-pub(crate) fn complete_session_rename(app: &mut App) {
-    let (Some(session_id), Some(title)) = (
-        app.session_runtime.session_id.as_ref().map(std::string::ToString::to_string),
-        app.session_runtime.session_title.clone(),
-    ) else {
-        return;
-    };
-    let Some(pending) = app.config.pending_session_title_change.take_if(|pending| {
-        pending.session_id == session_id
-            && matches!(&pending.kind, PendingSessionTitleChangeKind::Rename { requested_title }
-                if *requested_title == title)
-    }) else {
-        return;
-    };
-    tracing::debug!(
-        target: crate::logging::targets::APP_SESSION,
-        event_name = "session_rename_applied",
-        message = "session reported the requested title",
-        outcome = "success",
-        session_id = %pending.session_id,
-    );
-    app.config.last_error = None;
-    app.config.status_message = Some(format!("Renamed session to {title}"));
+fn pending_rename_stage(app: &mut App) -> Option<(&str, &mut RenameStage)> {
+    match &mut app.config.pending_session_title_change {
+        Some(PendingSessionTitleChangeState {
+            kind: PendingSessionTitleChangeKind::Rename { message_uuid, stage },
+            ..
+        }) => Some((message_uuid.as_str(), stage)),
+        _ => None,
+    }
 }
 
-/// The /rename turn failed, so the session keeps its old title.
-pub(crate) fn fail_session_rename(app: &mut App, message: &str) {
-    if app
-        .config
-        .pending_session_title_change
-        .take_if(|pending| matches!(pending.kind, PendingSessionTitleChangeKind::Rename { .. }))
-        .is_some()
+/// The session started or answered a prompt. Only the rename prompt's result
+/// matters: the title read that follows it carries the rename's outcome.
+pub(crate) fn session_rename_message_started(
+    app: &mut App,
+    message_uuid: &str,
+    source: crate::agent::types::UserMessageStartSource,
+) {
+    if source != crate::agent::types::UserMessageStartSource::Result {
+        return;
+    }
+    if let Some((uuid, stage)) = pending_rename_stage(app)
+        && uuid == message_uuid
+        && *stage == RenameStage::Sent
     {
-        app.config.last_error = Some(format!("Failed to rename session: {message}"));
+        *stage = RenameStage::ResultIn;
+    }
+}
+
+/// The session reported its title. After the rename turn's result this is the
+/// name Claude Code chose, which can differ from the draft (a name held by
+/// another session, stripped characters); before it, it is an older read.
+pub(crate) fn session_rename_title_reported(app: &mut App) {
+    if !pending_rename_stage(app).is_some_and(|(_, stage)| *stage != RenameStage::Sent) {
+        return;
+    }
+    app.config.pending_session_title_change = None;
+    app.config.last_error = None;
+    app.config.status_message = Some(match app.session_runtime.session_title.as_deref() {
+        Some(title) => format!("Renamed session to {title}"),
+        None => RENAME_TURN_ENDED.to_owned(),
+    });
+}
+
+const RENAME_TURN_ENDED: &str = "Rename finished; Claude Code's reply is in the chat";
+
+/// A turn ended. The rename was sent only between turns with nothing queued,
+/// so the first turn to end is the rename turn: its error is the rename's
+/// failure. A later turn ends the wait for a title without a verdict.
+pub(crate) fn session_rename_turn_ended(app: &mut App, error: Option<&str>) {
+    let Some((_, stage)) = pending_rename_stage(app) else {
+        return;
+    };
+    if *stage == RenameStage::TurnEnded {
+        app.config.pending_session_title_change = None;
+        return;
+    }
+    if let Some(error) = error {
+        app.config.pending_session_title_change = None;
+        app.config.last_error = Some(format!("Failed to rename session: {error}"));
+        app.config.status_message = None;
+        return;
+    }
+    // The title read can finish after the turn does.
+    *stage = RenameStage::TurnEnded;
+    app.config.status_message = Some(RENAME_TURN_ENDED.to_owned());
+}
+
+/// The bridge proved the rename prompt could not reach the session.
+pub(crate) fn session_rename_message_rejected(app: &mut App, message_uuid: &str, reason: &str) {
+    if pending_rename_stage(app).is_some_and(|(uuid, _)| uuid == message_uuid) {
+        app.config.pending_session_title_change = None;
+        app.config.last_error = Some(format!("Failed to rename session: {reason}"));
         app.config.status_message = None;
     }
 }

@@ -121,8 +121,9 @@ fn idle_turn_refusal(app: &App, submission: &slash::ResolvedSubmission) -> Optio
 /// Send a Claude Code command on behalf of another surface, such as the Status
 /// tab's rename, as a composer submission of the same text would travel: the
 /// same admission rules, the same session turn, the same reply in the chat.
-/// The composer's draft and attachments stay untouched.
-pub(crate) fn submit_session_command(app: &mut App, text: &str) -> Result<(), String> {
+/// The composer's draft and attachments stay untouched. Returns the prompt's
+/// message UUID, which the session's start and result events carry.
+pub(crate) fn submit_session_command(app: &mut App, text: &str) -> Result<String, String> {
     if !app.composer_access().can_submit() {
         return Err("The session is not ready for commands".to_owned());
     }
@@ -130,15 +131,12 @@ pub(crate) fn submit_session_command(app: &mut App, text: &str) -> Result<(), St
     if let Some(refusal) = idle_turn_refusal(app, &submission) {
         return Err(refusal);
     }
-    if send_prompt_turn(app, &submission.into_text(), Vec::new(), Vec::new()) {
-        Ok(())
-    } else {
-        Err("The command could not be sent to the session".to_owned())
-    }
+    send_prompt_turn(app, &submission.into_text(), Vec::new(), Vec::new())
+        .ok_or_else(|| "The command could not be sent to the session".to_owned())
 }
 
 fn dispatch_prompt_turn(app: &mut App, text: &str, inline_pastes: Vec<String>) {
-    if send_prompt_turn(app, text, app.pending_images.clone(), inline_pastes) {
+    if send_prompt_turn(app, text, app.pending_images.clone(), inline_pastes).is_some() {
         app.input.clear();
         app.pending_images.clear();
     }
@@ -155,7 +153,8 @@ pub(super) fn maybe_submit_initial_prompt(app: &mut App) {
         return;
     }
     let Some(prompt) = app.startup.take_initial_prompt() else { return };
-    if prompt.trim().is_empty() || send_prompt_turn(app, &prompt, Vec::new(), Vec::new()) {
+    if prompt.trim().is_empty() || send_prompt_turn(app, &prompt, Vec::new(), Vec::new()).is_some()
+    {
         return;
     }
     // Keep a failed launch prompt recoverable without overwriting a draft.
@@ -175,11 +174,9 @@ fn send_prompt_turn(
     text: &str,
     images: Vec<super::clipboard_image::ImageAttachment>,
     inline_pastes: Vec<String>,
-) -> bool {
-    let Some(conn) = app.session_runtime.conn.clone() else { return false };
-    let Some(sid) = app.session_runtime.session_id.clone() else {
-        return false;
-    };
+) -> Option<String> {
+    let conn = app.session_runtime.conn.clone()?;
+    let sid = app.session_runtime.session_id.clone()?;
     let input_chars = text.chars().count();
     let session_id = sid.to_string();
     let message_uuid = uuid::Uuid::new_v4().to_string();
@@ -196,7 +193,7 @@ fn send_prompt_turn(
         Ok(resp) => resp,
         Err(error) => {
             crate::app::events::handle_local_prompt_dispatch_error(app, &error.to_string());
-            return false;
+            return None;
         }
     };
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
@@ -220,7 +217,7 @@ fn send_prompt_turn(
         input_chars,
         stop_reason = ?resp.stop_reason,
     );
-    true
+    Some(message_uuid)
 }
 
 fn dispatch_active_turn_prompt(app: &mut App, text: String, inline_pastes: Vec<String>) {

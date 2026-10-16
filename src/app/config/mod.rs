@@ -19,7 +19,10 @@ mod tabs;
 
 pub use controller::{handle_key, handle_paste, open};
 pub(crate) use controller::{open_category, open_tab, refresh_runtime_tabs_for_session_change};
-pub(crate) use edit::{complete_session_rename, fail_session_rename};
+pub(crate) use edit::{
+    session_rename_message_rejected, session_rename_message_started, session_rename_title_reported,
+    session_rename_turn_ended,
+};
 pub(crate) use mcp::{
     McpAuthRedirectOverlayState, McpDetailsOverlayState, McpElicitationOverlayState,
     apply_mcp_config_remove_failure, apply_mcp_config_remove_success,
@@ -42,7 +45,7 @@ pub use overlays::*;
 pub(crate) use service::{apply_settings_result, request_settings};
 pub use state::{
     ConfigState, PendingSessionTitleChangeKind, PendingSessionTitleChangeState,
-    PendingSettingsRequest,
+    PendingSettingsRequest, RenameStage,
 };
 pub(crate) use structured::{FieldInput, FormRow};
 pub use structured::{StructuredEditor, summary as structured_summary};
