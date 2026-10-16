@@ -523,42 +523,6 @@ fn model_selection_arms_submit_on_the_first_enter() {
 }
 
 #[test]
-fn resume_selection_with_explicit_tab_then_enter_arms_submit() {
-    let mut app = App::test_default();
-    app.recent_sessions = vec![RecentSessionInfo {
-        session_id: "session-1".to_owned(),
-        summary: "Session one".to_owned(),
-        last_modified_ms: 1,
-        file_size_bytes: 1,
-        cwd: None,
-        git_branch: None,
-        custom_title: None,
-        first_prompt: None,
-        tag: None,
-    }];
-    app.input.set_text("/resume se");
-    let _ = app.input.set_cursor(0, "/resume se".chars().count());
-    crate::app::slash::sync_with_cursor(&mut app);
-
-    events::handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
-    );
-
-    assert!(app.pending_submit.is_none());
-    assert_eq!(app.input.text(), "/resume session-1 ");
-    assert!(app.slash.visible().is_none());
-    assert_eq!(app.focus_owner(), FocusOwner::Input);
-
-    events::handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-    );
-
-    assert!(app.pending_submit.is_some());
-}
-
-#[test]
 fn paste_event_cancels_deferred_submit_snapshot() {
     let mut app = App::test_default();
     app.input.set_text("draft");
@@ -663,18 +627,59 @@ fn welcome_hello_ends_with_exactly_one_more_draw() {
 }
 
 #[test]
-fn hello_schedules_no_redraws_while_the_crab_cannot_wave() {
+fn a_welcome_held_back_without_a_hello_still_gets_the_draw_that_commits_it() {
     let connected = Instant::now();
-    let at = connected + Duration::from_millis(100);
+    let mut app = welcomed_app(connected, false);
+    app.config.snapshot = None;
+    app.surface_dirty.chat.repaint = false;
 
-    let mut unknown_preference = welcomed_app(connected, false);
-    unknown_preference.config.snapshot = None;
-    assert!(!frame_is_animating(&unknown_preference, at));
+    assert!(scheduled_draw(&mut app, connected + Duration::from_millis(100)));
+    assert!(
+        scheduled_draw(&mut app, connected + Duration::from_millis(1_200)),
+        "the window closed with no hello drawn; this draw commits the welcome"
+    );
+    assert!(!scheduled_draw(&mut app, connected + Duration::from_millis(1_216)));
+}
 
+#[test]
+fn a_narrow_terminal_neither_holds_the_welcome_nor_schedules_draws() {
+    let connected = Instant::now();
     // 36 columns is the width at which the overview drops the crab column.
-    let mut narrow = welcomed_app(connected, false);
-    narrow.chat_render.observe_terminal_size(36, 34);
-    assert!(!frame_is_animating(&narrow, at));
+    let mut app = welcomed_app(connected, false);
+    app.chat_render.observe_terminal_size(36, 34);
+    app.surface_dirty.chat.repaint = false;
+
+    assert!(!scheduled_draw(&mut app, connected + Duration::from_millis(100)));
+    assert!(!scheduled_draw(&mut app, connected + Duration::from_millis(1_200)));
+}
+
+#[test]
+fn the_hello_does_not_redraw_a_fullscreen_view_over_the_welcome() {
+    let connected = Instant::now();
+    let mut app = welcomed_app(connected, false);
+    app.terminal_lifecycle =
+        TerminalLifecycleState::Running(SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
+
+    assert!(!frame_is_animating(&app, connected + Duration::from_millis(100)));
+}
+
+#[test]
+fn a_stopped_animation_requests_no_extra_draw_once_the_transcript_has_more_than_the_welcome() {
+    let mut app = App::test_default();
+    app.status = AppStatus::Connecting;
+    app.transcript.messages.push(ChatMessage::welcome("1.2.3", "Pro", "/demo", "session-1"));
+    app.transcript.messages.push(ChatMessage::new(
+        MessageRole::User,
+        vec![MessageBlock::Text(crate::app::TextBlock::from_complete("hello"))],
+        None,
+    ));
+    let start = Instant::now();
+    app.surface_dirty.chat.repaint = false;
+    assert!(scheduled_draw(&mut app, start), "Connecting animates");
+
+    app.status = AppStatus::Ready;
+
+    assert!(!scheduled_draw(&mut app, start + Duration::from_millis(16)));
 }
 
 #[test]

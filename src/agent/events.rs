@@ -40,12 +40,6 @@ pub struct HistoryChunk {
 
 /// Messages sent from the backend bridge path to the App/UI layer.
 pub enum ClientEvent {
-    WorkingDiffReceived {
-        session_id: String,
-        request_id: Option<String>,
-        files: Vec<crate::agent::wire::WorkingDiffFile>,
-        error: Option<String>,
-    },
     SettingsResultReceived {
         session_id: String,
         request_id: Option<String>,
@@ -321,7 +315,6 @@ impl ClientEvent {
             | Self::StatusSnapshotReceived { session_id, .. }
             | Self::ContextUsageReceived { session_id, .. }
             | Self::StructuredUsageReceived { session_id, .. }
-            | Self::WorkingDiffReceived { session_id, .. }
             | Self::SubagentsListed { session_id, .. }
             | Self::SubagentMessagesReceived { session_id, .. }
             | Self::SubagentStopResult { session_id, .. }

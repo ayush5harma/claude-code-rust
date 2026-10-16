@@ -245,12 +245,15 @@ mod tests {
         let rows = screen_rows(&bench);
         let tail = rows
             .iter()
-            .position(|row| row == "That is the full picture.")
+            .position(|row| row.trim() == "That is the full picture.")
             .expect("the last line of the reply is on screen");
-        assert!(rows[tail + 1].starts_with("Reading output"), "{:?}", rows[tail + 1]);
-        assert!(rows[tail + 2].contains(&prompt_prefix_text()), "{:?}", rows[tail + 2]);
+        // The message layout closes a reply with one blank padding row.
+        assert_eq!(rows[tail + 1], "", "{:?}", rows[tail + 1]);
+        assert!(rows[tail + 2].starts_with("Reading output"), "{:?}", rows[tail + 2]);
+        assert!(rows[tail + 3].contains(&prompt_prefix_text()), "{:?}", rows[tail + 3]);
         assert!(
-            rows.last().is_some_and(|row| row.starts_with("fixture") && row.ends_with("/test")),
+            rows.last()
+                .is_some_and(|row| row.starts_with("[fixture]") && row.contains("Loc: /test")),
             "{:?}",
             rows.last()
         );
@@ -276,9 +279,13 @@ mod tests {
         // the activity row above the composer are what the live viewport still owns.
         let tail = rows
             .iter()
-            .position(|row| row == "That is the full picture.")
+            .position(|row| row.trim() == "That is the full picture.")
             .expect("the open tail of the reply is live");
-        assert!(rows[tail + 1].contains('…'), "activity row follows: {:?}", rows[tail + 1]);
+        let activity = rows[tail + 1..].iter().find(|row| !row.is_empty());
+        assert!(
+            activity.is_some_and(|row| row.contains('…')),
+            "activity row follows: {activity:?}"
+        );
         assert!(!rows.iter().any(|row| row.contains("Finding 11")), "{rows:#?}");
     }
 

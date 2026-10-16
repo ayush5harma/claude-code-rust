@@ -9,9 +9,9 @@ mod autocomplete;
 mod config;
 mod copy;
 mod diff;
-mod diff_view;
 mod document_table;
 pub(crate) mod footer_rows;
+mod git_diff;
 pub(crate) mod help;
 pub(crate) mod highlight;
 pub(crate) mod host_tips;
@@ -21,6 +21,7 @@ pub(crate) mod input_rows;
 pub(crate) mod live_rows;
 mod markdown;
 mod message;
+pub(crate) mod message_layout;
 mod message_rows;
 mod rewind_picker;
 mod search;
@@ -38,7 +39,7 @@ mod welcome;
 mod wrap;
 
 pub use message::SpinnerState;
-pub(crate) use welcome::ferris_hello_live;
+pub(crate) use welcome::{ferris_hello_live, welcome_is_whole_transcript};
 
 use crate::app::App;
 use crate::app::{FullscreenView, SurfaceMode};
@@ -57,7 +58,7 @@ pub fn render_fullscreen_surface(frame: &mut Frame, app: &mut App) {
         SurfaceMode::Fullscreen(FullscreenView::Tasks) => tasks::render(frame, app),
         SurfaceMode::Fullscreen(FullscreenView::Verbose) => verbose::render(frame, app),
         SurfaceMode::Fullscreen(FullscreenView::Search) => search::render(frame, app),
-        SurfaceMode::Fullscreen(FullscreenView::Diff) => diff_view::render(frame, app),
+        SurfaceMode::Fullscreen(FullscreenView::Diff) => git_diff::render(frame, app),
         SurfaceMode::Fullscreen(FullscreenView::Agents) => agents::render(frame, app),
         SurfaceMode::Chat => {
             debug_assert!(false, "chat is rendered by the inline terminal session");

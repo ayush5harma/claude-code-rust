@@ -19,7 +19,6 @@ The PR workflow runs this suite on Ubuntu, Windows, and macOS, and requires all 
 | `resize-ready` | Streams a completed transcript for scrollback checks across zoom and reading-mode resizes. |
 | `resize-replay` | Emits a large completed reply in one chunk for interruption and replay-budget checks. |
 | `resize-code` | Completes the first reply, then holds a second reply inside an unfinished code block. |
-| `native-diff` | Emits a retained session tool diff and answers `/diff` Git refreshes with a separate working-tree file. |
 | `read-result` | Emits a completed Read of a four-line markdown file as `file_text` content, so a test can check one source line per row behind a line-number gutter. |
 | `bash-colour` | Emits a completed Bash call whose output carries SGR colours, an OSC 8 hyperlink, a title change and a cursor-up, so a test can check which cells are coloured and that the rest never reach the terminal. |
 | `hook-activity` | Sends a slow and a fast SessionStart hook right after connecting, then answers the first prompt after a failed PreToolUse hook. |

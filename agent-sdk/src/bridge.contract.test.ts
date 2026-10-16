@@ -400,12 +400,13 @@ test("bridge process emits connection_failed for malformed JSON", async () => {
 });
 
 test("bridge process initializes with stable capability envelope", async () => {
-  const bridge = new SpawnedBridge();
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-initialize-"));
+  const bridge = new SpawnedBridge({ CLAUDE_CONFIG_DIR: directory });
   try {
     bridge.writeCommand({
       request_id: "req-init",
       command: "initialize",
-      cwd: process.cwd(),
+      cwd: directory,
     });
 
     const envelope = await bridge.nextEnvelope();
@@ -429,6 +430,9 @@ test("bridge process initializes with stable capability envelope", async () => {
         supports_resume_session: true,
       },
     });
+    const sessions = await nextMatching(bridge, event => event.event === "sessions_listed");
+    assert.equal(sessions.request_id, "req-init");
+    assert.deepEqual(sessions.sessions, []);
     assert.ok(
       bridge.stderrLines.every((line) => {
         const parsed = JSON.parse(line) as { schema?: unknown };
@@ -437,6 +441,7 @@ test("bridge process initializes with stable capability envelope", async () => {
     );
   } finally {
     await bridge.stop();
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 
@@ -495,28 +500,17 @@ test("bridge process exits cleanly on shutdown", async () => {
 });
 
 test("bridge process reports actionable session initialization failure", async () => {
-  const missingClaudeExecutable = join(
-    tmpdir(),
-    `claude-rs-missing-claude-code-${process.pid}`,
-  );
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-missing-executable-"));
+  const missingClaudeExecutable = join(directory, "missing-claude-code");
   const bridge = new SpawnedBridge({
+    CLAUDE_CONFIG_DIR: directory,
     CLAUDE_CODE_EXECUTABLE: missingClaudeExecutable,
   });
   try {
     bridge.writeCommand({
-      request_id: "req-init",
-      command: "initialize",
-      cwd: process.cwd(),
-    });
-    assertProtocolEvent(await bridge.nextEnvelope(), "initialized");
-    const sessions = await bridge.nextEnvelope();
-    assertProtocolEvent(sessions, "sessions_listed");
-    assert.equal(sessions.request_id, "req-init");
-
-    bridge.writeCommand({
       request_id: "req-create",
       command: "create_session",
-      cwd: process.cwd(),
+      cwd: directory,
       launch_settings: {},
     });
 
@@ -534,6 +528,7 @@ test("bridge process reports actionable session initialization failure", async (
     );
   } finally {
     await bridge.stop();
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 
@@ -596,6 +591,11 @@ test("production bridge source stays on the public main SDK export", () => {
 function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedBridge; cleanup: () => Promise<void> } {
   const directory = mkdtempSync(join(tmpdir(), "claude-rs-ultracode-"));
   const sdkPath = import.meta.resolve("@anthropic-ai/claude-agent-sdk");
+  const sdkPackage = join(dirname(fileURLToPath(sdkPath)), "package.json");
+  writeFileSync(
+    join(directory, "package.json"),
+    JSON.stringify({ version: JSON.parse(readFileSync(sdkPackage, "utf8")).version }),
+  );
   const fixturePath = join(directory, "sdk-fixture.mjs");
   writeFileSync(fixturePath, `
     export * from ${JSON.stringify(sdkPath)};
@@ -1317,27 +1317,33 @@ test("resume of an unknown title or id reports the failure under the requested i
   } finally { await cleanup(); }
 });
 
-test("spawned bridge returns working diff for the connected session directory", async () => {
-  const cwd = mkdtempSync(join(tmpdir(), "claude-rs-bridge-diff-"));
-  const { bridge, cleanup } = ultracodeFixtureBridge();
+test("fixture session info preserves and clears a seeded title", async () => {
+  const cwd = process.cwd();
+  const sessionId = "seeded-session";
+  const { bridge, cleanup } = ultracodeFixtureBridge({
+    STARTUP_SESSIONS_FIXTURE: JSON.stringify([
+      { sessionId, cwd, lastModified: 1, customTitle: "Saved title" },
+    ]),
+  });
   try {
-    const { execFileSync } = await import("node:child_process");
-    execFileSync("git", ["-C", cwd, "init", "--quiet"]);
-    writeFileSync(join(cwd, "file with spaces.txt"), "base\n");
-    execFileSync("git", ["-C", cwd, "add", "."]);
-    execFileSync("git", ["-C", cwd, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "-m", "base"]);
-    writeFileSync(join(cwd, "file with spaces.txt"), "base\nchanged\n");
-    bridge.writeCommand({ command: "create_session", cwd, launch_settings: {} });
-    const connected = await nextMatching(bridge, event => event.event === "connected");
-    bridge.writeCommand({ command: "get_working_diff", session_id: connected.session_id, request_id: "diff-one" });
-    const result = await nextMatching(bridge, event => event.event === "working_diff");
-    assert.equal(result.request_id, "diff-one");
-    assert.equal(result.session_id, connected.session_id);
-    assert.match(JSON.stringify(result.files), /file with spaces\.txt[\s\S]*\+changed/);
-  } finally {
-    await cleanup();
-    rmSync(cwd, { recursive: true, force: true });
-  }
+    bridge.writeCommand({ command: "resume_session", session_id: sessionId, launch_settings: {} });
+    await nextMatching(bridge, event => event.event === "connected");
+    const restored = await nextMatching(bridge, event => {
+      const update = event.update as SessionUpdate | undefined;
+      return update?.type === "session_title_update";
+    });
+    assert.equal((restored.update as SessionUpdate & { type: "session_title_update" }).title, "Saved title");
+
+    bridge.writeCommand({ command: "rename_session", session_id: sessionId, title: "", request_id: "clear-title" });
+    const cleared = await nextMatching(bridge, event => {
+      const update = event.update as SessionUpdate | undefined;
+      return update?.type === "session_title_update";
+    });
+    assert.equal((cleared.update as SessionUpdate & { type: "session_title_update" }).title, "");
+    const listed = await nextMatching(bridge, event => event.event === "sessions_listed" && event.request_id === "clear-title");
+    const saved = (listed.sessions as BridgeEnvelope[]).find(session => session.session_id === sessionId);
+    assert.equal(saved?.custom_title, undefined);
+  } finally { await cleanup(); }
 });
 
 test("spawned bridge reports applied effort at startup, after caps and model changes, per turn and after resume", async () => {

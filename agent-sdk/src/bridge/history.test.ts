@@ -12,7 +12,8 @@ test("resume display restores compaction segments once and preserves SDK branch 
   try {
     const cwd = join(directory, "project");
     const configDir = join(directory, "config");
-    const projectDir = join(configDir, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+    const projectDirName = "history-export-fixture";
+    const projectDir = join(configDir, "projects", projectDirName);
     mkdirSync(cwd, { recursive: true });
     mkdirSync(projectDir, { recursive: true });
     const sessionId = "11111111-1111-4111-8111-111111111111";
@@ -27,8 +28,11 @@ test("resume display restores compaction segments once and preserves SDK branch 
     add("boundary-1", null, "system", undefined, { subtype: "compact_boundary", logicalParentUuid: "answer-1", compactMetadata: { trigger: "auto", preservedMessages: { anchorUuid: "summary-1", uuids: ["tool", "result", "answer-1"] } } });
     add("summary-1", "boundary-1", "user", { role: "user", content: "Internal summary one" }, { isCompactSummary: true });
     add("prompt-2", "summary-1", "user", { role: "user", content: [{ type: "text", text: "Second prompt" }] });
-    add("discarded", "prompt-2", "assistant", { id: "discarded-branch", role: "assistant", content: [{ type: "text", text: "Discarded answer" }] });
-    add("answer-2", "prompt-2", "assistant", { id: "assistant-3", role: "assistant", content: [{ type: "text", text: "Second answer" }] });
+    add("command-caveat", "prompt-2", "user", { role: "user", content: "<local-command-caveat>Internal context only</local-command-caveat>" }, { isMeta: true });
+    add("rename", "command-caveat", "user", { role: "user", content: "<command-name>/rename</command-name>\n<command-message>rename</command-message>\n<command-args>review-444</command-args>" });
+    add("color", "rename", "user", { role: "user", content: "<command-name>/color</command-name>\n<command-message>color</command-message>\n<command-args>blue</command-args>" });
+    add("discarded", "color", "assistant", { id: "discarded-branch", role: "assistant", content: [{ type: "text", text: "Discarded answer" }] });
+    add("answer-2", "color", "assistant", { id: "assistant-3", role: "assistant", content: [{ type: "text", text: "Second answer" }] });
     add("boundary-2", null, "system", undefined, { subtype: "compact_boundary", logicalParentUuid: "answer-2", compactMetadata: { trigger: "auto", preservedSegment: { headUuid: "prompt-2", anchorUuid: "summary-2", tailUuid: "answer-2" } } });
     add("summary-2", "boundary-2", "user", { role: "user", content: [{ type: "text", text: "Internal summary two" }] }, { isCompactSummary: true });
     add("prompt-3", "summary-2", "user", { role: "user", content: "Third prompt" });
@@ -41,23 +45,26 @@ test("resume display restores compaction segments once and preserves SDK branch 
     writeFileSync(transcript, before);
     const script = `
       import { getSessionTranscriptMessages, mapSessionMessagesToUpdates } from ${JSON.stringify(new URL("./history.js", import.meta.url).href)};
+      import { rewindTargetsFromSessionMessages } from ${JSON.stringify(new URL("../bridge.js", import.meta.url).href)};
       const messages = await getSessionTranscriptMessages(${JSON.stringify(sessionId)});
       const updates = mapSessionMessagesToUpdates(messages);
       console.log(JSON.stringify({
-        uuids: messages.map(message => message.uuid), updates
+        uuids: messages.map(message => message.uuid), updates,
+        targets: rewindTargetsFromSessionMessages(messages).map(target => [target.uuid, target.input_text])
       }));
     `;
     const child = spawnSync(process.execPath, ["--input-type=module", "-"], {
       input: script,
       encoding: "utf8",
-      env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, CLAUDE_CODE_PROJECT_DIR_NAME: undefined },
+      env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, CLAUDE_CODE_PROJECT_DIR_NAME: projectDirName },
       windowsHide: true,
     });
     assert.equal(child.status, 0, child.stderr);
     const result = JSON.parse(child.stdout);
-    assert.deepEqual(result.uuids, ["prompt-1", "tool", "result", "answer-1", "boundary-1", "summary-1", "prompt-2", "answer-2", "boundary-2", "summary-2", "prompt-3", "answer-3"]);
+    assert.deepEqual(result.uuids, ["prompt-1", "tool", "result", "answer-1", "boundary-1", "summary-1", "prompt-2", "rename", "color", "answer-2", "boundary-2", "summary-2", "prompt-3", "answer-3"]);
     const chunks = result.updates.filter((update: { type: string }) => update.type === "user_message_chunk" || update.type === "agent_message_chunk");
-    assert.deepEqual(chunks.map((update: { content: { text: string } }) => update.content.text), ["First prompt", "First answer", "Second prompt", "Second answer", "Third prompt", "Third answer"]);
+    assert.deepEqual(chunks.map((update: { content: { text: string } }) => update.content.text), ["First prompt", "First answer", "Second prompt", "/rename review-444", "/color blue", "Second answer", "Third prompt", "Third answer"]);
+    assert.deepEqual(result.targets, [["prompt-3", "Third prompt"], ["prompt-2", "Second prompt"], ["prompt-1", "First prompt"]]);
     const tools = result.updates.filter((update: { type: string }) => update.type === "tool_call");
     assert.equal(tools.length, 1);
     assert.equal(tools[0].tool_call.tool_call_id, "read-1");
@@ -225,12 +232,17 @@ test("resume handles many unclosed notification and field tags without blocking 
         "<task-notification><task-id>bad</task-id>" + "<status>a".repeat(200_000) + "</task-notification>",
         "<task-notification><task-id>valid</task-id><status>completed</status>" + "<tool-use-id>a<summary>b<output-file>c".repeat(200_000) + "</task-notification>",
       ];
+      const brokenCommand = "<command-name>/rename</command-name><command-message>rename</command-message><command-args>".repeat(100_000);
       const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
       const updates = mapSessionMessagesToUpdates([
         ...broken.map((content, index) => ({ ...base, type: "user", uuid: "broken-" + index, origin: { kind: "task-notification" }, message: { role: "user", content } })),
+        { ...base, type: "user", uuid: "broken-command", message: { role: "user", content: brokenCommand } },
         { ...base, type: "user", uuid: "after", message: { role: "user", content: "Still restored" } },
       ]);
-      process.stdout.write(JSON.stringify(updates));
+      process.stdout.write(JSON.stringify({
+        chunks: updates.filter(update => update.type === "user_message_chunk").map(update => ({ uuid: update.source_message_uuid, preserved: update.content.text === brokenCommand, tail: update.source_message_uuid === "after" ? update.content : undefined })),
+        tasks: updates.filter(update => update.type === "task_state_update").flatMap(update => update.tasks),
+      }));
     `,
     encoding: "utf8",
     timeout: 10_000,
@@ -238,25 +250,12 @@ test("resume handles many unclosed notification and field tags without blocking 
   });
   assert.equal(child.error, undefined, String(child.error));
   assert.equal(child.status, 0, child.stderr);
-  const updates = JSON.parse(child.stdout) as SessionUpdate[];
-  assert.deepEqual(updates.filter(update => update.type === "user_message_chunk").map(update => [update.source_message_uuid, update.content]), [["after", { type: "text", text: "Still restored" }]]);
-  assert.deepEqual(updates.filter(update => update.type === "task_state_update").flatMap(update => update.tasks).map(task => [task.task_id, task.status, task.source_tool_call_id, task.description]), [["valid", "completed", undefined, undefined]]);
-});
-
-test("resume preserves user text that resembles SDK local command markup", () => {
-  const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
-  const command = "<command-name>/rename</command-name>\n            <command-message>rename</command-message>\n            <command-args>Project check</command-args>";
-  const updates = mapSessionMessagesToUpdates([
-    { ...base, type: "user", uuid: "rename", message: { role: "user", content: command } },
-    { ...base, type: "user", uuid: "ordinary", message: { role: "user", content: "Explain <example>literal XML</example>" } },
+  const result = JSON.parse(child.stdout);
+  assert.deepEqual(result.chunks, [
+    { uuid: "broken-command", preserved: true },
+    { uuid: "after", preserved: false, tail: { type: "text", text: "Still restored" } },
   ]);
-  assert.deepEqual(
-    updates.filter(update => update.type === "user_message_chunk").map(update => [update.source_message_uuid, update.content]),
-    [
-      ["rename", { type: "text", text: command }],
-      ["ordinary", { type: "text", text: "Explain <example>literal XML</example>" }],
-    ],
-  );
+  assert.deepEqual(result.tasks.map((task: { task_id: string; status: string; source_tool_call_id?: string; description?: string }) => [task.task_id, task.status, task.source_tool_call_id, task.description]), [["valid", "completed", undefined, undefined]]);
 });
 
 test("resume display maps plain string messages and hides internal compact summaries", () => {

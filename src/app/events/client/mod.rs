@@ -97,7 +97,6 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         | ClientEvent::AuthCompleted { .. }
         | ClientEvent::LogoutCompleted
         | ClientEvent::StatusSnapshotReceived { .. }
-        | ClientEvent::WorkingDiffReceived { .. }
         | ClientEvent::ContextUsageReceived { .. }
         | ClientEvent::RewindTargetsReceived { .. }
         | ClientEvent::SessionHistoryChunk { .. }

@@ -1426,7 +1426,7 @@ mod tests {
             ids: vec![id],
             msg_idx: 0,
             block_idx: None,
-            kind: LiveRowBoundaryKind::AssistantLabel,
+            kind: LiveRowBoundaryKind::Message,
             start_row,
             end_row,
             commit_ready: true,
@@ -1483,7 +1483,7 @@ mod tests {
         app.input.set_text("hello");
         let _ = app.input.set_cursor(0, 5);
 
-        let backend = render_textarea_to_test_backend(&mut app, Rect::new(0, 0, 4, 1));
+        let backend = render_textarea_to_test_backend(&mut app, Rect::new(0, 0, 0, 1));
 
         assert!(!backend.cursor_visible());
     }
@@ -1685,7 +1685,7 @@ mod tests {
                     .flat_map(|batch| batch.rows.slice(0..batch.rows.len()))
                     .map(line_text)
                     .collect();
-                assert_eq!(text, ["Claude", "completed prefix"]);
+                assert_eq!(text, ["", " ● completed prefix"]);
                 assert!(
                     !batches
                         .iter()
@@ -1725,13 +1725,24 @@ mod tests {
             .map(line_text)
             .collect::<Vec<_>>();
 
-        assert_eq!(batches.iter().flat_map(|batch| batch.confirm_ids.iter()).count(), 1);
-        assert!(
+        assert_eq!(
             batches
                 .iter()
-                .any(|batch| batch.confirm_ids.contains(&HistoryOutputId::Block(second_id)))
+                .flat_map(|batch| batch.confirm_ids.iter().cloned())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                HistoryOutputId::Block(second_id),
+                HistoryOutputId::AssistantPadding(message_id)
+            ])
         );
-        assert_eq!(inserted_text, vec!["second paragraph"]);
+        assert_eq!(
+            inserted_text
+                .iter()
+                .map(|row| row.trim())
+                .filter(|row| !row.is_empty())
+                .collect::<Vec<_>>(),
+            ["second paragraph"]
+        );
     }
 
     #[test]
@@ -1786,7 +1797,7 @@ mod tests {
         );
         let live =
             serialize_live_rows_with_boundaries_excluding(&mut app, 80, history.confirmed_ids());
-        assert!(live.rows().iter().any(|line| line_text(line) == "After the card."));
+        assert!(live.rows().iter().any(|line| line_text(line) == "   After the card."));
         assert!(!live.rows().iter().any(|line| line_text(line).contains("Claude · BTW")));
         let combined: Vec<_> =
             committed_rows.into_iter().chain(live.rows().iter().cloned()).collect();
@@ -1804,7 +1815,7 @@ mod tests {
             .map(line_text)
             .collect();
         assert_eq!(replay_text.iter().filter(|line| line.contains("Claude · BTW")).count(), 1);
-        assert!(!replay_text.iter().any(|line| line == "After the card."));
+        assert!(!replay_text.iter().any(|line| line == "   After the card."));
         history.confirm(replay.confirm_ids);
 
         crate::app::events::handle_client_event(
@@ -1824,7 +1835,7 @@ mod tests {
             .flat_map(|batch| batch.rows.slice(0..batch.rows.len()))
             .map(line_text)
             .collect();
-        assert!(final_rows.iter().any(|line| line == "After the card."));
+        assert!(final_rows.iter().any(|line| line == "   After the card."));
         assert!(!final_rows.iter().any(|line| line.contains("Claude · BTW")));
     }
 
@@ -1860,11 +1871,18 @@ mod tests {
         let remaining_live_text =
             serialized.rows_excluding_ids(&excluded_ids).iter().map(line_text).collect::<Vec<_>>();
 
-        assert!(inserted_text.iter().any(|line| line == "Claude"));
+        assert!(inserted_text.iter().any(|line| line.starts_with(" ●")));
         assert!(inserted_text.iter().any(|line| line.contains("Paste freeze")));
         assert!(inserted_text.iter().any(|line| line.contains("Scrollback destroyed")));
         assert!(!inserted_text.iter().any(|line| line.trim_start().starts_with('|')));
-        assert_eq!(remaining_live_text, vec!["streaming tail remains mutable"]);
+        assert_eq!(
+            remaining_live_text
+                .iter()
+                .map(|row| row.trim())
+                .filter(|row| !row.is_empty())
+                .collect::<Vec<_>>(),
+            ["streaming tail remains mutable"]
+        );
     }
 
     #[test]

@@ -181,8 +181,8 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         command: AppSlashCommand::Diff,
         name: "/diff",
         usage: "Usage: /diff",
-        short_description: "Inspect file changes",
-        long_description: "Browse retained session tool diffs and current Git working-tree changes.",
+        short_description: "Review Git changes",
+        long_description: "Open the read-only Git diff and file viewer with HEAD, staged, and unstaged comparisons.",
         args: NO_ARGS,
     },
     AppSlashCommandSpec {
@@ -335,9 +335,9 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
     AppSlashCommandSpec {
         command: AppSlashCommand::Resume,
         name: "/resume",
-        usage: "Usage: /resume [session_id_or_title]",
-        short_description: "Resume a session by ID or title",
-        long_description: "Open the session picker, or resume a manually supplied session ID.",
+        usage: "Usage: /resume",
+        short_description: "Open the session picker",
+        long_description: "Search and select a session in the fullscreen resume picker.",
         args: NO_ARGS,
     },
     AppSlashCommandSpec {
@@ -417,13 +417,8 @@ impl AppSlashCommand {
     #[allow(clippy::too_many_lines)]
     pub(crate) fn submission_class(self, args: &[&str]) -> SubmissionClass {
         match self {
-            Self::Btw => {
-                if args.is_empty() {
-                    SubmissionClass::Invalid
-                } else {
-                    SubmissionClass::Informational
-                }
-            }
+            Self::Btw if args.is_empty() => SubmissionClass::Invalid,
+            Self::Btw => SubmissionClass::Informational,
             Self::Cancel => {
                 if args.is_empty() {
                     SubmissionClass::TurnControl
@@ -432,6 +427,7 @@ impl AppSlashCommand {
                 }
             }
             Self::Config
+            | Self::Diff
             | Self::Memory
             | Self::Permissions
             | Self::Sandbox
@@ -441,8 +437,7 @@ impl AppSlashCommand {
             | Self::Plugins
             | Self::Status
             | Self::Usage
-            | Self::Agents
-            | Self::Diff => {
+            | Self::Agents => {
                 if args.is_empty() {
                     SubmissionClass::Fullscreen
                 } else {
@@ -463,7 +458,12 @@ impl AppSlashCommand {
                 }
                 _ => SubmissionClass::Invalid,
             },
-            Self::Compact | Self::Login | Self::Logout | Self::NewSession | Self::Reload => {
+            Self::Compact
+            | Self::Login
+            | Self::Logout
+            | Self::NewSession
+            | Self::Reload
+            | Self::Resume => {
                 if args.is_empty() {
                     SubmissionClass::TurnExclusive
                 } else {
@@ -503,7 +503,7 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
-            Self::Export | Self::Resume => SubmissionClass::TurnExclusive,
+            Self::Export => SubmissionClass::TurnExclusive,
             Self::Rewind => {
                 if matches!(args, [_, "both" | "conversation" | "code"]) {
                     SubmissionClass::TurnExclusive

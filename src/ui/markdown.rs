@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
+mod lists;
+
 use super::highlight;
 use super::theme;
 use super::wrap::{hard_wrap_line, line_display_width};
 use crate::failure;
+use pulldown_cmark::{Event, Options, Parser, Tag};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -38,7 +41,42 @@ impl tui_markdown::StyleSheet for ClaudeRsStyleSheet {
 }
 
 pub(super) fn render_markdown_safe(text: &str, bg: Option<Color>) -> Vec<Line<'static>> {
-    render_markdown_safe_with(text, bg, render_with_tui_markdown)
+    render_markdown_at_width(text, u16::MAX, bg)
+}
+
+/// List rows are laid out while parser ownership is available, before becoming plain rows.
+pub(super) fn render_markdown_at_width(
+    text: &str,
+    width: u16,
+    bg: Option<Color>,
+) -> Vec<Line<'static>> {
+    render_markdown_safe_with(text, bg, |text, bg| lists::render(text, width, bg))
+}
+
+fn parser_options() -> Options {
+    // Match the dialect used by tui-markdown for non-list blocks.
+    Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TABLES
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_HEADING_ATTRIBUTES
+        | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
+        | Options::ENABLE_SUPERSCRIPT
+        | Options::ENABLE_SUBSCRIPT
+        | Options::ENABLE_MATH
+        | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_DEFINITION_LIST
+        | Options::ENABLE_GFM
+}
+
+fn list_ranges(source: &str) -> impl Iterator<Item = std::ops::Range<usize>> + '_ {
+    Parser::new_ext(source, parser_options())
+        .into_offset_iter()
+        .filter_map(|(event, range)| matches!(event, Event::Start(Tag::List(_))).then_some(range))
+}
+
+/// A boundary inside one parsed list cannot be frozen or rendered independently.
+pub(super) fn list_crosses_boundary(source: &str, boundary: usize) -> bool {
+    list_ranges(source).any(|range| range.start < boundary && range.end > boundary)
 }
 
 fn render_markdown_safe_with<F>(text: &str, bg: Option<Color>, renderer: F) -> Vec<Line<'static>>
@@ -79,85 +117,35 @@ fn render_with_tui_markdown(text: &str, bg: Option<Color>) -> Vec<Line<'static>>
             Line::from(owned_spans).style(line_style)
         })
         .collect();
-    normalize_list_indentation(shorten_link_destinations(lines))
-}
-
-fn normalize_list_indentation(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
-    let list_lines = rendered_list_line_flags(&lines);
-    let mut normalized = Vec::with_capacity(lines.len());
-
-    for (idx, line) in lines.into_iter().enumerate() {
-        if list_lines[idx] {
-            normalized.push(indent_line(line));
-        } else {
-            normalized.push(line);
-        }
-    }
-
-    normalized
-}
-
-fn rendered_list_line_flags(lines: &[Line<'_>]) -> Vec<bool> {
-    let mut in_fenced_code = false;
-    let mut flags = Vec::with_capacity(lines.len());
-
-    for line in lines {
-        let text = line_text(line);
-        let starts_fence = text.trim_start().starts_with("```");
-        let in_code_line = in_fenced_code || starts_fence;
-        flags.push(!in_code_line && rendered_line_is_list_item(&text));
-        if starts_fence {
-            in_fenced_code = !in_fenced_code;
-        }
-    }
-
-    flags
-}
-
-fn rendered_line_is_list_item(text: &str) -> bool {
-    let trimmed = text.trim_start();
-    trimmed.starts_with("- ") || starts_with_ordered_list_marker(trimmed)
-}
-
-fn starts_with_ordered_list_marker(text: &str) -> bool {
-    let digit_count = text.bytes().take_while(u8::is_ascii_digit).count();
-    digit_count > 0 && text[digit_count..].starts_with(". ")
-}
-
-fn indent_line(mut line: Line<'static>) -> Line<'static> {
-    let existing_indent = line.spans.first().map_or(0, |span| {
-        span.content.as_ref().chars().take_while(|ch| ch.is_whitespace()).count()
-    });
-    if let Some(first) = line.spans.first_mut()
-        && existing_indent > 0
-    {
-        let content = first.content.to_string();
-        first.content = content.chars().skip(existing_indent).collect::<String>().into();
-    }
-    let indent = " ".repeat(2 + existing_indent / 2);
-    line.spans.insert(0, Span::styled(indent, line.style));
-    line
+    shorten_link_destinations(lines)
 }
 
 fn shorten_link_destinations(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
-    const MAX_LINK_DESTINATION_WIDTH: usize = 48;
-
     for line in &mut lines {
         for span_idx in 1..line.spans.len() {
             let is_destination = line.spans[span_idx - 1].content.as_ref() == " (";
             if !is_destination {
                 continue;
             }
-            let span = &mut line.spans[span_idx];
-            let content = span.content.as_ref();
-            if content.starts_with("http://") || content.starts_with("https://") {
-                let shortened = shorten_link_destination(content, MAX_LINK_DESTINATION_WIDTH);
-                span.content = shortened.into();
-                span.style = span.style.fg(theme::tertiary()).remove_modifier(Modifier::UNDERLINED);
-            }
+            let span = &line.spans[span_idx];
+            line.spans[span_idx] = link_destination_span(span.content.as_ref(), span.style);
         }
     }
     lines
+}
+
+/// A web link's destination after its label: dimmed, not underlined, and shortened to
+/// `MAX_LINK_DESTINATION_WIDTH`. Other destinations keep their text and style.
+fn link_destination_span(destination: &str, style: Style) -> Span<'static> {
+    const MAX_LINK_DESTINATION_WIDTH: usize = 48;
+    if destination.starts_with("http://") || destination.starts_with("https://") {
+        Span::styled(
+            shorten_link_destination(destination, MAX_LINK_DESTINATION_WIDTH),
+            style.fg(theme::tertiary()).remove_modifier(Modifier::UNDERLINED),
+        )
+    } else {
+        Span::styled(destination.to_owned(), style)
+    }
 }
 
 fn shorten_link_destination(destination: &str, width: usize) -> String {
@@ -177,15 +165,6 @@ fn shorten_link_destination(destination: &str, width: usize) -> String {
     }
     shortened.push('…');
     shortened
-}
-
-#[cfg(test)]
-fn line_is_blank(line: &Line<'_>) -> bool {
-    line.spans.iter().all(|span| span.content.trim().is_empty())
-}
-
-fn line_text(line: &Line<'_>) -> String {
-    line.spans.iter().map(|span| span.content.as_ref()).collect()
 }
 
 /// Renders a code block as indented rows on the highlight theme's background, behind a dim
@@ -241,11 +220,174 @@ fn plain_text_fallback(text: &str, bg: Option<Color>) -> Vec<Line<'static>> {
 
 #[cfg(test)]
 mod tests {
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|span| span.content.as_ref()).collect()
+    }
+
+    fn line_is_blank(line: &Line<'_>) -> bool {
+        line.spans.iter().all(|span| span.content.trim().is_empty())
+    }
     use super::*;
     use std::panic::catch_unwind;
 
     fn rendered_text(lines: &[Line<'_>]) -> Vec<String> {
         lines.iter().map(line_text).collect()
+    }
+
+    fn document_rows(source: &str, width: u16) -> Vec<String> {
+        let lines =
+            crate::ui::document_table::render_markdown_with_tables(source, width, None, false);
+        crate::ui::wrap::wrap_lines_to_physical_rows(&lines, width)
+            .iter()
+            .map(|line| line_text(line).trim_end().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn list_continuation_paragraphs_and_nested_items_retain_their_parent() {
+        let rows = document_rows(
+            "3. First paragraph.\n\n   Second paragraph.\n\n   - Child item.\n\n     Child continuation.\n\n   Parent again.\n4. Next item.",
+            60,
+        );
+        for (text, column) in [
+            ("Second paragraph.", 5),
+            ("- Child item.", 5),
+            ("Child continuation.", 7),
+            ("Parent again.", 5),
+        ] {
+            let row = rows.iter().find(|row| row.trim() == text).expect("list content survives");
+            assert_eq!(row.find(text), Some(column), "wrong parent alignment: {rows:?}");
+        }
+        let first = rows.iter().position(|row| row.contains("First paragraph.")).unwrap();
+        let second = rows.iter().position(|row| row.contains("Second paragraph.")).unwrap();
+        assert!(
+            rows[first + 1..second].iter().any(String::is_empty),
+            "separate item paragraphs must stay separate: {rows:?}"
+        );
+        assert!(rows.iter().any(|row| row.trim() == "4. Next item."));
+    }
+
+    #[test]
+    fn ordered_and_task_item_wrapping_use_the_actual_body_column() {
+        for (source, prefix, column) in [
+            ("9) alpha beta gamma delta epsilon\n1) zeta eta theta iota kappa", "9.", 5),
+            ("10. alpha beta gamma delta epsilon", "10.", 6),
+            ("- [x] alpha beta gamma delta epsilon", "- [x]", 8),
+        ] {
+            let rows = document_rows(source, 22);
+            let first =
+                rows.iter().position(|row| row.trim_start().starts_with(prefix)).expect("marker");
+            let continuation = &rows[first + 1];
+            assert!(!continuation.trim().is_empty());
+            assert_eq!(continuation.len() - continuation.trim_start().len(), column, "{rows:?}");
+            assert!(rows.iter().all(|row| crate::ui::wrap::display_width(row) <= 22));
+            if source.starts_with("9)") {
+                assert!(
+                    rows.iter().any(|row| row.trim_start().starts_with("10. zeta")),
+                    "number sequentially from the declared start: {rows:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn code_and_escaped_markers_do_not_acquire_list_indentation() {
+        for source in [
+            "~~~text\n- literal marker\n~~~",
+            "    - indented code",
+            "\\- escaped marker",
+            "3a ordinary text",
+        ] {
+            let rows = document_rows(source, 60);
+            let content = rows
+                .iter()
+                .find(|row| {
+                    row.contains("marker") || row.contains("ordinary") || row.contains("indented")
+                })
+                .expect("literal content");
+            // Code is drawn as a code block, whose own indent and rail are not list padding.
+            let content = content.strip_prefix("  \u{258e} ").unwrap_or(content);
+            assert!(
+                !content.starts_with("  "),
+                "non-list source acquired list padding: {source:?}: {rows:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nested_list_wrapping_preserves_inline_styles_links_and_unicode() {
+        let lines = crate::ui::document_table::render_markdown_with_tables(
+            "1. Parent\n   - **Bold** and *italic* [docs](https://example.com) 日本語😀 words words words",
+            28,
+            Some(Color::Blue),
+            false,
+        );
+        let text = lines.iter().map(line_text).collect::<Vec<_>>();
+        let content = text.join(" ");
+        for required in ["Bold", "italic", "https://example.com", "日本語😀"] {
+            assert!(content.contains(required), "lost inline content: {text:?}");
+        }
+        for (word, modifier) in
+            [("Bold", ratatui::style::Modifier::BOLD), ("italic", ratatui::style::Modifier::ITALIC)]
+        {
+            assert!(
+                lines.iter().flat_map(|line| &line.spans).any(|span| span.content.contains(word)
+                    && span.style.add_modifier.contains(modifier)),
+                "lost {word} formatting"
+            );
+        }
+        assert!(lines.iter().all(|line| crate::ui::wrap::line_display_width(line) <= 28));
+        assert!(
+            lines
+                .iter()
+                .flat_map(|line| &line.spans)
+                .all(|span| span.style.bg == Some(Color::Blue))
+        );
+        let child = text.iter().position(|row| row.contains("- Bold")).expect("nested item");
+        for row in &text[child + 1..] {
+            assert_eq!(
+                row.find(|ch: char| !ch.is_whitespace()),
+                Some(7),
+                "child continuation lost its parent: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn table_and_code_inside_a_list_keep_the_parent_column() {
+        let rows = document_rows(
+            "1. Parent\n\n   | Name | Value |\n   | --- | --- |\n   | Alpha | Beta |\n\n   ~~~text\n   - literal code\n       indented code\n   ~~~\n\n   Tail paragraph.",
+            60,
+        );
+        for word in ["Name", "Alpha", "- literal code", "Tail paragraph."] {
+            let row = rows.iter().find(|row| row.contains(word)).expect("nested content survives");
+            assert!(row.starts_with("     "), "content escaped its parent: {rows:?}");
+        }
+        let code = rows.iter().find(|row| row.contains("- literal code")).unwrap();
+        let code_column = code.chars().position(|ch| ch == '-');
+        assert_eq!(code_column, Some(9), "code marker must stay literal, after the code rail");
+        let indented = rows.iter().find(|row| row.contains("indented code")).unwrap();
+        let indented_column =
+            indented.find("indented code").map(|byte| indented[..byte].chars().count());
+        assert_eq!(
+            indented_column,
+            Some(13),
+            "code indentation must survive inside its parent list"
+        );
+    }
+
+    #[test]
+    fn quoted_lists_keep_one_quote_prefix_on_wrapped_and_continued_rows() {
+        let rows = document_rows(
+            "> Introduction\n> continued\n>\n> 1. Parent item with enough words to wrap onto another row\n>\n>    Continuation paragraph\n>\n>    - Child item\n>\n> End quote",
+            30,
+        );
+        for row in rows.iter().filter(|row| !row.trim().is_empty()) {
+            assert!(row.starts_with("> "), "quote ownership lost: {rows:?}");
+            assert_eq!(row.matches('>').count(), 1, "quote prefixes duplicated: {rows:?}");
+        }
+        assert!(rows.iter().any(|row| row.contains("Child item")));
+        assert!(rows.iter().any(|row| row.contains("End quote")));
     }
 
     #[test]
@@ -284,14 +426,14 @@ mod tests {
     }
 
     #[test]
-    fn unordered_lists_keep_blank_rows_between_document_blocks() {
+    fn unordered_lists_preserve_surrounding_paragraph_separators() {
         let lines = render_markdown_safe("Intro\n\n- One\n- Two\n\nOutro", None);
 
         assert_eq!(rendered_text(&lines), vec!["Intro", "", "  - One", "  - Two", "", "Outro"]);
     }
 
     #[test]
-    fn ordered_lists_keep_blank_rows_between_document_blocks() {
+    fn ordered_lists_preserve_surrounding_paragraph_separators() {
         let lines = render_markdown_safe("Intro\n\n1. One\n2. Two\n\nOutro", None);
 
         assert_eq!(rendered_text(&lines), vec!["Intro", "", "  1. One", "  2. Two", "", "Outro"]);
@@ -302,26 +444,6 @@ mod tests {
         let lines = render_markdown_safe("- Parent\n  - Child\n    - Grandchild", None);
 
         assert_eq!(rendered_text(&lines), vec!["  - Parent", "    - Child", "      - Grandchild"]);
-    }
-
-    #[test]
-    fn wrapped_nested_list_continuations_keep_the_compact_indent() {
-        let lines = render_markdown_safe(
-            "- Parent\n  - nested list item that wraps to another physical row",
-            None,
-        );
-        let rows = crate::ui::wrap::wrap_markdown_lines_to_physical_rows(&lines, 24);
-
-        assert_eq!(
-            rendered_text(&rows),
-            vec![
-                "  - Parent",
-                "    - nested list item",
-                "      that wraps to",
-                "      another physical",
-                "      row"
-            ]
-        );
     }
 
     #[test]
@@ -384,5 +506,20 @@ mod tests {
         let lines = render_markdown_safe(&format!("See ({url}) for details."), None);
 
         assert!(rendered_text(&lines).join("\n").contains(url));
+    }
+
+    #[test]
+    fn list_links_are_shortened_like_paragraph_links() {
+        let lines = render_markdown_safe(
+            "- see [documentation](https://example.com/a/very/long/path/that/should/not/take/the/whole/terminal)",
+            None,
+        );
+        let destination = lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .find(|span| span.content.starts_with("https://"))
+            .expect("rendered link destination");
+        assert!(destination.content.ends_with('\u{2026}'));
+        assert_eq!(destination.style.fg, Some(theme::tertiary()));
     }
 }

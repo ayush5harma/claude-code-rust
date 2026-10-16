@@ -6,9 +6,6 @@ use crate::agent::events::ClientEvent;
 #[allow(clippy::too_many_lines)]
 pub(super) fn handle(app: &mut App, event: ClientEvent) {
     match event {
-        ClientEvent::WorkingDiffReceived { session_id, request_id, files, error } => {
-            crate::app::diff_view::apply(app, &session_id, request_id.as_deref(), files, error);
-        }
         ClientEvent::SessionMutationResult {
             session_id,
             request_id,
@@ -192,8 +189,7 @@ fn apply_rewind_targets(
         super::super::notices::emit_system_notice(app, SystemSeverity::Error, message);
     }
     app.sdk_inventory.rewind_targets_error = error;
-    app.session_picker.turn_selected = 0;
-    app.session_picker.turn_scroll_offset = 0;
+    app.session_picker.reset_turn_navigation();
     crate::app::slash::sync_with_cursor(app);
 }
 
