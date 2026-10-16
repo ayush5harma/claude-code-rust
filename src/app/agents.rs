@@ -434,8 +434,12 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
             KeyCode::Esc | KeyCode::Left => app.agents.transcript = None,
             KeyCode::Up => transcript.scroll = transcript.scroll.saturating_sub(1),
             KeyCode::Down => transcript.scroll = transcript.scroll.saturating_add(1),
-            KeyCode::PageUp => transcript.scroll = transcript.scroll.saturating_sub(usize::from(PAGE_ROWS)),
-            KeyCode::PageDown => transcript.scroll = transcript.scroll.saturating_add(usize::from(PAGE_ROWS)),
+            KeyCode::PageUp => {
+                transcript.scroll = transcript.scroll.saturating_sub(usize::from(PAGE_ROWS))
+            }
+            KeyCode::PageDown => {
+                transcript.scroll = transcript.scroll.saturating_add(usize::from(PAGE_ROWS))
+            }
             _ => {}
         }
         return;

@@ -283,7 +283,8 @@ fn detail_lines(app: &App, row: &SubagentRow<'_>, width: u16) -> Vec<Line<'stati
         }
     } else if let Some(outcome) = row.failure().or_else(|| row.summary()) {
         // An interrupted row has no outcome; its text is the last progress.
-        let label = if row.status == SubagentStatus::Interrupted { "Last progress" } else { "Result" };
+        let label =
+            if row.status == SubagentStatus::Interrupted { "Last progress" } else { "Result" };
         lines.push(detail_kv(label, outcome, value));
     }
     let recent: Vec<_> = children.collect();
@@ -364,13 +365,8 @@ fn render_transcript(frame: &mut Frame, title_area: Rect, body: Rect, app: &mut 
     let Some(wrapped) = &view.wrapped else { return };
     let max_scroll = wrapped.rows.len().saturating_sub(usize::from(body.height));
     view.scroll = view.scroll.min(max_scroll);
-    let visible: Vec<Line<'static>> = wrapped
-        .rows
-        .iter()
-        .skip(view.scroll)
-        .take(usize::from(body.height))
-        .cloned()
-        .collect();
+    let visible: Vec<Line<'static>> =
+        wrapped.rows.iter().skip(view.scroll).take(usize::from(body.height)).cloned().collect();
     frame.render_widget(Paragraph::new(visible), body);
 }
 
