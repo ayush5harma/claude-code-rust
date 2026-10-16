@@ -306,7 +306,10 @@ mod tests {
             ),
             ("x-api-key: sk-ant-api03-secretvalue", "x-api-key: [redacted]"),
             ("access_token=abc123 next", "access_token=[redacted] next"),
-            ("fetch https://user:pass@example.com/repo", "fetch https://[redacted]@example.com/repo"),
+            (
+                "fetch https://user:pass@example.com/repo",
+                "fetch https://[redacted]@example.com/repo",
+            ),
             ("Authorization: Basic dXNlcjpwYXNz", "Authorization: [redacted]"),
             ("Authorization: Bearer abc.def", "Authorization: [redacted]"),
             ("key sk-live_abc123 end", "key [redacted] end"),
