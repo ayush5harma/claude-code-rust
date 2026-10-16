@@ -112,7 +112,7 @@ The bridge normalizes confirmed launch results and SDK task lifecycle events int
 
 Rust keeps execution state on the original `ToolCallInfo`. Its history projection freezes the launch at its creation position with the fixed `↗` icon, allowing the transcript prefix to enter terminal history while the task runs independently. Actual completion, failure or stopping appends one separately identified result linked to that tool. The session owns pending interactions; foreground turn reset preserves background controls, which remain mutable at the end of the live region during transcript replay after resize. Cache and retention accounting include the frozen projections without adding them to the execution index or foreground activity set.
 
-A task row's lifecycle state is separate from its tool call. A notification that follows a finished tool call still settles the row, and only a new start or another outcome changes a settled row. A row that leaves `background_tasks_changed` after its lifecycle reported an outcome keeps that row and drops only its background marker.
+A task row's lifecycle state is separate from its tool call. A notification that follows a finished tool call still settles the row, and only a new start or another outcome changes a settled row. A lifecycle-owned subagent keeps its row when it leaves `background_tasks_changed`, whether the outcome arrives before or after that snapshot, and drops only its background marker. A `TaskList` snapshot replaces plan tasks while retaining runtime lifecycle rows in the bridge's complete task snapshot.
 
 ### Subagents view
 

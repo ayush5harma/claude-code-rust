@@ -136,6 +136,27 @@ test("resume notifications preserve terminal outcomes, linked tools and optional
   assert.deepEqual(minimal.filter(update => update.type === "task_state_update").flatMap(update => update.tasks).map(task => [task.task_id, task.status, task.source_tool_call_id, task.description]), [["minimal", "completed", undefined, undefined]]);
 });
 
+test("resume settles a subagent task after its tool result has completed", () => {
+  const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
+  const notification = "<task-notification><task-id>agent-1</task-id><tool-use-id>tool-1</tool-use-id><status>completed</status><summary>Finished work</summary></task-notification>";
+  const updates = mapSessionMessagesToUpdates([
+    { ...base, type: "assistant", uuid: "launch", message: { role: "assistant", content: [{ type: "tool_use", id: "tool-1", name: "Agent", input: { description: "Work", prompt: "Work" } }] } },
+    { ...base, type: "system", uuid: "started", message: { subtype: "task_started", task_id: "agent-1", tool_use_id: "tool-1", task_type: "local_agent", description: "Work" } },
+    { ...base, type: "user", uuid: "result", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tool-1", content: "Done" }] } },
+    { ...base, type: "user", uuid: "notification", ...{ origin: { kind: "task-notification", producer: "session-task" } }, message: { role: "user", content: notification } },
+    { ...base, type: "system", uuid: "late-progress", message: { subtype: "task_progress", task_id: "agent-1", tool_use_id: "tool-1", description: "Stale progress" } },
+  ]);
+  const results = updates.filter(update => update.type === "tool_call_update").map(update => update.tool_call_update).filter(update => update.tool_call_id === "tool-1");
+  assert.equal(results.length, 2, "only the start and result update the tool");
+  assert.equal(results.at(-1)?.fields.status, "completed");
+  const rows = updates.filter(update => update.type === "task_state_update").flatMap(update => update.tasks);
+  assert.deepEqual(rows.map(row => [row.task_id, row.status, (row.metadata as Record<string, unknown>)?.task_type, (row.metadata as Record<string, unknown>)?.terminal_status]), [
+    ["agent-1", "in_progress", "local_agent", undefined],
+    ["agent-1", "completed", "local_agent", "completed"],
+  ]);
+  assert.equal(rows.at(-1)?.description, "Finished work");
+});
+
 test("resume skips malformed internal notifications and restores later conversation and task outcomes", () => {
   const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
   const malformed = [

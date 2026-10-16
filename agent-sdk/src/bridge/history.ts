@@ -104,6 +104,11 @@ function pushResumeTaskSystemUpdate(
   }
   const toolUseId = explicitToolUseId ?? taskToolUseIds.get(taskId);
   const tool = toolUseId ? toolCalls.get(toolUseId) : undefined;
+  const patch = taskLifecyclePatch(tasksById.get(taskId), subtype, msg, toolUseId);
+  if (patch) {
+    const task = upsertTask({ tasksById, taskOrder: [] }, patch);
+    updates.push({ type: "task_state_update", source: "task_lifecycle", tasks: [task], removed_task_ids: [], is_complete_snapshot: false });
+  }
   if (tool && toolUseId && toolAcceptsTaskLifecycle(tool)) {
     const fields = taskSystemToolFields(tool, subtype, msg);
     if (!normalizeToolCallUpdateFields(tool, fields ?? {}, subtype as "task_started" | "task_progress" | "task_updated" | "task_notification")) return true;
@@ -113,11 +118,6 @@ function pushResumeTaskSystemUpdate(
     }
   }
 
-  const patch = taskLifecyclePatch(tasksById.get(taskId), subtype, msg, toolUseId);
-  if (patch) {
-    const task = upsertTask({ tasksById, taskOrder: [] }, patch);
-    updates.push({ type: "task_state_update", source: "task_lifecycle", tasks: [task], removed_task_ids: [], is_complete_snapshot: false });
-  }
   return true;
 }
 

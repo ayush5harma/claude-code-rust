@@ -247,12 +247,43 @@ test("a backgrounded subagent keeps its lifecycle row after it leaves the backgr
   assert.deepEqual(row?.metadata, {
     task_type: "local_agent",
     subagent_type: "general-purpose",
+    sdk_lifecycle_started: true,
     output_file: "",
     summary: "ok",
     terminal_status: "completed",
   }, "the settled row keeps its lifecycle metadata and drops only the background marker");
   assert.equal(session.tasksById.get("agent-1")?.status, "completed");
   assert.equal(session.tasksById.has("shell-1"), false);
+});
+
+test("a subagent remains visible when it leaves the background snapshot before its outcome", () => {
+  const session = makeSession();
+  const emit = (message: Record<string, unknown>) =>
+    handleSdkMessage(session, { session_id: "session-1", uuid: crypto.randomUUID(), ...message } as unknown as SDKMessage);
+  const writes: string[] = [];
+  const restore = replaceProtocolEventWriter((line) => { writes.push(line); });
+  try {
+    emit({ type: "system", subtype: "task_started", task_id: "agent-1", task_type: "local_agent", description: "Background sleep" });
+    emit({ type: "system", subtype: "background_tasks_changed", tasks: [
+      { task_id: "agent-1", task_type: "local_agent", description: "Background sleep" },
+      { task_id: "snapshot-only", task_type: "local_agent", description: "No lifecycle start" },
+    ] });
+    emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });
+    const waiting = session.tasksById.get("agent-1");
+    assert.equal(waiting?.status, "in_progress", "snapshot departure does not infer completion");
+    assert.deepEqual(waiting?.metadata, { task_type: "local_agent", sdk_lifecycle_started: true });
+    assert.equal(session.tasksById.has("snapshot-only"), false, "a background-only row leaves with the snapshot");
+    emit({ type: "system", subtype: "task_notification", task_id: "agent-1", status: "completed", summary: "ok" });
+  } finally {
+    restore();
+  }
+
+  const updates = writes.map(line => (JSON.parse(line) as { update?: { type?: string; removed_task_ids?: string[]; tasks?: Array<Record<string, unknown>> } }).update)
+    .filter(update => update?.type === "task_state_update");
+  assert.ok(!updates.some(update => update?.removed_task_ids?.includes("agent-1")));
+  const final = updates.flatMap(update => update?.tasks ?? []).filter(task => task.task_id === "agent-1").at(-1);
+  assert.equal(final?.status, "completed");
+  assert.deepEqual(final?.metadata, { task_type: "local_agent", sdk_lifecycle_started: true, summary: "ok", terminal_status: "completed" });
 });
 
 test("SDK context usage Markdown is shown even without a response ID", () => {
