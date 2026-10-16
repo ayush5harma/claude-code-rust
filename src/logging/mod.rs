@@ -290,6 +290,10 @@ impl BaselineFieldVisitor<'_> {
         if value.is_empty() {
             return;
         }
+        if field.name() == BRIDGE_FIELDS_JSON {
+            self.record(field, Value::String(baseline_bridge_fields(value)));
+            return;
+        }
         let redacted = crate::cli::redaction::redact_text(value);
         self.record(field, Value::String(preview_text(&redacted, BASELINE_VALUE_LIMIT)));
     }
@@ -317,6 +321,57 @@ impl Visit for BaselineFieldVisitor<'_> {
             self.record_text(field, &format!("{value:?}"));
         }
     }
+}
+
+/// Name of the event field that carries a bridge record's own `fields` object as JSON.
+const BRIDGE_FIELDS_JSON: &str = "fields_json";
+
+/// Keys of a bridge record's `fields` that the default log keeps: what diagnosing a failure
+/// needs, and no path, project key, session or message identifier. This is the one
+/// allowlist for bridge fields; the bridge's `baselineFields` only redacts and bounds values.
+fn baseline_bridge_field_allowed(key: &str) -> bool {
+    matches!(
+        key,
+        "error_message"
+            | "reason"
+            | "cause"
+            | "hook_name"
+            | "hook_event"
+            | "output_excerpt"
+            | "exit_code"
+            | "plugin"
+            | "category"
+            | "bridge_event"
+            | "preview"
+            | "preview_chars"
+            | "startup_failure_reason"
+            | "startup_failure_errors"
+            | "action"
+            | "attempts"
+    )
+}
+
+/// Reduce a bridge record's `fields` JSON to the allowed keys with redacted, bounded values.
+/// Unparseable input yields an empty object rather than passing it through.
+fn baseline_bridge_fields(raw: &str) -> String {
+    let parsed = serde_json::from_str::<Map<String, Value>>(raw).unwrap_or_default();
+    let kept: Map<String, Value> = parsed
+        .into_iter()
+        .filter(|(key, _)| baseline_bridge_field_allowed(key))
+        .map(|(key, value)| {
+            let value = match value {
+                Value::Number(_) | Value::Bool(_) | Value::Null => value,
+                Value::String(text) => Value::String(bounded_redacted(&text)),
+                other => Value::String(bounded_redacted(&other.to_string())),
+            };
+            (key, value)
+        })
+        .collect();
+    serde_json::to_string(&kept).unwrap_or_else(|_| "{}".to_owned())
+}
+
+fn bounded_redacted(text: &str) -> String {
+    preview_text(&crate::cli::redaction::redact_text(text), BASELINE_VALUE_LIMIT)
 }
 
 fn baseline_field_allowed(name: &str) -> bool {
@@ -1182,6 +1237,30 @@ mod tests {
         for absent in ["session_id", "error_kind", "duration_ms", "count", "size_bytes"] {
             assert!(record.get(absent).is_none(), "{absent} should be absent: {record}");
         }
+    }
+
+    // A bridge warning that names a working directory, project key or session ids must not
+    // write them to a log the user never opted into, while the failure context survives.
+    #[test]
+    fn default_log_drops_paths_and_ids_from_bridge_fields() {
+        let warning = r#"{"schema":"claude-rs-log/v1","level":"warn","target":"app.session","event_name":"sdk_mirror_error_received","message":"SDK transcript mirror error received","outcome":"failure","session_id":"sess-1111","request_id":"req-2222","fields":{"error_message":"mirror failed","cwd":"/Users/alice/private-project","project_key":"-Users-alice-private-project","mirror_session_id":"mirror-3333","subpath":"subagents/agent-4444","resume_session_at":"msg-5555","hook_id":"hook-6666"}}"#;
+        let records = baseline_records(|| emit_bridge_stderr_line(warning));
+
+        assert_eq!(records.len(), 1, "{records:?}");
+        let written = records[0].to_string();
+        for private in [
+            "alice",
+            "private-project",
+            "mirror-3333",
+            "agent-4444",
+            "msg-5555",
+            "hook-6666",
+            "sess-1111",
+            "req-2222",
+        ] {
+            assert!(!written.contains(private), "{private} reached the default log: {written}");
+        }
+        assert!(written.contains("mirror failed"), "{written}");
     }
 
     #[test]

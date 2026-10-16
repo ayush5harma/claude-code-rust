@@ -71,7 +71,10 @@ function definedFields(
 /**
  * Baseline fields can reach a log the user never asked to be detailed, so
  * every string is redacted and bounded and nested values are flattened to a
- * bounded excerpt rather than carried whole.
+ * bounded excerpt rather than carried whole. Which KEYS may reach the default log
+ * is decided once, by the host (`baseline_bridge_field_allowed` in
+ * src/logging/mod.rs), which drops the rest before writing; do not keep a
+ * second list here.
  */
 function baselineFields(fields: DiagnosticFields): DiagnosticFields {
   return Object.fromEntries(
