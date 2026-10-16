@@ -222,3 +222,41 @@ fn invalid_trust_structure_is_not_replaced_during_acceptance() {
         assert_eq!(std::fs::read_to_string(&path).expect("read"), raw);
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn untrusted_startup_through_a_symlink_shows_the_directory_yes_would_save() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let fixture = tempfile::tempdir().expect("tempdir");
+    let target = fixture.path().join("resolved-target-dir");
+    std::fs::create_dir(&target).expect("target");
+    let shortcut = fixture.path().join("shortcut-dir");
+    std::os::unix::fs::symlink(&target, &shortcut).expect("symlink");
+    let preferences = fixture.path().join(".claude.json");
+    std::fs::write(&preferences, r#"{"projects":{}}"#).expect("preferences");
+    let mut app = App::test_default();
+    app.cwd_raw = shortcut.to_string_lossy().into_owned();
+    app.trust.preferences_path = Some(preferences.clone());
+
+    initialize(&mut app);
+    let mut terminal = Terminal::new(TestBackend::new(200, 14)).expect("terminal");
+    terminal.draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app)).expect("draw");
+    let screen: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .filter(|symbol| !symbol.trim().is_empty())
+        .collect();
+    accept(&mut app).expect("accept");
+
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&preferences).expect("read")).expect("json");
+    let saved_key = saved["projects"].as_object().expect("projects").keys().next().expect("key");
+    assert!(saved_key.ends_with("resolved-target-dir"), "{saved_key}");
+    assert!(screen.contains(&saved_key.replace(' ', "")), "{screen}");
+    assert!(!screen.contains("shortcut-dir"), "{screen}");
+}

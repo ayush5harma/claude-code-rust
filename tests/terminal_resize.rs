@@ -164,6 +164,8 @@ struct TerminalTest {
     /// not produced by that action.
     before_action: String,
     settled: bool,
+    /// The trust prompt as it was drawn, before the test answered it.
+    trust_prompt: String,
 }
 
 #[allow(clippy::expect_used, clippy::panic)]
@@ -252,8 +254,13 @@ impl TerminalTest {
             temp,
             before_action: String::new(),
             settled: true,
+            trust_prompt: String::new(),
         };
-        test.wait_screen("Trust this project");
+        let project_tail = format!(
+            "{}/project",
+            test.temp.path().file_name().expect("temp directory name").to_string_lossy()
+        );
+        test.trust_prompt = test.wait_screen_with("Trust this project", &[&project_tail]);
         test.send(b"y");
         if has_initial_prompt {
             test.wait_until("initial prompt", |test| !test.prompts().is_empty());
@@ -1384,6 +1391,23 @@ fn activity_stays_above_queue_and_out_of_scrollback_through_wait_resize_and_comp
         assert!(!screen.contents().contains("Tip:"));
         assert!(!screen.contents().contains(&activity_header));
     }
+}
+
+#[test]
+fn trust_prompt_names_the_directory_that_yes_will_save() {
+    let test = TerminalTest::start("hold-success", 1);
+
+    let rows: Vec<&str> = test.trust_prompt.lines().collect();
+    let question = rows
+        .iter()
+        .position(|row| row.contains("Trust this project directory?"))
+        .expect("question row");
+    let directory = rows[question + 1].trim_matches(|c: char| c == '\u{2502}' || c == ' ');
+    assert!(directory.ends_with("/project"), "{}", test.trust_prompt);
+    // The key is absolute and resolved, so it never repeats a relative or
+    // symlinked spelling of the start directory.
+    assert!(Path::new(directory).is_absolute(), "{directory}");
+    assert!(!test.trust_prompt.contains("Unknown Project"), "{}", test.trust_prompt);
 }
 
 #[test]
