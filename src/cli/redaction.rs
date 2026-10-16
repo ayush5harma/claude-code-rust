@@ -3,17 +3,12 @@
 use serde_json::Value;
 
 const REDACTED: &str = "[redacted]";
-const SECRET_ASSIGNMENT_KEYS: &[&str] = &[
-    "ANTHROPIC_API_KEY",
-    "api_key",
-    "apikey",
-    "accessToken",
-    "refreshToken",
-    "authorization",
-    "password",
-    "secret",
-    "credential",
-];
+/// Name fragments that make a `name=value` or `name: value` pair secret. A fragment
+/// matches inside a longer name (`CLAUDE_CODE_OAUTH_TOKEN`, `x-api-key`, `access_token`).
+const SECRET_ASSIGNMENT_KEYS: &[&str] =
+    &["api_key", "api-key", "apikey", "token", "secret", "password", "credential", "authorization"];
+/// Credential schemes that precede the secret in an `Authorization` value.
+const AUTH_SCHEMES: &[&str] = &["basic ", "digest ", "negotiate ", "bearer "];
 
 pub fn redact_json_value(value: &mut Value) {
     match value {
@@ -39,6 +34,12 @@ pub fn redact_env_value(name: &str, value: Option<&str>) -> Option<String> {
     value.map(|value| if is_secret_key(name) { REDACTED.to_owned() } else { value.to_owned() })
 }
 
+/// Line-oriented redaction for text that reaches the always-on log, support bundles and
+/// failure reports.
+///
+/// The TypeScript twin is `redactStartupDetail` in `agent-sdk/src/bridge/startup_failures.ts`.
+/// This function is the reference: its table test (`redacts_credential_shapes`) lists the
+/// shapes both must cover, and a rule added to one is added to the other.
 pub fn redact_text(input: &str) -> String {
     input.lines().map(redact_line).collect::<Vec<_>>().join("\n")
 }
@@ -52,6 +53,8 @@ pub fn redact_line(line: &str) -> String {
     };
 
     redacted = redact_bearer_tokens(&redacted);
+    redacted = redact_sk_tokens(&redacted);
+    redacted = redact_url_userinfo(&redacted);
     for key in SECRET_ASSIGNMENT_KEYS {
         redacted = redact_assignment_values(&redacted, key);
     }
@@ -90,18 +93,80 @@ fn redact_bearer_tokens(input: &str) -> String {
     output
 }
 
+/// Provider keys (`sk-...`, `sk-ant-...`) wherever they appear, even without a name.
+fn redact_sk_tokens(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut output = String::with_capacity(input.len());
+    let mut copied = 0;
+    let mut index = 0;
+    while index + 3 < bytes.len() {
+        let at_boundary = index == 0 || !is_word_byte(bytes[index - 1]);
+        if at_boundary && bytes[index..index + 3].eq_ignore_ascii_case(b"sk-") {
+            let end = index
+                + 3
+                + bytes[index + 3..].iter().take_while(|byte| is_token_byte(**byte)).count();
+            if end > index + 3 {
+                output.push_str(&input[copied..index]);
+                output.push_str(REDACTED);
+                copied = end;
+                index = end;
+                continue;
+            }
+        }
+        index += 1;
+    }
+    output.push_str(&input[copied..]);
+    output
+}
+
+/// `https://user:pass@host` keeps the scheme and host and drops the userinfo.
+fn redact_url_userinfo(input: &str) -> String {
+    let mut output = input.to_owned();
+    for scheme in ["https://", "http://"] {
+        let mut search_start = 0;
+        while let Some(relative) = find_ascii_case_insensitive(&output[search_start..], scheme) {
+            let start = search_start + relative + scheme.len();
+            let userinfo_len = output.as_bytes()[start..]
+                .iter()
+                .take_while(|byte| !byte.is_ascii_whitespace() && **byte != b'/' && **byte != b'@')
+                .count();
+            if userinfo_len > 0 && output.as_bytes().get(start + userinfo_len) == Some(&b'@') {
+                output.replace_range(start..start + userinfo_len, REDACTED);
+                search_start = start + REDACTED.len();
+            } else {
+                search_start = start;
+            }
+        }
+    }
+    output
+}
+
+fn is_word_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn is_token_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
+}
+
 fn redact_assignment_values(input: &str, key: &str) -> String {
     let mut output = input.to_owned();
     let mut search_start = 0;
 
     while let Some(relative_key_start) = find_ascii_case_insensitive(&output[search_start..], key) {
         let key_start = search_start + relative_key_start;
-        let Some((value_start, quote)) = assignment_value_start(&output, key_start + key.len())
-        else {
+        let name_end = key_start
+            + key.len()
+            + output.as_bytes()[key_start + key.len()..]
+                .iter()
+                .take_while(|byte| is_token_byte(**byte))
+                .count();
+        let Some((value_start, quote)) = assignment_value_start(&output, name_end) else {
             search_start = key_start + key.len();
             continue;
         };
-        let value_end = assignment_value_end(&output, value_start, quote);
+        let scheme_len = if quote.is_none() { auth_scheme_len(&output[value_start..]) } else { 0 };
+        let value_end = assignment_value_end(&output, value_start + scheme_len, quote);
         if value_end <= value_start {
             search_start = value_start;
             continue;
@@ -111,6 +176,15 @@ fn redact_assignment_values(input: &str, key: &str) -> String {
     }
 
     output
+}
+
+/// Length of a leading credential scheme plus its spaces (`Basic `), so the credential
+/// after it is redacted with it instead of being left behind.
+fn auth_scheme_len(value: &str) -> usize {
+    let lowered = value.to_ascii_lowercase();
+    AUTH_SCHEMES.iter().find(|scheme| lowered.starts_with(**scheme)).map_or(0, |scheme| {
+        scheme.len() + value[scheme.len()..].bytes().take_while(|byte| *byte == b' ').count()
+    })
 }
 
 fn assignment_value_start(input: &str, offset: usize) -> Option<(usize, Option<u8>)> {
@@ -219,5 +293,27 @@ mod tests {
         assert!(redacted.contains("ANTHROPIC_API_KEY=[redacted]"));
         assert!(redacted.contains("Authorization: [redacted]"));
         assert!(redacted.contains("Bearer [redacted]"));
+    }
+
+    // Mirrors the table in agent-sdk/src/bridge/startup_failures.test.ts.
+    #[test]
+    fn redacts_credential_shapes() {
+        let cases: &[(&str, &str)] = &[
+            ("GET /v1?token=abc&x=1", "GET /v1?token=[redacted]&x=1"),
+            (
+                "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-abcDEF123",
+                "CLAUDE_CODE_OAUTH_TOKEN=[redacted]",
+            ),
+            ("x-api-key: sk-ant-api03-secretvalue", "x-api-key: [redacted]"),
+            ("access_token=abc123 next", "access_token=[redacted] next"),
+            ("fetch https://user:pass@example.com/repo", "fetch https://[redacted]@example.com/repo"),
+            ("Authorization: Basic dXNlcjpwYXNz", "Authorization: [redacted]"),
+            ("Authorization: Bearer abc.def", "Authorization: [redacted]"),
+            ("key sk-live_abc123 end", "key [redacted] end"),
+            ("task-1 and risk-free are not keys", "task-1 and risk-free are not keys"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(redact_text(input), *expected, "input: {input}");
+        }
     }
 }

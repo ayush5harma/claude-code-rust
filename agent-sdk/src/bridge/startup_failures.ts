@@ -8,10 +8,18 @@ export function startupFailureDetails(errors: unknown): string[] {
   );
 }
 
+/**
+ * Twin of `redact_text` in `src/cli/redaction.rs`, which is the reference: its
+ * table test lists the shapes both must cover, and a rule added to one is added
+ * to the other.
+ */
 export function redactStartupDetail(value: string): string {
   return value
     .replace(/\bBearer\s+[^\s"',;]+/gi, "Bearer [redacted]")
-    .replace(/\bsk-(?:ant-)?[a-z0-9_-]+/gi, "[redacted]")
-    .replace(/((?:[a-z0-9_-]*(?:api[_-]?key|token|secret|password|credential|authorization)[a-z0-9_-]*)["']?\s*[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|[^\s,;]+)/gi, "$1[redacted]")
-    .replace(/(https?:\/\/)[^\s/@]+@/gi, "$1[redacted]@");
+    .replace(/\bsk-[a-z0-9_-]+/gi, "[redacted]")
+    .replace(/(https?:\/\/)[^\s/@]+@/gi, "$1[redacted]@")
+    .replace(
+      /((?:api[_-]?key|token|secret|password|credential|authorization)[a-z0-9_-]*["']?\s*[:=]\s*)(?:(?:basic|digest|negotiate|bearer)\s+)?(?:"[^"\n]*"|'[^'\n]*'|[^\s,;&]+)/gi,
+      "$1[redacted]",
+    );
 }
