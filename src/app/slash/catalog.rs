@@ -373,7 +373,6 @@ impl AppSlashCommand {
         command_spec(self.name()).map_or(self.name(), |spec| spec.usage)
     }
 
-    #[allow(clippy::too_many_lines)]
     pub(crate) fn submission_class(self, args: &[&str]) -> SubmissionClass {
         match self {
             Self::Btw if args.is_empty() => SubmissionClass::Invalid,
