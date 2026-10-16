@@ -1,12 +1,22 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { emitConnectEvent, replaceProtocolEventWriter } from "./events.js";
+import { bridgeLogger } from "./logger.js";
 import { handleSdkMessage } from "./message_handlers.js";
 import type { SessionState } from "./session_lifecycle.js";
+
+/** Poll until `done` holds, failing after `timeoutMs` instead of waiting on a fixed delay. */
+async function waitFor(done: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!done()) {
+    assert.ok(Date.now() < deadline, "timed out waiting for the event");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
 
 function makeSession(): SessionState {
   return {
@@ -238,16 +248,33 @@ test("a failed hook with no other feedback is one warning, once", () => {
 test("a hook that exits 2 is a block decision on any event, never a failure notice", () => {
   const session = makeSession();
   const events = ["PreToolUse", "UserPromptSubmit", "Stop", "PostToolUse"];
-  const notices = noticesWritten(() => {
-    events.forEach((event, index) => {
-      handleSdkMessage(
-        session,
-        hookResponse(event, { outcome: "error", exit_code: 2, stderr: "gate says no" }, `block-${index}`),
-      );
+  const logged: Array<{ level: string; eventName: string }> = [];
+  const originals = { info: bridgeLogger.info, warn: bridgeLogger.warn, error: bridgeLogger.error };
+  for (const level of ["info", "warn", "error"] as const) {
+    bridgeLogger[level] = (event) => {
+      logged.push({ level, eventName: event.eventName });
+    };
+  }
+  let notices: Array<{ severity: unknown; message: unknown }>;
+  try {
+    notices = noticesWritten(() => {
+      events.forEach((event, index) => {
+        handleSdkMessage(
+          session,
+          hookResponse(event, { outcome: "error", exit_code: 2, stderr: "gate says no" }, `block-${index}`),
+        );
+      });
     });
-  });
+  } finally {
+    Object.assign(bridgeLogger, originals);
+  }
 
   assert.deepEqual(notices, []);
+  // Info stays out of the default log, which keeps only warnings and errors.
+  assert.deepEqual(
+    logged,
+    events.map(() => ({ level: "info", eventName: "sdk_hook_blocked" })),
+  );
 });
 
 test("routine hook activity and a cancelled hook never become notices", () => {
@@ -304,14 +331,31 @@ test("a hook failure before the session connects is held, not written", () => {
 });
 
 // emitConnectEvent starts an async session-title read that outlives the call. It
-// is pointed at an empty config directory and given time to finish before the
-// writer and the environment are restored, so the test never reads the real
-// ~/.claude and nothing it finds can leak into the test output.
+// is pointed at a scratch config directory that holds a titled session, so the
+// test waits for that title update, the read's own completion, before the writer
+// and the environment are restored: it never reads the real ~/.claude, and it
+// never guesses a delay.
 test("held hook failures are written after the connect event, then cleared", async () => {
+  const configDir = realpathSync(mkdtempSync(join(tmpdir(), "claude-rs-config-")));
+  const workDir = join(configDir, "work");
+  mkdirSync(workDir);
+  const sessionId = "2f6c1f0e-1111-4111-8111-aaaaaaaaaaaa";
+  const projectDir = join(configDir, "projects", workDir.replace(/[^a-zA-Z0-9]/g, "-"));
+  mkdirSync(projectDir, { recursive: true });
+  writeFileSync(
+    join(projectDir, `${sessionId}.jsonl`),
+    [
+      { type: "user", uuid: "11111111-1111-4111-8111-111111111111", sessionId, timestamp: "2026-10-01T00:00:00Z", cwd: workDir, message: { role: "user", content: "hi" } },
+      { type: "custom-title", customTitle: "Fixture title", sessionId },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join("\n"),
+  );
   const session = makeSession();
+  session.sessionId = sessionId;
+  session.cwd = workDir;
   session.connected = false;
   session.pendingHookNotices = ["Hook SessionStart:Bash failed (exit 1): missing env"];
-  const configDir = mkdtempSync(join(tmpdir(), "claude-rs-config-"));
   const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
   process.env.CLAUDE_CONFIG_DIR = configDir;
   const writes: string[] = [];
@@ -320,7 +364,7 @@ test("held hook failures are written after the connect event, then cleared", asy
   });
   try {
     emitConnectEvent(session);
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await waitFor(() => writes.some((line) => line.includes("session_title_update")));
   } finally {
     restore();
     if (previousConfigDir === undefined) {
