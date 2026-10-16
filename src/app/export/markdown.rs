@@ -242,7 +242,7 @@ fn closes_fence(line: &str, fence: &Fence) -> bool {
 }
 
 /// A raw HTML block (or comment) that a Markdown parser keeps open until its end
-/// marker, however many lines later: CommonMark HTML block types 1-5.
+/// marker, however many lines later: `CommonMark` HTML block types 1-5.
 struct RawBlock {
     ends: &'static [&'static str],
     /// Closing tags match without regard to case.
@@ -325,17 +325,14 @@ fn raw_block_after(line: &str, mut open: Option<&'static RawBlock>) -> Option<&'
         rest = &line[skip..];
     }
     loop {
-        match open {
-            Some(block) => {
-                let Some(end) = block_end(block, rest) else { return open };
-                rest = &rest[end..];
-                open = None;
-            }
-            None => {
-                let Some(start) = comment_start(rest) else { return open };
-                rest = &rest[start..];
-                open = Some(&COMMENT);
-            }
+        if let Some(block) = open {
+            let Some(end) = block_end(block, rest) else { return open };
+            rest = &rest[end..];
+            open = None;
+        } else {
+            let Some(start) = comment_start(rest) else { return open };
+            rest = &rest[start..];
+            open = Some(&COMMENT);
         }
     }
 }
