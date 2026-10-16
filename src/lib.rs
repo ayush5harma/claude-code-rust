@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 pub mod agent;
 pub mod app;
@@ -10,6 +9,7 @@ pub mod failure;
 pub mod install_method;
 mod json_file;
 pub mod logging;
+mod markdown;
 pub mod permission_mode;
 pub mod session_config;
 pub mod ui;

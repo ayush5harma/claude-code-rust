@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::block_cache::BlockCache;
 use super::messages::MessageBlockId;
@@ -213,6 +212,11 @@ impl ToolCallInfo {
     #[must_use]
     pub fn non_execution_metadata(&self) -> Option<&model::ToolNonExecutionMetadata> {
         self.output_metadata.as_ref()?.non_execution.as_ref()
+    }
+
+    #[must_use]
+    pub fn read_output_metadata(&self) -> Option<&model::ReadOutputMetadata> {
+        self.output_metadata.as_ref()?.read.as_ref()
     }
 
     #[must_use]
