@@ -140,6 +140,17 @@ fn tool_call(
 }
 
 #[test]
+fn a_long_title_is_shortened_so_the_status_badge_stays_in_the_list_column() {
+    let (mut app, _commands) = app_with_subagents();
+    app.sdk_inventory.tasks[0].subject =
+        "List every file in the working directory and summarise each one".to_owned();
+    let lines = screen(&mut app, 120, 30);
+    let (_, row) = row_with(&lines, "› List every file");
+    let list_column: String = row.chars().take(2 + 52).collect();
+    assert!(list_column.contains("... ") && list_column.contains(" running "), "{row}");
+}
+
+#[test]
 fn details_show_the_selected_subagents_model_activity_and_prompt_beside_or_below_the_list() {
     let (mut app, _commands) = app_with_subagents();
     tool_call(

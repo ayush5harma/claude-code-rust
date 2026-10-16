@@ -7,6 +7,7 @@ use super::config::common::{
     badge_span, detail_kv, help_style, hint_text_with_escape, position_counter, render_message,
     section_heading, selection_line, selection_style, title_style, wrapped_height,
 };
+use super::session_picker::fit_with_ellipsis;
 use super::theme;
 use crate::agent::types::SubagentMessageRole;
 use crate::app::agents::{
@@ -173,7 +174,8 @@ fn render_list(
 ) {
     let items = rows.iter().enumerate().map(|(index, row)| {
         let is_selected = Some(index) == selected;
-        ListItem::new(row_lines(app, row, is_selected)).style(selection_style(is_selected))
+        ListItem::new(row_lines(app, row, is_selected, area.width))
+            .style(selection_style(is_selected))
     });
     let mut state = ListState::default().with_selected(selected);
     frame.render_stateful_widget(List::new(items).highlight_symbol(""), area, &mut state);
@@ -191,7 +193,9 @@ fn status_badge(status: SubagentStatus) -> Span<'static> {
     badge_span(status.label(), fg, bg)
 }
 
-fn row_lines(app: &App, row: &SubagentRow<'_>, selected: bool) -> Vec<Line<'static>> {
+/// One list row: the title, shortened so its status badge stays visible, then
+/// the subagent type and transcript state.
+fn row_lines(app: &App, row: &SubagentRow<'_>, selected: bool, width: u16) -> Vec<Line<'static>> {
     let mut details = Vec::new();
     if let Some(kind) = row.subagent_type() {
         details.push(kind.to_owned());
@@ -201,11 +205,14 @@ fn row_lines(app: &App, row: &SubagentRow<'_>, selected: bool) -> Vec<Line<'stat
         Some(false) => details.push("no transcript".to_owned()),
         None => {}
     }
+    let badge = status_badge(row.status);
+    // Selection marker and its space, then two spaces before the badge.
+    let title_width = usize::from(width).saturating_sub(4 + badge.width());
     let mut lines = vec![selection_line(
         Line::from(vec![
-            Span::styled(row.task.subject.clone(), title_style()),
+            Span::styled(fit_with_ellipsis(&row.task.subject, title_width), title_style()),
             Span::raw("  "),
-            status_badge(row.status),
+            badge,
         ]),
         selected,
     )];
@@ -264,11 +271,15 @@ fn detail_lines(app: &App, row: &SubagentRow<'_>, width: u16) -> Vec<Line<'stati
     }
     lines.push(detail_kv("Transcript", transcript_state(app, &row.task.task_id), value));
 
+    // One row per tool call; the transcript has the full calls.
+    let one_row = |text: String, indent: usize| {
+        fit_with_ellipsis(&text, usize::from(width).saturating_sub(indent))
+    };
     let mut children = recent_child_tools(app, row.task).into_iter().map(tool_activity);
     if row.status.is_running() {
         let now = children.next().or_else(|| row.summary().map(str::to_owned));
         if let Some(now) = now {
-            lines.push(detail_kv("Now", &now, value));
+            lines.push(detail_kv("Now", &one_row(now, "Now: ".len()), value));
         }
     } else if let Some(outcome) = row.failure().or_else(|| row.summary()) {
         lines.push(detail_kv("Result", outcome, value));
@@ -277,7 +288,9 @@ fn detail_lines(app: &App, row: &SubagentRow<'_>, width: u16) -> Vec<Line<'stati
     if !recent.is_empty() {
         lines.push(Line::default());
         lines.push(section_heading("Recent"));
-        lines.extend(recent.into_iter().map(|activity| Line::from(format!("  {activity}"))));
+        lines.extend(
+            recent.into_iter().map(|activity| Line::from(format!("  {}", one_row(activity, 2)))),
+        );
     }
 
     let prompt = launching_call(app, row.task)
