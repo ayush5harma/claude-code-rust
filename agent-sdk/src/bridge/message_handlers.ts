@@ -9,7 +9,6 @@ import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
   BridgeCommand,
   SessionUpdate,
-  SystemNoticeSeverity,
   TaskMetadata,
   TerminalReason,
   TranscriptRetractionReason,
@@ -25,6 +24,7 @@ import {
 import {
   writeEvent,
   emitSessionUpdate,
+  emitSystemNoticeUpdate,
   emitConnectEvent,
   emitSessionReplacedEvent,
 } from "./events.js";
@@ -389,22 +389,6 @@ function logSdkMessageOrigin(
   });
 }
 
-function emitSystemNoticeUpdate(
-  session: SessionState,
-  severity: SystemNoticeSeverity,
-  message: string,
-): void {
-  const trimmed = message.trim();
-  if (!trimmed) {
-    return;
-  }
-  emitSessionUpdate(session.sessionId, {
-    type: "system_notice_update",
-    severity,
-    message: trimmed,
-  });
-}
-
 const MAX_INFORMATIONAL_DEDUP_KEYS = 256;
 
 function shouldEmitInformationalMessage(
@@ -480,14 +464,13 @@ const HOOK_OUTPUT_EXCERPT_LIMIT = 240;
 /** Most hook notices held for a session that has not connected yet. */
 const PENDING_HOOK_NOTICE_LIMIT = 20;
 /**
- * A hook that exits 2 on these events blocks the action, and the SDK already
- * reports it: a PreToolUse block comes back as the tool's error result and a
- * UserPromptSubmit block as a warning informational message (measured on SDK
- * 0.3.288). Any other failure, including exit 1 on those events, has no other
- * feedback.
+ * A hook that exits 2 is making a decision, not failing: it blocks the action
+ * (a tool call, a prompt, a stop) and its output is the reason. The SDK reports
+ * every such exit as outcome "error" on every event (measured on 0.3.288), so
+ * the exit code is what tells a gate from a crash. A blocking hook is logged
+ * and never shown as a failure; any other failure has no other feedback.
  */
 const BLOCKING_EXIT_CODE = 2;
-const HOOK_EVENTS_WITH_BLOCK_FEEDBACK = new Set(["PreToolUse", "UserPromptSubmit"]);
 
 function hookOutputExcerpt(msg: Record<string, unknown>): string | undefined {
   for (const field of ["stderr", "output", "stdout"]) {
@@ -577,6 +560,16 @@ function handleHookSystemMessage(
   }
 
   const excerpt = hookOutputExcerpt(msg);
+  if (exitCode === BLOCKING_EXIT_CODE) {
+    bridgeLogger.info({
+      ...common,
+      eventName: "sdk_hook_blocked",
+      message: "SDK hook blocked the action",
+      outcome: "blocked",
+      fields: { ...common.fields, exit_code: exitCode, output_excerpt: excerpt },
+    });
+    return true;
+  }
   bridgeLogger.warn({
     ...common,
     eventName: "sdk_hook_failed",
@@ -584,12 +577,6 @@ function handleHookSystemMessage(
     outcome: "failure",
     fields: { ...common.fields, exit_code: exitCode, output_excerpt: excerpt },
   });
-  if (
-    exitCode === BLOCKING_EXIT_CODE &&
-    HOOK_EVENTS_WITH_BLOCK_FEEDBACK.has(hookEvent)
-  ) {
-    return true;
-  }
   const notice = hookFailureNotice(hookName, exitCode, excerpt);
   if (shouldEmitInformationalMessage(session, "warning", notice, hookId)) {
     emitHookFailureNotice(session, notice);

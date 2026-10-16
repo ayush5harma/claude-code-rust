@@ -9,6 +9,7 @@ import type {
   BridgeEventEnvelope,
   McpOperationError,
   SessionUpdate,
+  SystemNoticeSeverity,
 } from "../types.js";
 import { buildModeState } from "./commands.js";
 import { mapSdkSessions } from "./history.js";
@@ -189,6 +190,22 @@ export function emitMcpOperationError(
     { event: "mcp_operation_error", session_id: sessionId, error },
     requestId,
   );
+}
+
+export function emitSystemNoticeUpdate(
+  session: SessionState,
+  severity: SystemNoticeSeverity,
+  message: string,
+): void {
+  const trimmed = message.trim();
+  if (!trimmed) {
+    return;
+  }
+  emitSessionUpdate(session.sessionId, {
+    type: "system_notice_update",
+    severity,
+    message: trimmed,
+  });
 }
 
 export function emitSessionUpdate(
@@ -391,11 +408,7 @@ export function emitConnectEvent(session: SessionState): void {
   }
   emitAvailableAgentsSnapshot(session);
   for (const message of session.pendingHookNotices ?? []) {
-    emitSessionUpdate(session.sessionId, {
-      type: "system_notice_update",
-      severity: "warning",
-      message,
-    });
+    emitSystemNoticeUpdate(session, "warning", message);
   }
   session.pendingHookNotices = undefined;
   void emitSessionTitle(session);

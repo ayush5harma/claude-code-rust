@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { emitConnectEvent, replaceProtocolEventWriter } from "./events.js";
@@ -230,12 +233,18 @@ test("a failed hook with no other feedback is one warning, once", () => {
   ]);
 });
 
-test("a hook that blocked a tool or a prompt is not reported a second time", () => {
+// Exit 2 is a block decision on every event, and the SDK still reports it as
+// outcome "error": a Stop or PostToolUse gate must not read "failed" each turn.
+test("a hook that exits 2 is a block decision on any event, never a failure notice", () => {
   const session = makeSession();
+  const events = ["PreToolUse", "UserPromptSubmit", "Stop", "PostToolUse"];
   const notices = noticesWritten(() => {
-    // The SDK reports these itself: the tool's error result and an informational warning.
-    handleSdkMessage(session, hookResponse("PreToolUse", { outcome: "error", exit_code: 2, stderr: "protected file" }, "a"));
-    handleSdkMessage(session, hookResponse("UserPromptSubmit", { outcome: "error", exit_code: 2, stderr: "blocked" }, "b"));
+    events.forEach((event, index) => {
+      handleSdkMessage(
+        session,
+        hookResponse(event, { outcome: "error", exit_code: 2, stderr: "gate says no" }, `block-${index}`),
+      );
+    });
   });
 
   assert.deepEqual(notices, []);
@@ -294,18 +303,32 @@ test("a hook failure before the session connects is held, not written", () => {
   assert.deepEqual(session.pendingHookNotices, ["Hook SessionStart:Bash failed (exit 1): missing env"]);
 });
 
-test("held hook failures are written after the connect event, then cleared", () => {
+// emitConnectEvent starts an async session-title read that outlives the call. It
+// is pointed at an empty config directory and given time to finish before the
+// writer and the environment are restored, so the test never reads the real
+// ~/.claude and nothing it finds can leak into the test output.
+test("held hook failures are written after the connect event, then cleared", async () => {
   const session = makeSession();
   session.connected = false;
   session.pendingHookNotices = ["Hook SessionStart:Bash failed (exit 1): missing env"];
+  const configDir = mkdtempSync(join(tmpdir(), "claude-rs-config-"));
+  const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = configDir;
   const writes: string[] = [];
   const restore = replaceProtocolEventWriter((line) => {
     writes.push(line);
   });
   try {
     emitConnectEvent(session);
+    await new Promise((resolve) => setTimeout(resolve, 100));
   } finally {
     restore();
+    if (previousConfigDir === undefined) {
+      delete process.env.CLAUDE_CONFIG_DIR;
+    } else {
+      process.env.CLAUDE_CONFIG_DIR = previousConfigDir;
+    }
+    rmSync(configDir, { recursive: true, force: true });
   }
 
   const events = writes.map((line) => JSON.parse(line) as Record<string, unknown>);
