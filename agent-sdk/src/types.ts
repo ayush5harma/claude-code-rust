@@ -999,6 +999,10 @@ export type BridgeCommand =
       session_id: string;
     }
   | {
+      command: "export_session_history";
+      session_id: string;
+    }
+  | {
       command: "rewind";
       session_id: string;
       target_user_message_id: string;
@@ -1249,6 +1253,14 @@ export type BridgeEvent =
       event: "rewind_targets";
       session_id: string;
       targets: RewindTarget[];
+      error?: string;
+    }
+  | {
+      event: "session_history_export";
+      session_id: string;
+      updates: SessionUpdate[];
+      last: boolean;
+      omitted_updates: number;
       error?: string;
     }
   | {
