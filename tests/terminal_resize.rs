@@ -852,6 +852,117 @@ fn interactive_cli_startup_sends_overrides_and_initial_prompt_without_saving_the
 }
 
 #[test]
+fn session_configuration_reaches_later_sessions_while_the_launch_name_stays_initial() {
+    let files = tempfile::tempdir().expect("flag files");
+    let settings = files.path().join("settings.json");
+    std::fs::write(&settings, r#"{"spinnerTipsEnabled":false}"#).expect("settings file");
+    let append = files.path().join("append.md");
+    std::fs::write(&append, "End every reply with DONE.").expect("append file");
+    let mcp = r#"{"mcpServers":{"docs":{"command":"docs-mcp"}}}"#;
+    let args = [
+        "--add-dir",
+        "..",
+        "--settings",
+        settings.to_str().expect("UTF-8 path"),
+        "--mcp-config",
+        mcp,
+        "--strict-mcp-config",
+        "--append-system-prompt-file",
+        append.to_str().expect("UTF-8 path"),
+        "-n",
+        "Launch name",
+    ];
+    let mut test = TerminalTest::start_with_options("stream", 3, None, &args, false);
+    test.submit_command("/new-session");
+    test.wait_until("the replacement session request", |test| {
+        !test.commands("new_session").is_empty()
+    });
+
+    let created = test.commands("create_session").remove(0)["launch_settings"].clone();
+    let replaced = test.commands("new_session").remove(0)["launch_settings"].clone();
+    // `--add-dir ..` resolves against --dir, the fixture's project inside its temp root.
+    let added = created["additional_directories"][0].as_str().expect("added directory");
+    assert!(Path::new(added).is_absolute(), "{added}");
+    assert_eq!(
+        Path::new(added).canonicalize().expect("added directory exists"),
+        test.temp.path().canonicalize().expect("temp root")
+    );
+    let config = serde_json::json!({
+        "additional_directories": [added],
+        "settings": { "spinnerTipsEnabled": false },
+        "mcp_configs": [{ "docs": { "command": "docs-mcp" } }],
+        "strict_mcp_config": true,
+        "append_system_prompt": "End every reply with DONE.",
+    });
+    let mut named = config.clone();
+    named["name"] = "Launch name".into();
+    assert_eq!(created, named);
+    assert_eq!(replaced, config, "the name is for the initial session only");
+    test.shutdown();
+}
+
+#[test]
+fn forked_resume_continues_under_the_new_session_id() {
+    let mut test = TerminalTest::start_with_options(
+        "stream",
+        3,
+        None,
+        &["-r", "chosen-session", "--fork-session", "Continue the fork"],
+        true,
+    );
+    test.wait_journal("turn_complete");
+    assert_eq!(test.commands("resume_session")[0]["launch_settings"]["fork_session"], true);
+    assert_eq!(test.prompts()[0]["session_id"], "chosen-session-fork");
+    test.shutdown();
+    // ConPTY can report process exit before the capture thread drains its final output
+    // (Windows CI, 2026-10-13); wait for the resume hint itself.
+    let started = Instant::now();
+    loop {
+        let output =
+            String::from_utf8_lossy(&test.output.lock().expect("output lock").raw).into_owned();
+        if output.contains("Resume this session: claude-rs resume chosen-session-fork") {
+            break;
+        }
+        assert!(started.elapsed() < WAIT_LIMIT, "{}", tail(&output, 400));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn launch_configuration_leaves_the_saved_preferences_untouched() {
+    let files = tempfile::tempdir().expect("flag files");
+    let settings = files.path().join("settings.json");
+    std::fs::write(&settings, r#"{"model":"sonnet"}"#).expect("settings file");
+    let mut test = TerminalTest::start_with_options(
+        "stream",
+        3,
+        None,
+        &[
+            "--settings",
+            settings.to_str().expect("UTF-8 path"),
+            "--system-prompt",
+            "You are a release bot.",
+            "Review this project",
+        ],
+        true,
+    );
+    test.wait_journal("turn_complete");
+    let launch = test.commands("create_session").remove(0)["launch_settings"].clone();
+    assert_eq!(launch["settings"], serde_json::json!({ "model": "sonnet" }));
+    assert_eq!(launch["system_prompt"], "You are a release bot.");
+    let saved: Value = serde_json::from_str(
+        &std::fs::read_to_string(test.temp.path().join("profile/settings.json"))
+            .expect("saved settings"),
+    )
+    .expect("settings JSON");
+    assert_eq!(
+        saved,
+        serde_json::json!({"model":"haiku","effortLevel":"medium","permissions":{"defaultMode":"default"}})
+    );
+    test.shutdown();
+}
+
+#[test]
 fn auth_child_owns_stdin_and_output_and_returns_a_resized_usable_terminal() {
     for mode in ["success", "failure"] {
         let mut test = TerminalTest::start_with_auth("stream", 3, Some(mode));
