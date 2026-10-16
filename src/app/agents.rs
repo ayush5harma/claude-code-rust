@@ -28,6 +28,9 @@ pub(crate) enum SubagentStatus {
     Completed,
     Failed,
     Stopped,
+    /// Was running when its process went away (a resumed session, or a missed
+    /// notification). Not running, and no outcome is known.
+    Interrupted,
 }
 
 impl SubagentStatus {
@@ -39,6 +42,7 @@ impl SubagentStatus {
             Self::Completed => "completed",
             Self::Failed => "failed",
             Self::Stopped => "stopped",
+            Self::Interrupted => "interrupted",
         }
     }
 
@@ -67,6 +71,15 @@ pub(crate) struct TranscriptView {
     pub messages: Option<Vec<SubagentMessage>>,
     pub error: Option<String>,
     pub scroll: u16,
+    /// The messages wrapped to the width they were last drawn at, so a frame
+    /// wraps nothing until the width or the messages change.
+    pub wrapped: Option<WrappedTranscript>,
+}
+
+#[derive(Debug)]
+pub(crate) struct WrappedTranscript {
+    pub width: u16,
+    pub rows: Vec<ratatui::text::Line<'static>>,
 }
 
 #[derive(Debug, Default)]
@@ -152,8 +165,17 @@ fn metadata_str<'a>(task: &'a TaskItem, key: &str) -> Option<&'a str> {
     task.metadata.as_ref()?.as_object()?.get(key)?.as_str()
 }
 
+/// Ambient tasks are housekeeping, not activity, and the SDK asks hosts to
+/// keep them out of indicators.
+fn is_ambient(task: &TaskItem) -> bool {
+    task.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.as_object()?.get("ambient")?.as_bool())
+        .unwrap_or(false)
+}
+
 fn is_subagent(task: &TaskItem) -> bool {
-    metadata_str(task, "task_type") == Some(SUBAGENT_TASK_TYPE)
+    metadata_str(task, "task_type") == Some(SUBAGENT_TASK_TYPE) && !is_ambient(task)
 }
 
 fn lifecycle_status(task: &TaskItem) -> SubagentStatus {
@@ -163,6 +185,7 @@ fn lifecycle_status(task: &TaskItem) -> SubagentStatus {
         TaskStatus::Completed => match metadata_str(task, "terminal_status") {
             Some("failed") => SubagentStatus::Failed,
             Some("killed" | "stopped") => SubagentStatus::Stopped,
+            Some("interrupted") => SubagentStatus::Interrupted,
             _ => SubagentStatus::Completed,
         },
     }
@@ -191,7 +214,7 @@ pub(crate) fn running_subagent_count(app: &App) -> usize {
     app.sdk_inventory
         .tasks
         .iter()
-        .filter(|task| is_subagent(task) && task.status == TaskStatus::InProgress)
+        .filter(|task| is_subagent(task) && lifecycle_status(task).is_running())
         .count()
 }
 
@@ -307,6 +330,7 @@ fn apply_transcript(
     };
     transcript.messages = Some(messages);
     transcript.error = error;
+    transcript.wrapped = None;
 }
 
 fn apply_stop_result(app: &mut App, task_id: &str, error: Option<String>) {

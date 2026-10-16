@@ -11,8 +11,8 @@ use super::session_picker::fit_with_ellipsis;
 use super::theme;
 use crate::agent::types::SubagentMessageRole;
 use crate::app::agents::{
-    NoticeKind, SubagentRow, SubagentStatus, TranscriptView, launching_call, recent_child_tools,
-    running_subagent_count, subagent_rows,
+    NoticeKind, SubagentRow, SubagentStatus, TranscriptView, WrappedTranscript, launching_call,
+    recent_child_tools, running_subagent_count, subagent_rows,
 };
 use crate::app::{App, ToolCallInfo};
 use ratatui::Frame;
@@ -188,7 +188,7 @@ fn status_badge(status: SubagentStatus) -> Span<'static> {
         SubagentStatus::Stopping => (Color::Black, theme::STATUS_WARNING),
         SubagentStatus::Completed => (Color::Black, Color::White),
         SubagentStatus::Failed => (Color::White, theme::STATUS_ERROR),
-        SubagentStatus::Stopped => (Color::White, Color::DarkGray),
+        SubagentStatus::Stopped | SubagentStatus::Interrupted => (Color::White, Color::DarkGray),
     };
     badge_span(status.label(), fg, bg)
 }
@@ -349,16 +349,23 @@ fn render_transcript(frame: &mut Frame, title_area: Rect, body: Rect, app: &mut 
         );
         return;
     }
-    let text = Text::from(transcript_lines(view));
-    let total =
-        Paragraph::new(text.clone()).wrap(Wrap { trim: false }).line_count(body.width.max(1));
-    let max_scroll =
-        u16::try_from(total.saturating_sub(usize::from(body.height))).unwrap_or(u16::MAX);
+    let width = body.width.max(1);
+    if view.wrapped.as_ref().is_none_or(|cached| cached.width != width) {
+        let rows = crate::ui::wrap::wrap_lines_to_physical_rows(&transcript_lines(view), width);
+        view.wrapped = Some(WrappedTranscript { width, rows });
+    }
+    let Some(wrapped) = &view.wrapped else { return };
+    let max_scroll = u16::try_from(wrapped.rows.len().saturating_sub(usize::from(body.height)))
+        .unwrap_or(u16::MAX);
     view.scroll = view.scroll.min(max_scroll);
-    frame.render_widget(
-        Paragraph::new(text).wrap(Wrap { trim: false }).scroll((view.scroll, 0)),
-        body,
-    );
+    let visible: Vec<Line<'static>> = wrapped
+        .rows
+        .iter()
+        .skip(usize::from(view.scroll))
+        .take(usize::from(body.height))
+        .cloned()
+        .collect();
+    frame.render_widget(Paragraph::new(visible), body);
 }
 
 fn transcript_lines(view: &TranscriptView) -> Vec<Line<'static>> {

@@ -264,3 +264,31 @@ fn a_session_without_subagents_and_an_unread_transcript_say_so() {
     let lines = screen(&mut app, 60, 16);
     row_with(&lines, "Reading transcript");
 }
+
+#[test]
+fn transcript_follows_width_changes_and_replaced_messages_through_its_wrap_cache() {
+    let (mut app, _commands) = app_with_subagents();
+    let long = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu";
+    let reply = |text: &str| SubagentMessage {
+        role: SubagentMessageRole::Assistant,
+        text: text.to_owned(),
+    };
+    app.agents.transcript = Some(TranscriptView {
+        agent_id: "agent-2".to_owned(),
+        messages: Some(vec![reply(long)]),
+        ..TranscriptView::default()
+    });
+
+    let wide = screen(&mut app, 100, 12);
+    row_with(&wide, long);
+    let narrow = screen(&mut app, 30, 12);
+    assert!(!narrow.iter().any(|line| line.contains(long)), "the cached rows were rewrapped");
+    row_with(&narrow, "alpha beta");
+    row_with(&narrow, "lambda mu");
+
+    if let Some(view) = app.agents.transcript.as_mut() {
+        view.messages = Some(vec![reply("fresh answer")]);
+        view.wrapped = None;
+    }
+    row_with(&screen(&mut app, 30, 12), "fresh answer");
+}

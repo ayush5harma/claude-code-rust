@@ -391,3 +391,64 @@ fn answers_for_another_session_and_a_stop_that_lost_the_race_change_nothing() {
     assert!(app.agents.notice.is_none(), "the row already shows how the subagent ended");
     assert_eq!(statuses(&app)[0].1, SubagentStatus::Completed);
 }
+
+#[test]
+fn ambient_subagents_are_neither_listed_nor_counted() {
+    let (mut app, _commands) = connected_app();
+    let mut watcher = task("watch-1", "local_agent", TaskStatus::InProgress, None);
+    if let Some(metadata) = watcher.metadata.as_mut() {
+        metadata["ambient"] = serde_json::json!(true);
+    }
+    lifecycle(
+        &mut app,
+        vec![watcher, task("agent-1", "local_agent", TaskStatus::InProgress, None)],
+    );
+
+    assert_eq!(statuses(&app), vec![("agent-1".to_owned(), SubagentStatus::Running)]);
+    assert_eq!(running_subagent_count(&app), 1);
+}
+
+#[test]
+fn an_interrupted_subagent_is_shown_as_such_not_counted_and_cannot_be_stopped() {
+    let (mut app, mut commands) = connected_app();
+    lifecycle(
+        &mut app,
+        vec![task("agent-1", "local_agent", TaskStatus::Completed, Some("interrupted"))],
+    );
+
+    assert_eq!(statuses(&app), vec![("agent-1".to_owned(), SubagentStatus::Interrupted)]);
+    assert_eq!(running_subagent_count(&app), 0);
+
+    press(&mut app, KeyCode::Left);
+    sent(&mut commands);
+    press(&mut app, KeyCode::Char('s'));
+    assert!(sent(&mut commands).is_empty(), "no stop request for a task no process owns");
+}
+
+#[test]
+fn a_new_transcript_answer_replaces_what_was_wrapped_for_the_old_one() {
+    let (mut app, _commands) = connected_app();
+    lifecycle(
+        &mut app,
+        vec![task("agent-1", "local_agent", TaskStatus::Completed, Some("completed"))],
+    );
+    app.agents.transcript = Some(super::TranscriptView {
+        agent_id: "agent-1".to_owned(),
+        ..super::TranscriptView::default()
+    });
+    let answer = |text: &str| ClientEvent::SubagentMessagesReceived {
+        session_id: SESSION.to_owned(),
+        agent_id: "agent-1".to_owned(),
+        messages: vec![SubagentMessage {
+            role: SubagentMessageRole::Assistant,
+            text: text.to_owned(),
+        }],
+        error: None,
+    };
+    handle_client_event(&mut app, answer("first"));
+    if let Some(view) = app.agents.transcript.as_mut() {
+        view.wrapped = Some(super::WrappedTranscript { width: 80, rows: Vec::new() });
+    }
+    handle_client_event(&mut app, answer("second"));
+    assert!(app.agents.transcript.is_some_and(|view| view.wrapped.is_none()));
+}
