@@ -282,7 +282,9 @@ fn detail_lines(app: &App, row: &SubagentRow<'_>, width: u16) -> Vec<Line<'stati
             lines.push(detail_kv("Now", &one_row(now, "Now: ".len()), value));
         }
     } else if let Some(outcome) = row.failure().or_else(|| row.summary()) {
-        lines.push(detail_kv("Result", outcome, value));
+        // An interrupted row has no outcome; its text is the last progress.
+        let label = if row.status == SubagentStatus::Interrupted { "Last progress" } else { "Result" };
+        lines.push(detail_kv(label, outcome, value));
     }
     let recent: Vec<_> = children.collect();
     if !recent.is_empty() {
@@ -351,17 +353,21 @@ fn render_transcript(frame: &mut Frame, title_area: Rect, body: Rect, app: &mut 
     }
     let width = body.width.max(1);
     if view.wrapped.as_ref().is_none_or(|cached| cached.width != width) {
-        let rows = crate::ui::wrap::wrap_lines_to_physical_rows(&transcript_lines(view), width);
+        // One logical line at a time: the helper caps its result at u16::MAX
+        // rows, which a whole long transcript can exceed but one line cannot.
+        let rows = transcript_lines(view)
+            .into_iter()
+            .flat_map(|line| crate::ui::wrap::wrap_lines_to_physical_rows(&[line], width))
+            .collect();
         view.wrapped = Some(WrappedTranscript { width, rows });
     }
     let Some(wrapped) = &view.wrapped else { return };
-    let max_scroll = u16::try_from(wrapped.rows.len().saturating_sub(usize::from(body.height)))
-        .unwrap_or(u16::MAX);
+    let max_scroll = wrapped.rows.len().saturating_sub(usize::from(body.height));
     view.scroll = view.scroll.min(max_scroll);
     let visible: Vec<Line<'static>> = wrapped
         .rows
         .iter()
-        .skip(usize::from(view.scroll))
+        .skip(view.scroll)
         .take(usize::from(body.height))
         .cloned()
         .collect();

@@ -70,7 +70,7 @@ pub(crate) struct TranscriptView {
     /// `None` until the SDK answers.
     pub messages: Option<Vec<SubagentMessage>>,
     pub error: Option<String>,
-    pub scroll: u16,
+    pub scroll: usize,
     /// The messages wrapped to the width they were last drawn at, so a frame
     /// wraps nothing until the width or the messages change.
     pub wrapped: Option<WrappedTranscript>,
@@ -434,8 +434,8 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
             KeyCode::Esc | KeyCode::Left => app.agents.transcript = None,
             KeyCode::Up => transcript.scroll = transcript.scroll.saturating_sub(1),
             KeyCode::Down => transcript.scroll = transcript.scroll.saturating_add(1),
-            KeyCode::PageUp => transcript.scroll = transcript.scroll.saturating_sub(PAGE_ROWS),
-            KeyCode::PageDown => transcript.scroll = transcript.scroll.saturating_add(PAGE_ROWS),
+            KeyCode::PageUp => transcript.scroll = transcript.scroll.saturating_sub(usize::from(PAGE_ROWS)),
+            KeyCode::PageDown => transcript.scroll = transcript.scroll.saturating_add(usize::from(PAGE_ROWS)),
             _ => {}
         }
         return;

@@ -292,3 +292,38 @@ fn transcript_follows_width_changes_and_replaced_messages_through_its_wrap_cache
     }
     row_with(&screen(&mut app, 30, 12), "fresh answer");
 }
+
+#[test]
+fn an_interrupted_row_labels_its_text_as_last_progress_not_as_a_result() {
+    let (mut app, _commands) = app_with_subagents();
+    app.sdk_inventory.tasks = vec![subagent(
+        "agent-9",
+        "Watch the logs",
+        TaskStatus::Completed,
+        serde_json::json!({ "terminal_status": "interrupted", "summary": "tailing the third file" }),
+    )];
+    handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let lines = screen(&mut app, 120, 30);
+    let (_, progress) = row_with(&lines, "Last progress: ");
+    assert!(progress.contains("tailing the third file"), "{progress}");
+    assert!(!lines.iter().any(|line| line.contains("Result: ")), "no outcome is claimed");
+}
+
+#[test]
+fn a_transcript_longer_than_the_wrap_helpers_row_cap_stays_readable_to_the_end() {
+    let (mut app, _commands) = app_with_subagents();
+    // Three rows per reply: more than u16::MAX rows in all.
+    let messages: Vec<_> = (1..=25_000)
+        .map(|n| SubagentMessage {
+            role: SubagentMessageRole::Assistant,
+            text: format!("finding {n}"),
+        })
+        .collect();
+    app.agents.transcript = Some(TranscriptView {
+        agent_id: "agent-2".to_owned(),
+        messages: Some(messages),
+        scroll: usize::MAX,
+        ..TranscriptView::default()
+    });
+    row_with(&screen(&mut app, 60, 20), "finding 25000");
+}
