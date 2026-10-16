@@ -370,7 +370,11 @@ function logConnectEventEmission(
   });
 }
 
-export function emitConnectEvent(session: SessionState): void {
+/**
+ * Writes the connect event and everything held until it. Returns the session-title
+ * read it starts in the background; callers do not wait for it.
+ */
+export function emitConnectEvent(session: SessionState): Promise<void> {
   const staleSessions = session.sessionsToCloseAfterConnect;
   if (staleSessions) {
     for (const stale of staleSessions) {
@@ -411,14 +415,14 @@ export function emitConnectEvent(session: SessionState): void {
     emitSystemNoticeUpdate(session, "warning", message);
   }
   session.pendingHookNotices = undefined;
-  void emitSessionTitle(session);
+  const titleRead = emitSessionTitle(session);
   session.resumeUpdates = undefined;
   session.restoredInput = undefined;
 
   session.sessionsToCloseAfterConnect = undefined;
   if (!staleSessions || staleSessions.length === 0) {
     refreshSessionsList();
-    return;
+    return titleRead;
   }
   const closeTask = (async () => {
     // Lazy import to break circular dependency at module-evaluation time.
@@ -432,6 +436,7 @@ export function emitConnectEvent(session: SessionState): void {
     refreshSessionsList();
   })();
   trackSessionCloseTask(closeTask);
+  return titleRead;
 }
 
 export function emitSessionReplacedEvent(

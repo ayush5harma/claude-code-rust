@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,15 +8,6 @@ import { emitConnectEvent, replaceProtocolEventWriter } from "./events.js";
 import { bridgeLogger } from "./logger.js";
 import { handleSdkMessage } from "./message_handlers.js";
 import type { SessionState } from "./session_lifecycle.js";
-
-/** Poll until `done` holds, failing after `timeoutMs` instead of waiting on a fixed delay. */
-async function waitFor(done: () => boolean, timeoutMs = 5_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!done()) {
-    assert.ok(Date.now() < deadline, "timed out waiting for the event");
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-}
 
 function makeSession(): SessionState {
   return {
@@ -330,30 +321,16 @@ test("a hook failure before the session connects is held, not written", () => {
   assert.deepEqual(session.pendingHookNotices, ["Hook SessionStart:Bash failed (exit 1): missing env"]);
 });
 
-// emitConnectEvent starts an async session-title read that outlives the call. It
-// is pointed at a scratch config directory that holds a titled session, so the
-// test waits for that title update, the read's own completion, before the writer
-// and the environment are restored: it never reads the real ~/.claude, and it
-// never guesses a delay.
+// emitConnectEvent starts an async session-title read that outlives the call and
+// returns it. The read is pointed at an empty scratch config directory and awaited
+// before the writer and the environment are restored, so the test never reads the
+// real ~/.claude and does not depend on how the SDK maps a directory to a project
+// folder (which differs on Windows).
 test("held hook failures are written after the connect event, then cleared", async () => {
   const configDir = realpathSync(mkdtempSync(join(tmpdir(), "claude-rs-config-")));
-  const workDir = join(configDir, "work");
-  mkdirSync(workDir);
-  const sessionId = "2f6c1f0e-1111-4111-8111-aaaaaaaaaaaa";
-  const projectDir = join(configDir, "projects", workDir.replace(/[^a-zA-Z0-9]/g, "-"));
-  mkdirSync(projectDir, { recursive: true });
-  writeFileSync(
-    join(projectDir, `${sessionId}.jsonl`),
-    [
-      { type: "user", uuid: "11111111-1111-4111-8111-111111111111", sessionId, timestamp: "2026-10-01T00:00:00Z", cwd: workDir, message: { role: "user", content: "hi" } },
-      { type: "custom-title", customTitle: "Fixture title", sessionId },
-    ]
-      .map((entry) => JSON.stringify(entry))
-      .join("\n"),
-  );
   const session = makeSession();
-  session.sessionId = sessionId;
-  session.cwd = workDir;
+  session.sessionId = "2f6c1f0e-1111-4111-8111-aaaaaaaaaaaa";
+  session.cwd = configDir;
   session.connected = false;
   session.pendingHookNotices = ["Hook SessionStart:Bash failed (exit 1): missing env"];
   const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
@@ -363,8 +340,7 @@ test("held hook failures are written after the connect event, then cleared", asy
     writes.push(line);
   });
   try {
-    emitConnectEvent(session);
-    await waitFor(() => writes.some((line) => line.includes("session_title_update")));
+    await emitConnectEvent(session);
   } finally {
     restore();
     if (previousConfigDir === undefined) {

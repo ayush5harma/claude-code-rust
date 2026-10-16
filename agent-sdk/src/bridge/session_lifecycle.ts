@@ -853,7 +853,7 @@ export function startSessionTasks(session: SessionState, requestId?: string): vo
       ) {
         session.initializationReady = true;
       } else if (!session.connected) {
-        emitConnectEvent(session);
+        void emitConnectEvent(session);
       } else {
         emitSessionUpdate(session.sessionId, {
           type: "mode_state_update",
@@ -1018,7 +1018,7 @@ export function commitDeferredSession(session: SessionState): void {
   const deferredAuthRequired = session.deferredAuthRequired;
   session.deferredAuthRequired = undefined;
   session.deferConnect = false;
-  emitConnectEvent(session);
+  void emitConnectEvent(session);
   if (deferredAuthRequired) {
     emitAuthRequired(session, deferredAuthRequired.detail);
   }

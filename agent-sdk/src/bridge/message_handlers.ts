@@ -2071,7 +2071,7 @@ export function handleSdkMessage(
       );
 
       if (!session.connected) {
-        emitConnectEvent(session);
+        void emitConnectEvent(session);
       } else if (previousSessionId !== session.sessionId) {
         emitSessionReplacedEvent(session);
       } else {
