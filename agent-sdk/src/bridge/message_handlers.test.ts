@@ -288,6 +288,51 @@ test("a subagent that leaves the background snapshot before its outcome stops co
   assert.deepEqual(final?.metadata, { task_type: "local_agent", sdk_lifecycle_task: true, is_backgrounded: true, summary: "ok", terminal_status: "completed" });
 });
 
+test("a relisted interrupted subagent runs again and its real outcome still wins", () => {
+  const session = makeSession();
+  const emit = (message: Record<string, unknown>) =>
+    handleSdkMessage(session, { session_id: "session-1", uuid: crypto.randomUUID(), ...message } as unknown as SDKMessage);
+  const restore = replaceProtocolEventWriter(() => {});
+  try {
+    emit({ type: "system", subtype: "task_started", task_id: "agent-1", task_type: "local_agent", description: "Background sleep" });
+    emit({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "agent-1", task_type: "local_agent" }] });
+    emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });
+    assert.equal(session.tasksById.get("agent-1")?.status, "completed", "dropped: settled as interrupted");
+    emit({ type: "system", subtype: "task_progress", task_id: "agent-1", summary: "still going" });
+    assert.equal(session.tasksById.get("agent-1")?.status, "in_progress", "progress revives an interrupted row");
+    emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });
+    assert.equal(session.tasksById.get("agent-1")?.status, "completed", "dropped again");
+    emit({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "agent-1", task_type: "local_agent" }] });
+    const relisted = session.tasksById.get("agent-1");
+    assert.equal(relisted?.status, "in_progress", "a relisted row is live");
+    assert.equal((relisted?.metadata as Record<string, unknown>).terminal_status, undefined, "the inferred status is cleared");
+    emit({ type: "system", subtype: "task_notification", task_id: "agent-1", status: "failed", summary: "boom" });
+    const final = session.tasksById.get("agent-1");
+    assert.equal(final?.status, "completed", "the wire has no failed status");
+    assert.equal((final?.metadata as Record<string, unknown>).terminal_status, "failed");
+  } finally {
+    restore();
+  }
+});
+
+test("a subagent with a recorded outcome is not revived by a relisting or later progress", () => {
+  const session = makeSession();
+  const emit = (message: Record<string, unknown>) =>
+    handleSdkMessage(session, { session_id: "session-1", uuid: crypto.randomUUID(), ...message } as unknown as SDKMessage);
+  const restore = replaceProtocolEventWriter(() => {});
+  try {
+    emit({ type: "system", subtype: "task_started", task_id: "agent-1", task_type: "local_agent", description: "Background sleep" });
+    emit({ type: "system", subtype: "task_notification", task_id: "agent-1", status: "completed", summary: "ok" });
+    emit({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "agent-1", task_type: "local_agent" }] });
+    emit({ type: "system", subtype: "task_progress", task_id: "agent-1", summary: "late" });
+    const row = session.tasksById.get("agent-1");
+    assert.equal(row?.status, "completed");
+    assert.equal((row?.metadata as Record<string, unknown>).terminal_status, "completed");
+  } finally {
+    restore();
+  }
+});
+
 test("a foreground subagent the snapshot never listed keeps running when a snapshot arrives", () => {
   const session = makeSession();
   const emit = (message: Record<string, unknown>) =>

@@ -1141,7 +1141,10 @@ export function taskLifecyclePatch(
   const status = lifecycleTaskStatus(subtype, msg);
   // Progress and updates can be queued behind the outcome. Only a new start
   // or another outcome may change a settled row.
-  if (existing?.status === "completed" && status !== "completed" && subtype !== "task_started") {
+  // A row settled only by our own inference (terminal_status "interrupted")
+  // is the exception: live evidence for it revives it.
+  const revived = isInterruptedRow(existing) && status === "in_progress";
+  if (existing?.status === "completed" && !revived && status !== "completed" && subtype !== "task_started") {
     return undefined;
   }
   const description =
@@ -1162,6 +1165,7 @@ export function taskLifecyclePatch(
   const existingMetadata = asRecordOrNull(existing?.metadata);
   const fields: Record<string, Json> = {
     ...lifecycleMetadata(msg),
+    ...(revived ? { terminal_status: null } : {}),
     ...(existingMetadata?.[LIFECYCLE_TASK_METADATA_KEY] === true ? {} : { [LIFECYCLE_TASK_METADATA_KEY]: true }),
     ...(existingMetadata?.[BACKGROUND_TASK_METADATA_KEY] === true ? { [BACKGROUND_TASK_METADATA_KEY]: null, is_backgrounded: true } : {}),
   };
@@ -1186,6 +1190,13 @@ export function taskLifecyclePatch(
       metadata,
       source_tool_call_id: sourceToolCallId,
     };
+}
+
+function isInterruptedRow(task: TaskItem | undefined): boolean {
+  return (
+    task?.status === "completed" &&
+    asRecordOrNull(task.metadata)?.terminal_status === INTERRUPTED_TERMINAL_STATUS
+  );
 }
 
 /**
@@ -1220,13 +1231,18 @@ export function applyBackgroundTasksChanged(
       const existing = session.tasksById.get(taskId);
       const inventoryOnly = !existing || asRecordOrNull(existing.metadata)?.[BACKGROUND_TASK_METADATA_KEY] === true;
       // Listed means running in the background, whichever edge created the row.
-      const listedByLifecycle = !inventoryOnly && existing?.status === "in_progress";
+      // The SDK replaces the set with every live task, so a relisted row that
+      // we only inferred to be interrupted is live again. A recorded outcome
+      // is never undone by a listing.
+      const revived = isInterruptedRow(existing);
+      const listedByLifecycle = !inventoryOnly && (existing?.status === "in_progress" || revived);
       return {
         task_id: taskId,
         subject: description ?? taskType ?? taskId,
         description,
-        status: existing?.status ?? "in_progress",
+        status: revived ? "in_progress" : existing?.status ?? "in_progress",
         metadata: mergeMetadata(existing?.metadata, {
+          ...(revived ? { terminal_status: null } : {}),
           ...(inventoryOnly ? { [BACKGROUND_TASK_METADATA_KEY]: true } : {}),
           ...(taskType ? { task_type: taskType } : {}),
           ...(ambient !== undefined ? { ambient } : {}),
