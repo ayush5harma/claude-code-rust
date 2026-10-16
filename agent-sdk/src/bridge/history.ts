@@ -26,6 +26,7 @@ import {
   buildToolResultFields,
   backgroundToolLaunchTaskIdFromResult,
   createToolCall,
+  isAgentLikeToolName,
   isToolSearchToolName,
   isToolSearchToolResultType,
   isToolUseBlockType,
@@ -77,6 +78,24 @@ function nonEmptyTrimmed(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+/**
+ * What a subagent's task_started record would have said, read from the Agent
+ * call that launched it. Claude Code 2.1.300 saves no task_started record for a
+ * background Agent call, only the call and a task notification, so on resume
+ * this call is the only source of the row's type, subagent type and title.
+ */
+function agentLaunchFields(tool: ToolCall | undefined): Record<string, unknown> {
+  if (!isAgentLikeToolName(toolNameFromMeta(tool?.meta) ?? "")) return {};
+  const input = asRecordOrNull(tool?.raw_input);
+  const subagentType = nonEmptyTrimmed(input?.subagent_type);
+  const description = nonEmptyTrimmed(input?.description);
+  return {
+    task_type: "local_agent",
+    ...(subagentType ? { subagent_type: subagentType } : {}),
+    ...(description ? { task_description: description } : {}),
+  };
+}
+
 function pushResumeTaskSystemUpdate(
   updates: SessionUpdate[],
   tasksById: Map<string, TaskItem>,
@@ -104,7 +123,8 @@ function pushResumeTaskSystemUpdate(
   }
   const toolUseId = explicitToolUseId ?? taskToolUseIds.get(taskId);
   const tool = toolUseId ? toolCalls.get(toolUseId) : undefined;
-  const patch = taskLifecyclePatch(tasksById.get(taskId), subtype, msg, toolUseId);
+  // The record's own fields win over what the launching call implies.
+  const patch = taskLifecyclePatch(tasksById.get(taskId), subtype, { ...agentLaunchFields(tool), ...msg }, toolUseId);
   if (patch) {
     const task = upsertTask({ tasksById, taskOrder: [] }, patch);
     updates.push({ type: "task_state_update", source: "task_lifecycle", tasks: [task], removed_task_ids: [], is_complete_snapshot: false });
@@ -212,7 +232,7 @@ function pushResumeToolResult(
   if (taskId) {
     taskToolUseIds.set(taskId, toolUseId);
     const patch = taskLifecyclePatch(tasksById.get(taskId), "task_started", {
-      task_id: taskId, description: base?.title, is_backgrounded: true,
+      ...agentLaunchFields(base), task_id: taskId, description: base?.title, is_backgrounded: true,
     }, toolUseId);
     if (patch) updates.push({ type: "task_state_update", source: "task_lifecycle", tasks: [upsertTask({ tasksById, taskOrder: [] }, patch)], removed_task_ids: [], is_complete_snapshot: false });
   }

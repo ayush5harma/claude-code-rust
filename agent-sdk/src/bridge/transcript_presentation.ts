@@ -48,7 +48,8 @@ function taskNotification(raw: unknown): Record<string, unknown> | undefined {
     const field = (name: string) => tagContent(body, name)?.trim();
     const taskId = field("task-id");
     const status = field("status");
-    if (taskId && (status === "completed" || status === "failed" || status === "stopped")) {
+    // A background agent the user stopped is saved as "killed" (Claude Code 2.1.300).
+    if (taskId && (status === "completed" || status === "failed" || status === "stopped" || status === "killed")) {
       return { subtype: "task_notification", task_id: taskId, status, tool_use_id: field("tool-use-id"), summary: field("summary"), output_file: field("output-file") };
     }
   }

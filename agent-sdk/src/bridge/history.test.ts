@@ -126,7 +126,7 @@ test("resume notifications preserve terminal outcomes, linked tools and optional
       assert.equal(results[0].tool_call_update.fields.task_metadata?.output_file, outputFile);
       assert.equal(results[0].tool_call_update.fields.task_metadata?.terminal_status, status);
       const tasks = updates.filter(update => update.type === "task_state_update").flatMap(update => update.tasks);
-      assert.deepEqual(tasks.map(task => [task.task_id, task.status, task.source_tool_call_id, task.description, task.metadata]), [[`task-${status}`, "completed", "monitor", summary, { output_file: outputFile, summary, terminal_status: status }]]);
+      assert.deepEqual(tasks.map(task => [task.task_id, task.status, task.source_tool_call_id, task.description, task.metadata]), [[`task-${status}`, "completed", "monitor", summary, { output_file: outputFile, summary, terminal_status: status, sdk_lifecycle_task: true }]]);
       assert.ok(!updates.some(update => update.type === "user_message_chunk"));
     }
   }
@@ -155,6 +155,46 @@ test("resume settles a subagent task after its tool result has completed", () =>
     ["agent-1", "completed", "local_agent", "completed"],
   ]);
   assert.equal(rows.at(-1)?.description, "Finished work");
+});
+
+// Claude Code 2.1.300 saves no task_started record for a background Agent call
+// (measured 2026-10-16): only the tool_use, its async-launch result and one
+// task-notification per outcome. A user-stopped agent is saved as "killed".
+test("resume rebuilds background subagent rows from their Agent calls and notifications", () => {
+  const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
+  const saved = (toolUseId: string, agentId: string, description: string, status: string, summary: string) => [
+    { ...base, type: "assistant" as const, uuid: `launch-${agentId}`, message: { role: "assistant", content: [{ type: "tool_use", id: toolUseId, name: "Agent", input: { description, prompt: `Prompt of ${description}`, subagent_type: "general-purpose", model: "haiku", run_in_background: true } }] } },
+    { ...base, type: "user" as const, uuid: `result-${agentId}`, ...{ toolUseResult: { isAsync: true, status: "async_launched", agentId, description, prompt: `Prompt of ${description}`, outputFile: `/tmp/tasks/${agentId}.output` } }, message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolUseId, content: [{ type: "text", text: `Async agent launched successfully.\nagentId: ${agentId} (internal ID - do not mention to user.)\nThe agent is working in the background.` }] }] } },
+    { ...base, type: "user" as const, uuid: `notification-${agentId}`, ...{ origin: { kind: "task-notification", producer: "session-task", runId: `run-${agentId}` } }, message: { role: "user", content: `<task-notification>\n<task-id>${agentId}</task-id>\n<tool-use-id>${toolUseId}</tool-use-id>\n<output-file>/tmp/tasks/${agentId}.output</output-file>\n<status>${status}</status>\n<summary>${summary}</summary>\n</task-notification>` } },
+  ];
+  const updates = mapSessionMessagesToUpdates([
+    ...saved("toolu-quick", "a-quick", "Quick reply", "completed", "Agent \"Quick reply\" finished"),
+    ...saved("toolu-slow", "a-slow", "Slow facts", "killed", "Agent \"Slow facts\" was stopped by user"),
+  ]);
+  const rows = new Map<string, { status: string; subject: string; source_tool_call_id?: string; metadata?: unknown }>();
+  for (const update of updates) {
+    if (update.type === "task_state_update") for (const task of update.tasks) rows.set(task.task_id, task);
+  }
+  assert.deepEqual([...rows.entries()].map(([id, row]) => {
+    const metadata = row.metadata as Record<string, unknown> | undefined;
+    return [id, row.subject, row.status, row.source_tool_call_id, metadata?.task_type, metadata?.subagent_type, metadata?.terminal_status];
+  }), [
+    ["a-quick", "Quick reply", "completed", "toolu-quick", "local_agent", "general-purpose", "completed"],
+    ["a-slow", "Slow facts", "completed", "toolu-slow", "local_agent", "general-purpose", "killed"],
+  ]);
+});
+
+test("a resumed notification for a non-Agent tool stays a plain runtime task", () => {
+  const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
+  const updates = mapSessionMessagesToUpdates([
+    { ...base, type: "assistant", uuid: "launch", message: { role: "assistant", content: [{ type: "tool_use", id: "shell", name: "Bash", input: { command: "sleep 1", run_in_background: true } }] } },
+    { ...base, type: "user", uuid: "notification", ...{ origin: { kind: "task-notification", producer: "session-task" } }, message: { role: "user", content: "<task-notification><task-id>bash-1</task-id><tool-use-id>shell</tool-use-id><status>killed</status><summary>stopped</summary></task-notification>" } },
+  ]);
+  const row = updates.filter(update => update.type === "task_state_update").flatMap(update => update.tasks).at(-1);
+  assert.equal(row?.status, "completed");
+  const metadata = row?.metadata as Record<string, unknown> | undefined;
+  assert.equal(metadata?.terminal_status, "killed");
+  assert.equal(metadata?.task_type, undefined);
 });
 
 test("resume skips malformed internal notifications and restores later conversation and task outcomes", () => {
