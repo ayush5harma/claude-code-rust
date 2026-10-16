@@ -44,9 +44,11 @@ impl PendingSettingsRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PendingSessionTitleChangeKind {
     /// A Status rename, followed through the turn of its `/rename` prompt.
+    /// `previous_title` is the title the session reported before it.
     Rename {
         message_uuid: String,
         stage: RenameStage,
+        previous_title: Option<String>,
     },
     Generate,
 }

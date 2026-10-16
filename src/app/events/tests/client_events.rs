@@ -1427,12 +1427,14 @@ fn terminal_return_event_restores_chat_lifecycle_and_rebuilds_chat() {
 
 fn pending_status_rename(app: &mut App, message_uuid: &str) {
     app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
+    app.session_runtime.session_title = Some("old name".to_owned());
     app.config.pending_session_title_change =
         Some(crate::app::config::PendingSessionTitleChangeState {
             session_id: "session-1".to_owned(),
             kind: crate::app::config::PendingSessionTitleChangeKind::Rename {
                 message_uuid: message_uuid.to_owned(),
                 stage: crate::app::config::RenameStage::Sent,
+                previous_title: Some("old name".to_owned()),
             },
         });
     app.config.status_message = Some("Renaming session...".to_owned());
@@ -1535,6 +1537,23 @@ fn status_rename_turn_without_any_title_ends_neutrally_and_later_turns_are_not_i
     assert!(app.config.pending_session_title_change.is_none());
     assert!(app.config.last_error.is_none(), "{:?}", app.config.last_error);
     assert_eq!(app.config.status_message.as_deref(), Some(neutral.as_str()));
+}
+
+#[test]
+fn status_rename_that_claude_code_declines_says_the_name_is_unchanged() {
+    let mut app = make_test_app();
+    pending_status_rename(&mut app, "rename-uuid");
+
+    // No turn error: the reply explains the refusal, and the title read after
+    // the turn's result is the one from before.
+    handle_client_event(&mut app, result_started("rename-uuid"));
+    handle_client_event(&mut app, rename_events_title("old name"));
+    handle_client_event(&mut app, turn_complete());
+
+    assert!(app.config.pending_session_title_change.is_none());
+    let status = app.config.status_message.as_deref().expect("outcome shown");
+    assert!(status.starts_with("Session name unchanged: old name"), "{status}");
+    assert!(app.config.last_error.is_none());
 }
 
 #[test]

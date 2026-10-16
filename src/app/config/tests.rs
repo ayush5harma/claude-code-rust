@@ -658,6 +658,7 @@ fn status_tab_rename_runs_rename_in_the_live_session() {
                 && pending.kind == PendingSessionTitleChangeKind::Rename {
                     message_uuid: sent_uuid.clone(),
                     stage: RenameStage::Sent,
+                    previous_title: Some("Current custom title".to_owned()),
                 }
     ));
 }

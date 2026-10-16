@@ -549,6 +549,7 @@ fn confirm_session_rename_overlay(app: &mut App) {
         return;
     }
 
+    let previous_title = app.session_runtime.session_title.clone();
     // The composer's /rename is the one rename path: it renames the live
     // session, so a session with no saved transcript yet can be renamed too.
     match crate::app::input_submit::submit_session_command(
@@ -561,6 +562,7 @@ fn confirm_session_rename_overlay(app: &mut App) {
                 kind: PendingSessionTitleChangeKind::Rename {
                     message_uuid,
                     stage: RenameStage::Sent,
+                    previous_title,
                 },
             });
             app.config.clear_overlay();
@@ -574,7 +576,7 @@ fn confirm_session_rename_overlay(app: &mut App) {
 fn pending_rename_stage(app: &mut App) -> Option<(&str, &mut RenameStage)> {
     match &mut app.config.pending_session_title_change {
         Some(PendingSessionTitleChangeState {
-            kind: PendingSessionTitleChangeKind::Rename { message_uuid, stage },
+            kind: PendingSessionTitleChangeKind::Rename { message_uuid, stage, .. },
             ..
         }) => Some((message_uuid.as_str(), stage)),
         _ => None,
@@ -602,13 +604,24 @@ pub(crate) fn session_rename_message_started(
 /// The session reported its title. After the rename turn's result this is the
 /// name Claude Code chose, which can differ from the draft (a name held by
 /// another session, stripped characters); before it, it is an older read.
+/// Claude Code can also decline a rename without failing the turn, and then
+/// the title is the one from before.
 pub(crate) fn session_rename_title_reported(app: &mut App) {
     if !pending_rename_stage(app).is_some_and(|(_, stage)| *stage != RenameStage::Sent) {
         return;
     }
-    app.config.pending_session_title_change = None;
+    let Some(PendingSessionTitleChangeState {
+        kind: PendingSessionTitleChangeKind::Rename { previous_title, .. },
+        ..
+    }) = app.config.pending_session_title_change.take()
+    else {
+        return;
+    };
     app.config.last_error = None;
     app.config.status_message = Some(match app.session_runtime.session_title.as_deref() {
+        Some(title) if previous_title.as_deref() == Some(title) => {
+            format!("Session name unchanged: {title}; Claude Code's reply is in the chat")
+        }
         Some(title) => format!("Renamed session to {title}"),
         None => RENAME_TURN_ENDED.to_owned(),
     });
