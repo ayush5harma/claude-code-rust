@@ -71,10 +71,8 @@ impl BridgeClient {
 
         let stdin = child.stdin.take().context("bridge stdin not available")?;
         let stdout = child.stdout.take().context("bridge stdout not available")?;
-        if bridge_diagnostics_enabled {
-            let stderr = child.stderr.take().context("bridge stderr not available")?;
-            Self::spawn_stderr_logger(stderr);
-        }
+        let stderr = child.stderr.take().context("bridge stderr not available")?;
+        Self::spawn_stderr_logger(stderr);
 
         let (connection, command_rx) = command_channel();
         let command_tx = connection.command_tx;

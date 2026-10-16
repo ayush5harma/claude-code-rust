@@ -48,6 +48,9 @@ pub mod targets {
 const BRIDGE_LOG_SCHEMA: &str = "claude-rs-log/v1";
 const BASELINE_LOG_SCHEMA: &str = "claude-rs-baseline/v1";
 const BRIDGE_LINE_PREVIEW_LIMIT: usize = 240;
+/// Longest string a default (baseline) log record carries for one field, in characters.
+/// The bridge already bounds and redacts what it sends; this caps native fields too.
+const BASELINE_VALUE_LIMIT: usize = 2048;
 const DEFAULT_LOG_DIR: &str = "claude-code-rust";
 const DEFAULT_LOG_FILE_NAME: &str = "claude-rs.log";
 const DEFAULT_RUNTIME_LOG_SUBDIR: &str = "runtime";
@@ -281,6 +284,15 @@ impl BaselineFieldVisitor<'_> {
             self.fields.insert(field.name().to_owned(), value);
         }
     }
+
+    fn record_text(&mut self, field: &Field, value: &str) {
+        // Bridge records carry every identifier as an empty string when it is absent.
+        if value.is_empty() {
+            return;
+        }
+        let redacted = crate::cli::redaction::redact_text(value);
+        self.record(field, Value::String(preview_text(&redacted, BASELINE_VALUE_LIMIT)));
+    }
 }
 
 impl Visit for BaselineFieldVisitor<'_> {
@@ -297,11 +309,13 @@ impl Visit for BaselineFieldVisitor<'_> {
     }
 
     fn record_str(&mut self, field: &Field, value: &str) {
-        self.record(field, Value::String(value.to_owned()));
+        self.record_text(field, value);
     }
 
     fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
-        self.record(field, Value::String(format!("{value:?}")));
+        if baseline_field_allowed(field.name()) {
+            self.record_text(field, &format!("{value:?}"));
+        }
     }
 }
 
@@ -318,6 +332,16 @@ fn baseline_field_allowed(name: &str) -> bool {
             | "count"
             | "size_bytes"
             | "exit_code"
+            | "error"
+            | "error_message"
+            | "error_preview"
+            | "preview"
+            | "preview_chars"
+            | "line_chars"
+            | "bridge_target"
+            | "fields_json"
+            | "startup_failure_reason"
+            | "startup_failure_errors"
             | "version"
             | "log_path_source"
             | "log_filter"
@@ -968,9 +992,9 @@ impl BridgeDiagnosticRecord {
                     terminal_id = %self.terminal_id(),
                     error_kind = %self.error_kind(),
                     error_code = %self.error_code(),
-                    duration_ms = self.duration_ms.unwrap_or_default(),
-                    count = self.count.unwrap_or_default(),
-                    size_bytes = self.size_bytes.unwrap_or_default(),
+                    duration_ms = self.duration_ms,
+                    count = self.count,
+                    size_bytes = self.size_bytes,
                     fields_json = %fields_json,
                 )
             };
@@ -1016,11 +1040,12 @@ impl BridgeDiagnosticRecord {
 #[cfg(test)]
 mod tests {
     use super::{
-        BaselineEventFormatter, BridgeDiagnosticRecord, LogOpenMode, LogPathSource,
+        BASELINE_VALUE_LIMIT, BRIDGE_LINE_PREVIEW_LIMIT, BaselineEventFormatter,
+        BridgeDiagnosticRecord, DEFAULT_BASELINE_FILTER, LogOpenMode, LogPathSource,
         LogRetentionPolicy, LogRetentionTarget, RollingFileWriter, baseline_field_allowed,
-        clear_rotated_files, enforce_log_retention_at, generated_log_file_name,
-        is_managed_log_file, list_managed_runtime_logs_in, preview_text, resolve_log_path,
-        rotated_log_path,
+        clear_rotated_files, emit_bridge_stderr_line, enforce_log_retention_at,
+        generated_log_file_name, is_managed_log_file, list_managed_runtime_logs_in, preview_text,
+        resolve_log_path, rotated_log_path,
     };
     use crate::{Cli, DiagnosticsPreset};
     use std::fs;
@@ -1072,73 +1097,101 @@ mod tests {
     }
 
     #[test]
-    fn baseline_fields_exclude_sensitive_diagnostic_payloads() {
+    fn baseline_fields_keep_failure_details_and_exclude_payloads() {
         for allowed in [
             "event_name",
             "message",
             "outcome",
             "error_kind",
             "error_code",
+            "error_message",
+            "fields_json",
+            "startup_failure_errors",
             "duration_ms",
             "version",
         ] {
             assert!(baseline_field_allowed(allowed), "{allowed} should be retained");
         }
-        for excluded in [
-            "session_id",
-            "request_id",
-            "tool_call_id",
-            "prompt",
-            "content",
-            "command",
-            "path",
-            "preview",
-            "error",
-            "error_message",
-        ] {
+        for excluded in
+            ["session_id", "request_id", "tool_call_id", "prompt", "content", "command", "path"]
+        {
             assert!(!baseline_field_allowed(excluded), "{excluded} should be excluded");
         }
     }
 
-    #[test]
-    fn baseline_formatter_writes_structured_metadata_without_sensitive_fields() {
+    fn baseline_records(run: impl FnOnce()) -> Vec<serde_json::Value> {
         let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::fmt()
             .event_format(BaselineEventFormatter)
+            .with_env_filter(DEFAULT_BASELINE_FILTER)
             .with_writer(SharedLogWriter(std::sync::Arc::clone(&buffer)))
             .finish();
+        tracing::subscriber::with_default(subscriber, run);
+        let output =
+            String::from_utf8(buffer.lock().expect("log buffer lock").clone()).expect("utf8 log");
+        output.lines().map(|line| serde_json::from_str(line).expect("json log")).collect()
+    }
 
-        tracing::subscriber::with_default(subscriber, || {
+    #[test]
+    fn baseline_formatter_redacts_and_bounds_failure_details() {
+        let long_detail = "x".repeat(BASELINE_VALUE_LIMIT * 2);
+        let records = baseline_records(|| {
             tracing::warn!(
                 target: "app.session",
                 event_name = "session_operation_failed",
                 message = "session operation failed",
                 outcome = "failure",
-                error_code = "timeout",
-                duration_ms = 250_u64,
                 session_id = "session-secret",
                 path = "C:/private/project",
-                error_message = "token=secret",
+                error_message = "request failed api_key=sk-secret-value",
+                error_preview = %long_detail,
             );
         });
 
-        let output =
-            String::from_utf8(buffer.lock().expect("log buffer lock").clone()).expect("utf8 log");
-        let record: serde_json::Value = serde_json::from_str(output.trim()).expect("json log");
+        let record = &records[0];
         assert_eq!(record["event_name"], "session_operation_failed");
         assert_eq!(record["schema"], "claude-rs-baseline/v1");
-        assert_eq!(record["message"], "session operation failed");
-        assert_eq!(record["outcome"], "failure");
-        assert_eq!(record["error_code"], "timeout");
-        assert_eq!(record["duration_ms"], 250);
-        assert_eq!(record["target"], "app.session");
-        assert!(record.get("timestamp").is_some());
+        assert_eq!(record["error_message"], "request failed api_key=[redacted]");
+        let preview = record["error_preview"].as_str().expect("bounded preview");
+        assert_eq!(preview.chars().count(), BASELINE_VALUE_LIMIT + 3);
         assert!(record.get("session_id").is_none());
         assert!(record.get("path").is_none());
-        assert!(record.get("error_message").is_none());
-        assert!(!output.contains("session-secret"));
-        assert!(!output.contains("private/project"));
-        assert!(!output.contains("token=secret"));
+    }
+
+    // The bridge sends a warning on stderr even with detailed diagnostics off. The default
+    // log must keep its failure context, drop its routine records, and not invent zero
+    // timings or empty identifiers for fields the bridge never set.
+    #[test]
+    fn default_log_keeps_bridge_warnings_with_context_and_drops_routine_records() {
+        let warning = r#"{"schema":"claude-rs-log/v1","level":"warn","target":"bridge.sdk","event_name":"sdk_hook_failed","message":"SDK hook failed","outcome":"failure","session_id":"session-1","fields":{"hook_name":"PreToolUse:Bash","exit_code":1,"output_excerpt":"lint gate failed"}}"#;
+        let routine = r#"{"schema":"claude-rs-log/v1","level":"debug","target":"bridge.sdk","event_name":"sdk_hook_started","message":"started","fields":{}}"#;
+        let records = baseline_records(|| {
+            emit_bridge_stderr_line(routine);
+            emit_bridge_stderr_line(warning);
+        });
+
+        assert_eq!(records.len(), 1, "{records:?}");
+        let record = &records[0];
+        assert_eq!(record["event_name"], "sdk_hook_failed");
+        assert_eq!(record["outcome"], "failure");
+        let fields: serde_json::Value =
+            serde_json::from_str(record["fields_json"].as_str().expect("fields_json"))
+                .expect("fields json");
+        assert_eq!(fields["output_excerpt"], "lint gate failed");
+        assert_eq!(fields["exit_code"], 1);
+        for absent in ["session_id", "error_kind", "duration_ms", "count", "size_bytes"] {
+            assert!(record.get(absent).is_none(), "{absent} should be absent: {record}");
+        }
+    }
+
+    #[test]
+    fn default_log_keeps_unstructured_bridge_stderr_with_a_bounded_preview() {
+        let line = format!("panic: bridge crashed {}", "z".repeat(1_000));
+        let records = baseline_records(|| emit_bridge_stderr_line(&line));
+
+        assert_eq!(records[0]["event_name"], "bridge_stderr_unstructured");
+        let preview = records[0]["preview"].as_str().expect("preview");
+        assert_eq!(preview.chars().count(), BRIDGE_LINE_PREVIEW_LIMIT + 3);
     }
 
     #[test]

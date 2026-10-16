@@ -89,6 +89,9 @@ pub struct Cli {
     pub bridge_script: Option<std::path::PathBuf>,
 
     /// Enable detailed info-level diagnostics in addition to the always-on warning/error baseline.
+    ///
+    /// The baseline log already records warnings and errors from the app, the bridge and the SDK.
+    /// Run `claude-rs logs` to find it.
     #[arg(long)]
     pub enable_logs: bool,
 

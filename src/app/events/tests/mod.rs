@@ -4040,6 +4040,31 @@ fn settings_parse_error_surfaces_system_error_message() {
 }
 
 #[test]
+fn settings_parse_error_is_recorded_in_the_default_log() {
+    let mut app = make_test_app();
+    let records = crate::logging::test_capture::capture(|| {
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::SettingsParseError {
+                file: Some("settings.json".to_owned()),
+                path: "permissions.allow".to_owned(),
+                message: "Expected array".to_owned(),
+            }),
+        );
+    });
+
+    let record = records
+        .iter()
+        .find(|record| record["event_name"] == "settings_parse_error")
+        .expect("settings parse error record");
+    assert_eq!(record["level"], "WARN");
+    assert_eq!(
+        record["error_message"],
+        "Settings parse error in settings.json at permissions.allow: Expected array"
+    );
+}
+
+#[test]
 fn internal_error_detection_accepts_xml_payload() {
     use crate::agent::error_handling::looks_like_internal_error;
     let payload = "<error><code>-32603</code><message>Adapter process crashed</message></error>";

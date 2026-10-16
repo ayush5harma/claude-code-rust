@@ -1,6 +1,6 @@
 # Diagnostics
 
-Interactive TUI runs write a small local diagnostics baseline by default. The baseline records warnings, errors, and minimal application lifecycle metadata using a restricted field set; detailed diagnostics remain opt-in because verbose logs can grow quickly and may contain private context.
+Interactive TUI runs write a small local diagnostics baseline by default. The baseline records warnings and errors from the app, the bridge, and the SDK, plus minimal application lifecycle metadata, using a restricted field set. Detailed diagnostics (timings, routine activity, every protocol and SDK event) remain opt-in because verbose logs can grow quickly and may contain private context. `claude-rs logs` prints where the current log is; see [Finding Logs](#finding-logs).
 
 ## Doctor
 
@@ -93,7 +93,7 @@ Use an explicit tracing filter for targeted debugging:
 claude-rs --log-filter "info,app.render=trace,bridge.protocol=debug"
 ```
 
-`--log-filter` overrides `--diagnostics-preset`. Every interactive run writes to a timestamped default diagnostics file when `--log-file` is omitted. With no logging options, the filter is `warn,app.lifecycle=info` and versioned `claude-rs-baseline/v1` records retain only stable event metadata such as event name, message, outcome, error classification, duration, counts, and logging policy. Session and request identifiers, paths, commands, content, previews, and raw error payloads are omitted from the baseline format.
+`--log-filter` overrides `--diagnostics-preset`. Every interactive run writes to a timestamped default diagnostics file when `--log-file` is omitted. With no logging options, the filter is `warn,app.lifecycle=info` and versioned `claude-rs-baseline/v1` records keep stable event metadata (event name, message, outcome, error classification, duration, counts, logging policy) plus the failure detail needed to act on a warning or error: the error message or startup failure reason, and for bridge and SDK records a short excerpt of their fields. Every text field is redacted for obvious credentials and cut to a fixed length. Session and request identifiers, paths, commands, and conversation or file content are omitted from the baseline format.
 
 Baseline logging is best-effort: if the default log cannot be initialized, the app continues without disrupting the TUI. Explicitly requested detailed logging still reports initialization failures as startup errors.
 
@@ -165,7 +165,9 @@ Unexpected Rust panics install a local panic hook. The hook writes a redacted `l
 
 ## Bridge Diagnostics
 
-When detailed diagnostics are requested through `--enable-logs`, a preset, `--log-file`, `--log-filter`, `--log-append`, or `RUST_LOG`, bridge diagnostics are enabled and bridge stderr is captured into the structured log. The always-on baseline leaves the high-volume bridge diagnostic stream disabled while retaining native bridge lifecycle warnings and errors.
+The bridge always writes its warnings and errors to stderr, and the app records them in the baseline log with a redacted, length-bounded excerpt of the failing fields. This includes SDK warnings and errors, and a hook that fails (the hook's event, name, exit code, and the start of its stderr). A bridge process that prints something that is not a structured record is logged as an unstructured line with a bounded preview.
+
+When detailed diagnostics are requested through `--enable-logs`, a preset, `--log-file`, `--log-filter`, `--log-append`, or `RUST_LOG`, the bridge also writes its info, debug, and trace records, with their full fields, into the structured log. That is where timings, hook start and progress, and other routine activity appear.
 
 The bridge script can be overridden with:
 
