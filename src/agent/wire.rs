@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use crate::agent::types;
 use serde::{Deserialize, Serialize};
@@ -704,6 +703,42 @@ mod tests {
         let envelope: EventEnvelope =
             serde_json::from_value(payload.clone()).expect("notification event");
         assert_eq!(serde_json::to_value(envelope).expect("serialize notification"), payload);
+    }
+
+    #[test]
+    fn read_source_and_line_metadata_survive_the_wire() {
+        let source = "# Notes\r\n\r\n\t**literal**  \r\n";
+        let event: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "session_update", "session_id": "s1",
+            "update": { "type": "tool_call_update", "tool_call_update": {
+                "tool_call_id": "read-1", "fields": {
+                    "status": "completed", "raw_output": source,
+                    "content": [{ "type": "content", "content": { "type": "text", "text": source } }],
+                    "output_metadata": { "read": { "file_path": "notes.md", "start_line": 60 } }
+                }
+            }}
+        }))
+        .expect("Read update");
+        let encoded = serde_json::to_value(&event).expect("serialize Read update");
+        let decoded: EventEnvelope = serde_json::from_value(encoded).expect("decode Read update");
+        let BridgeEvent::SessionUpdate {
+            update: types::SessionUpdate::ToolCallUpdate { tool_call_update },
+            ..
+        } = decoded.event
+        else {
+            panic!("expected tool update")
+        };
+        assert_eq!(tool_call_update.tool_call_id, "read-1");
+        let fields = tool_call_update.fields;
+        assert_eq!(fields.raw_output.as_deref(), Some(source));
+        assert_eq!(
+            serde_json::to_value(fields.content).expect("content"),
+            serde_json::json!([{ "type": "content", "content": { "type": "text", "text": source } }])
+        );
+        assert_eq!(
+            fields.output_metadata.expect("metadata").read,
+            Some(types::ReadOutputMetadata { file_path: "notes.md".to_owned(), start_line: 60 })
+        );
     }
 
     #[test]
