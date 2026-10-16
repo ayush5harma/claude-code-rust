@@ -10,12 +10,14 @@
 use crate::agent::events::ClientEvent;
 use crate::agent::model::{TaskItem, TaskStatus};
 use crate::agent::types::SubagentMessage;
-use crate::app::App;
+use crate::app::{App, MessageBlock, ToolCallInfo, ToolCallScope};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashSet;
 
 const SUBAGENT_TASK_TYPE: &str = "local_agent";
-const TRANSCRIPT_PAGE_ROWS: u16 = 10;
+const PAGE_ROWS: u16 = 10;
+/// Child tool calls the details list for one subagent, newest first.
+const RECENT_CHILD_TOOLS: usize = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SubagentStatus {
@@ -38,6 +40,11 @@ impl SubagentStatus {
             Self::Failed => "failed",
             Self::Stopped => "stopped",
         }
+    }
+
+    /// Running by the lifecycle, whether or not a stop was requested.
+    pub(crate) const fn is_running(self) -> bool {
+        matches!(self, Self::Running | Self::Stopping)
     }
 }
 
@@ -64,6 +71,8 @@ pub(crate) struct TranscriptView {
 
 #[derive(Debug, Default)]
 pub(crate) struct AgentsView {
+    /// The chosen subagent. It never moves to another row on its own, so `s`
+    /// and Enter act only on a subagent the user chose or the view opened on.
     pub selected_task_id: Option<String>,
     /// Ids `listSubagents()` returned; `None` until the first answer.
     pub transcript_ids: Option<HashSet<String>>,
@@ -71,6 +80,8 @@ pub(crate) struct AgentsView {
     stop_requested: HashSet<String>,
     pub transcript: Option<TranscriptView>,
     pub notice: Option<Notice>,
+    /// Scroll offset of the selected subagent's details.
+    pub detail_scroll: u16,
 }
 
 pub(crate) struct SubagentRow<'a> {
@@ -88,6 +99,53 @@ impl SubagentRow<'_> {
         metadata_str(self.task, "summary")
             .filter(|summary| !summary.trim().is_empty() && *summary != self.task.subject)
     }
+
+    /// Why a failed subagent failed, as the lifecycle reported it.
+    pub(crate) fn failure(&self) -> Option<&str> {
+        if self.status != SubagentStatus::Failed {
+            return None;
+        }
+        metadata_str(self.task, "error").or_else(|| metadata_str(self.task, "terminal_reason"))
+    }
+
+    /// The prompt the lifecycle reported, for a subagent whose Agent call is gone.
+    pub(crate) fn prompt(&self) -> Option<&str> {
+        metadata_str(self.task, "prompt")
+    }
+}
+
+/// The Agent call that launched a subagent, when the transcript still holds it.
+pub(crate) fn launching_call<'a>(app: &'a App, task: &TaskItem) -> Option<&'a ToolCallInfo> {
+    let (message, block) = app.lookup_tool_call(task.source_tool_call_id.as_deref()?)?;
+    match app.transcript.messages.get(message)?.blocks.get(block)? {
+        MessageBlock::ToolCall(tool) => Some(tool),
+        _ => None,
+    }
+}
+
+/// The subagent's own tool calls the session has seen, newest first.
+pub(crate) fn recent_child_tools<'a>(app: &'a App, task: &TaskItem) -> Vec<&'a ToolCallInfo> {
+    let Some(parent) = task.source_tool_call_id.as_deref() else { return Vec::new() };
+    let mut children: Vec<_> = app
+        .tool_call_scopes
+        .iter()
+        .filter(|(_, scope)| {
+            matches!(scope, ToolCallScope::SubagentChild { parent_tool_use_id }
+                if parent_tool_use_id == parent)
+        })
+        .filter_map(|(id, _)| app.lookup_tool_call(id))
+        .collect();
+    children.sort_unstable_by(|a, b| b.cmp(a));
+    children
+        .into_iter()
+        .take(RECENT_CHILD_TOOLS)
+        .filter_map(|(message, block)| {
+            match app.transcript.messages.get(message)?.blocks.get(block)? {
+                MessageBlock::ToolCall(tool) => Some(tool.as_ref()),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 fn metadata_str<'a>(task: &'a TaskItem, key: &str) -> Option<&'a str> {
@@ -143,17 +201,10 @@ impl AgentsView {
         self.transcript_ids.as_ref().map(|ids| ids.contains(task_id))
     }
 
-    /// The chosen row, else the first still running, else the first.
-    pub(crate) fn selected_index(&self, rows: &[SubagentRow<'_>]) -> usize {
-        self.selected_task_id
-            .as_deref()
-            .and_then(|id| rows.iter().position(|row| row.task.task_id == id))
-            .or_else(|| {
-                rows.iter().position(|row| {
-                    matches!(row.status, SubagentStatus::Running | SubagentStatus::Stopping)
-                })
-            })
-            .unwrap_or(0)
+    /// The chosen row among `rows`, if one is chosen and still listed.
+    pub(crate) fn selected_index(&self, rows: &[SubagentRow<'_>]) -> Option<usize> {
+        let id = self.selected_task_id.as_deref()?;
+        rows.iter().position(|row| row.task.task_id == id)
     }
 
     /// Forget everything tied to the previous session.
@@ -174,10 +225,15 @@ fn notice(app: &mut App, kind: NoticeKind, text: impl Into<String>) {
     app.agents.notice = Some(Notice { kind, text: text.into() });
 }
 
+/// Opens the view on the first running subagent, else the first one.
 pub(crate) fn open(app: &mut App) {
+    let rows = subagent_rows(app);
+    let first = rows.iter().find(|row| row.status.is_running()).or_else(|| rows.first());
+    let selected = first.map(|row| row.task.task_id.clone());
     app.agents.transcript = None;
     app.agents.notice = None;
-    app.agents.selected_task_id = None;
+    app.agents.selected_task_id = selected;
+    app.agents.detail_scroll = 0;
     crate::app::view::set_fullscreen_view(app, crate::app::FullscreenView::Agents);
     request_transcript_list(app);
 }
@@ -197,8 +253,24 @@ fn request_transcript_list(app: &mut App) {
     }
 }
 
-/// Applies the bridge's answer to one of this view's requests.
+/// Applies the bridge's answer to one of this view's requests. An answer for
+/// another session arrives after a switch and describes subagents no longer shown.
 pub(crate) fn apply_client_event(app: &mut App, event: ClientEvent) {
+    let (ClientEvent::SubagentsListed { session_id, .. }
+    | ClientEvent::SubagentMessagesReceived { session_id, .. }
+    | ClientEvent::SubagentStopResult { session_id, .. }) = &event
+    else {
+        tracing::warn!("client event family routed a non-subagent event to the subagent handler");
+        return;
+    };
+    if app
+        .session_runtime
+        .session_id
+        .as_ref()
+        .is_none_or(|active| active.to_string() != *session_id)
+    {
+        return;
+    }
     match event {
         ClientEvent::SubagentsListed { agent_ids, error, .. } => {
             apply_transcript_list(app, agent_ids, error);
@@ -209,11 +281,7 @@ pub(crate) fn apply_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::SubagentStopResult { task_id, error, .. } => {
             apply_stop_result(app, &task_id, error);
         }
-        _ => {
-            tracing::warn!(
-                "client event family routed a non-subagent event to the subagent handler"
-            );
-        }
+        _ => {}
     }
 }
 
@@ -245,7 +313,16 @@ fn apply_stop_result(app: &mut App, task_id: &str, error: Option<String>) {
     match error {
         Some(error) => {
             app.agents.stop_requested.remove(task_id);
-            notice(app, NoticeKind::Error, format!("Could not stop the subagent: {error}"));
+            // A stop that loses the race with the subagent's own outcome is
+            // refused as not running; the row already shows how it ended.
+            if app
+                .sdk_inventory
+                .tasks
+                .iter()
+                .any(|task| task.task_id == task_id && task.status == TaskStatus::InProgress)
+            {
+                notice(app, NoticeKind::Error, format!("Could not stop the subagent: {error}"));
+            }
         }
         // The lifecycle can report the outcome before the acknowledgement.
         None if subagent_rows(app)
@@ -260,7 +337,7 @@ fn apply_stop_result(app: &mut App, task_id: &str, error: Option<String>) {
 
 fn selected_row(app: &App) -> Option<(String, SubagentStatus)> {
     let rows = subagent_rows(app);
-    let row = rows.get(app.agents.selected_index(&rows))?;
+    let row = rows.get(app.agents.selected_index(&rows)?)?;
     Some((row.task.task_id.clone(), row.status))
 }
 
@@ -269,9 +346,15 @@ fn move_selection(app: &mut App, down: bool) {
     if rows.is_empty() {
         return;
     }
-    let current = app.agents.selected_index(&rows);
-    let next = if down { (current + 1).min(rows.len() - 1) } else { current.saturating_sub(1) };
+    let next = match app.agents.selected_index(&rows) {
+        None => 0,
+        Some(current) if down => (current + 1).min(rows.len() - 1),
+        Some(current) => current.saturating_sub(1),
+    };
     let id = rows[next].task.task_id.clone();
+    if app.agents.selected_task_id.as_deref() != Some(id.as_str()) {
+        app.agents.detail_scroll = 0;
+    }
     app.agents.selected_task_id = Some(id);
 }
 
@@ -327,12 +410,8 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
             KeyCode::Esc | KeyCode::Left => app.agents.transcript = None,
             KeyCode::Up => transcript.scroll = transcript.scroll.saturating_sub(1),
             KeyCode::Down => transcript.scroll = transcript.scroll.saturating_add(1),
-            KeyCode::PageUp => {
-                transcript.scroll = transcript.scroll.saturating_sub(TRANSCRIPT_PAGE_ROWS);
-            }
-            KeyCode::PageDown => {
-                transcript.scroll = transcript.scroll.saturating_add(TRANSCRIPT_PAGE_ROWS);
-            }
+            KeyCode::PageUp => transcript.scroll = transcript.scroll.saturating_sub(PAGE_ROWS),
+            KeyCode::PageDown => transcript.scroll = transcript.scroll.saturating_add(PAGE_ROWS),
             _ => {}
         }
         return;
@@ -341,6 +420,12 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Esc => close(app),
         KeyCode::Up => move_selection(app, false),
         KeyCode::Down => move_selection(app, true),
+        KeyCode::PageUp => {
+            app.agents.detail_scroll = app.agents.detail_scroll.saturating_sub(PAGE_ROWS);
+        }
+        KeyCode::PageDown => {
+            app.agents.detail_scroll = app.agents.detail_scroll.saturating_add(PAGE_ROWS);
+        }
         KeyCode::Enter => open_transcript(app),
         KeyCode::Char('s') => request_stop(app),
         KeyCode::Char('r') => request_transcript_list(app),

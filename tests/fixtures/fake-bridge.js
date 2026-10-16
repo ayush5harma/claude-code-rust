@@ -313,9 +313,9 @@ function streamReply(messageUuid) {
 }
 
 // Subagent rows as the bridge normalizes SDK task lifecycle messages.
-function agentTask(task_id, subject, status, terminal_status) {
+function agentTask(task_id, subject, status, terminal_status, extra = {}) {
   return { task_id, subject, status, blocks: [], blocked_by: [], metadata: {
-    task_type: 'local_agent', subagent_type: 'general-purpose', ...(terminal_status ? { terminal_status } : {}),
+    task_type: 'local_agent', subagent_type: 'general-purpose', ...(terminal_status ? { terminal_status } : {}), ...extra,
   } };
 }
 function sendTasks(tasks) {
@@ -397,7 +397,7 @@ readline
         }
         if (SCENARIO === 'agents') {
           sendTasks([
-            agentTask('agent-running', 'Review parser', 'in_progress', null),
+            agentTask('agent-running', 'Review parser', 'in_progress', null, { prompt: 'Check the parser for edge cases' }),
             agentTask('agent-done', 'Inspect docs', 'completed', 'completed'),
             { task_id: 'shell-1', subject: 'Watch logs', status: 'in_progress', blocks: [], blocked_by: [], metadata: { task_type: 'local_bash' } },
           ]);

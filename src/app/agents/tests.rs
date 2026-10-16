@@ -322,3 +322,72 @@ fn a_new_session_forgets_stop_requests_and_transcripts() {
     assert_eq!(app.agents.has_transcript("agent-1"), None);
     assert_eq!(statuses(&app)[0].1, SubagentStatus::Running);
 }
+
+#[test]
+fn a_selection_whose_subagent_leaves_is_not_moved_to_another_row() {
+    let (mut app, mut commands) = connected_app();
+    lifecycle(
+        &mut app,
+        vec![
+            task("agent-1", "local_agent", TaskStatus::InProgress, None),
+            task("agent-2", "local_agent", TaskStatus::InProgress, None),
+        ],
+    );
+    super::open(&mut app);
+    press(&mut app, KeyCode::Down);
+    let _ = sent(&mut commands);
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate {
+            session_id: SESSION.to_owned(),
+            update: model::SessionUpdate::TaskStateUpdate(
+                model::TaskStateUpdate::new(TaskUpdateSource::Lifecycle)
+                    .removed_task_ids(vec!["agent-2".to_owned()]),
+            ),
+        },
+    );
+    press(&mut app, KeyCode::Char('s'));
+    assert!(sent(&mut commands).is_empty(), "s never stops a subagent the user did not choose");
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Char('s'));
+    assert_eq!(
+        sent(&mut commands),
+        vec![BridgeCommand::StopSubagent {
+            session_id: SESSION.to_owned(),
+            task_id: "agent-1".to_owned()
+        }]
+    );
+}
+
+#[test]
+fn answers_for_another_session_and_a_stop_that_lost_the_race_change_nothing() {
+    let (mut app, mut commands) = connected_app();
+    lifecycle(&mut app, vec![task("agent-1", "local_agent", TaskStatus::InProgress, None)]);
+    super::open(&mut app);
+    press(&mut app, KeyCode::Char('s'));
+    let _ = sent(&mut commands);
+    handle_client_event(
+        &mut app,
+        ClientEvent::SubagentsListed {
+            session_id: "previous-session".to_owned(),
+            agent_ids: vec!["agent-1".to_owned()],
+            error: None,
+        },
+    );
+    assert_eq!(app.agents.has_transcript("agent-1"), None, "another session's list is ignored");
+
+    lifecycle(
+        &mut app,
+        vec![task("agent-1", "local_agent", TaskStatus::Completed, Some("completed"))],
+    );
+    handle_client_event(
+        &mut app,
+        ClientEvent::SubagentStopResult {
+            session_id: SESSION.to_owned(),
+            task_id: "agent-1".to_owned(),
+            error: Some("Task agent-1 is not running".to_owned()),
+        },
+    );
+    assert!(app.agents.notice.is_none(), "the row already shows how the subagent ended");
+    assert_eq!(statuses(&app)[0].1, SubagentStatus::Completed);
+}

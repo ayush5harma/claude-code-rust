@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::agent::client::{AgentConnection, CommandReceiver};
-use crate::agent::model::{SessionId, TaskItem, TaskStatus};
+use crate::agent::events::ClientEvent;
+use crate::agent::model::{self, SessionId, TaskItem, TaskStatus};
 use crate::agent::types::{SubagentMessage, SubagentMessageRole};
 use crate::app::App;
 use crate::app::agents::{TranscriptView, apply_transcript_list, handle_key, open};
@@ -71,11 +72,11 @@ fn app_with_subagents() -> (App, CommandReceiver) {
 }
 
 #[test]
-fn rows_show_each_subagents_status_type_transcript_and_summary_under_their_own_title() {
+fn rows_show_each_subagents_status_type_and_transcript_under_their_own_title() {
     let (mut app, _commands) = app_with_subagents();
     apply_transcript_list(&mut app, vec!["agent-2".to_owned()], None);
     handle_key(&mut app, KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
-    let lines = screen(&mut app, 80, 24);
+    let lines = screen(&mut app, 80, 30);
 
     let (title, title_line) = row_with(&lines, "Subagents");
     assert!(title_line.contains("1/3"), "{title_line}");
@@ -95,7 +96,10 @@ fn rows_show_each_subagents_status_type_transcript_and_summary_under_their_own_t
     let (done, done_line) = row_with(&lines, "Review the parser");
     assert!(done_line.contains("completed") && !done_line.contains('›'), "{done_line}");
     assert!(lines[done + 1].contains("reviewer") && lines[done + 1].contains("· transcript"));
-    assert!(lines[done + 2].contains("Parser looks fine"));
+    assert!(
+        !lines.iter().any(|line| line.contains("Parser looks fine")),
+        "an unselected subagent's result stays out of the list"
+    );
 
     let (_, stopped_line) = row_with(&lines, "Abandoned search");
     assert!(stopped_line.contains("stopped"), "{stopped_line}");
@@ -103,9 +107,99 @@ fn rows_show_each_subagents_status_type_transcript_and_summary_under_their_own_t
     let (hint_row, _) = row_with(&lines, "Up/Down select");
     assert!(hint_row > running, "the hint row follows the list");
     let hint = lines[hint_row..].join(" ");
-    for key in ["Enter transcript", "s stop", "r re-check transcripts", "Esc", "close"] {
+    for key in ["Enter transcript", "s stop", "r refresh", "Esc", "close"] {
         assert!(hint.contains(key), "{hint}");
     }
+}
+
+/// Reports one tool call the way the bridge does; `parent` makes it a subagent's own call.
+fn tool_call(
+    app: &mut App,
+    id: &str,
+    name: &str,
+    title: &str,
+    input: serde_json::Value,
+    parent: Option<&str>,
+) {
+    let mut meta = serde_json::json!({ "claudeCode": { "toolName": name } });
+    if let Some(parent) = parent {
+        meta["claudeCode"]["parentToolUseId"] = serde_json::json!(parent);
+    }
+    crate::app::handle_client_event(
+        app,
+        ClientEvent::SessionUpdate {
+            session_id: "session-1".to_owned(),
+            update: model::SessionUpdate::ToolCall(
+                model::ToolCall::new(id, title)
+                    .status(model::ToolCallStatus::InProgress)
+                    .raw_input(input)
+                    .meta(meta),
+            ),
+        },
+    );
+}
+
+#[test]
+fn details_show_the_selected_subagents_model_activity_and_prompt_beside_or_below_the_list() {
+    let (mut app, _commands) = app_with_subagents();
+    tool_call(
+        &mut app,
+        "launch-1",
+        "Agent",
+        "Run the slow check",
+        serde_json::json!({ "description": "Run the slow check", "prompt": "List the files here, then summarise", "subagent_type": "general-purpose", "model": "haiku" }),
+        None,
+    );
+    for (id, title) in
+        [("child-1", "Glob **/*"), ("child-2", "Read notes.md"), ("child-3", "Bash wc -l notes.md")]
+    {
+        tool_call(&mut app, id, "Read", title, serde_json::json!({}), Some("launch-1"));
+    }
+    app.sdk_inventory.tasks[0].source_tool_call_id = Some("launch-1".to_owned());
+    app.sdk_inventory
+        .available_agents
+        .push(model::AvailableAgent::new("reviewer", "Reviews code").model("sonnet"));
+    apply_transcript_list(&mut app, vec!["agent-1".to_owned()], None);
+
+    let wide = screen(&mut app, 120, 30);
+    let (row, list_line) = row_with(&wide, "› Run the slow check");
+    let detail_column =
+        list_line.find("Run the slow check  ").and(list_line.rfind("Run the slow check"));
+    assert!(
+        detail_column.is_some_and(|column| column > 50),
+        "details sit beside the list: {list_line}"
+    );
+    let detail = |label: &str| {
+        wide.iter()
+            .find(|line| line.contains(label))
+            .unwrap_or_else(|| panic!("no {label:?} row:\n{}", wide.join("\n")))
+            .clone()
+    };
+    assert!(detail("Model: ").contains("haiku (requested)"));
+    assert!(detail("Transcript: ").contains("saved, Enter to read"));
+    assert!(detail("Now: ").contains("Bash wc -l notes.md"), "the newest child call is current");
+    let (recent, _) = row_with(&wide, "Recent");
+    assert!(wide[recent + 1].contains("Read notes.md") && wide[recent + 2].contains("Glob **/*"));
+    assert!(
+        !wide[recent + 1..].iter().any(|line| line.contains("Bash wc -l")),
+        "Now is not repeated"
+    );
+    let (prompt, _) = row_with(&wide, "Prompt");
+    assert!(wide[prompt + 1].contains("List the files here, then summarise"));
+    assert!(row < prompt);
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let narrow = screen(&mut app, 80, 30);
+    let (selected, _) = row_with(&narrow, "› Review the parser");
+    let (_, model) = row_with(&narrow, "Model: ");
+    assert!(model.contains("sonnet (agent default)"), "{model}");
+    let (result, result_line) = row_with(&narrow, "Result: ");
+    assert!(result_line.contains("Parser looks fine"), "{result_line}");
+    assert!(result > selected, "details sit below the list when narrow");
+    assert!(
+        !narrow.iter().any(|line| line.contains("Now: ")),
+        "a finished subagent has no current activity"
+    );
 }
 
 #[test]

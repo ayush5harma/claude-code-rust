@@ -2295,24 +2295,13 @@ fn ctrl_v_attaches_the_system_clipboard_image_and_sends_it_with_the_prompt() {
 #[test]
 fn agents_view_opens_from_an_empty_composer_stops_a_running_subagent_and_returns_to_chat() {
     let mut test = TerminalTest::start("agents", 3);
+    // A draft keeping Left as cursor movement is covered by the app key tests.
     test.wait_screen("[AGENTS:1]");
-
-    // With a draft, Left moves the cursor: the next character lands before the last one.
-    let log_offset =
-        std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
-    test.paste("keep this draft");
-    test.wait_composer_text(log_offset, "keep this draft");
     test.send(b"\x1b[D");
-    // Keys that follow within the key-burst window count as pasted text.
-    std::thread::sleep(Duration::from_millis(300));
-    test.send(b"X");
-    test.wait_screen("keep this drafXt");
-    assert!(test.commands("list_subagents").is_empty(), "a draft keeps Left in the composer");
-
-    test.send(b"\x05\x15"); // End, then kill to line start.
-    test.wait_screen("Type a message");
-    test.send(b"\x1b[D");
-    let screen = test.wait_screen_with("Review parser", &["Subagents", "running", "Inspect docs"]);
+    let screen = test.wait_screen_with(
+        "Check the parser for edge cases",
+        &["Subagents", "running", "Inspect docs", "Prompt", "Transcript: not saved yet"],
+    );
     assert!(!screen.contains("Watch logs"), "background shells are not listed:\n{screen}");
     assert_eq!(test.commands("list_subagents").len(), 1);
 

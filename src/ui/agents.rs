@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! The `/agents` screen: the active session's subagents and one saved transcript.
+//! The `/agents` screen: the active session's subagents, the selected
+//! subagent's details, and one saved transcript.
 
 use super::config::common::{
-    badge_span, help_style, hint_text_with_escape, position_counter, render_message,
-    selection_line, selection_style, title_style, wrapped_height,
+    badge_span, detail_kv, help_style, hint_text_with_escape, position_counter, render_message,
+    section_heading, selection_line, selection_style, title_style, wrapped_height,
 };
 use super::theme;
 use crate::agent::types::SubagentMessageRole;
-use crate::app::App;
 use crate::app::agents::{
-    NoticeKind, SubagentRow, SubagentStatus, TranscriptView, running_subagent_count, subagent_rows,
+    NoticeKind, SubagentRow, SubagentStatus, TranscriptView, launching_call, recent_child_tools,
+    running_subagent_count, subagent_rows,
 };
+use crate::app::{App, ToolCallInfo};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Style};
@@ -19,6 +21,9 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
 
 const TITLE: &str = "Subagents";
+/// Below this width the details sit under the list instead of beside it.
+const SIDE_BY_SIDE_MIN_WIDTH: u16 = 110;
+const PROMPT_PREVIEW_LINES: usize = 6;
 
 pub(crate) fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -49,7 +54,7 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App) {
     if app.agents.transcript.is_some() {
         render_transcript(frame, chunks[0], chunks[2], app);
     } else {
-        render_list(frame, chunks[0], chunks[2], app);
+        app.agents.detail_scroll = render_agents(frame, chunks[0], chunks[2], app);
     }
     if let Some(notice) = notice {
         frame.render_widget(Paragraph::new(notice).wrap(Wrap { trim: false }), chunks[3]);
@@ -81,20 +86,22 @@ fn hint(app: &App, width: u16) -> String {
         );
     }
     hint_text_with_escape(
-        vec!["Up/Down select", "Enter transcript", "s stop", "r re-check transcripts"],
+        vec!["Up/Down select", "Enter transcript", "s stop", "r refresh", "PgUp/PgDn details"],
         width,
         "Esc close",
     )
 }
 
-fn render_list(frame: &mut Frame, title_area: Rect, body: Rect, app: &App) {
+/// Draws the list and the selected subagent's details; returns the details' clamped scroll.
+fn render_agents(frame: &mut Frame, title_area: Rect, body: Rect, app: &App) -> u16 {
     let rows = subagent_rows(app);
     let selected = app.agents.selected_index(&rows);
-    let mut title = vec![
-        Span::styled(TITLE, title_style().fg(theme::RUST_ORANGE)),
-        Span::raw("  "),
-        position_counter(selected, rows.len()),
-    ];
+    let counter = selected.map_or_else(
+        || Span::styled(format!("-/{}", rows.len()), Style::default().fg(theme::DIM)),
+        |index| position_counter(index, rows.len()),
+    );
+    let mut title =
+        vec![Span::styled(TITLE, title_style().fg(theme::RUST_ORANGE)), Span::raw("  "), counter];
     let running = running_subagent_count(app);
     if running > 0 {
         title.push(Span::styled(format!("  {running} running"), Style::default().fg(theme::DIM)));
@@ -107,7 +114,7 @@ fn render_list(frame: &mut Frame, title_area: Rect, body: Rect, app: &App) {
             "No active session",
             "Start or resume a session to see its subagents.",
         );
-        return;
+        return 0;
     }
     if rows.is_empty() {
         render_message(
@@ -116,14 +123,60 @@ fn render_list(frame: &mut Frame, title_area: Rect, body: Rect, app: &App) {
             "No subagents yet",
             "Subagents this session starts appear here with their live status.",
         );
-        return;
+        return 0;
     }
+    let (list_area, detail_area) = split_body(body, rows.len());
+    render_list(frame, list_area, app, &rows, selected);
+    let Some(row) = selected.and_then(|index| rows.get(index)) else {
+        render_message(frame, detail_area, "No subagent selected", "Up/Down selects a subagent.");
+        return 0;
+    };
+
+    let details = Text::from(detail_lines(app, row, detail_area.width));
+    let total =
+        Paragraph::new(details.clone()).wrap(Wrap { trim: false }).line_count(detail_area.width);
+    let max_scroll =
+        u16::try_from(total.saturating_sub(usize::from(detail_area.height))).unwrap_or(u16::MAX);
+    let scroll = app.agents.detail_scroll.min(max_scroll);
+    frame.render_widget(
+        Paragraph::new(details).wrap(Wrap { trim: false }).scroll((scroll, 0)),
+        detail_area,
+    );
+    scroll
+}
+
+/// Beside each other when wide; otherwise the list takes at most a third of
+/// the height and the details fill the rest.
+fn split_body(body: Rect, row_count: usize) -> (Rect, Rect) {
+    if body.width >= SIDE_BY_SIDE_MIN_WIDTH {
+        let panes = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(45), Constraint::Length(2), Constraint::Min(0)])
+            .split(body);
+        return (panes[0], panes[2]);
+    }
+    let list_rows = u16::try_from(row_count.saturating_mul(2)).unwrap_or(u16::MAX);
+    let list_height = list_rows.min((body.height / 3).max(4));
+    let panes = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(list_height), Constraint::Length(1), Constraint::Min(0)])
+        .split(body);
+    (panes[0], panes[2])
+}
+
+fn render_list(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    rows: &[SubagentRow<'_>],
+    selected: Option<usize>,
+) {
     let items = rows.iter().enumerate().map(|(index, row)| {
-        let is_selected = index == selected;
+        let is_selected = Some(index) == selected;
         ListItem::new(row_lines(app, row, is_selected)).style(selection_style(is_selected))
     });
-    let mut state = ListState::default().with_selected(Some(selected));
-    frame.render_stateful_widget(List::new(items).highlight_symbol(""), body, &mut state);
+    let mut state = ListState::default().with_selected(selected);
+    frame.render_stateful_widget(List::new(items).highlight_symbol(""), area, &mut state);
 }
 
 fn status_badge(status: SubagentStatus) -> Span<'static> {
@@ -139,7 +192,6 @@ fn status_badge(status: SubagentStatus) -> Span<'static> {
 }
 
 fn row_lines(app: &App, row: &SubagentRow<'_>, selected: bool) -> Vec<Line<'static>> {
-    let dim = Style::default().fg(theme::DIM);
     let mut details = Vec::new();
     if let Some(kind) = row.subagent_type() {
         details.push(kind.to_owned());
@@ -158,12 +210,89 @@ fn row_lines(app: &App, row: &SubagentRow<'_>, selected: bool) -> Vec<Line<'stat
         selected,
     )];
     if !details.is_empty() {
-        lines.push(Line::styled(format!("  {}", details.join(" · ")), dim));
+        lines.push(Line::styled(
+            format!("  {}", details.join(" · ")),
+            Style::default().fg(theme::DIM),
+        ));
     }
-    if let Some(summary) = row.summary() {
-        lines.push(Line::styled(format!("  {summary}"), Style::default().fg(Color::White)));
+    lines
+}
+
+/// What one tool call is doing, on one line.
+fn tool_activity(tool: &ToolCallInfo) -> String {
+    let title = tool.title.lines().next().unwrap_or_default().trim();
+    if title.is_empty() { tool.sdk_tool_name.clone() } else { title.to_owned() }
+}
+
+/// The model the Agent call asked for, else the agent definition's default.
+/// Nothing is shown when neither is known: the session's subagent default applies.
+fn model_choice(app: &App, row: &SubagentRow<'_>) -> Option<String> {
+    let input = launching_call(app, row.task).and_then(|tool| tool.raw_input.as_ref());
+    if let Some(model) = input.and_then(|input| input.get("model")?.as_str()) {
+        return Some(format!("{model} (requested)"));
     }
-    lines.push(Line::default());
+    let kind = row.subagent_type()?;
+    let agent = app.sdk_inventory.available_agents.iter().find(|agent| agent.name == kind)?;
+    agent.model.as_deref().map(|model| format!("{model} (agent default)"))
+}
+
+fn transcript_state(app: &App, task_id: &str) -> &'static str {
+    match app.agents.has_transcript(task_id) {
+        Some(true) => "saved, Enter to read",
+        Some(false) => "not saved yet, r to check again",
+        None if app.agents.listing => "checking...",
+        None => "unknown, r to check",
+    }
+}
+
+/// The selected subagent: identity and model choice, transcript, activity and prompt.
+fn detail_lines(app: &App, row: &SubagentRow<'_>, width: u16) -> Vec<Line<'static>> {
+    let value = Color::White;
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(row.task.subject.clone(), title_style()),
+            Span::raw("  "),
+            status_badge(row.status),
+        ]),
+        Line::default(),
+    ];
+    if let Some(kind) = row.subagent_type() {
+        lines.push(detail_kv("Type", kind, value));
+    }
+    if let Some(model) = model_choice(app, row) {
+        lines.push(detail_kv("Model", &model, value));
+    }
+    lines.push(detail_kv("Transcript", transcript_state(app, &row.task.task_id), value));
+
+    let mut children = recent_child_tools(app, row.task).into_iter().map(tool_activity);
+    if row.status.is_running() {
+        let now = children.next().or_else(|| row.summary().map(str::to_owned));
+        if let Some(now) = now {
+            lines.push(detail_kv("Now", &now, value));
+        }
+    } else if let Some(outcome) = row.failure().or_else(|| row.summary()) {
+        lines.push(detail_kv("Result", outcome, value));
+    }
+    let recent: Vec<_> = children.collect();
+    if !recent.is_empty() {
+        lines.push(Line::default());
+        lines.push(section_heading("Recent"));
+        lines.extend(recent.into_iter().map(|activity| Line::from(format!("  {activity}"))));
+    }
+
+    let prompt = launching_call(app, row.task)
+        .and_then(|tool| tool.raw_input.as_ref()?.get("prompt")?.as_str())
+        .or_else(|| row.prompt());
+    if let Some(prompt) = prompt {
+        lines.push(Line::default());
+        lines.push(section_heading("Prompt"));
+        let wrapped = crate::ui::wrap::wrap_plain(prompt, usize::from(width.max(1)));
+        let shown = wrapped.len().min(PROMPT_PREVIEW_LINES);
+        lines.extend(wrapped.iter().take(shown).map(|line| Line::from(line.clone())));
+        if wrapped.len() > shown {
+            lines.push(Line::styled("...", Style::default().fg(theme::DIM)));
+        }
+    }
     lines
 }
 
