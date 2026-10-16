@@ -652,6 +652,7 @@ pub(super) fn handle_turn_error_event(
     terminal_reason: Option<crate::agent::types::TerminalReason>,
 ) {
     log_queued_turn_count(app, queued_turn_count, "error");
+    crate::app::config::fail_session_rename(app, &summarize_internal_error(msg));
     let exit = begin_turn_exit(app, false);
 
     if exit.cancel_requested {

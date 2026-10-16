@@ -538,35 +538,74 @@ fn confirm_session_rename_overlay(app: &mut App) {
         app.config.clear_overlay();
         return;
     };
-    let Some(conn) = app.session_runtime.conn.clone() else {
-        app.config.set_overlay_error("No active bridge connection");
+    let Some(overlay) = app.config.session_rename_overlay() else {
         return;
     };
-    let Some(overlay) = app.config.session_rename_overlay().cloned() else {
+    let requested_title = overlay.draft.trim().to_owned();
+    // Claude Code's /rename without a name generates one, so an empty draft
+    // has no rename to send; `g` is the Status tab's generate action.
+    if requested_title.is_empty() {
+        app.config.set_overlay_error("Enter a session name");
         return;
-    };
+    }
 
-    let trimmed = overlay.draft.trim().to_owned();
-    let requested_title = (!trimmed.is_empty()).then_some(trimmed.clone());
-    match conn.rename_session(session_id.clone(), trimmed) {
+    // The composer's /rename is the one rename path: it renames the live
+    // session, so a session with no saved transcript yet can be renamed too.
+    match crate::app::input_submit::submit_session_command(
+        app,
+        &format!("/rename {requested_title}"),
+    ) {
         Ok(()) => {
             app.config.pending_session_title_change = Some(PendingSessionTitleChangeState {
                 session_id,
-                kind: PendingSessionTitleChangeKind::Rename {
-                    requested_title: requested_title.clone(),
-                },
+                kind: PendingSessionTitleChangeKind::Rename { requested_title },
             });
             app.config.clear_overlay();
             app.config.last_error = None;
-            app.config.status_message = Some(if requested_title.is_some() {
-                "Renaming session...".to_owned()
-            } else {
-                "Clearing session name...".to_owned()
-            });
+            app.config.status_message = Some("Renaming session...".to_owned());
         }
-        Err(err) => {
-            app.config.set_overlay_error(format!("Failed to rename session: {err}"));
-        }
+        Err(err) => app.config.set_overlay_error(err),
+    }
+}
+
+/// A Status rename is done once the session reports the requested title. A
+/// title read from before the rename turn can still arrive, so only the
+/// requested title completes it.
+pub(crate) fn complete_session_rename(app: &mut App) {
+    let (Some(session_id), Some(title)) = (
+        app.session_runtime.session_id.as_ref().map(std::string::ToString::to_string),
+        app.session_runtime.session_title.clone(),
+    ) else {
+        return;
+    };
+    let Some(pending) = app.config.pending_session_title_change.take_if(|pending| {
+        pending.session_id == session_id
+            && matches!(&pending.kind, PendingSessionTitleChangeKind::Rename { requested_title }
+                if *requested_title == title)
+    }) else {
+        return;
+    };
+    tracing::debug!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "session_rename_applied",
+        message = "session reported the requested title",
+        outcome = "success",
+        session_id = %pending.session_id,
+    );
+    app.config.last_error = None;
+    app.config.status_message = Some(format!("Renamed session to {title}"));
+}
+
+/// The /rename turn failed, so the session keeps its old title.
+pub(crate) fn fail_session_rename(app: &mut App, message: &str) {
+    if app
+        .config
+        .pending_session_title_change
+        .take_if(|pending| matches!(pending.kind, PendingSessionTitleChangeKind::Rename { .. }))
+        .is_some()
+    {
+        app.config.last_error = Some(format!("Failed to rename session: {message}"));
+        app.config.status_message = None;
     }
 }
 

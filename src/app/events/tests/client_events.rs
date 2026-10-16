@@ -1425,54 +1425,82 @@ fn terminal_return_event_restores_chat_lifecycle_and_rebuilds_chat() {
     assert!(app.surface_dirty.chat.repaint);
 }
 
-#[test]
-fn sessions_listed_completes_pending_session_rename() {
-    let mut app = make_test_app();
+fn pending_status_rename(app: &mut App, session_id: &str, requested_title: &str) {
+    app.session_runtime.session_id = Some(model::SessionId::new(session_id));
     app.config.pending_session_title_change =
         Some(crate::app::config::PendingSessionTitleChangeState {
-            session_id: "session-1".to_owned(),
+            session_id: session_id.to_owned(),
             kind: crate::app::config::PendingSessionTitleChangeKind::Rename {
-                requested_title: Some("Renamed session".to_owned()),
+                requested_title: requested_title.to_owned(),
             },
         });
+    app.config.status_message = Some("Renaming session...".to_owned());
+}
+
+#[test]
+fn status_rename_completes_only_when_the_session_reports_the_requested_title() {
+    let mut app = make_test_app();
+    pending_status_rename(&mut app, "session-1", "demo-469");
+    let title = |title: &str| ClientEvent::SessionUpdate {
+        session_id: "session-1".to_owned(),
+        update: model::SessionUpdate::SessionTitleUpdate(Some(title.to_owned())),
+    };
+
+    // A listing is not the session's answer to /rename, and a read that
+    // started before the rename turn still carries the old title.
+    let mut listed = listed_session("session-1", "summary");
+    listed.custom_title = Some("demo-469".to_owned());
+    handle_client_event(&mut app, ClientEvent::SessionsListed { sessions: vec![listed] });
+    handle_client_event(&mut app, title("old name"));
+    assert!(app.config.pending_session_title_change.is_some());
+    assert_eq!(app.config.status_message.as_deref(), Some("Renaming session..."));
+
+    handle_client_event(&mut app, title("demo-469"));
+    assert!(app.config.pending_session_title_change.is_none());
+    assert_eq!(app.config.status_message.as_deref(), Some("Renamed session to demo-469"));
+    assert!(app.config.last_error.is_none());
+    assert_eq!(app.active_session_custom_title(), Some("demo-469"));
+}
+
+#[test]
+fn failed_rename_turn_reports_in_status_feedback() {
+    let mut app = make_test_app();
+    pending_status_rename(&mut app, "session-1", "demo-469");
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionsListed {
-            sessions: vec![crate::agent::types::SessionListEntry {
-                session_id: "session-1".to_owned(),
-                summary: "Renamed session".to_owned(),
-                last_modified_ms: 1,
-                file_size_bytes: 2,
-                cwd: Some("/test".to_owned()),
-                git_branch: None,
-                custom_title: Some("Renamed session".to_owned()),
-                first_prompt: Some("prompt".to_owned()),
-            }],
+        ClientEvent::TurnError {
+            session_id: "session-1".to_owned(),
+            message: "bridge stopped".to_owned(),
+            queued_turn_count: None,
+            api_error_status: None,
+            terminal_reason: None,
         },
     );
 
     assert!(app.config.pending_session_title_change.is_none());
-    assert_eq!(app.config.status_message.as_deref(), Some("Renamed session to Renamed session"));
-    assert!(app.config.last_error.is_none());
-    assert_eq!(app.recent_sessions.len(), 1);
+    assert!(app.config.status_message.is_none());
+    let error = app.config.last_error.as_deref().expect("rename failure in Status");
+    assert!(error.starts_with("Failed to rename session"), "{error}");
+    assert!(error.contains("bridge stopped"), "{error}");
 }
 
 #[test]
-fn slash_command_error_for_pending_session_rename_stays_in_config_feedback() {
+fn slash_command_error_for_pending_title_generation_stays_in_config_feedback() {
     let mut app = make_test_app();
     app.config.pending_session_title_change =
         Some(crate::app::config::PendingSessionTitleChangeState {
             session_id: "session-1".to_owned(),
-            kind: crate::app::config::PendingSessionTitleChangeKind::Rename {
-                requested_title: Some("Renamed session".to_owned()),
-            },
+            kind: crate::app::config::PendingSessionTitleChangeKind::Generate,
         });
 
-    handle_client_event(&mut app, slash_command_error("failed to rename session: boom".into()));
+    handle_client_event(
+        &mut app,
+        slash_command_error("failed to generate session title: boom".into()),
+    );
 
     assert!(app.config.pending_session_title_change.is_none());
-    assert_eq!(app.config.last_error.as_deref(), Some("failed to rename session: boom"));
+    assert_eq!(app.config.last_error.as_deref(), Some("failed to generate session title: boom"));
     assert!(app.config.status_message.is_none());
     assert!(app.transcript.messages.is_empty());
 }

@@ -19,6 +19,7 @@ mod tabs;
 
 pub use controller::{handle_key, handle_paste, open};
 pub(crate) use controller::{open_category, open_tab, refresh_runtime_tabs_for_session_change};
+pub(crate) use edit::{complete_session_rename, fail_session_rename};
 pub(crate) use mcp::{
     McpAuthRedirectOverlayState, McpDetailsOverlayState, McpElicitationOverlayState,
     apply_mcp_config_remove_failure, apply_mcp_config_remove_success,

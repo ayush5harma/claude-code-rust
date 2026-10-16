@@ -2227,6 +2227,25 @@ fn status_tab_shows_the_session_name_after_rename() {
     test.shutdown();
 }
 
+#[test]
+fn status_tab_renames_a_fresh_session_through_its_rename_command() {
+    let mut test = TerminalTest::start("session-name", 3);
+    // No prompt has run, so the session has no saved transcript yet.
+    test.submit("/status", "/status");
+    test.wait_for("the unnamed session in Status", |test| {
+        status_name_row(test, "(unnamed session)")
+    });
+    test.send(b"r");
+    test.wait_screen("Rename session");
+    test.paste("demo-469");
+    test.wait_screen("demo-469");
+    test.send(b"\r");
+
+    test.wait_for("the new name in Status", |test| status_name_row(test, "demo-469"));
+    test.assert_prompts(&["/rename demo-469"]);
+    test.shutdown();
+}
+
 /// A terminal outside Windows sends Ctrl+V as one press byte and no release.
 /// Without a display server the clipboard cannot be opened, and the app has to
 /// say so: silence means the key never reached the clipboard path.

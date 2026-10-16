@@ -43,7 +43,7 @@ impl PendingSettingsRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PendingSessionTitleChangeKind {
-    Rename { requested_title: Option<String> },
+    Rename { requested_title: String },
     Generate,
 }
 

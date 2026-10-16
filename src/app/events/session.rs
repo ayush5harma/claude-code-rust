@@ -102,7 +102,11 @@ pub(super) fn handle_sessions_listed_event(
     sessions: Vec<crate::agent::types::SessionListEntry>,
 ) {
     let session_count = sessions.len();
-    let pending_title_change = app.config.pending_session_title_change.take();
+    // Only title generation completes with a listing; a rename completes when
+    // the session reports the new title.
+    let pending_title_change = app.config.pending_session_title_change.take_if(|pending| {
+        pending.kind == crate::app::config::PendingSessionTitleChangeKind::Generate
+    });
     let selected_session_id = super::super::session_picker::selected_session(app)
         .map(|session| session.session_id.clone());
     let had_pending_title_change = pending_title_change.is_some();
@@ -128,17 +132,7 @@ pub(super) fn handle_sessions_listed_event(
         pending_title_change_resolved = renamed_session_present;
         if renamed_session_present {
             app.config.last_error = None;
-            app.config.status_message = Some(match pending_title_change.kind {
-                crate::app::config::PendingSessionTitleChangeKind::Rename { requested_title } => {
-                    match requested_title {
-                        Some(title) => format!("Renamed session to {title}"),
-                        None => "Cleared session name".to_owned(),
-                    }
-                }
-                crate::app::config::PendingSessionTitleChangeKind::Generate => {
-                    "Generated session title".to_owned()
-                }
-            });
+            app.config.status_message = Some("Generated session title".to_owned());
         }
     }
     app.startup.mark_recent_sessions_loaded();
@@ -307,7 +301,14 @@ fn startup_failure_message(reason: &str) -> &'static str {
 }
 
 pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
-    if app.config.pending_session_title_change.take().is_some() {
+    if app
+        .config
+        .pending_session_title_change
+        .take_if(|pending| {
+            pending.kind == crate::app::config::PendingSessionTitleChangeKind::Generate
+        })
+        .is_some()
+    {
         app.config.last_error = Some(msg.to_owned());
         app.config.status_message = None;
         app.request_active_surface_repaint();

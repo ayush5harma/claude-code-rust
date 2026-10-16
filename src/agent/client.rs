@@ -717,13 +717,6 @@ impl AgentConnection {
         })
     }
 
-    pub fn rename_session(&self, session_id: String, title: String) -> anyhow::Result<()> {
-        self.send(CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::RenameSession { session_id, title },
-        })
-    }
-
     pub fn set_model(&self, session_id: String, model: String) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: None,
@@ -1214,22 +1207,6 @@ mod tests {
         assert_eq!(
             String::from_utf8(output).expect("utf8"),
             "{\"command\":\"cancel_turn\",\"session_id\":\"s1\"}\n"
-        );
-    }
-
-    #[test]
-    fn rename_session_sends_bridge_command() {
-        let (conn, mut rx) = AgentConnection::test_channel();
-
-        conn.rename_session("session-1".to_owned(), "Renamed".to_owned()).expect("rename");
-
-        let envelope = rx.try_recv().expect("command");
-        assert_eq!(
-            envelope.command,
-            BridgeCommand::RenameSession {
-                session_id: "session-1".to_owned(),
-                title: "Renamed".to_owned(),
-            }
         );
     }
 

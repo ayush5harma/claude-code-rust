@@ -2,12 +2,10 @@ import { observeSessionModel } from "./session_model.js";
 import {
   getSessionMessages,
   listSessions,
-  renameSession,
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
   Query,
   SessionMessage,
-  SessionMutationOptions,
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
   BridgeCommand,
@@ -43,7 +41,6 @@ type SessionDataCommand = Extract<
   {
     command:
       | "generate_session_title"
-      | "rename_session"
       | "get_status_snapshot"
       | "get_context_usage"
       | "get_usage"
@@ -57,9 +54,6 @@ export type SessionDataCommandDeps = {
     query: Query,
     description: string,
   ) => Promise<string>;
-  buildSessionMutationOptions: (
-    cwd?: string,
-  ) => SessionMutationOptions | undefined;
   rewindTargetsFromSessionMessages: (
     messages: SessionMessage[],
   ) => RewindTarget[];
@@ -77,9 +71,6 @@ export async function handleSessionDataCommand(
   switch (command.command) {
     case "generate_session_title":
       await generateTitle(command, requestId, deps);
-      return;
-    case "rename_session":
-      await rename(command, requestId, deps);
       return;
     case "get_status_snapshot":
       await getStatusSnapshot(command, requestId);
@@ -120,34 +111,6 @@ async function generateTitle(
     slashError(
       command.session_id,
       `failed to generate session title: ${message}`,
-      requestId,
-    );
-  }
-}
-
-async function rename(
-  command: Extract<SessionDataCommand, { command: "rename_session" }>,
-  requestId: string | undefined,
-  deps: SessionDataCommandDeps,
-): Promise<void> {
-  const session = requireSession(command.session_id, requestId);
-  if (!session) {
-    return;
-  }
-  try {
-    await renameSession(
-      command.session_id,
-      command.title,
-      deps.buildSessionMutationOptions(session.cwd),
-    );
-    await emitSessionTitle(session);
-    setSessionListingDir(session.cwd);
-    await emitSessionsList(requestId);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    slashError(
-      command.session_id,
-      `failed to rename session: ${message}`,
       requestId,
     );
   }

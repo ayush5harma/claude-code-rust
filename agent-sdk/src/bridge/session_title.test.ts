@@ -48,9 +48,6 @@ function writeSdkFixture(fixturePath: string, cwd: string): void {
       const title = titles.get(sessionId);
       return title === undefined ? undefined : { sessionId, summary: title, lastModified: 1, customTitle: title, cwd };
     }
-    export async function renameSession(sessionId, title) {
-      titles.set(sessionId, title);
-    }
     export async function importSessionToStore() {}
     export async function getSessionMessages() {
       return [];
@@ -209,9 +206,7 @@ test("the bridge sends the session API's title through resume, turns, renames, r
       prompt("prompt-rename", "/rename Fresh name");
       await readUntil(titleUpdate(SESSION_ID, "Fresh name"));
 
-      // The Status tab's rename and title generation.
-      send({ command: "rename_session", session_id: SESSION_ID, title: "Status name", request_id: "status-rename" });
-      await readUntil(titleUpdate(SESSION_ID, "Status name"));
+      // The Status tab's title generation.
       send({ command: "generate_session_title", session_id: SESSION_ID, description: "hello", request_id: "status-generate" });
       await readUntil(titleUpdate(SESSION_ID, "Generated name"));
 
@@ -235,7 +230,6 @@ test("the bridge sends the session API's title through resume, turns, renames, r
           [SESSION_ID, "Saved name"],
           [SESSION_ID, "Launch name"],
           [SESSION_ID, "Fresh name"],
-          [SESSION_ID, "Status name"],
           [SESSION_ID, "Generated name"],
           [CLEARED_SESSION_ID, "Generated name"],
         ],

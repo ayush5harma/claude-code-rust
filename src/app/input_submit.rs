@@ -29,18 +29,8 @@ pub(super) fn submit_input(app: &mut App) {
         dispatch_active_turn_prompt(app, submission.into_text(), inline_pastes);
         return;
     }
-    if (app.is_agent_turn_active() || !app.pending_user_messages.is_empty())
-        && submission.class().requires_idle_turn()
-    {
-        let label = submission.blocked_label();
-        crate::app::events::push_active_turn_submission_blocked_notice(app, &label);
-        tracing::debug!(
-            target: crate::logging::targets::APP_INPUT,
-            event_name = "submit_blocked_by_active_turn",
-            message = "submission rejected while agent turn is active",
-            outcome = "blocked",
-            submission = %label,
-        );
+    if let Some(refusal) = idle_turn_refusal(app, &submission) {
+        crate::app::events::push_active_turn_submission_blocked_notice(app, &refusal);
         return;
     }
 
@@ -108,6 +98,43 @@ fn dispatch_submission(
         return;
     }
     dispatch_prompt_turn(app, &submission.into_text(), inline_pastes);
+}
+
+/// The composer's rule for commands that need an idle turn, shared by every
+/// surface that submits one.
+fn idle_turn_refusal(app: &App, submission: &slash::ResolvedSubmission) -> Option<String> {
+    let turn_busy = app.is_agent_turn_active() || !app.pending_user_messages.is_empty();
+    if !turn_busy || !submission.class().requires_idle_turn() {
+        return None;
+    }
+    let label = submission.blocked_label();
+    tracing::debug!(
+        target: crate::logging::targets::APP_INPUT,
+        event_name = "submit_blocked_by_active_turn",
+        message = "submission rejected while agent turn is active",
+        outcome = "blocked",
+        submission = %label,
+    );
+    Some(crate::app::events::active_turn_submission_blocked_message(&label))
+}
+
+/// Send a Claude Code command on behalf of another surface, such as the Status
+/// tab's rename, as a composer submission of the same text would travel: the
+/// same admission rules, the same session turn, the same reply in the chat.
+/// The composer's draft and attachments stay untouched.
+pub(crate) fn submit_session_command(app: &mut App, text: &str) -> Result<(), String> {
+    if !app.composer_access().can_submit() {
+        return Err("The session is not ready for commands".to_owned());
+    }
+    let submission = slash::ResolvedSubmission::resolve(text.to_owned());
+    if let Some(refusal) = idle_turn_refusal(app, &submission) {
+        return Err(refusal);
+    }
+    if send_prompt_turn(app, &submission.into_text(), Vec::new(), Vec::new()) {
+        Ok(())
+    } else {
+        Err("The command could not be sent to the session".to_owned())
+    }
 }
 
 fn dispatch_prompt_turn(app: &mut App, text: &str, inline_pastes: Vec<String>) {

@@ -10,8 +10,8 @@ import type { SessionState } from "./session_lifecycle.js";
  *
  * Measured on Claude Code 2.1.288 (bundled with the pinned SDK): a launch-time
  * `-n` name and a /rename reach `getSessionInfo` only after a turn, so the
- * title is read again after every top-level turn and every rename the app
- * requests. After /clear the new session id already reports the old title.
+ * title is read again after every top-level turn and every title generation
+ * the app requests. After /clear the new session id already reports the old title.
  * `customTitle` falls back to the generated title after the first turn.
  */
 export async function emitSessionTitle(session: SessionState): Promise<void> {
