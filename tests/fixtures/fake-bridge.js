@@ -18,6 +18,7 @@ const activityScenario = SCENARIO.startsWith('hold-activity');
 const RELEASE_FILE = process.env.FAKE_BRIDGE_RELEASE_FILE;
 const JOURNAL = process.env.FAKE_BRIDGE_JOURNAL;
 let replyNumber = 0;
+let reloads = 0;
 let active = null;
 const pending = [];
 
@@ -402,6 +403,13 @@ readline
           pending.push(message.message_uuid);
           send({ event: 'user_message_queued', session_id: SESSION, message_uuid: message.message_uuid });
         } else streamReply(message.message_uuid);
+        break;
+      case 'reload_skills_and_styles':
+        // First reload succeeds; the second fails the way the bridge reports an SDK error.
+        reloads++;
+        send(reloads === 1
+          ? { event: 'skills_and_styles_reloaded', session_id: SESSION, skills: ['deploy', 'lint'], output_styles: ['default', 'Explanatory', 'mine'] }
+          : { event: 'slash_error', session_id: SESSION, message: 'failed to reload skills and output styles: style directory unreadable' });
         break;
       case 'inspect_settings':
         if (notificationScenario) {
