@@ -384,6 +384,46 @@ test("resume restores background acknowledgements and routes task-only outcomes 
   }
 });
 
+const PROMPT_ENVELOPE = '{"command":"prompt","chunks":[{"kind":"text","value":"my private plan for the merger"';
+
+test("a malformed command envelope writes none of its content to the default log", async () => {
+  const bridge = new SpawnedBridge({ CLAUDE_RS_BRIDGE_DIAGNOSTICS: "0" });
+  let message: string;
+  try {
+    bridge.writeRaw(`${PROMPT_ENVELOPE}\n`);
+    const envelope = await bridge.nextEnvelope();
+    assertProtocolEvent(envelope, "connection_failed");
+    message = String(envelope.message);
+  } finally {
+    await bridge.stop();
+  }
+
+  const records = bridge.stderrLines.map((line) => JSON.parse(line) as Record<string, unknown>);
+  const decode = records.find((record) => record.event_name === "bridge_command_decode_failed");
+  assert.ok(decode, bridge.stderrLines.join("\n"));
+  assert.equal(decode.size_bytes, PROMPT_ENVELOPE.length);
+  for (const text of [...bridge.stderrLines, message]) {
+    assert.ok(!text.includes("private plan"), text);
+  }
+  assert.equal("preview" in (decode.fields as Record<string, unknown>), false);
+});
+
+test("a malformed command envelope keeps its preview in the detailed log", async () => {
+  const bridge = new SpawnedBridge({ CLAUDE_RS_BRIDGE_DIAGNOSTICS: "1" });
+  try {
+    bridge.writeRaw(`${PROMPT_ENVELOPE}\n`);
+    await bridge.nextEnvelope();
+  } finally {
+    await bridge.stop();
+  }
+
+  const decode = bridge.stderrLines
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .find((record) => record.event_name === "bridge_command_decode_failed");
+  assert.ok(decode, bridge.stderrLines.join("\n"));
+  assert.match(String((decode.fields as Record<string, unknown>).preview), /private plan/);
+});
+
 test("bridge process emits connection_failed for malformed JSON", async () => {
   const bridge = new SpawnedBridge();
   try {

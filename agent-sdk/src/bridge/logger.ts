@@ -13,6 +13,11 @@ const BASELINE_DIAGNOSTICS = DIAGNOSTICS_MODE === "0";
 /** Longest excerpt of one baseline field, in characters. */
 const BASELINE_FIELD_LIMIT = 240;
 
+/** Whether the host asked for detailed diagnostics (content-bearing fields are allowed). */
+export function detailedDiagnosticsEnabled(): boolean {
+  return DETAILED_DIAGNOSTICS;
+}
+
 export const LOG_TARGETS = {
   APP_AUTH: "app.auth",
   APP_CACHE: "app.cache",
