@@ -223,12 +223,27 @@ fn invalid_trust_structure_is_not_replaced_during_acceptance() {
     }
 }
 
-#[cfg(unix)]
-#[test]
-fn untrusted_startup_through_a_symlink_shows_the_directory_yes_would_save() {
+/// What the trust prompt draws, with spaces removed so the path reads as one
+/// string whatever the row breaks.
+fn prompt_text(app: &mut App) -> String {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
+    let mut terminal = Terminal::new(TestBackend::new(200, 14)).expect("terminal");
+    terminal.draw(|frame| crate::ui::render_fullscreen_surface(frame, app)).expect("draw");
+    terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .filter(|symbol| !symbol.trim().is_empty())
+        .collect()
+}
+
+#[cfg(unix)]
+#[test]
+fn untrusted_startup_through_a_symlink_shows_the_directory_yes_would_save() {
     let fixture = tempfile::tempdir().expect("tempdir");
     let target = fixture.path().join("resolved-target-dir");
     std::fs::create_dir(&target).expect("target");
@@ -241,16 +256,7 @@ fn untrusted_startup_through_a_symlink_shows_the_directory_yes_would_save() {
     app.trust.preferences_path = Some(preferences.clone());
 
     initialize(&mut app);
-    let mut terminal = Terminal::new(TestBackend::new(200, 14)).expect("terminal");
-    terminal.draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app)).expect("draw");
-    let screen: String = terminal
-        .backend()
-        .buffer()
-        .content
-        .iter()
-        .map(ratatui::buffer::Cell::symbol)
-        .filter(|symbol| !symbol.trim().is_empty())
-        .collect();
+    let screen = prompt_text(&mut app);
     accept(&mut app).expect("accept");
 
     let saved: serde_json::Value =
@@ -259,4 +265,30 @@ fn untrusted_startup_through_a_symlink_shows_the_directory_yes_would_save() {
     assert!(saved_key.ends_with("resolved-target-dir"), "{saved_key}");
     assert!(screen.contains(&saved_key.replace(' ', "")), "{screen}");
     assert!(!screen.contains("shortcut-dir"), "{screen}");
+}
+
+#[test]
+fn unreadable_preferences_still_show_the_directory_and_never_a_stale_one() {
+    let fixture = tempfile::tempdir().expect("tempdir");
+    let first = fixture.path().join("first-project-dir");
+    let second = fixture.path().join("second-project-dir");
+    std::fs::create_dir(&first).expect("first");
+    std::fs::create_dir(&second).expect("second");
+    let preferences = fixture.path().join(".claude.json");
+    std::fs::write(&preferences, r#"{"projects":{}}"#).expect("preferences");
+    let mut app = App::test_default();
+    app.trust.preferences_path = Some(preferences.clone());
+    app.cwd_raw = first.to_string_lossy().into_owned();
+    initialize(&mut app);
+    assert!(prompt_text(&mut app).contains("first-project-dir"));
+
+    std::fs::write(&preferences, "{not json").expect("corrupt");
+    app.cwd_raw = second.to_string_lossy().into_owned();
+    refresh(&mut app);
+    let screen = prompt_text(&mut app);
+
+    assert!(screen.contains("Invalidtrustpreferences"), "{screen}");
+    assert!(screen.contains("second-project-dir"), "{screen}");
+    assert!(!screen.contains("first-project-dir"), "{screen}");
+    assert!(accept(&mut app).is_err());
 }
