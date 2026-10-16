@@ -46,6 +46,11 @@ pub fn redact_text(input: &str) -> String {
     redact_text_with_home(input, dirs::home_dir().as_deref())
 }
 
+/// Credential rules only, for output whose paths are the point (`config path`).
+pub fn redact_credentials(input: &str) -> String {
+    redact_text_with_home(input, None)
+}
+
 pub fn redact_line(line: &str) -> String {
     redact_line_with_home(line, dirs::home_dir().as_deref())
 }
@@ -113,9 +118,8 @@ fn match_home(bytes: &[u8], start: usize, home: &[u8], windows_style: bool) -> O
         let actual = *bytes.get(at)?;
         if windows_style && matches!(expected, b'/' | b'\\') {
             match actual {
-                b'/' => at += 1,
                 b'\\' if bytes.get(at + 1) == Some(&b'\\') => at += 2,
-                b'\\' => at += 1,
+                b'/' | b'\\' => at += 1,
                 _ => return None,
             }
         } else if windows_style && actual.eq_ignore_ascii_case(expected) || actual == *expected {
@@ -285,11 +289,9 @@ fn is_token_key_span(input: &str, key_start: usize, name_end: usize) -> bool {
     if name_end != key_end {
         return false;
     }
-    match key_start.checked_sub(1).map(|index| bytes[index]) {
-        None => true,
-        Some(previous) if previous.is_ascii_alphanumeric() => bytes[key_start] == b'T',
-        Some(_) => true,
-    }
+    // After a letter or digit only the camelCase `accessToken` form counts.
+    key_start.checked_sub(1).is_none_or(|index| !bytes[index].is_ascii_alphanumeric())
+        || bytes[key_start] == b'T'
 }
 
 /// Length of a leading credential scheme plus its spaces (`Basic `), so the credential
@@ -369,6 +371,16 @@ mod tests {
         assert_eq!(value["access_token"], "[redacted]");
         assert_eq!(value["refresh-token"], "[redacted]");
         assert_eq!(value["token"], "[redacted]");
+    }
+
+    #[test]
+    fn credential_only_redaction_keeps_paths() {
+        let home = dirs::home_dir().expect("home");
+        let text = format!("{}/.claude/settings.json token=abc", home.display());
+        assert_eq!(
+            super::redact_credentials(&text),
+            format!("{}/.claude/settings.json token=[redacted]", home.display())
+        );
     }
 
     // Mirrors the home table in agent-sdk/src/bridge/startup_failures.test.ts.

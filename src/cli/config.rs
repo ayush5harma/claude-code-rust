@@ -505,7 +505,8 @@ fn write_json<T: Serialize>(stdout: &mut impl Write, value: &T) -> anyhow::Resul
 
 fn json_text<T: Serialize>(value: &T) -> anyhow::Result<String> {
     let text = serde_json::to_string_pretty(value)?;
-    Ok(redaction::redact_text(&text))
+    // Paths are the answer to `config path`, so only credentials are redacted here.
+    Ok(redaction::redact_credentials(&text))
 }
 
 fn write_new_file_atomically(path: &Path, text: &str) -> anyhow::Result<()> {
