@@ -288,6 +288,10 @@ test("a subagent that leaves the background snapshot before its outcome stops co
   assert.deepEqual(final?.metadata, { task_type: "local_agent", sdk_lifecycle_task: true, is_backgrounded: true, summary: "ok", terminal_status: "completed" });
 });
 
+function terminalStatus(metadata: unknown): unknown {
+  return (metadata as Record<string, unknown> | undefined)?.terminal_status;
+}
+
 test("a relisted interrupted subagent runs again and its real outcome still wins", () => {
   const session = makeSession();
   const emit = (message: Record<string, unknown>) =>
@@ -305,11 +309,11 @@ test("a relisted interrupted subagent runs again and its real outcome still wins
     emit({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "agent-1", task_type: "local_agent" }] });
     const relisted = session.tasksById.get("agent-1");
     assert.equal(relisted?.status, "in_progress", "a relisted row is live");
-    assert.equal((relisted?.metadata as Record<string, unknown>).terminal_status, undefined, "the inferred status is cleared");
+    assert.equal(terminalStatus(relisted?.metadata), undefined, "the inferred status is cleared");
     emit({ type: "system", subtype: "task_notification", task_id: "agent-1", status: "failed", summary: "boom" });
     const final = session.tasksById.get("agent-1");
     assert.equal(final?.status, "completed", "the wire has no failed status");
-    assert.equal((final?.metadata as Record<string, unknown>).terminal_status, "failed");
+    assert.equal(terminalStatus(final?.metadata), "failed");
   } finally {
     restore();
   }
@@ -327,7 +331,7 @@ test("a subagent with a recorded outcome is not revived by a relisting or later 
     emit({ type: "system", subtype: "task_progress", task_id: "agent-1", summary: "late" });
     const row = session.tasksById.get("agent-1");
     assert.equal(row?.status, "completed");
-    assert.equal((row?.metadata as Record<string, unknown>).terminal_status, "completed");
+    assert.equal(terminalStatus(row?.metadata), "completed");
   } finally {
     restore();
   }
