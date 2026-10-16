@@ -29,7 +29,7 @@ pub(crate) use catalog::{APP_SLASH_COMMANDS, AppSlashCommand, SubmissionClass, c
 #[cfg(test)]
 pub use executors::try_handle_submit;
 pub(crate) use executors::{
-    request_mode_change, try_handle_submission, unsupported_command_refusal,
+    request_effort_change, request_mode_change, try_handle_submission, unsupported_command_refusal,
 };
 pub use navigation::{confirm_selection, move_down, move_up, prepare_submit, sync_with_cursor};
 pub(crate) use navigation::{dismiss, request_completion};
@@ -194,9 +194,11 @@ fn require_active_session(
 }
 
 /// Block the input field while a slash command is in flight.
-fn set_command_pending(app: &mut App, label: &str, ack: Option<super::PendingCommandAck>) {
+///
+/// `label` is shown as the composer status; `None` keeps the command silent so the draft stays visible.
+fn set_command_pending(app: &mut App, label: Option<&str>, ack: Option<super::PendingCommandAck>) {
     app.status = AppStatus::CommandPending;
-    app.turn.pending_command_label = Some(label.to_owned());
+    app.turn.pending_command_label = label.map(str::to_owned);
     app.turn.pending_command_ack = ack;
 }
 
