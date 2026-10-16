@@ -210,7 +210,9 @@ pub(crate) fn apply_client_event(app: &mut App, event: ClientEvent) {
             apply_stop_result(app, &task_id, error);
         }
         _ => {
-            unreachable!("client event family routed a non-subagent event to the subagent handler")
+            tracing::warn!(
+                "client event family routed a non-subagent event to the subagent handler"
+            );
         }
     }
 }
