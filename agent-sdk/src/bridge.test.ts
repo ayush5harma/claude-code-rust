@@ -1,6 +1,6 @@
 import { refreshSessionModel } from "./bridge/session_model.js";
 import { applySessionEffort, applySessionAgent, applySessionFastMode, emitAgentConfigOptionUpdate } from "./bridge/session_preferences.js";
-import test from "node:test";
+import test, { mock } from "node:test";
 import { emitEffortConfigOptionUpdate, refreshSessionEffort } from "./bridge/effort.js";
 import assert from "node:assert/strict";
 import {
@@ -1694,6 +1694,137 @@ test("parseCommandEnvelope validates reload_plugins command", () => {
     ).command,
     { command: "reload_plugins", session_id: "session-123", force: true },
   );
+});
+
+test("parseCommandEnvelope validates reload_skills_and_styles command", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      request_id: "req-reload",
+      command: "reload_skills_and_styles",
+      session_id: "session-123",
+    }),
+  );
+
+  assert.equal(parsed.requestId, "req-reload");
+  assert.deepEqual(parsed.command, {
+    command: "reload_skills_and_styles",
+    session_id: "session-123",
+  });
+  assert.throws(
+    () => parseCommandEnvelope(JSON.stringify({ command: "reload_skills_and_styles" })),
+    /session_id/,
+  );
+});
+
+type ReloadQueryStub = {
+  reloadSkills: () => Promise<unknown>;
+  reloadOutputStyles: () => Promise<unknown>;
+};
+
+async function runReloadSkillsAndStyles(
+  query: ReloadQueryStub,
+  during?: () => void | Promise<void>,
+): Promise<Array<Record<string, unknown>>> {
+  sessions.clear();
+  const session = makeSessionState();
+  session.query = query as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+  sessions.set(session.sessionId, session);
+  try {
+    return await captureBridgeEventsAsync(async () => {
+      const reload = handleSessionControlCommand(
+        { command: "reload_skills_and_styles", session_id: session.sessionId },
+        "req-reload",
+        promptControlDeps(),
+      );
+      await during?.();
+      await reload;
+    });
+  } finally {
+    sessions.clear();
+  }
+}
+
+test("reload_skills_and_styles starts both SDK reloads together and reports the names they returned", async () => {
+  const calls: string[] = [];
+  let resolveSkills!: (value: unknown) => void;
+  let resolveStyles!: (value: unknown) => void;
+  const events = await runReloadSkillsAndStyles(
+    {
+      reloadSkills: () => {
+        calls.push("skills");
+        return new Promise((resolve) => {
+          resolveSkills = resolve;
+        });
+      },
+      reloadOutputStyles: () => {
+        calls.push("styles");
+        return new Promise((resolve) => {
+          resolveStyles = resolve;
+        });
+      },
+    },
+    () => {
+      // Both requests are in flight before either answers.
+      assert.deepEqual(calls, ["skills", "styles"]);
+      resolveStyles({ available_output_styles: ["default", "Explanatory", "mine"] });
+      resolveSkills({
+        skills: [
+          { name: "deploy", description: "d", argumentHint: "" },
+          { name: "lint", description: "l", argumentHint: "" },
+        ],
+      });
+    },
+  );
+
+  assert.equal(events.length, 1);
+  assert.deepEqual(events[0], {
+    request_id: "req-reload",
+    event: "skills_and_styles_reloaded",
+    session_id: events[0]?.session_id,
+    skills: ["deploy", "lint"],
+    output_styles: ["default", "Explanatory", "mine"],
+  });
+});
+
+test("reload_skills_and_styles answers an SDK failure with a slash error and no reload event", async () => {
+  const events = await runReloadSkillsAndStyles({
+    reloadSkills: async () => ({ skills: [] }),
+    reloadOutputStyles: async () => {
+      throw new Error("style directory unreadable");
+    },
+  });
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.event, "slash_error");
+  assert.equal(events[0]?.request_id, "req-reload");
+  assert.equal(
+    events[0]?.message,
+    "failed to reload skills and output styles: style directory unreadable",
+  );
+});
+
+test("reload_skills_and_styles answers a request the SDK never acknowledges after 10 seconds", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const events = await runReloadSkillsAndStyles(
+      {
+        reloadSkills: () => new Promise(() => undefined),
+        reloadOutputStyles: async () => ({ available_output_styles: ["default"] }),
+      },
+      () => {
+        mock.timers.tick(10_000);
+      },
+    );
+
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.event, "slash_error");
+    assert.equal(
+      events[0]?.message,
+      "failed to reload skills and output styles: reloading skills timed out",
+    );
+  } finally {
+    mock.timers.reset();
+  }
 });
 
 test("handleReloadPluginsCommand holds cache-impacting reloads and sanitizes plugin names", async () => {

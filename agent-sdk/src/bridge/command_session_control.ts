@@ -22,6 +22,9 @@ import { FastModeVerificationError } from "./session_preferences.js";
 import { SessionObservations } from "./session_observations.js";
 
 const thinkingObservations = new SessionObservations();
+// Measured 2026-10-13 on a fresh session: the SDK applied reloadSkills() but never answered it.
+// An unbounded wait would leave the composer blocked for the rest of the session.
+const RELOAD_REQUEST_TIMEOUT_MS = 10_000;
 import {
   applyUltracode,
   emitUltracodeUpdate,
@@ -51,7 +54,8 @@ type SessionControlCommand = Extract<
       | "set_ultracode"
       | "refresh_ultracode"
       | "set_fast_mode"
-      | "reload_plugins";
+      | "reload_plugins"
+      | "reload_skills_and_styles";
   }
 >;
 
@@ -121,6 +125,9 @@ export async function handleSessionControlCommand(
       return;
     case "reload_plugins":
       await reloadPlugins(command, requestId, deps);
+      return;
+    case "reload_skills_and_styles":
+      await reloadSkillsAndStyles(command, requestId);
   }
 }
 
@@ -535,6 +542,64 @@ async function reloadPlugins(
   const session = requireSession(command.session_id, requestId);
   if (session) {
     await deps.handleReloadPluginsCommand(session, requestId, command.force);
+  }
+}
+
+// The SDK pushes `commands_changed` after a skills reload, which the existing inventory path
+// applies; this command only reports what was reloaded.
+async function reloadSkillsAndStyles(
+  command: Extract<SessionControlCommand, { command: "reload_skills_and_styles" }>,
+  requestId: string | undefined,
+): Promise<void> {
+  const session = requireSession(command.session_id, requestId);
+  if (!session) {
+    return;
+  }
+  try {
+    const [{ skills }, { available_output_styles: outputStyles }] = await Promise.all([
+      boundedReloadRequest("skills", session.query.reloadSkills()),
+      boundedReloadRequest("output styles", session.query.reloadOutputStyles()),
+    ]);
+    writeEvent(
+      {
+        event: "skills_and_styles_reloaded",
+        session_id: session.sessionId,
+        skills: skills.map((skill) => skill.name),
+        output_styles: outputStyles,
+      },
+      requestId,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    bridgeLogger.warn({
+      target: LOG_TARGETS.APP_SESSION,
+      eventName: "reload_skills_and_styles_failed",
+      message: "failed to reload skills and output styles",
+      outcome: "failure",
+      ...(requestId ? { requestId } : {}),
+      sessionId: session.sessionId,
+      fields: { error_message: message },
+    });
+    slashError(
+      command.session_id,
+      `failed to reload skills and output styles: ${message}`,
+      requestId,
+    );
+  }
+}
+
+async function boundedReloadRequest<T>(what: string, request: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`reloading ${what} timed out`)),
+      RELOAD_REQUEST_TIMEOUT_MS,
+    );
+  });
+  try {
+    return await Promise.race([request, timeout]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
