@@ -2018,3 +2018,79 @@ fn live_title_update_preserves_filtered_selection_when_an_earlier_result_stops_m
     assert!(matches!(rx.try_recv().expect("resume selected match").command,
         crate::agent::wire::BridgeCommand::ResumeSession { session_id, .. } if session_id == "chosen"));
 }
+
+#[test]
+fn skills_and_styles_reload_result_is_noticed_and_releases_the_pending_reload() {
+    let mut app = make_test_app();
+    app.status = AppStatus::CommandPending;
+    app.turn.pending_command_label = Some("Reloading skills and output styles...".into());
+    app.turn.pending_command_ack = Some(PendingCommandAck::SkillsAndStylesReload);
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SkillsAndStylesReloaded {
+            session_id: "test-session".to_owned(),
+            skill_names: vec!["deploy".to_owned(), "lint".to_owned()],
+            output_style_names: vec![
+                "default".to_owned(),
+                "Explanatory".to_owned(),
+                "mine".to_owned(),
+            ],
+        },
+    );
+
+    assert!(matches!(app.status, AppStatus::Ready));
+    assert!(app.turn.pending_command_ack.is_none());
+    let last = app.transcript.messages.last().expect("reload notice");
+    let Some(MessageBlock::Notice(notice)) = last.blocks.first() else {
+        panic!("expected a notice block");
+    };
+    assert_eq!(notice.severity, SystemSeverity::Info);
+    assert_eq!(notice.text.text, "Reloaded skills (2) and output styles (3)");
+}
+
+#[test]
+fn skills_and_styles_reload_result_leaves_an_unrelated_pending_command_alone() {
+    let mut app = make_test_app();
+    app.status = AppStatus::CommandPending;
+    app.turn.pending_command_label = Some("Switching mode...".into());
+    app.turn.pending_command_ack = Some(PendingCommandAck::CurrentMode);
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SkillsAndStylesReloaded {
+            session_id: "test-session".to_owned(),
+            skill_names: Vec::new(),
+            output_style_names: Vec::new(),
+        },
+    );
+
+    assert!(matches!(app.status, AppStatus::CommandPending));
+    assert!(matches!(app.turn.pending_command_ack, Some(PendingCommandAck::CurrentMode)));
+}
+
+#[test]
+fn skills_and_styles_reload_failure_is_noticed_and_releases_the_pending_reload() {
+    let mut app = make_test_app();
+    app.status = AppStatus::CommandPending;
+    app.turn.pending_command_label = Some("Reloading skills and output styles...".into());
+    app.turn.pending_command_ack = Some(PendingCommandAck::SkillsAndStylesReload);
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SlashCommandError {
+            session_id: Some("test-session".to_owned()),
+            message: "failed to reload skills and output styles: reloading skills timed out"
+                .to_owned(),
+        },
+    );
+
+    assert!(matches!(app.status, AppStatus::Ready));
+    assert!(app.turn.pending_command_ack.is_none());
+    let last = app.transcript.messages.last().expect("failure notice");
+    let Some(MessageBlock::Notice(notice)) = last.blocks.first() else {
+        panic!("expected a notice block");
+    };
+    assert_eq!(notice.severity, SystemSeverity::Error);
+    assert!(notice.text.text.contains("reloading skills timed out"), "{}", notice.text.text);
+}

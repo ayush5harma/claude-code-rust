@@ -102,6 +102,7 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         | ClientEvent::RuntimeReloadCompleted { .. }
         | ClientEvent::RuntimeReloadHeld { .. }
         | ClientEvent::RuntimeReloadFailed { .. }
+        | ClientEvent::SkillsAndStylesReloaded { .. }
         | ClientEvent::StructuredUsageReceived { .. }
         | ClientEvent::UsageRefreshStarted { .. }
         | ClientEvent::UsageSnapshotReceived { .. }
