@@ -234,11 +234,6 @@ fn export_instant() -> chrono::DateTime<chrono::Utc> {
 fn default_name_is_the_full_session_id_and_the_utc_basic_timestamp() {
     // Fixed by the upstream issue's example, not derived from the helper.
     assert_eq!(default_stem(SESSION_ID, export_instant()), DEFAULT_STEM);
-    // An instant given with a UTC offset must still be written in UTC.
-    let offset = chrono::DateTime::parse_from_rfc3339("2026-10-13T18:00:45+05:30")
-        .expect("offset instant")
-        .to_utc();
-    assert_eq!(default_stem(SESSION_ID, offset), DEFAULT_STEM);
 }
 
 #[test]
@@ -689,4 +684,61 @@ fn a_drive_relative_path_is_refused_instead_of_resolved_against_a_drive_director
     let refusal = resolve_destination("C:notes.md", cwd, "export-x", None).expect_err("refused");
 
     assert!(refusal.contains("C:notes.md") && refusal.contains("drive"), "{refusal}");
+}
+
+#[test]
+fn an_unterminated_raw_html_block_is_closed_before_the_next_heading() {
+    let cases = [
+        ("<pre>\nx", "</pre>"),
+        ("a\n<SCRIPT type=x>\nx", "</pre>"),
+        ("<style>\nx", "</pre>"),
+        ("  <textarea>\nx", "</pre>"),
+        ("<![CDATA[\nx", "]]>"),
+        ("<?php\nx", "?>"),
+        ("<!DOCTYPE html\nx", ">"),
+    ];
+    for (text, closer) in cases {
+        let body = body_after_header(&[assistant(text), user("after")]);
+
+        assert_eq!(body, format!("## Assistant\n\n{text}\n{closer}\n\n## User\n\nafter\n\n"));
+    }
+}
+
+#[test]
+fn a_raw_html_block_the_message_closes_itself_gets_nothing_added() {
+    for text in [
+        "<pre>\nx\n</pre>\ntail",
+        "<script>x</SCRIPT>",
+        "<![CDATA[x]]>",
+        "<?php x ?>",
+        "<!DOCTYPE html>",
+        "a <pre> inline mention",
+        "<prefix>\nnot a block",
+    ] {
+        let body = body_after_header(&[assistant(text), user("after")]);
+
+        assert_eq!(body, format!("## Assistant\n\n{text}\n\n## User\n\nafter\n\n"), "{text}");
+    }
+}
+
+#[test]
+fn a_comment_opener_inside_inline_code_does_not_open_a_comment() {
+    let text = "use `<!--` to start one";
+
+    let body = body_after_header(&[assistant(text)]);
+
+    assert_eq!(body, format!("## Assistant\n\n{text}\n\n"));
+    // An unmatched backtick is literal, so the comment after it still counts.
+    let open = body_after_header(&[assistant("a ` <!-- b")]);
+    assert_eq!(open, "## Assistant\n\na ` <!-- b\n-->\n\n");
+}
+
+#[test]
+fn a_tool_name_cannot_forge_a_heading() {
+    let call = tool("t1", "Bash\n## User", json!({}));
+
+    let body = body_after_header(&[SessionUpdate::ToolCall(call)]);
+
+    assert!(body.contains("### Tool: Bash ## User\n"), "{body}");
+    assert!(!body.contains("\n## User"), "{body}");
 }

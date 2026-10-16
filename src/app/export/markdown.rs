@@ -241,14 +241,102 @@ fn closes_fence(line: &str, fence: &Fence) -> bool {
     run >= fence.len && trimmed[run..].trim().is_empty()
 }
 
-/// Whether the text after this line is inside an HTML comment.
-fn inside_html_comment(line: &str, mut open: bool) -> bool {
+/// A raw HTML block (or comment) that a Markdown parser keeps open until its end
+/// marker, however many lines later: CommonMark HTML block types 1-5.
+struct RawBlock {
+    ends: &'static [&'static str],
+    /// Closing tags match without regard to case.
+    ignore_case: bool,
+}
+
+const COMMENT: RawBlock = RawBlock { ends: &["-->"], ignore_case: false };
+const RAW_TEXT: RawBlock =
+    RawBlock { ends: &["</pre>", "</script>", "</style>", "</textarea>"], ignore_case: true };
+const PROCESSING: RawBlock = RawBlock { ends: &["?>"], ignore_case: false };
+const DECLARATION: RawBlock = RawBlock { ends: &[">"], ignore_case: false };
+const CDATA: RawBlock = RawBlock { ends: &["]]>"], ignore_case: false };
+
+/// The raw block a line opens at its start (up to three spaces of indent), and how
+/// many bytes of the opener cannot count toward the end marker (`<?>` is not closed).
+fn block_start(line: &str) -> Option<(&'static RawBlock, usize)> {
+    let trimmed = line.trim_start_matches(' ');
+    if line.len() - trimmed.len() > 3 {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("<![cdata[") {
+        return Some((&CDATA, 9));
+    }
+    if lower.starts_with("<?") {
+        return Some((&PROCESSING, 2));
+    }
+    if trimmed
+        .strip_prefix("<!")
+        .is_some_and(|rest| rest.starts_with(|ch: char| ch.is_ascii_alphabetic()))
+    {
+        return Some((&DECLARATION, 2));
+    }
+    let tag = lower.strip_prefix('<')?;
+    let name_end = tag.find(|ch: char| !ch.is_ascii_alphanumeric()).unwrap_or(tag.len());
+    let ends_name = tag[name_end..].starts_with([' ', '\t', '>']) || name_end == tag.len();
+    (ends_name && matches!(&tag[..name_end], "pre" | "script" | "style" | "textarea"))
+        .then_some((&RAW_TEXT, 0))
+}
+
+/// Offset just past the first end marker of `block` in `text`.
+fn block_end(block: &RawBlock, text: &str) -> Option<usize> {
+    let haystack = if block.ignore_case { text.to_ascii_lowercase() } else { text.to_owned() };
+    block.ends.iter().filter_map(|end| haystack.find(end).map(|at| at + end.len())).min()
+}
+
+/// Offset just past the first `<!--` outside an inline code span.
+fn comment_start(text: &str) -> Option<usize> {
+    let mut at = 0;
+    while at < text.len() {
+        let rest = &text[at..];
+        if rest.starts_with("<!--") {
+            return Some(at + 4);
+        }
+        if rest.starts_with('`') {
+            let run = rest.chars().take_while(|ch| *ch == '`').count();
+            let ticks = &rest[..run];
+            let span_end = rest[run..]
+                .match_indices(ticks)
+                .find(|(index, _)| {
+                    !rest[run + index + run..].starts_with('`')
+                        && !rest[..run + index].ends_with('`')
+                })
+                .map(|(index, _)| run + index + run);
+            at += span_end.unwrap_or(run);
+            continue;
+        }
+        at += rest.chars().next().map_or(1, char::len_utf8);
+    }
+    None
+}
+
+/// The raw block still open after this line, given the one open before it.
+fn raw_block_after(line: &str, mut open: Option<&'static RawBlock>) -> Option<&'static RawBlock> {
     let mut rest = line;
+    if open.is_none()
+        && let Some((block, skip)) = block_start(line)
+    {
+        open = Some(block);
+        rest = &line[skip..];
+    }
     loop {
-        let (marker, opens) = if open { ("-->", false) } else { ("<!--", true) };
-        let Some(index) = rest.find(marker) else { return open };
-        rest = &rest[index + marker.len()..];
-        open = opens;
+        match open {
+            Some(block) => {
+                let Some(end) = block_end(block, rest) else { return open };
+                rest = &rest[end..];
+                open = None;
+            }
+            None => {
+                let Some(start) = comment_start(rest) else { return open };
+                rest = &rest[start..];
+                open = Some(&COMMENT);
+            }
+        }
     }
 }
 
@@ -265,13 +353,13 @@ fn forges_export_heading(line: &str) -> bool {
         && (title == "User" || title == "Assistant" || title.starts_with("Tool:"))
 }
 
-/// Message text that cannot change the file's structure: a fence or HTML comment
+/// Message text that cannot change the file's structure: a fence, HTML comment or raw HTML block
 /// the message leaves open is closed at its end, and a line that would read as one
 /// of the export's own role or tool headings gets its first `#` escaped.
 fn contain_message(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut fence: Option<Fence> = None;
-    let mut in_comment = false;
+    let mut raw: Option<&'static RawBlock> = None;
     for (index, line) in text.split('\n').enumerate() {
         if index > 0 {
             out.push('\n');
@@ -283,7 +371,7 @@ fn contain_message(text: &str) -> String {
             out.push_str(line);
             continue;
         }
-        if !in_comment {
+        if raw.is_none() {
             if let Some(open) = fence_opener(line) {
                 fence = Some(open);
                 out.push_str(line);
@@ -295,25 +383,27 @@ fn contain_message(text: &str) -> String {
                 out.push_str(&line[..position]);
                 out.push('\\');
                 out.push_str(&line[position..]);
-                in_comment = inside_html_comment(line, in_comment);
+                raw = raw_block_after(line, raw);
                 continue;
             }
         }
-        in_comment = inside_html_comment(line, in_comment);
+        raw = raw_block_after(line, raw);
         out.push_str(line);
     }
     if let Some(open) = fence {
         out.push('\n');
         out.push_str(&open.marker.to_string().repeat(open.len));
     }
-    if in_comment {
-        out.push_str("\n-->");
+    if let Some(block) = raw {
+        out.push('\n');
+        out.push_str(block.ends[0]);
     }
     out
 }
 
 fn write_tool(out: &mut String, call: &ToolCall) {
-    let name = tool_name(call);
+    let name = clean_line(tool_name(call));
+    let name = name.as_str();
     match input_summary(call.raw_input.as_ref()) {
         Some(summary) => {
             let _ = writeln!(out, "### Tool: {name} - {summary}\n");
