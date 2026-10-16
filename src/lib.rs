@@ -172,17 +172,24 @@ impl Cli {
     /// than refusing it, and the other support commands never start the bridge.
     fn validate_launch_paths(&self) -> Result<(), clap::Error> {
         use clap::CommandFactory;
-        let usage_error = |flag: &str, reason: String| {
-            Self::command().error(
+        let usage_error = |id: &str, reason: String| {
+            let mut command = Self::command();
+            command.build();
+            // clap renders the label the way its own value errors do ("--dir <DIR>").
+            let flag = command
+                .get_arguments()
+                .find(|arg| arg.get_id() == id)
+                .map_or_else(|| id.to_owned(), ToString::to_string);
+            command.error(
                 clap::error::ErrorKind::ValueValidation,
                 format!("invalid value for '{flag}': {reason}"),
             )
         };
         if let Some(reason) = self.dir.as_deref().and_then(working_dir_problem) {
-            return Err(usage_error("--dir <DIR>", reason));
+            return Err(usage_error("dir", reason));
         }
         if let Some(reason) = self.bridge_script.as_deref().and_then(bridge_script_problem) {
-            return Err(usage_error("--bridge-script <BRIDGE_SCRIPT>", reason));
+            return Err(usage_error("bridge_script", reason));
         }
         Ok(())
     }
@@ -226,9 +233,16 @@ fn working_dir_problem(dir: &std::path::Path) -> Option<String> {
     }
 }
 
-/// Why `script` cannot be the bridge script. Existence and file type come from the
-/// bridge resolver's own inspection, so they are worded as the bridge words them.
+/// Why `script` cannot be the bridge script. Absence and file type come from the bridge
+/// resolver's own inspection, so they are worded as the bridge words them. Any other
+/// failure to stat the path (a parent that cannot be searched) is reported as access,
+/// like `--dir`, because the inspector's `exists()` would call it "does not exist".
 fn bridge_script_problem(script: &std::path::Path) -> Option<String> {
+    if let Err(err) = std::fs::metadata(script)
+        && err.kind() != std::io::ErrorKind::NotFound
+    {
+        return Some(format!("bridge script cannot be accessed: {}: {err}", script.display()));
+    }
     agent::bridge::inspect_bridge_script(Some(script)).error.or_else(|| {
         std::fs::File::open(script)
             .err()

@@ -191,6 +191,23 @@ fn executable_refuses_a_bad_dir_or_bridge_script_before_startup() {
 }
 
 #[test]
+fn resume_with_a_bad_path_is_refused_like_a_plain_launch() {
+    let scratch = tempfile::tempdir().expect("scratch directory");
+    let missing_dir = scratch.path().join("missing-dir");
+    let missing_script = scratch.path().join("missing-bridge.js");
+    for (flag, path) in [("--dir", &missing_dir), ("--bridge-script", &missing_script)] {
+        let (profile, output) = run_with_scratch_profile(
+            &[flag.as_ref(), path.as_os_str(), "resume".as_ref(), "session-1".as_ref()],
+            scratch.path(),
+        );
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{flag}: {error}");
+        assert!(error.contains(flag) && error.contains(&path.display().to_string()), "{error}");
+        assert_eq!(std::fs::read_dir(profile.path()).expect("profile").count(), 0, "{flag}");
+    }
+}
+
+#[test]
 fn executable_resolves_a_relative_dir_against_the_current_directory() {
     let scratch = tempfile::tempdir().expect("scratch directory");
     std::fs::create_dir(scratch.path().join("project")).expect("project");
@@ -258,8 +275,15 @@ fn unreadable_dir_and_bridge_script_are_refused() {
     let locked = std::fs::Permissions::from_mode(0o000);
     std::fs::set_permissions(&dir, locked.clone()).expect("lock dir");
     std::fs::set_permissions(&script, locked).expect("lock script");
-    // Root reads through mode 000, which leaves nothing to refuse.
-    let enforced = std::fs::read_dir(&dir).is_err() && std::fs::File::open(&script).is_err();
+    let open = std::fs::Permissions::from_mode(0o755);
+    // Root reads through mode 000, which leaves nothing to refuse: skip explicitly rather
+    // than pass without asserting.
+    if std::fs::read_dir(&dir).is_ok() || std::fs::File::open(&script).is_ok() {
+        std::fs::set_permissions(&dir, open.clone()).expect("unlock dir");
+        std::fs::set_permissions(&script, open).expect("unlock script");
+        eprintln!("skipped: permissions are not enforced for this user (root?)");
+        return;
+    }
     let results = [
         Cli::try_parse_from(["claude-rs".as_ref(), "-C".as_ref(), dir.as_os_str()])
             .expect("parse")
@@ -269,17 +293,49 @@ fn unreadable_dir_and_bridge_script_are_refused() {
             .validate(),
     ];
     // Let the scratch directory be removed.
-    let open = std::fs::Permissions::from_mode(0o755);
     std::fs::set_permissions(&dir, open.clone()).expect("unlock dir");
     std::fs::set_permissions(&script, open).expect("unlock script");
-    if enforced {
-        let [dir_result, script_result] = results;
-        let dir_error = dir_result.expect_err("unreadable dir").to_string();
-        let script_error = script_result.expect_err("unreadable script").to_string();
-        assert!(dir_error.contains("--dir") && dir_error.contains("cannot be read"), "{dir_error}");
-        assert!(
-            script_error.contains("--bridge-script") && script_error.contains("cannot be read"),
-            "{script_error}"
-        );
+    let [dir_result, script_result] = results;
+    let dir_error = dir_result.expect_err("unreadable dir").to_string();
+    let script_error = script_result.expect_err("unreadable script").to_string();
+    assert!(dir_error.contains("--dir") && dir_error.contains("cannot be read"), "{dir_error}");
+    assert!(
+        script_error.contains("--bridge-script") && script_error.contains("cannot be read"),
+        "{script_error}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_path_behind_an_unsearchable_parent_is_reported_as_inaccessible_not_missing() {
+    use std::os::unix::fs::PermissionsExt;
+    let scratch = tempfile::tempdir().expect("scratch directory");
+    let parent = scratch.path().join("locked-parent");
+    std::fs::create_dir(&parent).expect("parent");
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o000)).expect("lock");
+    let open = std::fs::Permissions::from_mode(0o755);
+    // Root can search a mode-000 directory, so nothing would be refused.
+    let enforced = std::fs::metadata(parent.join("x"))
+        .is_err_and(|err| err.kind() == std::io::ErrorKind::PermissionDenied);
+    if !enforced {
+        std::fs::set_permissions(&parent, open).expect("unlock");
+        eprintln!("skipped: permissions are not enforced for this user (root?)");
+        return;
     }
+    let behind = parent.join("x.js");
+    let results = [
+        Cli::try_parse_from(["claude-rs".as_ref(), "-C".as_ref(), behind.as_os_str()])
+            .expect("parse")
+            .validate(),
+        Cli::try_parse_from(["claude-rs".as_ref(), "--bridge-script".as_ref(), behind.as_os_str()])
+            .expect("parse")
+            .validate(),
+    ];
+    std::fs::set_permissions(&parent, open).expect("unlock");
+    let [dir_result, script_result] = results;
+    let dir_error = dir_result.expect_err("dir behind locked parent").to_string();
+    let script_error = script_result.expect_err("script behind locked parent").to_string();
+    assert!(dir_error.contains("cannot be accessed"), "{dir_error}");
+    assert!(script_error.contains("cannot be accessed"), "{script_error}");
+    assert!(!script_error.contains("does not exist"), "{script_error}");
 }
