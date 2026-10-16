@@ -76,7 +76,7 @@ Use support commands when you need a repeatable snapshot of the local environmen
 
 Every run writes a default log of warnings and errors, including failures reported by the bridge and the SDK, without any flag. `claude-rs logs --latest` prints its path, and `--enable-logs` adds the detailed records.
 
-A hook that fails shows one warning in the transcript with its exit code and the start of its output. A hook that blocks a tool call or a prompt is reported where that block is shown, not again as a warning, and a hook cancelled by an interrupted turn is not reported at all. Every failure is also in the default log.
+A hook that fails shows one warning in the transcript with its exit code and the start of its output, and the failure is also in the default log. A hook that exits with code 2 is treated as a decision to block (a tool call, a prompt, or a stop), not a failure: no warning is shown and it is recorded only in the detailed log. A hook cancelled by an interrupted turn is not reported at all.
 
 See [Diagnostics](diagnostics.md) for full options, logging presets, bundle contents, and sharing guidance.
 
