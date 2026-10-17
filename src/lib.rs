@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
+// The test harness hands every test to its runner as one generated local array of references.
+// Past 2048 tests that array exceeds Clippy's 16 KiB `large_stack_arrays` limit, which it reports
+// without a span. Test builds only; production code keeps the lint.
+#![cfg_attr(test, allow(clippy::large_stack_arrays))]
+
 pub mod agent;
 pub mod app;
 mod claude_paths;
