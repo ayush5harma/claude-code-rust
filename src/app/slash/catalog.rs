@@ -26,6 +26,7 @@ pub(crate) enum AppSlashCommand {
     Plugins,
     Status,
     Usage,
+    Agents,
     Login,
     Logout,
     Mode,
@@ -265,6 +266,14 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         args: NO_ARGS,
     },
     AppSlashCommandSpec {
+        command: AppSlashCommand::Agents,
+        name: "/agents",
+        usage: "Usage: /agents",
+        short_description: "Show this session's subagents",
+        long_description: "Open the fullscreen list of this session's subagents with their live status and saved transcripts.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
         command: AppSlashCommand::Login,
         name: "/login",
         usage: "Usage: /login",
@@ -367,6 +376,7 @@ impl AppSlashCommand {
             Self::Plugins => "/plugins",
             Self::Status => "/status",
             Self::Usage => "/usage",
+            Self::Agents => "/agents",
             Self::Login => "/login",
             Self::Logout => "/logout",
             Self::Mode => "/mode",
@@ -404,7 +414,8 @@ impl AppSlashCommand {
             | Self::Mcp
             | Self::Plugins
             | Self::Status
-            | Self::Usage => {
+            | Self::Usage
+            | Self::Agents => {
                 if args.is_empty() {
                     SubmissionClass::Fullscreen
                 } else {

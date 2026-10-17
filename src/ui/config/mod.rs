@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod action_overlay;
-mod common;
+/// List, selection, badge and hint helpers shared by the fullscreen views.
+pub(super) mod common;
 mod footer;
 mod help;
 mod input;

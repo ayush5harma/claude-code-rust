@@ -166,6 +166,7 @@ pub(super) fn create_app_with_settings(
         copy_picker: None,
         history_export: None,
         diff_view: None,
+        agents: Box::default(),
         mention: None,
         committed_mentions: Vec::new(),
         file_index: super::file_index::FileIndexState::default(),

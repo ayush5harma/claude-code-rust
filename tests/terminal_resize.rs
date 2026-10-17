@@ -2640,6 +2640,55 @@ fn ctrl_v_attaches_the_system_clipboard_image_and_sends_it_with_the_prompt() {
 }
 
 #[test]
+fn agents_view_opens_from_an_empty_composer_stops_a_running_subagent_and_returns_to_chat() {
+    let mut test = TerminalTest::start("agents", 3);
+    // A draft keeping Left as cursor movement is covered by the app key tests.
+    test.wait_screen("[AGENTS:1]");
+    test.send(b"\x1b[D");
+    let screen = test.wait_screen_with(
+        "Check the parser for edge cases",
+        &["Subagents", "running", "Inspect docs", "Prompt", "Transcript: not saved yet"],
+    );
+    assert!(!screen.contains("Watch logs"), "background shells are not listed:\n{screen}");
+    assert_eq!(test.commands("list_subagents").len(), 1);
+
+    test.send(b"s");
+    test.wait_screen("stopped");
+    let stops = test.commands("stop_subagent");
+    assert_eq!(stops.len(), 1);
+    assert_eq!(stops[0]["task_id"], "agent-running");
+
+    // Selecting the completed subagent previews the response it ended with.
+    test.send(b"\x1b[B");
+    test.wait_screen_with("Docs path checked", &["Response", "Transcript: saved"]);
+    // Opening it shows the read the preview came from: the bridge's first answer.
+    test.send(b"\r");
+    test.wait_screen_with(
+        "Inspect the docs",
+        &["System reminder", "Hand the report back when done.", "step 1", "r refresh"],
+    );
+    // r reads it again and shows the step the second answer adds.
+    test.send(b"r");
+    test.wait_screen_with("step 2", &["Docs path checked"]);
+    let reads = test.commands("get_subagent_messages");
+    assert!(reads.iter().all(|read| read["agent_id"] == "agent-done"), "{reads:?}");
+    test.send(b"\x1b");
+    test.wait_screen("Review parser");
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+
+    test.submit("/agents", "/agents");
+    test.wait_screen("Review parser");
+    assert_eq!(test.commands("list_subagents").len(), 2);
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+    test.submit("after agents", "after agents");
+    test.wait_screen("reply 1 started");
+    test.assert_prompts(&["after agents"]);
+    test.shutdown();
+}
+
+#[test]
 #[allow(clippy::expect_used)]
 fn a_bad_dir_or_bridge_script_exits_before_the_terminal_is_touched() {
     let temp = tempfile::tempdir().expect("tempdir");

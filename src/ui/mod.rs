@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 pub(crate) mod activity_rows;
+mod agents;
 mod autocomplete;
 mod config;
 mod copy;
@@ -47,6 +48,7 @@ pub fn render_fullscreen_surface(frame: &mut Frame, app: &mut App) {
         SurfaceMode::Fullscreen(FullscreenView::Update) => update::render(frame, app),
         SurfaceMode::Fullscreen(FullscreenView::Copy) => copy::render(frame, app),
         SurfaceMode::Fullscreen(FullscreenView::Diff) => git_diff::render(frame, app),
+        SurfaceMode::Fullscreen(FullscreenView::Agents) => agents::render(frame, app),
         SurfaceMode::Chat => {
             debug_assert!(false, "chat is rendered by the inline terminal session");
         }

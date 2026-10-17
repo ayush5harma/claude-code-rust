@@ -5272,6 +5272,7 @@ test("TaskStop renders structured output and marks the task terminal", () => {
           blocks: [],
           blocked_by: [],
           metadata: {
+            sdk_lifecycle_task: true,
             terminal_status: "stopped",
             task_type: "bash",
             command: "npm run watch",
@@ -5567,6 +5568,33 @@ test("TaskList complete snapshot preserves richer retained fields", () => {
   });
 });
 
+test("TaskList keeps completed subagents while removing stale plan tasks", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "agent-tool", "Agent", { description: "Research", prompt: "Research" });
+    handleTaskSystemMessage(session, "task_started", {
+      task_id: "agent-1", tool_use_id: "agent-tool", task_type: "local_agent", description: "Research",
+    });
+    handleTaskSystemMessage(session, "task_notification", {
+      task_id: "agent-1", tool_use_id: "agent-tool", status: "completed", summary: "Research done",
+    });
+    session.tasksById.set("plan-old", { task_id: "plan-old", subject: "Stale plan", status: "pending", blocks: [], blocked_by: [] });
+    session.taskOrder.push("plan-old");
+    emitToolCall(session, "list-tool", "TaskList", {});
+    emitToolResultUpdate(session, "list-tool", false, { tasks: [] });
+  });
+
+  const snapshot = events.map(event => event.update as Record<string, unknown>).filter(update => update.type === "task_state_update").at(-1);
+  assert.equal(snapshot?.type, "task_state_update");
+  assert.equal(snapshot.source, "task_list");
+  assert.equal(snapshot.is_complete_snapshot, true);
+  const tasks = snapshot.tasks as Array<{ task_id: string; status: string; metadata?: Record<string, unknown> }>;
+  assert.deepEqual(tasks.map(task => [task.task_id, task.status, task.metadata?.task_type]), [["agent-1", "completed", "local_agent"]]);
+  assert.deepEqual(snapshot.removed_task_ids, ["plan-old"]);
+  assert.equal(session.tasksById.get("agent-1")?.status, "completed");
+  assert.equal(session.tasksById.has("plan-old"), false);
+});
+
 test("TaskGet null emits removal or confirmed absence", () => {
   const session = makeSessionState();
   session.tasksById.set("task-1", {
@@ -5625,6 +5653,7 @@ test("handleTaskSystemMessage emits task state for unlinked task_updated message
             status: "in_progress",
             blocks: [],
             blocked_by: [],
+            metadata: { sdk_lifecycle_task: true },
           },
         ],
         removed_task_ids: [],
@@ -5671,6 +5700,7 @@ test("handleTaskSystemMessage maps stopped notifications to terminal task state"
             blocked_by: [],
             metadata: {
               output_file: "C:/tmp/task-1.txt",
+              sdk_lifecycle_task: true,
               summary: "Stopped background watch",
               terminal_status: "stopped",
               terminal_reason: "worker_restart",
@@ -8018,6 +8048,7 @@ test("handleTaskSystemMessage preserves task correlation metadata", () => {
               request_id: "request-1",
               subagent_type: "tester",
               task_description: "Validate the branch",
+              sdk_lifecycle_task: true,
             },
             source_tool_call_id: "tool-1",
           },
@@ -8085,7 +8116,7 @@ test("ambient task lifecycle stays in inventory without creating a visible tool 
             status: "in_progress",
             blocks: [],
             blocked_by: [],
-            metadata: { task_type: "artifact_watch", ambient: true },
+            metadata: { task_type: "artifact_watch", ambient: true, sdk_lifecycle_task: true },
           },
         ],
         removed_task_ids: [],
@@ -9542,7 +9573,14 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
   const taskUpdates = updates.filter(
     (update) => update.type === "task_state_update",
   );
-  assert.equal(taskUpdates.length, 4);
+  // The three starts, then one update settling those with no saved outcome.
+  assert.equal(taskUpdates.length, 5);
+  const settled = taskUpdates.at(4);
+  assert.ok(settled?.type === "task_state_update");
+  assert.deepEqual(
+    settled.tasks.map((task) => [task.task_id, task.status, (task.metadata as Record<string, unknown>).terminal_status]),
+    [["task-bg", "completed", "interrupted"], ["task-remote", "completed", "interrupted"], ["task-mcp", "completed", "interrupted"]],
+  );
   assert.deepEqual(taskUpdates.at(1), {
     type: "task_state_update",
     source: "task_lifecycle",
@@ -9555,9 +9593,12 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
         blocks: [],
         blocked_by: [],
         metadata: {
+          // The saved start has no task_type; its Agent call makes it a subagent.
+          task_type: "local_agent",
           subagent_type: "general-purpose",
           is_backgrounded: true,
           spawn_depth: 2,
+          sdk_lifecycle_task: true,
         },
         source_tool_call_id: "tool-agent",
       },
@@ -9580,6 +9621,7 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
           task_description: "Remote agent smoke",
           task_type: "remote_agent",
           prompt: "Continue remotely",
+          sdk_lifecycle_task: true,
         },
       },
     ],
@@ -9601,6 +9643,7 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
           task_type: "mcp",
           workflow_name: "docs",
           prompt: "Read resource",
+          sdk_lifecycle_task: true,
         },
       },
     ],

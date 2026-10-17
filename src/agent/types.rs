@@ -628,6 +628,23 @@ pub struct TaskItem {
     pub source_tool_call_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentMessageRole {
+    User,
+    Assistant,
+    Tool,
+    /// A reminder the SDK added to the subagent's context, without its XML wrapper.
+    SystemReminder,
+}
+
+/// One readable entry of a saved subagent transcript.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentMessage {
+    pub role: SubagentMessageRole,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskStateUpdate {
     pub source: TaskUpdateSource,

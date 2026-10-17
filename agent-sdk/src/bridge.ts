@@ -68,6 +68,7 @@ import {
   handleSessionControlCommand,
 } from "./bridge/command_session_control.js";
 import { handleSessionDataCommand } from "./bridge/command_session_data.js";
+import { handleSubagentCommand } from "./bridge/subagents.js";
 import { dispatchSideQuestion } from "./bridge/side_questions.js";
 import { applySessionEffort, applySessionAgent, applySessionFastMode, emitAgentConfigOptionUpdate } from "./bridge/session_preferences.js";
 
@@ -1024,6 +1025,11 @@ async function handleCommand(
         rewindTargetsFromSessionMessages,
         handleRewind,
       });
+      return;
+    case "list_subagents":
+    case "get_subagent_messages":
+    case "stop_subagent":
+      await handleSubagentCommand(command, requestId);
       return;
     case "mcp_status":
     case "mcp_reconnect":
