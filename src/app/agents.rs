@@ -90,6 +90,9 @@ pub(crate) struct AgentsView {
     /// Ids `listSubagents()` returned; `None` until the first answer.
     pub transcript_ids: Option<HashSet<String>>,
     pub listing: bool,
+    /// Why the last transcript check failed. The ids it could not refresh are
+    /// kept, and the next successful check clears it.
+    pub list_error: Option<String>,
     stop_requested: HashSet<String>,
     pub transcript: Option<TranscriptView>,
     pub notice: Option<Notice>,
@@ -270,9 +273,7 @@ fn request_transcript_list(app: &mut App) {
     let Some((session_id, conn)) = active_session(app) else { return };
     match conn.list_subagents(session_id) {
         Ok(()) => app.agents.listing = true,
-        Err(error) => {
-            notice(app, NoticeKind::Error, format!("Could not check transcripts: {error}"));
-        }
+        Err(error) => app.agents.list_error = Some(error.to_string()),
     }
 }
 
@@ -310,12 +311,10 @@ pub(crate) fn apply_client_event(app: &mut App, event: ClientEvent) {
 
 pub(crate) fn apply_transcript_list(app: &mut App, agent_ids: Vec<String>, error: Option<String>) {
     app.agents.listing = false;
-    match error {
-        Some(error) => {
-            notice(app, NoticeKind::Error, format!("Could not check transcripts: {error}"));
-        }
-        None => app.agents.transcript_ids = Some(agent_ids.into_iter().collect()),
+    if error.is_none() {
+        app.agents.transcript_ids = Some(agent_ids.into_iter().collect());
     }
+    app.agents.list_error = error;
 }
 
 fn apply_transcript(

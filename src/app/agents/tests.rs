@@ -299,7 +299,7 @@ fn only_a_listed_id_has_a_transcript_and_reading_it_leaves_status_alone() {
         Some(true),
         "a failed re-check keeps the last list"
     );
-    assert!(app.agents.notice.as_ref().is_some_and(|notice| notice.text.contains("unreadable")));
+    assert!(app.agents.list_error.as_ref().is_some_and(|error| error.contains("unreadable")));
 }
 
 #[test]

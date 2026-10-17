@@ -38,9 +38,10 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App) {
     }
     let compact = area.height < 16;
     let inner = area.inner(Margin { vertical: u16::from(!compact), horizontal: 2 });
-    let notice = notice_line(app);
+    let notice = notice_lines(app);
     let hint = hint(app, inner.width);
-    let notice_height = notice.as_ref().map_or(0, |line| wrapped_height(line.clone(), inner.width));
+    let notice_height =
+        if notice.lines.is_empty() { 0 } else { wrapped_height(notice.clone(), inner.width) };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -57,25 +58,37 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App) {
     } else {
         app.agents.detail_scroll = render_agents(frame, chunks[0], chunks[2], app);
     }
-    if let Some(notice) = notice {
-        frame.render_widget(Paragraph::new(notice).wrap(Wrap { trim: false }), chunks[3]);
-    }
+    frame.render_widget(Paragraph::new(notice).wrap(Wrap { trim: false }), chunks[3]);
     frame.render_widget(
         Paragraph::new(hint).style(help_style()).wrap(Wrap { trim: false }),
         chunks[4],
     );
 }
 
-fn notice_line(app: &App) -> Option<Line<'static>> {
+/// The transcript check's state under the list, then the last action's notice.
+fn notice_lines(app: &App) -> Text<'static> {
+    let mut lines = Vec::new();
+    if app.agents.transcript.is_none() {
+        if app.agents.listing {
+            lines.push(Line::styled(
+                "Checking saved transcripts...",
+                Style::default().fg(theme::DIM),
+            ));
+        } else if let Some(error) = &app.agents.list_error {
+            lines.push(Line::styled(
+                format!("Could not check transcripts: {error}"),
+                Style::default().fg(theme::STATUS_ERROR),
+            ));
+        }
+    }
     if let Some(notice) = &app.agents.notice {
         let color = match notice.kind {
             NoticeKind::Error => theme::STATUS_ERROR,
             NoticeKind::Info => theme::DIM,
         };
-        return Some(Line::styled(notice.text.clone(), Style::default().fg(color)));
+        lines.push(Line::styled(notice.text.clone(), Style::default().fg(color)));
     }
-    (app.agents.listing && app.agents.transcript.is_none())
-        .then(|| Line::styled("Checking saved transcripts...", Style::default().fg(theme::DIM)))
+    Text::from(lines)
 }
 
 fn hint(app: &App, width: u16) -> String {

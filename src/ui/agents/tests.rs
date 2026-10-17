@@ -126,6 +126,45 @@ fn both_hints_name_the_page_keys_as_general_help_does() {
     assert!(hint.contains("PageUp/PageDown page"), "{hint}");
 }
 
+#[test]
+fn a_successful_recheck_clears_the_list_error_and_leaves_other_notices() {
+    let (mut app, _commands) = app_with_subagents();
+    let listed = |app: &mut App, error: Option<&str>| {
+        crate::app::handle_client_event(
+            app,
+            ClientEvent::SubagentsListed {
+                session_id: "session-1".to_owned(),
+                agent_ids: if error.is_some() { Vec::new() } else { vec!["agent-2".to_owned()] },
+                error: error.map(str::to_owned),
+            },
+        );
+    };
+    let list_error = "Could not check transcripts: subagent directory unreadable";
+    let press = |app: &mut App, code| handle_key(app, KeyEvent::new(code, KeyModifiers::NONE));
+
+    listed(&mut app, Some("subagent directory unreadable"));
+    let lines = screen(&mut app, 80, 30);
+    let (error_row, _) = row_with(&lines, list_error);
+    let (hint_row, _) = row_with(&lines, "Esc close");
+    assert!(error_row < hint_row, "the error sits above the hint");
+
+    press(&mut app, KeyCode::Char('r'));
+    listed(&mut app, None);
+    let lines = screen(&mut app, 80, 30);
+    assert!(!lines.iter().any(|line| line.contains("Could not check")), "{}", lines.join("\n"));
+
+    // A notice about something else outlives a later successful check.
+    press(&mut app, KeyCode::Char('r'));
+    listed(&mut app, Some("subagent directory unreadable"));
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Char('r'));
+    listed(&mut app, None);
+    let lines = screen(&mut app, 80, 30);
+    row_with(&lines, "Only a running subagent can be stopped.");
+    assert!(!lines.iter().any(|line| line.contains("Could not check")), "{}", lines.join("\n"));
+}
+
 /// Reports one tool call the way the bridge does; `parent` makes it a subagent's own call.
 fn tool_call(
     app: &mut App,
