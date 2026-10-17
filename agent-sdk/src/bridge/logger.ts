@@ -124,6 +124,7 @@ function commandSessionId(command: BridgeCommand): string | undefined {
     case "get_subagent_messages":
     case "stop_subagent":
     case "get_rewind_targets":
+    case "export_session_history":
     case "rewind":
     case "reload_plugins":
     case "mcp_status":
@@ -176,6 +177,7 @@ function commandToolCallId(command: BridgeCommand): string | undefined {
     case "get_subagent_messages":
     case "stop_subagent":
     case "get_rewind_targets":
+    case "export_session_history":
     case "rewind":
     case "reload_plugins":
     case "mcp_status":
@@ -230,6 +232,7 @@ function eventToolCallId(event: BridgeEvent): string | undefined {
     case "subagent_messages":
     case "subagent_stop_result":
     case "rewind_targets":
+    case "session_history_export":
     case "rewind_result":
     case "mcp_snapshot":
       return undefined;
@@ -286,6 +289,7 @@ function protocolEventLevel(event: BridgeEvent): LogLevel {
     case "subagent_messages":
     case "subagent_stop_result":
     case "rewind_targets":
+    case "session_history_export":
     case "rewind_result":
     case "runtime_reload_completed":
     case "mcp_set_servers_result":

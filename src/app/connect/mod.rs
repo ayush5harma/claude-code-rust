@@ -167,6 +167,7 @@ pub(super) fn create_app_with_settings(
         session_picker: SessionPickerState::default(),
         chat_render: super::ChatRenderState::default(),
         copy_picker: None,
+        history_export: None,
         diff_view: None,
         agents: Box::default(),
         mention: None,
