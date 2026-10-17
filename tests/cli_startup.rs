@@ -138,6 +138,10 @@ fn executable_rejects_unusable_launch_configuration_before_anything_starts() {
     let project = tempfile::tempdir().expect("project");
     std::fs::write(project.path().join("broken.json"), "{ \"a\": ").expect("broken settings");
     std::fs::write(project.path().join("empty.md"), "").expect("empty prompt");
+    // A usable script, so the up-front `--bridge-script` check passes and each flag below
+    // is the only thing wrong; the absent log shows nothing started.
+    let bridge = project.path().join("bridge.js");
+    std::fs::write(&bridge, "").expect("bridge script");
     let log = project.path().join("runtime.log");
     for (args, expected) in [
         (vec!["--add-dir", "not-there"], "--add-dir: "),
@@ -147,7 +151,9 @@ fn executable_rejects_unusable_launch_configuration_before_anything_starts() {
         (vec!["--system-prompt-file", "empty.md"], "--system-prompt-file: "),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_claude-rs"))
-            .args(["--bridge-script", "missing-bridge.js", "--log-file"])
+            .arg("--bridge-script")
+            .arg(&bridge)
+            .arg("--log-file")
             .arg(&log)
             .arg("-C")
             .arg(project.path())
@@ -158,7 +164,6 @@ fn executable_rejects_unusable_launch_configuration_before_anything_starts() {
         assert!(output.stdout.is_empty());
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(error.contains(expected), "{args:?}: {error}");
-        assert!(!error.contains("missing-bridge.js"), "runtime resolved the bridge: {error}");
         assert!(!log.exists(), "{args:?}: the launch started logging");
     }
 }
