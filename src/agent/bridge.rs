@@ -95,47 +95,7 @@ pub fn resolve_bridge_launcher(explicit_script: Option<&Path>) -> anyhow::Result
 }
 
 pub fn inspect_bridge_script(explicit_script: Option<&Path>) -> BridgeScriptInspection {
-    let resolver = BridgeScriptResolver::from_process(explicit_script);
-    let explicit_path = resolver.explicit_script.map(Path::to_path_buf);
-
-    let overridden = resolver
-        .explicit_script
-        .map(|path| (path, ScriptOverride::Explicit))
-        .or_else(|| resolver.env_script.as_deref().map(|path| (path, ScriptOverride::Env)));
-    if let Some((path, source)) = overridden {
-        let error = script_override_problem(path, source);
-        return BridgeScriptInspection {
-            explicit_path,
-            env_path: resolver.env_script.clone(),
-            candidates: Vec::new(),
-            resolved_path: error.is_none().then(|| path.to_path_buf()),
-            error,
-        };
-    }
-
-    let candidates = resolver
-        .automatic_candidates()
-        .into_iter()
-        .map(|candidate| BridgeCandidateInspection {
-            source: candidate.source.label().to_owned(),
-            is_file: candidate.path.is_file(),
-            path: candidate.path,
-        })
-        .collect::<Vec<_>>();
-    let resolved_path = candidates
-        .iter()
-        .find(|candidate| candidate.is_file)
-        .map(|candidate| candidate.path.clone());
-
-    BridgeScriptInspection {
-        explicit_path,
-        env_path: resolver.env_script.clone(),
-        error: resolved_path
-            .is_none()
-            .then(|| "bridge script not found near the installed executable".to_owned()),
-        candidates,
-        resolved_path,
-    }
+    BridgeScriptResolver::from_process(explicit_script).inspect()
 }
 
 pub fn inspect_bridge_runtime() -> BridgeRuntimeInspection {
@@ -376,6 +336,51 @@ impl<'a> BridgeScriptResolver<'a> {
             cwd_script: PathBuf::from(BRIDGE_SCRIPT_RELATIVE_PATH),
             manifest_script: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join(BRIDGE_SCRIPT_RELATIVE_PATH),
+        }
+    }
+
+    /// The resolver's choice as `doctor` reports it, with the same override checks as
+    /// [`Self::resolve`].
+    fn inspect(&self) -> BridgeScriptInspection {
+        let explicit_path = self.explicit_script.map(Path::to_path_buf);
+
+        let overridden = self
+            .explicit_script
+            .map(|path| (path, ScriptOverride::Explicit))
+            .or_else(|| self.env_script.as_deref().map(|path| (path, ScriptOverride::Env)));
+        if let Some((path, source)) = overridden {
+            let error = script_override_problem(path, source);
+            return BridgeScriptInspection {
+                explicit_path,
+                env_path: self.env_script.clone(),
+                candidates: Vec::new(),
+                resolved_path: error.is_none().then(|| path.to_path_buf()),
+                error,
+            };
+        }
+
+        let candidates = self
+            .automatic_candidates()
+            .into_iter()
+            .map(|candidate| BridgeCandidateInspection {
+                source: candidate.source.label().to_owned(),
+                is_file: candidate.path.is_file(),
+                path: candidate.path,
+            })
+            .collect::<Vec<_>>();
+        let resolved_path = candidates
+            .iter()
+            .find(|candidate| candidate.is_file)
+            .map(|candidate| candidate.path.clone());
+
+        BridgeScriptInspection {
+            explicit_path,
+            env_path: self.env_script.clone(),
+            error: resolved_path
+                .is_none()
+                .then(|| "bridge script not found near the installed executable".to_owned()),
+            candidates,
+            resolved_path,
         }
     }
 
@@ -681,19 +686,47 @@ mod tests {
     #[test]
     fn env_override_wins_over_automatic_lookup() {
         let fixture = resolver_fixture();
-
-        let resolved = BridgeScriptResolver {
+        let resolver = BridgeScriptResolver {
             explicit_script: None,
             env_script: Some(fixture.env_script.clone()),
             current_exe: Some(fixture.installed_exe.clone()),
             allow_dev_fallbacks: false,
             cwd_script: fixture.cwd_script.clone(),
             manifest_script: fixture.manifest_script.clone(),
-        }
-        .resolve()
-        .expect("env override should resolve");
+        };
 
-        assert_eq!(resolved, fixture.env_script);
+        let chosen = resolver.resolve().expect("env override should resolve");
+        let inspection = resolver.inspect();
+
+        assert_eq!(chosen, fixture.env_script);
+        assert_eq!(inspection.resolved_path.as_ref(), Some(&fixture.env_script));
+        assert_eq!(inspection.error, None);
+    }
+
+    #[test]
+    fn a_missing_env_override_fails_instead_of_falling_back_to_automatic_lookup() {
+        // The packaged bridge exists, so falling back to it would resolve.
+        let fixture = resolver_fixture();
+        let missing = fixture.dir.path().join("env").join("missing.js");
+        let resolver = BridgeScriptResolver {
+            explicit_script: None,
+            env_script: Some(missing.clone()),
+            current_exe: Some(fixture.installed_exe.clone()),
+            allow_dev_fallbacks: false,
+            cwd_script: fixture.cwd_script.clone(),
+            manifest_script: fixture.manifest_script.clone(),
+        };
+        let expected = format!(
+            "bridge script from CLAUDE_RS_AGENT_BRIDGE does not exist: {}",
+            missing.display()
+        );
+
+        let err = resolver.resolve().expect_err("missing env override should fail");
+        let inspection = resolver.inspect();
+
+        assert_eq!(err.to_string(), expected);
+        assert_eq!(inspection.error.as_deref(), Some(expected.as_str()));
+        assert_eq!(inspection.resolved_path, None);
     }
 
     #[test]

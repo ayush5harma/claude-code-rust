@@ -287,9 +287,11 @@ impl Drop for ModeGuard {
 
 /// Root passes every permission check, which leaves nothing to refuse: such a run skips
 /// explicitly rather than passing without asserting.
+/// The probe opens `behind_lock`, a path the test locked away, rather than repeating the
+/// check under test, so a broken check fails instead of being skipped.
 #[cfg(unix)]
-fn permissions_enforced(locked_dir: &std::path::Path) -> bool {
-    let enforced = std::fs::metadata(locked_dir.join("."))
+fn permissions_enforced(behind_lock: &std::path::Path) -> bool {
+    let enforced = std::fs::File::open(behind_lock)
         .is_err_and(|err| err.kind() == std::io::ErrorKind::PermissionDenied);
     if !enforced {
         eprintln!("skipped: permissions are not enforced for this user (root?)");
@@ -317,7 +319,7 @@ fn a_dir_needs_both_read_and_search_permission() {
         ModeGuard::set(&no_read, 0o300),
         ModeGuard::set(&both, 0o500),
     ];
-    if !permissions_enforced(&no_search) {
+    if !permissions_enforced(&no_search.join("inside.txt")) {
         return;
     }
     for (dir, reason) in [(&no_search, "cannot be entered"), (&no_read, "cannot be read")] {
@@ -341,7 +343,7 @@ fn a_dir_behind_an_unsearchable_parent_is_reported_as_inaccessible_not_missing()
     let parent = scratch.path().join("locked-parent");
     std::fs::create_dir_all(parent.join("project")).expect("project");
     let _guard = ModeGuard::set(&parent, 0o000);
-    if !permissions_enforced(&parent) {
+    if !permissions_enforced(&parent.join("project")) {
         return;
     }
     let project = parent.join("project");
@@ -386,7 +388,7 @@ fn startup_and_doctor_judge_an_unusable_bridge_script_alike() {
     let behind_parent = parent.join("bridge.js");
     std::fs::write(&behind_parent, "").expect("script behind parent");
     let _guards = [ModeGuard::set(&unreadable, 0o000), ModeGuard::set(&parent, 0o000)];
-    if !permissions_enforced(&parent) {
+    if !permissions_enforced(&behind_parent) {
         return;
     }
     for (script, reason) in
