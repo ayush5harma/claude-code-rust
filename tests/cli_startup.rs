@@ -83,6 +83,13 @@ fn contradictory_or_invalid_startup_arguments_are_rejected() {
         vec!["claude-rs", "--permission-mode", "invalid"],
         vec!["claude-rs", "--model", ""],
         vec!["claude-rs", "--agent", ""],
+        vec!["claude-rs", "--name", ""],
+        vec!["claude-rs", "--fork-session"],
+        vec!["claude-rs", "--fork-session", "explain this project"],
+        vec!["claude-rs", "doctor", "--add-dir", "src"],
+        vec!["claude-rs", "doctor", "--system-prompt", "a"],
+        vec!["claude-rs", "--system-prompt", "a", "--system-prompt-file", "prompt.md"],
+        vec!["claude-rs", "--append-system-prompt", "a", "--append-system-prompt-file", "a.md"],
     ] {
         assert!(
             Cli::try_parse_from(&args).and_then(|cli| cli.validate()).is_err(),
@@ -123,6 +130,41 @@ fn executable_rejects_startup_conflicts_before_resolving_the_bridge() {
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(error.contains("error:"), "{error}");
         assert!(!error.contains("missing-bridge.js"), "runtime resolved the bridge: {error}");
+    }
+}
+
+#[test]
+fn executable_rejects_unusable_launch_configuration_before_anything_starts() {
+    let project = tempfile::tempdir().expect("project");
+    std::fs::write(project.path().join("broken.json"), "{ \"a\": ").expect("broken settings");
+    std::fs::write(project.path().join("empty.md"), "").expect("empty prompt");
+    // A usable script, so the up-front `--bridge-script` check passes and each flag below
+    // is the only thing wrong; the absent log shows nothing started.
+    let bridge = project.path().join("bridge.js");
+    std::fs::write(&bridge, "").expect("bridge script");
+    let log = project.path().join("runtime.log");
+    for (args, expected) in [
+        (vec!["--add-dir", "not-there"], "--add-dir: "),
+        (vec!["--settings", "missing.json"], "--settings: cannot read "),
+        (vec!["--settings", "broken.json"], "is not valid JSON"),
+        (vec!["--mcp-config", "{\"servers\":{}}"], "must contain an \"mcpServers\" object"),
+        (vec!["--system-prompt-file", "empty.md"], "--system-prompt-file: "),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_claude-rs"))
+            .arg("--bridge-script")
+            .arg(&bridge)
+            .arg("--log-file")
+            .arg(&log)
+            .arg("-C")
+            .arg(project.path())
+            .args(&args)
+            .output()
+            .expect("run with an unusable flag");
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains(expected), "{args:?}: {error}");
+        assert!(!log.exists(), "{args:?}: the launch started logging");
     }
 }
 

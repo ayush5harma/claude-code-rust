@@ -37,6 +37,7 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/new-session` | `/new-session` | Start a fresh bridge session in the current folder. |
 | `/resume` | `/resume` | Search and select a session in the fullscreen picker. |
 | `/rewind` | `/rewind <user_message_uuid> <both\|conversation\|code>` | Restore conversation, code, or both to a previous user message. |
+| `/reload` | `/reload` | Re-read skills and output styles from disk for the active session. |
 | `/export` | `/export [path]` | Save the complete conversation as a Markdown file. |
 
 Enter completes the selected slash command or argument and submits it when ready. Tab completes without submitting. Exact command names appear ahead of substring matches; arrow keys can select a different match. App commands that still need required arguments stay in the composer; commands with argument choices show those choices, while `/btw` continues as ordinary question text. An empty suggestion menu allows Enter to submit the typed input for normal validation.
@@ -94,6 +95,10 @@ Refresh keeps the current pane focused and retains the selected change when it r
 ## Copying responses
 
 `/copy` copies the last completed assistant response as its original Markdown, without thinking or tool output. Responses loaded from session history can be copied too. If the response contains code blocks, choose Full response or a code block with Up/Down, then Enter; Escape cancels. Enable Skip the /copy picker in `/config` to copy the complete Markdown response directly. Responses without code blocks copy directly. If the clipboard is unavailable, the picker stays open so you can retry. The command can copy an earlier completed response while a new response is still running; it does not submit a model request.
+
+## Reloading skills and output styles
+
+`/reload` asks the active session to re-read skills and output styles from disk, so a skill or style you just edited applies without restarting. The input is blocked until the SDK has answered both reloads, output styles first, then a single notice reports how many skills and output styles it found. The two halves are reported separately: one that fails shows its error next to the count for the other, and one that does not answer within 10 seconds is reported as unanswered (it may still apply) instead of as a failure. Before it runs, `/reload` waits for earlier requests for the same session to finish. If they take longer than 10 seconds from when `/reload` reached the bridge, whether stalled or just slow, `/reload` is skipped, nothing is reloaded, and a notice says so; it does not run later when the earlier request finishes. Once started, each half is given 10 seconds, so the input can stay blocked for up to 30 seconds in all; either way it is released. The slash command list picks up new or changed skills through the SDK's own command-list update. `/reload` does not reload plugins; use the Plugins tab for that.
 
 ## Side Questions
 

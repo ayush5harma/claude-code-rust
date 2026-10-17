@@ -178,6 +178,14 @@ pub enum ClientEvent {
     },
     /// Session runtime plugin reload failed after dispatch.
     RuntimeReloadFailed { session_id: String, message: String },
+    /// How the skills and the output styles halves of a `/reload` each ended.
+    SkillsAndStylesReloaded {
+        session_id: String,
+        skills: crate::agent::types::ReloadOutcome,
+        output_styles: crate::agent::types::ReloadOutcome,
+    },
+    /// A `/reload` waited too long behind earlier requests for its session and was skipped.
+    SkillsAndStylesReloadExpired { session_id: String, after_ms: u64 },
     /// Custom slash command replaced the active session.
     SessionReplaced {
         session_id: model::SessionId,
@@ -292,6 +300,8 @@ impl ClientEvent {
             | Self::RuntimeReloadCompleted { session_id }
             | Self::RuntimeReloadHeld { session_id, .. }
             | Self::RuntimeReloadFailed { session_id, .. }
+            | Self::SkillsAndStylesReloaded { session_id, .. }
+            | Self::SkillsAndStylesReloadExpired { session_id, .. }
             | Self::SettingsResultReceived { session_id, .. }
             | Self::StatusSnapshotReceived { session_id, .. }
             | Self::ContextUsageReceived { session_id, .. }

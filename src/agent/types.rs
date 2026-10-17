@@ -336,6 +336,15 @@ pub struct RuntimeReloadCacheImpact {
     pub invalid_server_name_count: usize,
 }
 
+/// How one half of a skills-and-styles reload ended, as the bridge reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ReloadOutcome {
+    Reloaded { names: Vec<String> },
+    Failed { message: String },
+    TimedOut { after_ms: u64 },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {

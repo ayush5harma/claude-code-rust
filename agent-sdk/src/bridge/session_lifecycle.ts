@@ -40,6 +40,12 @@ import type {
   ToolCall,
   UserDialogOption,
 } from "../types.js";
+import {
+  buildFlagSettings,
+  buildLaunchQueryOptions,
+  buildSystemPrompt,
+  fileCheckpointingEnabled,
+} from "./launch_config.js";
 import { bridgeLogger, LOG_TARGETS, logSdkStderrLine } from "./logger.js";
 import { AsyncQueue, asRecordOrNull } from "./shared.js";
 import { beginSessionModeRead, observeSessionMode } from "./commands.js";
@@ -1116,30 +1122,20 @@ function startupPermissionModeOptions(launchSettings: SessionLaunchSettings): {
 }
 
 export function buildQueryOptions(params: QueryOptionsBuilderParams) {
-  const systemPrompt = {
-    type: "preset" as const,
-    preset: "claude_code" as const,
-    append: BRIDGE_RUNTIME_GUARD_PROMPT,
-    snapshot: true,
-  };
+  const systemPrompt = buildSystemPrompt(params.launchSettings, BRIDGE_RUNTIME_GUARD_PROMPT);
   const permissionModeOptions = startupPermissionModeOptions(
     params.launchSettings,
   );
-  // These are host capability restrictions, not copied user preferences.
-  // Draft review and held peer-message review require native UI surfaces.
-  const settings = {
-    feedbackDrafts: "off" as const,
-    ...(!["accept", "refuse"].includes(params.resolvedSettings.crossSessionInbound ?? "")
-      ? { crossSessionInbound: "refuse" as const }
-      : {}),
-  };
+  // Host capability restrictions, laid over any --settings layer rather than copied
+  // from user preferences.
+  const settings = buildFlagSettings(params.launchSettings, params.resolvedSettings);
   return {
     cwd: params.cwd,
     includePartialMessages: true,
     promptSuggestions: true,
     // SDK sessions need an explicit recording opt-in; their recording gate
     // otherwise ignores the JSON preference. Claude still applies environment restrictions.
-    enableFileCheckpointing: params.resolvedSettings.fileCheckpointingEnabled ?? true,
+    enableFileCheckpointing: fileCheckpointingEnabled(params.launchSettings, params.resolvedSettings),
     agentProgressSummaries: true,
     // Proposal tools require native review and lifecycle surfaces that the
     // public headless SDK does not currently expose to this host.
@@ -1151,6 +1147,7 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     ...permissionModeOptions,
     ...(params.launchSettings.effort !== undefined ? { effort: params.launchSettings.effort } : {}),
     ...(params.launchSettings.agent !== undefined ? { agent: params.launchSettings.agent } : {}),
+    ...buildLaunchQueryOptions(params.launchSettings, params),
     toolConfig: { askUserQuestion: { previewFormat: "markdown" as const } },
     systemPrompt,
     ...(params.claudeCodeExecutable

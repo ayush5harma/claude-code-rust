@@ -245,6 +245,20 @@ pub(super) async fn handle_bridge_event(
         crate::agent::wire::BridgeEvent::RuntimeReloadFailed { session_id, message } => {
             let _ = event_tx.send(ClientEvent::RuntimeReloadFailed { session_id, message }).await;
         }
+        crate::agent::wire::BridgeEvent::SkillsAndStylesReloaded {
+            session_id,
+            skills,
+            output_styles,
+        } => {
+            let _ = event_tx
+                .send(ClientEvent::SkillsAndStylesReloaded { session_id, skills, output_styles })
+                .await;
+        }
+        crate::agent::wire::BridgeEvent::SkillsAndStylesReloadExpired { session_id, after_ms } => {
+            let _ = event_tx
+                .send(ClientEvent::SkillsAndStylesReloadExpired { session_id, after_ms })
+                .await;
+        }
         crate::agent::wire::BridgeEvent::SessionReplaced {
             session_id,
             cwd,

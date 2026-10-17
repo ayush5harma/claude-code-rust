@@ -14,6 +14,14 @@ pub struct SessionLaunchSettings {
     pub effort: Option<super::model::EffortLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fork_session: bool,
+    /// Boxed so the session commands that carry launch settings stay small enough for
+    /// clippy's `large_futures` limit in futures that hold a command across an await.
+    #[serde(flatten)]
+    pub config: Box<SessionConfig>,
 }
 
 impl SessionLaunchSettings {
@@ -23,6 +31,44 @@ impl SessionLaunchSettings {
             && self.permission_mode.is_none()
             && self.effort.is_none()
             && self.agent.is_none()
+            && self.name.is_none()
+            && !self.fork_session
+            && self.config.is_empty()
+    }
+}
+
+/// Launch configuration kept for every session the process starts, unlike the initial-session
+/// fields above. The app has already resolved paths to absolute ones and checked that files
+/// were readable and JSON parsed; the bridge maps each field to its Agent SDK option.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_directories: Vec<String>,
+    /// A settings object for the SDK's flag-settings layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<serde_json::Map<String, serde_json::Value>>,
+    /// The `mcpServers` object of each `--mcp-config`, in command-line order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_configs: Vec<serde_json::Map<String, serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub strict_mcp_config: bool,
+    /// Replaces the default system prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    /// Appended to the system prompt, after the bridge's own instruction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub append_system_prompt: Option<String>,
+}
+
+impl SessionConfig {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.additional_directories.is_empty()
+            && self.settings.is_none()
+            && self.mcp_configs.is_empty()
+            && !self.strict_mcp_config
+            && self.system_prompt.is_none()
+            && self.append_system_prompt.is_none()
     }
 }
 
@@ -195,6 +241,9 @@ pub enum BridgeCommand {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         force: bool,
     },
+    ReloadSkillsAndStyles {
+        session_id: String,
+    },
     GetMcpSnapshot {
         session_id: String,
     },
@@ -266,6 +315,7 @@ impl BridgeCommand {
             Self::ExportSessionHistory { .. } => "export_session_history",
             Self::Rewind { .. } => "rewind",
             Self::ReloadPlugins { .. } => "reload_plugins",
+            Self::ReloadSkillsAndStyles { .. } => "reload_skills_and_styles",
             Self::GetMcpSnapshot { .. } => "get_mcp_snapshot",
             Self::McpReconnect { .. } => "mcp_reconnect",
             Self::McpToggle { .. } => "mcp_toggle",
@@ -311,6 +361,7 @@ impl BridgeCommand {
             | Self::ExportSessionHistory { session_id }
             | Self::Rewind { session_id, .. }
             | Self::ReloadPlugins { session_id, .. }
+            | Self::ReloadSkillsAndStyles { session_id }
             | Self::GetMcpSnapshot { session_id }
             | Self::McpReconnect { session_id, .. }
             | Self::McpToggle { session_id, .. }
@@ -360,6 +411,7 @@ impl BridgeCommand {
             | Self::ExportSessionHistory { .. }
             | Self::Rewind { .. }
             | Self::ReloadPlugins { .. }
+            | Self::ReloadSkillsAndStyles { .. }
             | Self::GetMcpSnapshot { .. }
             | Self::McpReconnect { .. }
             | Self::McpToggle { .. }
@@ -528,6 +580,15 @@ pub enum BridgeEvent {
         session_id: String,
         message: String,
     },
+    SkillsAndStylesReloaded {
+        session_id: String,
+        skills: types::ReloadOutcome,
+        output_styles: types::ReloadOutcome,
+    },
+    SkillsAndStylesReloadExpired {
+        session_id: String,
+        after_ms: u64,
+    },
     SessionReplaced {
         session_id: String,
         cwd: String,
@@ -642,6 +703,8 @@ impl BridgeEvent {
             Self::RuntimeReloadCompleted { .. } => "runtime_reload_completed",
             Self::RuntimeReloadHeld { .. } => "runtime_reload_held",
             Self::RuntimeReloadFailed { .. } => "runtime_reload_failed",
+            Self::SkillsAndStylesReloaded { .. } => "skills_and_styles_reloaded",
+            Self::SkillsAndStylesReloadExpired { .. } => "skills_and_styles_reload_expired",
             Self::SessionReplaced { .. } => "session_replaced",
             Self::Initialized { .. } => "initialized",
             Self::SessionsListed { .. } => "sessions_listed",
@@ -686,6 +749,8 @@ impl BridgeEvent {
             | Self::RuntimeReloadCompleted { session_id, .. }
             | Self::RuntimeReloadHeld { session_id, .. }
             | Self::RuntimeReloadFailed { session_id, .. }
+            | Self::SkillsAndStylesReloaded { session_id, .. }
+            | Self::SkillsAndStylesReloadExpired { session_id, .. }
             | Self::SessionReplaced { session_id, .. }
             | Self::SettingsResult { session_id, .. }
             | Self::StatusSnapshot { session_id, .. }
@@ -736,6 +801,8 @@ impl BridgeEvent {
             | Self::RuntimeReloadCompleted { .. }
             | Self::RuntimeReloadHeld { .. }
             | Self::RuntimeReloadFailed { .. }
+            | Self::SkillsAndStylesReloaded { .. }
+            | Self::SkillsAndStylesReloadExpired { .. }
             | Self::SessionReplaced { .. }
             | Self::Initialized { .. }
             | Self::SessionsListed { .. }
@@ -1247,6 +1314,75 @@ mod tests {
                 "command": "get_rewind_targets",
                 "session_id": "s1"
             })
+        );
+    }
+
+    #[test]
+    fn reload_skills_and_styles_command_serializes_snake_case() {
+        let env = CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::ReloadSkillsAndStyles { session_id: "s1".to_owned() },
+        };
+
+        assert_eq!(
+            serde_json::to_value(&env).expect("serialize"),
+            serde_json::json!({ "command": "reload_skills_and_styles", "session_id": "s1" })
+        );
+        assert_eq!(env.command.session_id(), Some("s1"));
+    }
+
+    #[test]
+    fn skills_and_styles_reloaded_event_deserializes_bridge_payload() {
+        let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "skills_and_styles_reloaded",
+            "session_id": "s1",
+            "skills": { "status": "reloaded", "names": ["deploy", "lint"] },
+            "output_styles": { "status": "timed_out", "after_ms": 10000 }
+        }))
+        .expect("deserialize reload result");
+
+        assert_eq!(
+            decoded.event,
+            BridgeEvent::SkillsAndStylesReloaded {
+                session_id: "s1".to_owned(),
+                skills: types::ReloadOutcome::Reloaded {
+                    names: vec!["deploy".to_owned(), "lint".to_owned()]
+                },
+                output_styles: types::ReloadOutcome::TimedOut { after_ms: 10_000 },
+            }
+        );
+        assert_eq!(decoded.event.session_id(), Some("s1"));
+    }
+
+    #[test]
+    fn skills_and_styles_reload_expired_event_deserializes_bridge_payload() {
+        let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "skills_and_styles_reload_expired",
+            "session_id": "s1",
+            "after_ms": 10000
+        }))
+        .expect("deserialize expired reload");
+
+        assert_eq!(
+            decoded.event,
+            BridgeEvent::SkillsAndStylesReloadExpired {
+                session_id: "s1".to_owned(),
+                after_ms: 10_000
+            }
+        );
+        assert_eq!(decoded.event.session_id(), Some("s1"));
+    }
+
+    #[test]
+    fn failed_reload_outcome_deserializes_the_bridge_message() {
+        let decoded: types::ReloadOutcome = serde_json::from_value(
+            serde_json::json!({ "status": "failed", "message": "style directory unreadable" }),
+        )
+        .expect("deserialize outcome");
+
+        assert_eq!(
+            decoded,
+            types::ReloadOutcome::Failed { message: "style directory unreadable".to_owned() }
         );
     }
 
@@ -1879,12 +2015,29 @@ mod tests {
             permission_mode: Some("plan".to_owned()),
             effort: Some(super::super::model::EffortLevel::Max),
             agent: Some("reviewer".to_owned()),
+            name: Some("Release prep".to_owned()),
+            fork_session: true,
+            config: Box::new(super::SessionConfig {
+                additional_directories: vec!["/work/shared".to_owned()],
+                settings: serde_json::from_str(r#"{"model":"haiku"}"#).ok(),
+                mcp_configs: serde_json::from_str(r#"[{"docs":{"command":"docs-mcp"}}]"#)
+                    .expect("MCP servers"),
+                strict_mcp_config: true,
+                system_prompt: Some("You are a release bot.".to_owned()),
+                append_system_prompt: Some("End with DONE.".to_owned()),
+            }),
         };
         let json = serde_json::to_value(&settings).expect("serialize");
         assert_eq!(
             json,
             serde_json::json!({
-                "model": "haiku", "permission_mode": "plan", "effort": "max", "agent": "reviewer"
+                "model": "haiku", "permission_mode": "plan", "effort": "max", "agent": "reviewer",
+                "name": "Release prep", "fork_session": true,
+                "additional_directories": ["/work/shared"],
+                "settings": {"model": "haiku"},
+                "mcp_configs": [{"docs": {"command": "docs-mcp"}}],
+                "strict_mcp_config": true, "system_prompt": "You are a release bot.",
+                "append_system_prompt": "End with DONE."
             })
         );
         assert_eq!(
