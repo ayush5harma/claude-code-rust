@@ -1,9 +1,10 @@
 import { getSubagentMessages, listSubagents } from "@anthropic-ai/claude-agent-sdk";
-import type { BridgeCommand, SubagentMessage } from "../types.js";
+import type { BridgeCommand, SubagentMessage, ToolCall } from "../types.js";
 import { writeEvent } from "./events.js";
 import { mapSessionMessagesToUpdates } from "./history.js";
 import { sessionById, type SessionState } from "./session_lifecycle.js";
 import { asRecordOrNull } from "./shared.js";
+import { toolNameFromMeta } from "./tool_calls.js";
 
 type SubagentCommand = Extract<
   BridgeCommand,
@@ -74,11 +75,22 @@ async function readTranscript(
   }
 }
 
+/**
+ * The report a subagent hands back to its caller through the `SubagentHandback`
+ * tool (Claude Code 2.1.300), often its only answer: no text reply follows it.
+ */
+function handbackReport(tool: ToolCall): string | undefined {
+  if (toolNameFromMeta(tool.meta) !== "SubagentHandback") return undefined;
+  const message = asRecordOrNull(tool.raw_input)?.message;
+  return typeof message === "string" && message.trim() !== "" ? message : undefined;
+}
+
 /** The text a reader follows: prompts, replies and the titles of tool calls. */
 function transcriptEntries(history: Parameters<typeof mapSessionMessagesToUpdates>[0]): SubagentMessage[] {
   return mapSessionMessagesToUpdates(history).flatMap((update): SubagentMessage[] => {
     if (update.type === "tool_call") {
-      return [{ role: "tool", text: update.tool_call.title }];
+      const report = handbackReport(update.tool_call);
+      return [report === undefined ? { role: "tool", text: update.tool_call.title } : { role: "assistant", text: report }];
     }
     if (update.type !== "user_message_chunk" && update.type !== "agent_message_chunk") return [];
     if (update.content.type !== "text" || update.content.text.trim() === "") return [];

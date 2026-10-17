@@ -9,7 +9,7 @@
 
 use crate::agent::events::ClientEvent;
 use crate::agent::model::{TaskItem, TaskStatus};
-use crate::agent::types::SubagentMessage;
+use crate::agent::types::{SubagentMessage, SubagentMessageRole};
 use crate::app::{App, MessageBlock, ToolCallInfo, ToolCallScope};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashSet;
@@ -75,6 +75,9 @@ pub(crate) struct TranscriptRead {
     pub messages: Option<Vec<SubagentMessage>>,
     /// Why the latest request failed.
     pub error: Option<String>,
+    /// Whether the subagent had completed when the latest request was sent,
+    /// so the read's last reply is its final response.
+    after_completion: bool,
 }
 
 /// The open transcript reader, showing `AgentsView::read`.
@@ -140,6 +143,29 @@ impl SubagentRow<'_> {
     pub(crate) fn prompt(&self) -> Option<&str> {
         metadata_str(self.task, "prompt")
     }
+}
+
+/// A completed subagent's final response: its last reply in a read made after
+/// it completed, or why that read failed. `None` until such a read answers.
+pub(crate) fn final_response<'a>(
+    app: &'a App,
+    row: &SubagentRow<'_>,
+) -> Option<Result<&'a str, &'a str>> {
+    if row.status != SubagentStatus::Completed {
+        return None;
+    }
+    let read = app
+        .agents
+        .read
+        .as_ref()
+        .filter(|read| read.agent_id == row.task.task_id && read.after_completion)?;
+    if let Some(error) = &read.error {
+        return Some(Err(error));
+    }
+    let messages = read.messages.as_ref()?;
+    let reply =
+        messages.iter().rev().find(|message| message.role == SubagentMessageRole::Assistant);
+    reply.map(|message| Ok(message.text.as_str()))
 }
 
 /// The Agent call that launched a subagent, when the transcript still holds it.
@@ -274,6 +300,7 @@ pub(crate) fn open(app: &mut App) {
     app.agents.detail_scroll = 0;
     crate::app::view::set_fullscreen_view(app, crate::app::FullscreenView::Agents);
     request_transcript_list(app);
+    read_selected_response(app, false);
 }
 
 fn close(app: &mut App) {
@@ -327,6 +354,7 @@ pub(crate) fn apply_transcript_list(app: &mut App, agent_ids: Vec<String>, error
         app.agents.transcript_ids = Some(agent_ids.into_iter().collect());
     }
     app.agents.list_error = error;
+    read_selected_response(app, false);
 }
 
 /// Applies the answer to the latest read request; an answer to an earlier
@@ -399,10 +427,30 @@ fn move_selection(app: &mut App, down: bool) {
         app.agents.detail_scroll = 0;
     }
     app.agents.selected_task_id = Some(id);
+    read_selected_response(app, false);
+}
+
+/// Keeps the read on the selected subagent. A completed one with a saved
+/// transcript is read for its response, unless a read made after it completed
+/// already holds it; `again` reads it even then.
+fn read_selected_response(app: &mut App, again: bool) {
+    let Some((task_id, status)) = selected_row(app) else { return };
+    if app.agents.read.as_ref().is_some_and(|read| read.agent_id != task_id) {
+        app.agents.read = None;
+    }
+    if status != SubagentStatus::Completed || app.agents.has_transcript(&task_id) != Some(true) {
+        return;
+    }
+    let held =
+        app.agents.read.as_ref().is_some_and(|read| read.after_completion && read.error.is_none());
+    if again || !held {
+        request_read(app, task_id);
+    }
 }
 
 /// Asks for `agent_id`'s saved transcript. What was read before for the same
-/// subagent stays shown, at the same position, until the answer replaces it.
+/// subagent stays shown, at the same position, until the answer replaces it,
+/// except a read from before it completed once it has: that is not its response.
 fn request_read(app: &mut App, agent_id: String) -> bool {
     let Some((session_id, conn)) = active_session(app) else { return false };
     let request_id = uuid::Uuid::new_v4().to_string();
@@ -411,13 +459,17 @@ fn request_read(app: &mut App, agent_id: String) -> bool {
         notice(app, NoticeKind::Error, format!("Could not read the transcript: {error}"));
         return false;
     }
+    let after_completion = subagent_rows(app)
+        .iter()
+        .any(|row| row.task.task_id == agent_id && row.status == SubagentStatus::Completed);
     let messages = app
         .agents
         .read
         .take()
-        .filter(|read| read.agent_id == agent_id)
+        .filter(|read| read.agent_id == agent_id && (read.after_completion || !after_completion))
         .and_then(|read| read.messages);
-    app.agents.read = Some(TranscriptRead { agent_id, request_id, messages, error: None });
+    app.agents.read =
+        Some(TranscriptRead { agent_id, request_id, messages, error: None, after_completion });
     true
 }
 
@@ -474,7 +526,11 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
     }
     if let Some(transcript) = app.agents.transcript.as_mut() {
         match key.code {
-            KeyCode::Esc | KeyCode::Left => app.agents.transcript = None,
+            KeyCode::Esc | KeyCode::Left => {
+                app.agents.transcript = None;
+                // The subagent may have completed while its transcript was open.
+                read_selected_response(app, false);
+            }
             KeyCode::Up => transcript.scroll = transcript.scroll.saturating_sub(1),
             KeyCode::Down => transcript.scroll = transcript.scroll.saturating_add(1),
             KeyCode::PageUp => {
@@ -500,7 +556,10 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Enter => open_transcript(app),
         KeyCode::Char('s') => request_stop(app),
-        KeyCode::Char('r') => request_transcript_list(app),
+        KeyCode::Char('r') => {
+            request_transcript_list(app);
+            read_selected_response(app, true);
+        }
         _ => {}
     }
 }

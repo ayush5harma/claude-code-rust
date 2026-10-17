@@ -94,6 +94,15 @@ fn open_transcript(app: &mut App, commands: &mut CommandReceiver) -> String {
 }
 
 fn answer(app: &mut App, request_id: &str, outcome: Result<Vec<SubagentMessage>, &str>) {
+    answer_for(app, "agent-2", request_id, outcome);
+}
+
+fn answer_for(
+    app: &mut App,
+    agent_id: &str,
+    request_id: &str,
+    outcome: Result<Vec<SubagentMessage>, &str>,
+) {
     let (messages, error) = match outcome {
         Ok(messages) => (messages, None),
         Err(error) => (Vec::new(), Some(error.to_owned())),
@@ -102,7 +111,7 @@ fn answer(app: &mut App, request_id: &str, outcome: Result<Vec<SubagentMessage>,
         app,
         ClientEvent::SubagentMessagesReceived {
             session_id: "session-1".to_owned(),
-            agent_id: "agent-2".to_owned(),
+            agent_id: agent_id.to_owned(),
             request_id: Some(request_id.to_owned()),
             messages,
             error,
@@ -428,6 +437,82 @@ fn r_retries_a_transcript_that_could_not_be_read() {
     let read = screen(&mut app, 60, 20);
     row_with(&read, "Parser checked");
     assert!(!read.iter().any(|line| line.contains("Could not read")), "{}", read.join("\n"));
+}
+
+#[test]
+fn a_completed_subagents_response_is_previewed_in_six_rows_and_read_in_full_as_markdown() {
+    let (mut app, mut commands) = app_with_subagents();
+    apply_transcript_list(&mut app, vec!["agent-2".to_owned()], None);
+    // A report handed back as the subagent's only answer.
+    let report = [
+        "## Docs survey",
+        "",
+        "The **docs** cover:",
+        "",
+        "- page 1",
+        "- page 2",
+        "- page 3",
+        "- page 4",
+        "- page 5",
+    ];
+    let transcript = vec![
+        message(SubagentMessageRole::User, "Survey the docs"),
+        message(SubagentMessageRole::Tool, "Glob docs/**"),
+        reply(&report.join("\n")),
+    ];
+    press(&mut app, KeyCode::Down);
+    let request = last_read_request(&mut commands);
+    answer(&mut app, &request, Ok(transcript.clone()));
+
+    let overview = screen(&mut app, 80, 40);
+    let (heading, _) = row_with(&overview, "Response");
+    let preview: Vec<_> =
+        overview[heading + 1..=heading + 7].iter().map(|row| row.trim()).collect();
+    assert_eq!(preview[..6], report[..6], "{}", overview.join("\n"));
+    assert_eq!(preview[6], "...", "a longer response ends in an ellipsis");
+    assert!(!overview.iter().any(|row| row.contains("page 3")), "{}", overview.join("\n"));
+
+    press(&mut app, KeyCode::Enter);
+    let request = last_read_request(&mut commands);
+    answer(&mut app, &request, Ok(transcript));
+    let reader = screen(&mut app, 80, 40);
+    let (label, _) = row_with(&reader, "Reply");
+    let body = &reader[label + 1..];
+    let (_, heading) = row_with(body, "Docs survey");
+    assert!(!heading.contains("##"), "the heading is rendered, not shown as source: {heading}");
+    let (_, bold) = row_with(body, "docs cover:");
+    assert!(bold.contains("The docs cover:"), "bold markers are rendered: {bold}");
+    for page in 1..=5 {
+        row_with(body, &format!("page {page}"));
+    }
+}
+
+#[test]
+fn a_transcript_read_while_running_is_not_taken_as_the_response() {
+    let (mut app, mut commands) = app_with_subagents();
+    apply_transcript_list(&mut app, vec!["agent-1".to_owned()], None);
+    press(&mut app, KeyCode::Enter);
+    let request = last_read_request(&mut commands);
+    answer_for(&mut app, "agent-1", &request, Ok(vec![reply("Halfway through the files")]));
+
+    // It completes while its transcript is open; leaving reads it again.
+    app.sdk_inventory.tasks[0].status = TaskStatus::Completed;
+    app.sdk_inventory.tasks[0].metadata =
+        Some(serde_json::json!({ "task_type": "local_agent", "terminal_status": "completed" }));
+    press(&mut app, KeyCode::Esc);
+    let request = last_read_request(&mut commands);
+    let overview = screen(&mut app, 80, 40);
+    assert!(!overview.iter().any(|row| row.contains("Halfway")), "{}", overview.join("\n"));
+
+    answer_for(
+        &mut app,
+        "agent-1",
+        &request,
+        Ok(vec![reply("Halfway through the files"), reply("All files checked")]),
+    );
+    let overview = screen(&mut app, 80, 40);
+    let (heading, _) = row_with(&overview, "Response");
+    assert_eq!(overview[heading + 1].trim(), "All files checked");
 }
 
 #[test]

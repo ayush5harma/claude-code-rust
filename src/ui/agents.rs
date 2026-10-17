@@ -11,8 +11,8 @@ use super::session_picker::fit_with_ellipsis;
 use super::theme;
 use crate::agent::types::{SubagentMessage, SubagentMessageRole};
 use crate::app::agents::{
-    NoticeKind, SubagentRow, SubagentStatus, WrappedTranscript, launching_call, recent_child_tools,
-    running_subagent_count, subagent_rows,
+    NoticeKind, SubagentRow, SubagentStatus, WrappedTranscript, final_response, launching_call,
+    recent_child_tools, running_subagent_count, subagent_rows,
 };
 use crate::app::{App, ToolCallInfo};
 use ratatui::Frame;
@@ -24,7 +24,8 @@ use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
 const TITLE: &str = "Subagents";
 /// Below this width the details sit under the list instead of beside it.
 const SIDE_BY_SIDE_MIN_WIDTH: u16 = 110;
-const PROMPT_PREVIEW_LINES: usize = 6;
+/// Rows the details show of a prompt or a response; the transcript has all of it.
+const PREVIEW_LINES: usize = 6;
 
 pub(crate) fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -321,12 +322,36 @@ fn detail_lines(app: &App, row: &SubagentRow<'_>, width: u16) -> Vec<Line<'stati
     if let Some(prompt) = prompt {
         lines.push(Line::default());
         lines.push(section_heading("Prompt"));
-        let wrapped = crate::ui::wrap::wrap_plain(prompt, usize::from(width.max(1)));
-        let shown = wrapped.len().min(PROMPT_PREVIEW_LINES);
-        lines.extend(wrapped.iter().take(shown).map(|line| Line::from(line.clone())));
-        if wrapped.len() > shown {
-            lines.push(Line::styled("...", Style::default().fg(theme::DIM)));
+        lines.extend(preview_lines(prompt, width));
+    }
+    if let Some(response) = final_response(app, row) {
+        lines.push(Line::default());
+        lines.push(section_heading("Response"));
+        match response {
+            Ok(response) => lines.extend(preview_lines(response, width)),
+            Err(error) => lines.push(Line::styled(
+                format!("Could not read the transcript: {error}"),
+                Style::default().fg(theme::STATUS_ERROR),
+            )),
         }
+    }
+    lines
+}
+
+/// The first `PREVIEW_LINES` rows of `text` wrapped to `width`, then `...` when
+/// it goes on.
+fn preview_lines(text: &str, width: u16) -> Vec<Line<'static>> {
+    let width = usize::from(width.max(1));
+    // A row holds at most `width` characters, so this head fills more rows than
+    // are shown even where wrapping drops spaces: a long response costs a frame
+    // no more than a short one.
+    let head_end =
+        text.char_indices().nth((PREVIEW_LINES + 1) * width * 2).map_or(text.len(), |(end, _)| end);
+    let rows = crate::ui::wrap::wrap_plain(&text[..head_end], width);
+    let mut lines: Vec<_> =
+        rows.iter().take(PREVIEW_LINES).map(|row| Line::from(row.clone())).collect();
+    if rows.len() > PREVIEW_LINES || head_end < text.len() {
+        lines.push(Line::styled("...", Style::default().fg(theme::DIM)));
     }
     lines
 }
@@ -376,7 +401,7 @@ fn render_transcript(frame: &mut Frame, title_area: Rect, body: Rect, app: &mut 
     if view.wrapped.as_ref().is_none_or(|cached| cached.width != width) {
         // One logical line at a time: the helper caps its result at u16::MAX
         // rows, which a whole long transcript can exceed but one line cannot.
-        let rows = transcript_lines(messages)
+        let rows = transcript_lines(messages, width)
             .into_iter()
             .flat_map(|line| crate::ui::wrap::wrap_lines_to_physical_rows(&[line], width))
             .collect();
@@ -391,10 +416,12 @@ fn render_transcript(frame: &mut Frame, title_area: Rect, body: Rect, app: &mut 
     frame.render_widget(Paragraph::new(visible), body);
 }
 
-fn transcript_lines(messages: &[SubagentMessage]) -> Vec<Line<'static>> {
+/// Prompts as written and replies through the chat's Markdown rendering, each
+/// under its label; tool calls as one dim line each.
+fn transcript_lines(messages: &[SubagentMessage], width: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for message in messages {
-        match message.role {
+        let (label, body) = match message.role {
             SubagentMessageRole::Tool => {
                 lines.push(Line::styled(
                     format!("• {}", message.text),
@@ -402,10 +429,17 @@ fn transcript_lines(messages: &[SubagentMessage]) -> Vec<Line<'static>> {
                 ));
                 continue;
             }
-            SubagentMessageRole::User => lines.push(Line::styled("Prompt", help_style())),
-            SubagentMessageRole::Assistant => lines.push(Line::styled("Reply", title_style())),
-        }
-        lines.extend(message.text.lines().map(|line| Line::from(line.to_owned())));
+            SubagentMessageRole::User => (
+                Line::styled("Prompt", help_style()),
+                message.text.lines().map(|line| Line::from(line.to_owned())).collect(),
+            ),
+            SubagentMessageRole::Assistant => (
+                Line::styled("Reply", title_style()),
+                super::markdown::render_markdown_at_width(&message.text, width, None, false),
+            ),
+        };
+        lines.push(label);
+        lines.extend(body);
         lines.push(Line::default());
     }
     lines

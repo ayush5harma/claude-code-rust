@@ -637,6 +637,12 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
       record({ type: "getSubagentMessages", sessionId, agentId, dir: options?.dir });
       if (agentId === "agent-unreadable") throw new Error("transcript unreadable");
       const entry = (type, uuid, parentUuid, content) => ({ type, uuid, parentUuid, session_id: sessionId, parent_tool_use_id: null, message: { role: type, content } });
+      if (agentId === "agent-handback") return [
+        entry("user", "handback-prompt", null, "Survey the docs"),
+        entry("assistant", "handback-read", "handback-prompt", [{ type: "tool_use", id: "handback-glob", name: "Glob", input: { pattern: "docs/**" } }]),
+        entry("assistant", "handback-call", "handback-read", [{ type: "tool_use", id: "handback-1", name: "SubagentHandback", input: { message: "## Docs survey\\n\\n- 12 pages\\n- 2 stale links" } }]),
+        entry("user", "handback-ack", "handback-call", [{ type: "tool_result", tool_use_id: "handback-1", content: [{ type: "text", text: "Report delivered to your caller." }] }]),
+      ];
       return [
         entry("user", "agent-prompt", null, [{ type: "text", text: "Inspect the parser" }]),
         entry("assistant", "agent-tool", "agent-prompt", [{ type: "tool_use", id: "agent-bash", name: "Bash", input: { command: "ls parser" } }]),
@@ -1538,6 +1544,15 @@ test("subagent commands read SDK transcripts and stop only a running subagent, l
       { role: "assistant", text: "Parser checked" },
     ]);
     assert.ok(messages.some(message => message.role === "tool" && message.text.includes("ls parser")), JSON.stringify(messages));
+    // An agent whose only answer is its hand-back report: the reader gets the full report as its final reply.
+    const handback = await result("subagent_messages", { command: "get_subagent_messages", agent_id: "agent-handback" });
+    const handbackMessages = handback.messages as Array<{ role: string; text: string }>;
+    assert.deepEqual(handbackMessages.at(-1), { role: "assistant", text: "## Docs survey\n\n- 12 pages\n- 2 stale links" });
+    assert.deepEqual(handbackMessages.filter(message => message.role !== "tool"), [
+      { role: "user", text: "Survey the docs" },
+      { role: "assistant", text: "## Docs survey\n\n- 12 pages\n- 2 stale links" },
+    ]);
+    assert.ok(!handbackMessages.some(message => message.text.includes("SubagentHandback")), JSON.stringify(handbackMessages));
     const unreadable = await result("subagent_messages", { command: "get_subagent_messages", agent_id: "agent-unreadable" });
     assert.deepEqual([unreadable.agent_id, unreadable.messages, unreadable.error], ["agent-unreadable", [], "transcript unreadable"]);
 

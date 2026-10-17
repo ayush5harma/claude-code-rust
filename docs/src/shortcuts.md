@@ -35,7 +35,7 @@ The fullscreen settings surface has its own keys for tabs, panes, search and edi
 | `Up`, `Down` | Select a subagent. |
 | `Enter` | Open the selected subagent's saved transcript. |
 | `s` | Ask the selected running subagent to stop. |
-| `r` | Check again which subagents have a saved transcript. |
+| `r` | Check again which subagents have a saved transcript, and read the selected subagent's response again. |
 | `Page Up`, `Page Down` | Scroll the selected subagent's details. |
 | `Esc` | Return to chat with the draft unchanged. |
 

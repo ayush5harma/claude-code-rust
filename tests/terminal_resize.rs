@@ -2552,11 +2552,13 @@ fn agents_view_opens_from_an_empty_composer_stops_a_running_subagent_and_returns
     assert_eq!(stops.len(), 1);
     assert_eq!(stops[0]["task_id"], "agent-running");
 
+    // Selecting the completed subagent previews the response it ended with.
     test.send(b"\x1b[B");
+    test.wait_screen_with("Docs path checked", &["Response", "Transcript: saved"]);
     test.send(b"\r");
-    test.wait_screen_with("Docs path checked", &["Inspect the docs", "ls docs", "r refresh"]);
+    test.wait_screen_with("Inspect the docs", &["Docs path checked", "ls docs", "r refresh"]);
     let reads = test.commands("get_subagent_messages");
-    assert_eq!(reads[0]["agent_id"], "agent-done");
+    assert!(reads.iter().all(|read| read["agent_id"] == "agent-done"), "{reads:?}");
     // r reads the open transcript again and shows what was added since.
     test.send(b"r");
     test.wait_screen_with(&format!("step {}", reads.len() + 1), &["Docs path checked"]);

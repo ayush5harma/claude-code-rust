@@ -285,18 +285,20 @@ fn only_a_listed_id_has_a_transcript_and_reading_it_leaves_status_alone() {
     assert!(app.agents.transcript.is_none(), "a running subagent not yet listed has no transcript");
     assert!(sent(&mut commands).is_empty());
 
+    // Selecting the completed subagent reads its transcript for the response;
+    // opening it reads it again.
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Enter);
     let reads = sent_reads(&mut commands);
     assert_eq!(
         reads.iter().map(|(command, _)| command.clone()).collect::<Vec<_>>(),
-        [read_command("agent-2")]
+        [read_command("agent-2"), read_command("agent-2")]
     );
     handle_client_event(
         &mut app,
         answer("agent-1", "another-request", vec![reply("someone else's")]),
     );
-    handle_client_event(&mut app, answer("agent-2", &reads[0].1, vec![reply("Parser checked")]));
+    handle_client_event(&mut app, answer("agent-2", &reads[1].1, vec![reply("Parser checked")]));
     assert!(app.agents.transcript.is_some(), "transcript open");
     let read = app.agents.read.as_ref().expect("transcript read");
     assert_eq!(read.messages.as_deref(), Some(&[reply("Parser checked")][..]));
@@ -311,7 +313,11 @@ fn only_a_listed_id_has_a_transcript_and_reading_it_leaves_status_alone() {
     assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Agents));
 
     press(&mut app, KeyCode::Char('r'));
-    assert_eq!(sent(&mut commands), vec![list_command()]);
+    assert_eq!(
+        sent(&mut commands),
+        vec![list_command(), read_command("agent-2")],
+        "r checks transcripts again and reads the selected response again"
+    );
     handle_client_event(
         &mut app,
         ClientEvent::SubagentsListed {
