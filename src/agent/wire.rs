@@ -14,6 +14,14 @@ pub struct SessionLaunchSettings {
     pub effort: Option<super::model::EffortLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fork_session: bool,
+    /// Boxed so the session commands that carry launch settings stay small enough for
+    /// clippy's `large_futures` limit in futures that hold a command across an await.
+    #[serde(flatten)]
+    pub config: Box<SessionConfig>,
 }
 
 impl SessionLaunchSettings {
@@ -23,6 +31,44 @@ impl SessionLaunchSettings {
             && self.permission_mode.is_none()
             && self.effort.is_none()
             && self.agent.is_none()
+            && self.name.is_none()
+            && !self.fork_session
+            && self.config.is_empty()
+    }
+}
+
+/// Launch configuration kept for every session the process starts, unlike the initial-session
+/// fields above. The app has already resolved paths to absolute ones and checked that files
+/// were readable and JSON parsed; the bridge maps each field to its Agent SDK option.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_directories: Vec<String>,
+    /// A settings object for the SDK's flag-settings layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<serde_json::Map<String, serde_json::Value>>,
+    /// The `mcpServers` object of each `--mcp-config`, in command-line order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_configs: Vec<serde_json::Map<String, serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub strict_mcp_config: bool,
+    /// Replaces the default system prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    /// Appended to the system prompt, after the bridge's own instruction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub append_system_prompt: Option<String>,
+}
+
+impl SessionConfig {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.additional_directories.is_empty()
+            && self.settings.is_none()
+            && self.mcp_configs.is_empty()
+            && !self.strict_mcp_config
+            && self.system_prompt.is_none()
+            && self.append_system_prompt.is_none()
     }
 }
 
@@ -1859,12 +1905,29 @@ mod tests {
             permission_mode: Some("plan".to_owned()),
             effort: Some(super::super::model::EffortLevel::Max),
             agent: Some("reviewer".to_owned()),
+            name: Some("Release prep".to_owned()),
+            fork_session: true,
+            config: Box::new(super::SessionConfig {
+                additional_directories: vec!["/work/shared".to_owned()],
+                settings: serde_json::from_str(r#"{"model":"haiku"}"#).ok(),
+                mcp_configs: serde_json::from_str(r#"[{"docs":{"command":"docs-mcp"}}]"#)
+                    .expect("MCP servers"),
+                strict_mcp_config: true,
+                system_prompt: Some("You are a release bot.".to_owned()),
+                append_system_prompt: Some("End with DONE.".to_owned()),
+            }),
         };
         let json = serde_json::to_value(&settings).expect("serialize");
         assert_eq!(
             json,
             serde_json::json!({
-                "model": "haiku", "permission_mode": "plan", "effort": "max", "agent": "reviewer"
+                "model": "haiku", "permission_mode": "plan", "effort": "max", "agent": "reviewer",
+                "name": "Release prep", "fork_session": true,
+                "additional_directories": ["/work/shared"],
+                "settings": {"model": "haiku"},
+                "mcp_configs": [{"docs": {"command": "docs-mcp"}}],
+                "strict_mcp_config": true, "system_prompt": "You are a release bot.",
+                "append_system_prompt": "End with DONE."
             })
         );
         assert_eq!(
