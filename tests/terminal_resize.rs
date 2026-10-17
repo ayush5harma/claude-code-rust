@@ -164,6 +164,8 @@ struct TerminalTest {
     /// not produced by that action.
     before_action: String,
     settled: bool,
+    /// The trust prompt as it was drawn, before the test answered it.
+    trust_prompt: String,
 }
 
 #[allow(clippy::expect_used, clippy::panic)]
@@ -256,8 +258,14 @@ impl TerminalTest {
             temp,
             before_action: String::new(),
             settled: true,
+            trust_prompt: String::new(),
         };
-        test.wait_screen("Trust this project");
+        // "> Yes" is drawn after everything above it, so seeing it means the
+        // whole prompt, directory included, is on screen.
+        test.wait_screen_with("Trust this project", &["> Yes"]);
+        // One string per visible row: `contents()` joins rows the terminal
+        // marks as wrapped, which ConPTY does for full-width box rows.
+        test.trust_prompt = test.screen_rows().join("\n");
         test.send(b"y");
         if has_initial_prompt {
             test.wait_until("initial prompt", |test| !test.prompts().is_empty());
@@ -332,6 +340,12 @@ impl TerminalTest {
 
     fn screen(&self) -> String {
         self.output.lock().expect("output lock").parser.screen().contents()
+    }
+
+    fn screen_rows(&self) -> Vec<String> {
+        let output = self.output.lock().expect("output lock");
+        let screen = output.parser.screen();
+        screen.rows(0, screen.size().1).collect()
     }
 
     fn transcript_rows(&self) -> Vec<String> {
@@ -1410,6 +1424,49 @@ fn activity_stays_above_queue_and_out_of_scrollback_through_wait_resize_and_comp
         assert!(!screen.contents().contains("Tip:"));
         assert!(!screen.contents().contains(&activity_header));
     }
+}
+
+#[test]
+fn trust_prompt_names_the_directory_that_yes_will_save() {
+    let test = TerminalTest::start("hold-success", 1);
+
+    // `start` answered Yes, so the profile now holds the key the prompt was
+    // about. The harness starts with an absolute `--dir`, which a temp
+    // directory behind a symlink (macOS) spells differently from its key.
+    let saved: Value = serde_json::from_slice(
+        &std::fs::read(test.temp.path().join("profile").join(".claude.json")).expect("saved trust"),
+    )
+    .expect("trust json");
+    let keys: Vec<&String> = saved["projects"].as_object().expect("projects").keys().collect();
+    assert_eq!(keys.len(), 1, "{keys:?}");
+
+    let rows: Vec<String> = test
+        .trust_prompt
+        .lines()
+        .map(|row| {
+            let inside = row.trim_start_matches('\u{2502}').trim_end_matches('\u{2502}');
+            inside.strip_prefix(' ').unwrap_or(inside).trim_end().to_owned()
+        })
+        .collect();
+    let row_of = |text: &str| {
+        rows.iter()
+            .position(|row| row.starts_with(text))
+            .unwrap_or_else(|| panic!("no {text:?} row: {}", test.trust_prompt))
+    };
+    let path = row_of("Path: ");
+    assert!(row_of("Trust this project directory?") < row_of("Claude Rust will wait"));
+    assert!(row_of("Claude Rust will wait") < path, "{}", test.trust_prompt);
+    // The path may wrap; its later rows are indented under the label.
+    let shown: String = std::iter::once(&rows[path]["Path: ".len()..])
+        .chain(
+            rows[path + 1..]
+                .iter()
+                .map_while(|row| row.strip_prefix("      ").filter(|rest| !rest.trim().is_empty())),
+        )
+        .collect();
+    assert_eq!(&shown, keys[0], "{}", test.trust_prompt);
+    assert!(Path::new(keys[0]).is_absolute(), "{}", keys[0]);
+    assert!(!test.trust_prompt.contains("Unknown Project"), "{}", test.trust_prompt);
 }
 
 #[test]
