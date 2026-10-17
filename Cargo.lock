@@ -573,6 +573,7 @@ dependencies = [
  "clap_mangen",
  "crossterm",
  "dirs",
+ "dunce",
  "fastrand",
  "fs4",
  "futures",

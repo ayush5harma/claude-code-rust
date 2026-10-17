@@ -46,9 +46,22 @@ fn shorten_cwd(cwd: &std::path::Path) -> String {
 }
 
 fn resolve_startup_cwd(cli: &Cli) -> PathBuf {
-    cli.dir
-        .clone()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+    let process_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    startup_cwd(cli.dir.as_deref(), process_cwd)
+}
+
+/// The session's working directory: `--dir` resolved against the process directory
+/// into the canonical absolute form, with `.` and `..` resolved the way the kernel
+/// resolves them. On Unix the process directory is already physical, so `--dir .`
+/// gives the same session directory and `Loc:` as no `--dir` at all.
+/// `--dir` was validated before startup; should it vanish since, the joined path is
+/// kept and the bridge reports the failure.
+fn startup_cwd(dir: Option<&std::path::Path>, process_cwd: PathBuf) -> PathBuf {
+    let Some(dir) = dir else {
+        return process_cwd;
+    };
+    let joined = process_cwd.join(dir);
+    dunce::canonicalize(&joined).unwrap_or(joined)
 }
 
 fn extract_app_error(err: &anyhow::Error) -> Option<AppError> {

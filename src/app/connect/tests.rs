@@ -49,6 +49,60 @@ fn create_app_defers_file_index_and_routes_untrusted_cwd_to_trust_surface() {
     assert_eq!(app.terminal_lifecycle, TerminalLifecycleState::Bootstrapping);
 }
 
+fn no_dot_components(path: &std::path::Path) -> bool {
+    !path
+        .components()
+        .any(|part| matches!(part, std::path::Component::CurDir | std::path::Component::ParentDir))
+}
+
+#[test]
+fn a_relative_dir_resolves_to_the_absolute_directory_it_names() {
+    let base = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(base.path().join("project").join("sub")).expect("project");
+    // Only the fixture root is canonicalized here (macOS temp dirs sit behind a symlink);
+    // every expected child is spelled out by name.
+    let root = dunce::canonicalize(base.path()).expect("canonical tempdir");
+    let cases = [
+        (".", root.clone()),
+        ("project", root.join("project")),
+        ("./project/./sub", root.join("project").join("sub")),
+        ("project/sub/..", root.join("project")),
+    ];
+    for (dir, expected) in cases {
+        let resolved = super::startup_cwd(Some(std::path::Path::new(dir)), base.path().into());
+        assert_eq!(resolved, expected, "--dir {dir}");
+        assert!(resolved.is_absolute() && no_dot_components(&resolved), "{}", resolved.display());
+    }
+}
+
+#[test]
+fn create_app_keeps_the_resolved_dir_for_session_state_and_display() {
+    let base = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(base.path().join("project").join("sub")).expect("project");
+    let expected = dunce::canonicalize(base.path()).expect("canonical tempdir").join("project");
+    let cli = Cli {
+        prompt: None,
+        resume: None,
+        continue_session: false,
+        session_options: crate::SessionOptions::default(),
+        command: None,
+        no_update_check: true,
+        dir: Some(base.path().join("project").join("sub").join("..").join(".")),
+        bridge_script: None,
+        enable_logs: false,
+        diagnostics_preset: None,
+        log_file: None,
+        log_filter: None,
+        log_append: false,
+    };
+
+    let app = super::create_app(&cli);
+
+    assert_eq!(std::path::Path::new(&app.cwd_raw), expected);
+    let shown = std::path::Path::new(app.cwd.trim_start_matches('~'));
+    assert!(shown.ends_with("project") && no_dot_components(shown), "Loc: {}", app.cwd);
+}
+
 #[test]
 fn app_client_event_queue_has_the_configured_capacity() {
     let mut app = crate::app::App::test_default();

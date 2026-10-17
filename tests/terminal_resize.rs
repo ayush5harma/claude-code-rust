@@ -216,8 +216,12 @@ impl TerminalTest {
         command.arg("--log-file");
         command.arg(temp.path().join("runtime.log"));
         command.env("RUST_LOG", "warn,app.lifecycle=debug,app.render=debug,bridge.protocol=debug");
-        command.arg("--dir");
-        command.arg(&project);
+        // The app starts in `project`; a test that passes its own `--dir` is resolved
+        // against it.
+        if !args.contains(&"--dir") {
+            command.arg("--dir");
+            command.arg(&project);
+        }
         for arg in args {
             command.arg(arg);
         }
@@ -2393,4 +2397,24 @@ fn a_bad_dir_or_bridge_script_exits_before_the_terminal_is_touched() {
         }
         assert_eq!(std::fs::read_dir(&profile).expect("profile").count(), 0, "{flag}");
     }
+}
+
+#[test]
+#[allow(clippy::expect_used)]
+fn a_relative_dir_starts_the_session_in_the_absolute_directory_it_names() {
+    // The app runs from `project`, so `--dir .` names it.
+    let mut test = TerminalTest::start_with_options("stream", 3, None, &["--dir", "."], false);
+    let project = dunce::canonicalize(test.temp.path().join("project")).expect("project path");
+
+    let session = test
+        .wait_for("the session request", |test| test.commands("create_session").into_iter().next());
+    assert_eq!(session["cwd"].as_str().map(Path::new), Some(project.as_path()), "{session}");
+    let location = test.wait_for("the footer location", |test| {
+        test.screen().lines().find_map(|line| {
+            let (_, value) = line.split_once("Loc: ")?;
+            Some(value.split_whitespace().next().unwrap_or_default().to_owned())
+        })
+    });
+    assert!(location.ends_with("project"), "Loc: {location}");
+    test.shutdown();
 }
