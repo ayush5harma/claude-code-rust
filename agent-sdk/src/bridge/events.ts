@@ -411,8 +411,8 @@ export function emitConnectEvent(session: SessionState): Promise<void> {
     }
   }
   emitAvailableAgentsSnapshot(session);
-  for (const message of session.pendingHookNotices ?? []) {
-    emitSystemNoticeUpdate(session, "warning", message);
+  for (const { severity, message } of session.pendingHookNotices ?? []) {
+    emitSystemNoticeUpdate(session, severity, message);
   }
   session.pendingHookNotices = undefined;
   const titleRead = emitSessionTitle(session);

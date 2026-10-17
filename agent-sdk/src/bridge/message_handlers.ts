@@ -9,6 +9,7 @@ import type { HookEvent, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
   BridgeCommand,
   SessionUpdate,
+  SystemNoticeSeverity,
   TaskMetadata,
   TerminalReason,
   TranscriptRetractionReason,
@@ -466,6 +467,11 @@ const PENDING_HOOK_NOTICE_LIMIT = 20;
 /** The exit code a command hook uses to deliver its decision. */
 const DECISION_EXIT_CODE = 2;
 /**
+ * Whether the bridge shows an exit-2 decision: "notice" when it was measured
+ * that nothing else in the SDK stream reaches the user, "none" otherwise.
+ */
+type DecisionNotice = "notice" | "none";
+/**
  * Events on which exit 2 is the hook's own decision rather than a failure: it
  * blocks or rolls back the action, keeps Claude or a subagent working, or hands
  * the hook's output to Claude. Taken from the per-event table in the hook
@@ -478,24 +484,40 @@ const DECISION_EXIT_CODE = 2;
  * that exits 2 it sends nothing else (measured on 0.3.288). An event missing
  * here, such as one a newer SDK adds, is a failure too, which keeps it in the
  * default log.
+ *
+ * The value was measured on SDK 0.3.288 with a command hook that exits 2 on
+ * each event, unless the entry says otherwise. Only a decision measured to reach
+ * the user through nothing but its hook_response gets a notice, so a notice is
+ * never a duplicate; an unmeasured event stays in the detailed log.
  */
-const EXIT_2_DECISION_EVENTS: ReadonlySet<string> = new Set<HookEvent>([
-  "PreToolUse",
-  "PostToolUse",
-  "PostToolUseFailure",
-  "PostToolBatch",
-  "UserPromptSubmit",
-  "UserPromptExpansion",
-  "Stop",
-  "SubagentStop",
-  "TeammateIdle",
-  "TaskCreated",
-  "TaskCompleted",
-  "ConfigChange",
-  "PreCompact",
-  "PreModelSwitch",
-  "Elicitation",
-  "ElicitationResult",
+const EXIT_2_DECISIONS: ReadonlyMap<string, DecisionNotice> = new Map<HookEvent, DecisionNotice>([
+  // The blocked call's tool result is the hook's output, marked as an error.
+  ["PreToolUse", "none"],
+  // Only the hook_response carries the output; the tool result is unchanged.
+  ["PostToolUse", "notice"],
+  ["PostToolUseFailure", "notice"],
+  // Only the hook_response carries the output; the turn ends with an empty result.
+  ["PostToolBatch", "notice"],
+  // A warning informational message and the turn result carry the output.
+  ["UserPromptSubmit", "none"],
+  ["UserPromptExpansion", "none"],
+  // Claude or the subagent keeps working, and the stock CLI shows nothing either.
+  ["Stop", "none"],
+  ["SubagentStop", "none"],
+  // Not measured: it needs an agent team.
+  ["TeammateIdle", "none"],
+  // The failed TaskCreate or TaskUpdate result is the hook's output.
+  ["TaskCreated", "none"],
+  ["TaskCompleted", "none"],
+  // Not measured: editing settings.local.json in an SDK session fired no hook.
+  ["ConfigChange", "none"],
+  // /compact reports a failed compaction with the hook's output (auto compaction not measured).
+  ["PreCompact", "none"],
+  // setModel rejects with the hook's output, and set_model reports the error.
+  ["PreModelSwitch", "none"],
+  // Not measured: they need an MCP server that elicits.
+  ["Elicitation", "none"],
+  ["ElicitationResult", "none"],
 ]);
 
 function hookOutputExcerpt(msg: Record<string, unknown>): string | undefined {
@@ -519,16 +541,29 @@ function hookFailureNotice(
   return `Hook ${hookName} failed${exit}${excerpt ? `: ${excerpt}` : "."}`;
 }
 
-function emitHookFailureNotice(session: SessionState, notice: string): void {
+function hookDecisionNotice(hookName: string, excerpt: string | undefined): string {
+  return `Hook ${hookName} blocked${excerpt ? `: ${excerpt}` : "."}`;
+}
+
+/** Shows one notice per hook run, held until the connect event if need be. */
+function emitHookNotice(
+  session: SessionState,
+  hookId: string,
+  severity: SystemNoticeSeverity,
+  message: string,
+): void {
+  if (!shouldEmitInformationalMessage(session, severity, message, hookId)) {
+    return;
+  }
   if (session.connected) {
-    emitSystemNoticeUpdate(session, "warning", notice);
+    emitSystemNoticeUpdate(session, severity, message);
     return;
   }
   // SessionStart hooks finish before the SDK answers its initialize request,
   // and the app ignores updates for a session it has not been told about.
   const pending = session.pendingHookNotices ?? [];
   if (pending.length < PENDING_HOOK_NOTICE_LIMIT) {
-    pending.push(notice);
+    pending.push({ severity, message });
   }
   session.pendingHookNotices = pending;
 }
@@ -536,9 +571,10 @@ function emitHookFailureNotice(session: SessionState, notice: string): void {
 /**
  * Handle the SDK's structured hook events. Started and progress messages are
  * routine and stay in the detailed log. A finished hook is logged at its real
- * severity: a decision stays in the detailed log, and a failure the user has no
- * other way to learn about becomes one warning notice. A cancelled hook is
- * ordinary (an interrupted turn cancels its hooks) and is never a notice.
+ * severity: a decision stays in the detailed log and becomes one info notice
+ * when nothing else shows it, and a failure the user has no other way to learn
+ * about becomes one warning notice. A cancelled hook is ordinary (an
+ * interrupted turn cancels its hooks) and is never a notice.
  */
 function handleHookSystemMessage(
   session: SessionState,
@@ -586,7 +622,8 @@ function handleHookSystemMessage(
   }
 
   const excerpt = hookOutputExcerpt(msg);
-  if (exitCode === DECISION_EXIT_CODE && EXIT_2_DECISION_EVENTS.has(hookEvent)) {
+  const decision = exitCode === DECISION_EXIT_CODE ? EXIT_2_DECISIONS.get(hookEvent) : undefined;
+  if (decision !== undefined) {
     bridgeLogger.info({
       ...common,
       eventName: "sdk_hook_decision",
@@ -594,6 +631,9 @@ function handleHookSystemMessage(
       outcome: "decision",
       fields: { ...common.fields, exit_code: exitCode, output_excerpt: excerpt },
     });
+    if (decision === "notice") {
+      emitHookNotice(session, hookId, "info", hookDecisionNotice(hookName, excerpt));
+    }
     return true;
   }
   bridgeLogger.warn({
@@ -603,10 +643,7 @@ function handleHookSystemMessage(
     outcome: "failure",
     fields: { ...common.fields, exit_code: exitCode, output_excerpt: excerpt },
   });
-  const notice = hookFailureNotice(hookName, exitCode, excerpt);
-  if (shouldEmitInformationalMessage(session, "warning", notice, hookId)) {
-    emitHookFailureNotice(session, notice);
-  }
+  emitHookNotice(session, hookId, "warning", hookFailureNotice(hookName, exitCode, excerpt));
   return true;
 }
 

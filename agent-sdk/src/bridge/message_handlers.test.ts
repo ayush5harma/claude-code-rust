@@ -273,19 +273,38 @@ function exitTwoOn(
 }
 
 // The SDK reports every exit 2 as outcome "error". On these events the hook
-// reference makes it the hook's decision (block the tool call or the prompt,
-// keep Claude working, or hand the output to Claude), so a gate must not read
-// "failed" each turn.
+// reference makes it the hook's decision (block the tool call, the prompt or
+// the compaction, keep Claude working, or hand the output to Claude), so a gate
+// must not read "failed" each turn. PreCompact and ConfigChange count although
+// they are not tool or prompt gates.
 test("a hook that exits 2 where exit 2 is a decision is logged at info, never a failure notice", () => {
-  const events = ["PreToolUse", "UserPromptSubmit", "Stop", "PostToolUse"];
+  const events = ["PreToolUse", "UserPromptSubmit", "Stop", "PostToolUse", "PreCompact", "ConfigChange"];
   const { logged, notices } = exitTwoOn(makeSession(), events);
 
-  assert.deepEqual(notices, []);
+  assert.deepEqual(
+    notices.filter((notice) => notice.severity !== "info"),
+    [],
+  );
   // Info stays out of the default log, which keeps only warnings and errors.
   assert.deepEqual(
-    logged.map((record) => record.level),
-    events.map(() => "info"),
+    logged,
+    events.map(() => ({ level: "info", eventName: "sdk_hook_decision" })),
   );
+});
+
+// Measured on SDK 0.3.288: after a PostToolUse hook exits 2 only its
+// hook_response carries the output, while a blocked PreToolUse call, prompt or
+// TaskCreate already shows it (a failed tool result or a warning message).
+test("a decision gets one info notice only when nothing else shows it", () => {
+  const events = ["PostToolUse", "PreToolUse", "UserPromptSubmit", "TaskCreated"];
+  const { notices } = exitTwoOn(makeSession(), events);
+
+  assert.equal(notices.length, 1, JSON.stringify(notices));
+  const [notice] = notices;
+  assert.equal(notice?.severity, "info");
+  const message = String(notice?.message);
+  assert.ok(message.includes("PostToolUse:Bash") && message.includes("gate says no"), message);
+  assert.ok(!message.includes("failed"), message);
 });
 
 // Measured on SDK 0.3.288 with a SessionStart command hook that exits 2: the
@@ -311,14 +330,15 @@ test("a SessionStart hook that exits 2 cannot block startup, so it is a failure 
 
   assert.deepEqual(logged, [{ level: "warn", eventName: "sdk_hook_failed" }]);
   assert.deepEqual(session.pendingHookNotices, [
-    "Hook SessionStart:startup failed (exit 2): start gate: env missing",
+    { severity: "warning", message: "Hook SessionStart:startup failed (exit 2): start gate: env missing" },
   ]);
 });
 
-// Notification ignores exit 2, and an event the hook reference does not list
-// (one a newer SDK adds) has no documented decision: both stay failures.
-test("exit 2 on an event that ignores it or an unknown event is a failure", () => {
-  const events = ["Notification", "SomeFutureEvent"];
+// Notification and PermissionRequest ignore exit 2, WorktreeCreate fails on any
+// non-zero exit, and an event the hook reference does not list (one a newer SDK
+// adds) has no documented decision: all of them stay failures.
+test("exit 2 on an event that ignores it, fails on it, or is unknown is a failure", () => {
+  const events = ["Notification", "PermissionRequest", "WorktreeCreate", "SomeFutureEvent"];
   const { logged, notices } = exitTwoOn(makeSession(), events);
 
   assert.deepEqual(
@@ -381,7 +401,9 @@ test("a hook failure before the session connects is held, not written", () => {
   });
 
   assert.deepEqual(notices, []);
-  assert.deepEqual(session.pendingHookNotices, ["Hook SessionStart:Bash failed (exit 1): missing env"]);
+  assert.deepEqual(session.pendingHookNotices, [
+    { severity: "warning", message: "Hook SessionStart:Bash failed (exit 1): missing env" },
+  ]);
 });
 
 // emitConnectEvent starts an async session-title read that outlives the call and
@@ -395,7 +417,7 @@ test("held hook failures are written after the connect event, then cleared", asy
   session.sessionId = "2f6c1f0e-1111-4111-8111-aaaaaaaaaaaa";
   session.cwd = configDir;
   session.connected = false;
-  session.pendingHookNotices = ["Hook SessionStart:Bash failed (exit 1): missing env"];
+  session.pendingHookNotices = [{ severity: "warning", message: "Hook SessionStart:Bash failed (exit 1): missing env" }];
   const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
   process.env.CLAUDE_CONFIG_DIR = configDir;
   const writes: string[] = [];

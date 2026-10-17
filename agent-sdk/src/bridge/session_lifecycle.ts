@@ -36,6 +36,7 @@ import type {
   SessionLaunchSettings,
   SessionUpdate,
   StartupFailure,
+  SystemNoticeSeverity,
   TaskItem,
   ToolCall,
   UserDialogOption,
@@ -195,8 +196,8 @@ export type SessionState = {
   resumeDropsTurn?: string;
   resumeGuardFenceComplete?: boolean;
   deferredBridgeEvents?: Array<{ event: BridgeEvent; requestId?: string }>;
-  /** Hook failure notices waiting for the connect event, oldest first. */
-  pendingHookNotices?: string[];
+  /** Hook notices waiting for the connect event, oldest first. */
+  pendingHookNotices?: Array<{ severity: SystemNoticeSeverity; message: string }>;
   deferredAuthRequired?: { detail?: string };
   input: AsyncQueue<SDKUserMessage>;
   connected: boolean;
