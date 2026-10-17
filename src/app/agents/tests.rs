@@ -5,7 +5,7 @@ use crate::agent::client::{AgentConnection, CommandReceiver};
 use crate::agent::events::ClientEvent;
 use crate::agent::model::{self, SessionId, TaskItem, TaskStatus, TaskUpdateSource};
 use crate::agent::types::{SubagentMessage, SubagentMessageRole};
-use crate::agent::wire::BridgeCommand;
+use crate::agent::wire::{BridgeCommand, CommandEnvelope};
 use crate::app::events::{handle_client_event, handle_terminal_event};
 use crate::app::{App, FullscreenView, SurfaceMode};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -48,8 +48,45 @@ fn lifecycle(app: &mut App, tasks: Vec<TaskItem>) {
     );
 }
 
+fn sent_envelopes(commands: &mut CommandReceiver) -> Vec<CommandEnvelope> {
+    std::iter::from_fn(|| commands.try_recv().ok()).collect()
+}
+
 fn sent(commands: &mut CommandReceiver) -> Vec<BridgeCommand> {
-    std::iter::from_fn(|| commands.try_recv().ok()).map(|envelope| envelope.command).collect()
+    sent_envelopes(commands).into_iter().map(|envelope| envelope.command).collect()
+}
+
+fn read_command(agent_id: &str) -> BridgeCommand {
+    BridgeCommand::GetSubagentMessages {
+        session_id: SESSION.to_owned(),
+        agent_id: agent_id.to_owned(),
+    }
+}
+
+/// The transcript reads among the sent commands, with their request ids.
+fn sent_reads(commands: &mut CommandReceiver) -> Vec<(BridgeCommand, String)> {
+    sent_envelopes(commands)
+        .into_iter()
+        .filter(|envelope| matches!(envelope.command, BridgeCommand::GetSubagentMessages { .. }))
+        .map(|envelope| {
+            let request_id = envelope.request_id.expect("a read names its request");
+            (envelope.command, request_id)
+        })
+        .collect()
+}
+
+fn answer(agent_id: &str, request_id: &str, messages: Vec<SubagentMessage>) -> ClientEvent {
+    ClientEvent::SubagentMessagesReceived {
+        session_id: SESSION.to_owned(),
+        agent_id: agent_id.to_owned(),
+        request_id: Some(request_id.to_owned()),
+        messages,
+        error: None,
+    }
+}
+
+fn reply(text: &str) -> SubagentMessage {
+    SubagentMessage { role: SubagentMessageRole::Assistant, text: text.to_owned() }
 }
 
 fn statuses(app: &App) -> Vec<(String, SubagentStatus)> {
@@ -250,30 +287,19 @@ fn only_a_listed_id_has_a_transcript_and_reading_it_leaves_status_alone() {
 
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Enter);
+    let reads = sent_reads(&mut commands);
     assert_eq!(
-        sent(&mut commands),
-        vec![BridgeCommand::GetSubagentMessages {
-            session_id: SESSION.to_owned(),
-            agent_id: "agent-2".to_owned()
-        }]
+        reads.iter().map(|(command, _)| command.clone()).collect::<Vec<_>>(),
+        [read_command("agent-2")]
     );
-    let reply = |text: &str| SubagentMessage {
-        role: SubagentMessageRole::Assistant,
-        text: text.to_owned(),
-    };
-    for (agent_id, text) in [("agent-1", "someone else's"), ("agent-2", "Parser checked")] {
-        handle_client_event(
-            &mut app,
-            ClientEvent::SubagentMessagesReceived {
-                session_id: SESSION.to_owned(),
-                agent_id: agent_id.to_owned(),
-                messages: vec![reply(text)],
-                error: None,
-            },
-        );
-    }
-    let transcript = app.agents.transcript.as_ref().expect("transcript open");
-    assert_eq!(transcript.messages.as_deref(), Some(&[reply("Parser checked")][..]));
+    handle_client_event(
+        &mut app,
+        answer("agent-1", "another-request", vec![reply("someone else's")]),
+    );
+    handle_client_event(&mut app, answer("agent-2", &reads[0].1, vec![reply("Parser checked")]));
+    assert!(app.agents.transcript.is_some(), "transcript open");
+    let read = app.agents.read.as_ref().expect("transcript read");
+    assert_eq!(read.messages.as_deref(), Some(&[reply("Parser checked")][..]));
     assert_eq!(
         statuses(&app)[0].1,
         SubagentStatus::Running,
@@ -427,28 +453,52 @@ fn an_interrupted_subagent_is_shown_as_such_not_counted_and_cannot_be_stopped() 
 
 #[test]
 fn a_new_transcript_answer_replaces_what_was_wrapped_for_the_old_one() {
-    let (mut app, _commands) = connected_app();
+    let (mut app, mut commands) = connected_app();
     lifecycle(
         &mut app,
         vec![task("agent-1", "local_agent", TaskStatus::Completed, Some("completed"))],
     );
-    app.agents.transcript = Some(super::TranscriptView {
-        agent_id: "agent-1".to_owned(),
-        ..super::TranscriptView::default()
-    });
-    let answer = |text: &str| ClientEvent::SubagentMessagesReceived {
-        session_id: SESSION.to_owned(),
-        agent_id: "agent-1".to_owned(),
-        messages: vec![SubagentMessage {
-            role: SubagentMessageRole::Assistant,
-            text: text.to_owned(),
-        }],
-        error: None,
-    };
-    handle_client_event(&mut app, answer("first"));
+    super::open(&mut app);
+    super::apply_transcript_list(&mut app, vec!["agent-1".to_owned()], None);
+    press(&mut app, KeyCode::Enter);
+    let first = sent_reads(&mut commands).pop().expect("read sent").1;
+    handle_client_event(&mut app, answer("agent-1", &first, vec![reply("first")]));
     if let Some(view) = app.agents.transcript.as_mut() {
         view.wrapped = Some(super::WrappedTranscript { width: 80, rows: Vec::new() });
     }
-    handle_client_event(&mut app, answer("second"));
+    press(&mut app, KeyCode::Char('r'));
+    let second = sent_reads(&mut commands).pop().expect("read sent").1;
+    handle_client_event(&mut app, answer("agent-1", &second, vec![reply("second")]));
     assert!(app.agents.transcript.is_some_and(|view| view.wrapped.is_none()));
+}
+
+#[test]
+fn r_reads_the_open_transcript_again_and_only_the_latest_request_is_applied() {
+    let (mut app, mut commands) = connected_app();
+    lifecycle(&mut app, vec![task("agent-1", "local_agent", TaskStatus::InProgress, None)]);
+    super::open(&mut app);
+    super::apply_transcript_list(&mut app, vec!["agent-1".to_owned()], None);
+    press(&mut app, KeyCode::Enter);
+    let first = sent_reads(&mut commands).pop().expect("read sent").1;
+    handle_client_event(&mut app, answer("agent-1", &first, vec![reply("step 1")]));
+
+    press(&mut app, KeyCode::Char('r'));
+    let reads = sent_reads(&mut commands);
+    assert_eq!(reads.len(), 1, "r reads the open transcript again");
+    let (command, second) = &reads[0];
+    assert_eq!(command, &read_command("agent-1"));
+    assert_ne!(second, &first, "each read is its own request");
+    let messages = |app: &App| app.agents.read.as_ref().and_then(|read| read.messages.clone());
+    assert_eq!(messages(&app), Some(vec![reply("step 1")]), "shown until the answer");
+
+    // An answer to the superseded request arrives late and changes nothing.
+    handle_client_event(&mut app, answer("agent-1", &first, vec![reply("stale")]));
+    assert_eq!(messages(&app), Some(vec![reply("step 1")]));
+    handle_client_event(
+        &mut app,
+        answer("agent-1", second, vec![reply("step 1"), reply("step 2")]),
+    );
+    assert_eq!(messages(&app), Some(vec![reply("step 1"), reply("step 2")]));
+    assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Agents));
+    assert!(app.agents.transcript.is_some(), "the transcript stays open");
 }

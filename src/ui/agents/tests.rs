@@ -4,8 +4,9 @@ use crate::agent::client::{AgentConnection, CommandReceiver};
 use crate::agent::events::ClientEvent;
 use crate::agent::model::{self, SessionId, TaskItem, TaskStatus};
 use crate::agent::types::{SubagentMessage, SubagentMessageRole};
+use crate::agent::wire::BridgeCommand;
 use crate::app::App;
-use crate::app::agents::{TranscriptView, apply_transcript_list, handle_key, open};
+use crate::app::agents::{apply_transcript_list, handle_key, open};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -71,6 +72,52 @@ fn app_with_subagents() -> (App, CommandReceiver) {
     (app, commands)
 }
 
+fn press(app: &mut App, code: KeyCode) {
+    handle_key(app, KeyEvent::new(code, KeyModifiers::NONE));
+}
+
+/// The id of the newest transcript read sent to the bridge.
+fn last_read_request(commands: &mut CommandReceiver) -> String {
+    std::iter::from_fn(|| commands.try_recv().ok())
+        .filter(|envelope| matches!(envelope.command, BridgeCommand::GetSubagentMessages { .. }))
+        .last()
+        .and_then(|envelope| envelope.request_id)
+        .expect("a transcript read was sent")
+}
+
+/// Opens the completed subagent's transcript as a user does; returns the read's request id.
+fn open_transcript(app: &mut App, commands: &mut CommandReceiver) -> String {
+    apply_transcript_list(app, vec!["agent-2".to_owned()], None);
+    app.agents.selected_task_id = Some("agent-2".to_owned());
+    press(app, KeyCode::Enter);
+    last_read_request(commands)
+}
+
+fn answer(app: &mut App, request_id: &str, outcome: Result<Vec<SubagentMessage>, &str>) {
+    let (messages, error) = match outcome {
+        Ok(messages) => (messages, None),
+        Err(error) => (Vec::new(), Some(error.to_owned())),
+    };
+    crate::app::handle_client_event(
+        app,
+        ClientEvent::SubagentMessagesReceived {
+            session_id: "session-1".to_owned(),
+            agent_id: "agent-2".to_owned(),
+            request_id: Some(request_id.to_owned()),
+            messages,
+            error,
+        },
+    );
+}
+
+fn message(role: SubagentMessageRole, text: &str) -> SubagentMessage {
+    SubagentMessage { role, text: text.to_owned() }
+}
+
+fn reply(text: &str) -> SubagentMessage {
+    message(SubagentMessageRole::Assistant, text)
+}
+
 #[test]
 fn rows_show_each_subagents_status_type_and_transcript_under_their_own_title() {
     let (mut app, _commands) = app_with_subagents();
@@ -114,16 +161,16 @@ fn rows_show_each_subagents_status_type_and_transcript_under_their_own_title() {
 
 #[test]
 fn both_hints_name_the_page_keys_as_general_help_does() {
-    let (mut app, _commands) = app_with_subagents();
+    let (mut app, mut commands) = app_with_subagents();
     let lines = screen(&mut app, 120, 30);
     let (_, hint) = row_with(&lines, "Esc close");
     assert!(hint.contains("PageUp/PageDown details"), "{hint}");
 
-    app.agents.transcript =
-        Some(TranscriptView { agent_id: "agent-2".to_owned(), ..TranscriptView::default() });
+    open_transcript(&mut app, &mut commands);
     let lines = screen(&mut app, 120, 30);
     let (_, hint) = row_with(&lines, "Esc/Left back");
     assert!(hint.contains("PageUp/PageDown page"), "{hint}");
+    assert!(hint.contains("r refresh"), "{hint}");
 }
 
 #[test]
@@ -268,19 +315,14 @@ fn details_show_the_selected_subagents_model_activity_and_prompt_beside_or_below
 
 #[test]
 fn transcript_replaces_the_list_in_the_same_screen_and_scrolls() {
-    let (mut app, _commands) = app_with_subagents();
-    let message = |role, text: &str| SubagentMessage { role, text: text.to_owned() };
+    let (mut app, mut commands) = app_with_subagents();
     let mut messages = vec![
         message(SubagentMessageRole::User, "Inspect the parser"),
         message(SubagentMessageRole::Tool, "ls parser"),
     ];
-    messages
-        .extend((1..=30).map(|n| message(SubagentMessageRole::Assistant, &format!("finding {n}"))));
-    app.agents.transcript = Some(TranscriptView {
-        agent_id: "agent-2".to_owned(),
-        messages: Some(messages),
-        ..TranscriptView::default()
-    });
+    messages.extend((1..=30).map(|n| reply(&format!("finding {n}"))));
+    let request = open_transcript(&mut app, &mut commands);
+    answer(&mut app, &request, Ok(messages));
 
     let lines = screen(&mut app, 60, 20);
     let (_, title) = row_with(&lines, "Subagents");
@@ -289,17 +331,18 @@ fn transcript_replaces_the_list_in_the_same_screen_and_scrolls() {
     let (prompt, _) = row_with(&lines, "Prompt");
     assert!(lines[prompt + 1].contains("Inspect the parser"));
     row_with(&lines, "• ls parser");
-    let (_, hint) = row_with(&lines, "Esc/Left back");
-    assert!(hint.contains("Up/Down scroll"), "{hint}");
+    let (hint_row, _) = row_with(&lines, "Up/Down scroll");
+    let hint = lines[hint_row..].join(" ");
+    assert!(hint.contains("Esc/Left back"), "{hint}");
 
     for _ in 0..200 {
-        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        press(&mut app, KeyCode::Down);
     }
     let bottom = screen(&mut app, 60, 20);
     row_with(&bottom, "finding 30");
     assert!(!bottom.iter().any(|line| line.contains("Inspect the parser")));
     // Scrolling past the end stops at the last page, so one Up moves back.
-    handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    press(&mut app, KeyCode::Up);
     assert_ne!(screen(&mut app, 60, 20), bottom);
 }
 
@@ -311,26 +354,18 @@ fn a_session_without_subagents_and_an_unread_transcript_say_so() {
     let lines = screen(&mut app, 60, 16);
     row_with(&lines, "No subagents yet");
 
-    let (mut app, _commands) = app_with_subagents();
-    app.agents.transcript =
-        Some(TranscriptView { agent_id: "agent-2".to_owned(), ..TranscriptView::default() });
+    let (mut app, mut commands) = app_with_subagents();
+    open_transcript(&mut app, &mut commands);
     let lines = screen(&mut app, 60, 16);
     row_with(&lines, "Reading transcript");
 }
 
 #[test]
 fn transcript_follows_width_changes_and_replaced_messages_through_its_wrap_cache() {
-    let (mut app, _commands) = app_with_subagents();
+    let (mut app, mut commands) = app_with_subagents();
     let long = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu";
-    let reply = |text: &str| SubagentMessage {
-        role: SubagentMessageRole::Assistant,
-        text: text.to_owned(),
-    };
-    app.agents.transcript = Some(TranscriptView {
-        agent_id: "agent-2".to_owned(),
-        messages: Some(vec![reply(long)]),
-        ..TranscriptView::default()
-    });
+    let request = open_transcript(&mut app, &mut commands);
+    answer(&mut app, &request, Ok(vec![reply(long)]));
 
     let wide = screen(&mut app, 100, 12);
     row_with(&wide, long);
@@ -339,11 +374,60 @@ fn transcript_follows_width_changes_and_replaced_messages_through_its_wrap_cache
     row_with(&narrow, "alpha beta");
     row_with(&narrow, "lambda mu");
 
-    if let Some(view) = app.agents.transcript.as_mut() {
-        view.messages = Some(vec![reply("fresh answer")]);
-        view.wrapped = None;
-    }
+    press(&mut app, KeyCode::Char('r'));
+    let request = last_read_request(&mut commands);
+    answer(&mut app, &request, Ok(vec![reply("fresh answer")]));
     row_with(&screen(&mut app, 30, 12), "fresh answer");
+}
+
+#[test]
+fn r_rereads_the_transcript_at_the_same_position_and_ends_a_shrunk_one_on_its_last_page() {
+    let (mut app, mut commands) = app_with_subagents();
+    let findings = |count: usize| (1..=count).map(|n| reply(&format!("finding {n}"))).collect();
+    let request = open_transcript(&mut app, &mut commands);
+    answer(&mut app, &request, Ok(findings(40)));
+    for _ in 0..20 {
+        press(&mut app, KeyCode::Down);
+    }
+    let before = screen(&mut app, 60, 20);
+    let (title, _) = row_with(&before, "Review the parser");
+    let (hint, _) = row_with(&before, "Esc/Left back");
+    assert!(
+        !before.iter().any(|line| line.trim() == "finding 1"),
+        "the reader is scrolled: {}",
+        before.join("\n")
+    );
+
+    press(&mut app, KeyCode::Char('r'));
+    let request = last_read_request(&mut commands);
+    answer(&mut app, &request, Ok(findings(60)));
+    let after = screen(&mut app, 60, 20);
+    assert_eq!(after[title..hint], before[title..hint], "the reading position is kept");
+
+    press(&mut app, KeyCode::Char('r'));
+    let request = last_read_request(&mut commands);
+    answer(&mut app, &request, Ok(findings(3)));
+    let shrunk = screen(&mut app, 60, 20);
+    row_with(&shrunk, "finding 3");
+    row_with(&shrunk, "finding 1");
+}
+
+#[test]
+fn r_retries_a_transcript_that_could_not_be_read() {
+    let (mut app, mut commands) = app_with_subagents();
+    let request = open_transcript(&mut app, &mut commands);
+    answer(&mut app, &request, Err("transcript unreadable"));
+    let failed = screen(&mut app, 60, 20);
+    row_with(&failed, "Could not read the transcript");
+    row_with(&failed, "transcript unreadable");
+
+    press(&mut app, KeyCode::Char('r'));
+    let request = last_read_request(&mut commands);
+    row_with(&screen(&mut app, 60, 20), "Reading transcript");
+    answer(&mut app, &request, Ok(vec![reply("Parser checked")]));
+    let read = screen(&mut app, 60, 20);
+    row_with(&read, "Parser checked");
+    assert!(!read.iter().any(|line| line.contains("Could not read")), "{}", read.join("\n"));
 }
 
 #[test]
@@ -364,19 +448,13 @@ fn an_interrupted_row_labels_its_text_as_last_progress_not_as_a_result() {
 
 #[test]
 fn a_transcript_longer_than_the_wrap_helpers_row_cap_stays_readable_to_the_end() {
-    let (mut app, _commands) = app_with_subagents();
+    let (mut app, mut commands) = app_with_subagents();
     // Three rows per reply: more than u16::MAX rows in all.
-    let messages: Vec<_> = (1..=25_000)
-        .map(|n| SubagentMessage {
-            role: SubagentMessageRole::Assistant,
-            text: format!("finding {n}"),
-        })
-        .collect();
-    app.agents.transcript = Some(TranscriptView {
-        agent_id: "agent-2".to_owned(),
-        messages: Some(messages),
-        scroll: usize::MAX,
-        ..TranscriptView::default()
-    });
+    let messages: Vec<_> = (1..=25_000).map(|n| reply(&format!("finding {n}"))).collect();
+    let request = open_transcript(&mut app, &mut commands);
+    answer(&mut app, &request, Ok(messages));
+    if let Some(view) = app.agents.transcript.as_mut() {
+        view.scroll = usize::MAX;
+    }
     row_with(&screen(&mut app, 60, 20), "finding 25000");
 }

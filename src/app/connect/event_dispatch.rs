@@ -331,6 +331,7 @@ pub(super) async fn handle_bridge_event(
                 .send(ClientEvent::SubagentMessagesReceived {
                     session_id,
                     agent_id,
+                    request_id,
                     messages,
                     error,
                 })

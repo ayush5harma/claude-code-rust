@@ -313,6 +313,8 @@ function streamReply(messageUuid) {
   }
 }
 
+let subagentReads = 0;
+
 // Subagent rows as the bridge normalizes SDK task lifecycle messages.
 function agentTask(task_id, subject, status, terminal_status, extra = {}) {
   return { task_id, subject, status, blocks: [], blocked_by: [], metadata: {
@@ -418,10 +420,13 @@ readline
         send({ event: 'subagents_listed', session_id: SESSION, agent_ids: ['agent-done'] });
         break;
       case 'get_subagent_messages':
-        send({ event: 'subagent_messages', session_id: SESSION, agent_id: message.agent_id, messages: [
+        subagentReads += 1;
+        send({ event: 'subagent_messages', session_id: SESSION, request_id: message.request_id, agent_id: message.agent_id, messages: [
           { role: 'user', text: 'Inspect the docs' },
           { role: 'tool', text: 'ls docs' },
           { role: 'assistant', text: 'Docs path checked' },
+          // Each read finds one more step, as a transcript that is still being written grows.
+          ...Array.from({ length: subagentReads }, (_, index) => ({ role: 'tool', text: `step ${index + 1}` })),
         ] });
         break;
       case 'stop_subagent':

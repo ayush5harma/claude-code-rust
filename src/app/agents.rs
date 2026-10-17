@@ -64,12 +64,22 @@ pub(crate) struct Notice {
     pub text: String,
 }
 
+/// One subagent's saved transcript as this view last read it.
+#[derive(Debug)]
+pub(crate) struct TranscriptRead {
+    pub agent_id: String,
+    /// The request this read waits on; an answer to any earlier one is superseded.
+    request_id: String,
+    /// The last successful answer; `None` until one arrives. It stays shown
+    /// while a later request for the same subagent is pending.
+    pub messages: Option<Vec<SubagentMessage>>,
+    /// Why the latest request failed.
+    pub error: Option<String>,
+}
+
+/// The open transcript reader, showing `AgentsView::read`.
 #[derive(Debug, Default)]
 pub(crate) struct TranscriptView {
-    pub agent_id: String,
-    /// `None` until the SDK answers.
-    pub messages: Option<Vec<SubagentMessage>>,
-    pub error: Option<String>,
     pub scroll: usize,
     /// The messages wrapped to the width they were last drawn at, so a frame
     /// wraps nothing until the width or the messages change.
@@ -94,6 +104,8 @@ pub(crate) struct AgentsView {
     /// kept, and the next successful check clears it.
     pub list_error: Option<String>,
     stop_requested: HashSet<String>,
+    /// The transcript last read; the open reader shows it.
+    pub read: Option<TranscriptRead>,
     pub transcript: Option<TranscriptView>,
     pub notice: Option<Notice>,
     /// Scroll offset of the selected subagent's details.
@@ -299,8 +311,8 @@ pub(crate) fn apply_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::SubagentsListed { agent_ids, error, .. } => {
             apply_transcript_list(app, agent_ids, error);
         }
-        ClientEvent::SubagentMessagesReceived { agent_id, messages, error, .. } => {
-            apply_transcript(app, &agent_id, messages, error);
+        ClientEvent::SubagentMessagesReceived { request_id, messages, error, .. } => {
+            apply_transcript(app, request_id.as_deref(), messages, error);
         }
         ClientEvent::SubagentStopResult { task_id, error, .. } => {
             apply_stop_result(app, &task_id, error);
@@ -317,19 +329,27 @@ pub(crate) fn apply_transcript_list(app: &mut App, agent_ids: Vec<String>, error
     app.agents.list_error = error;
 }
 
+/// Applies the answer to the latest read request; an answer to an earlier
+/// request, for this subagent or another, changes nothing.
 fn apply_transcript(
     app: &mut App,
-    agent_id: &str,
+    request_id: Option<&str>,
     messages: Vec<SubagentMessage>,
     error: Option<String>,
 ) {
-    let Some(transcript) = app.agents.transcript.as_mut().filter(|view| view.agent_id == agent_id)
+    let Some(read) =
+        app.agents.read.as_mut().filter(|read| Some(read.request_id.as_str()) == request_id)
     else {
         return;
     };
-    transcript.messages = Some(messages);
-    transcript.error = error;
-    transcript.wrapped = None;
+    match error {
+        // A failed re-read keeps what was read before for the next retry.
+        Some(error) => read.error = Some(error),
+        None => read.messages = Some(messages),
+    }
+    if let Some(view) = app.agents.transcript.as_mut() {
+        view.wrapped = None;
+    }
 }
 
 fn apply_stop_result(app: &mut App, task_id: &str, error: Option<String>) {
@@ -381,6 +401,26 @@ fn move_selection(app: &mut App, down: bool) {
     app.agents.selected_task_id = Some(id);
 }
 
+/// Asks for `agent_id`'s saved transcript. What was read before for the same
+/// subagent stays shown, at the same position, until the answer replaces it.
+fn request_read(app: &mut App, agent_id: String) -> bool {
+    let Some((session_id, conn)) = active_session(app) else { return false };
+    let request_id = uuid::Uuid::new_v4().to_string();
+    if let Err(error) = conn.get_subagent_messages(session_id, agent_id.clone(), request_id.clone())
+    {
+        notice(app, NoticeKind::Error, format!("Could not read the transcript: {error}"));
+        return false;
+    }
+    let messages = app
+        .agents
+        .read
+        .take()
+        .filter(|read| read.agent_id == agent_id)
+        .and_then(|read| read.messages);
+    app.agents.read = Some(TranscriptRead { agent_id, request_id, messages, error: None });
+    true
+}
+
 fn open_transcript(app: &mut App) {
     let Some((task_id, _)) = selected_row(app) else { return };
     if app.agents.has_transcript(&task_id) != Some(true) {
@@ -391,13 +431,17 @@ fn open_transcript(app: &mut App) {
         );
         return;
     }
-    let Some((session_id, conn)) = active_session(app) else { return };
-    if let Err(error) = conn.get_subagent_messages(session_id, task_id.clone()) {
-        notice(app, NoticeKind::Error, format!("Could not read the transcript: {error}"));
-        return;
+    if request_read(app, task_id) {
+        app.agents.notice = None;
+        app.agents.transcript = Some(TranscriptView::default());
     }
-    app.agents.notice = None;
-    app.agents.transcript = Some(TranscriptView { agent_id: task_id, ..TranscriptView::default() });
+}
+
+/// Reads the open transcript again, also after a failed read.
+fn refresh_transcript(app: &mut App) {
+    if let Some(agent_id) = app.agents.read.as_ref().map(|read| read.agent_id.clone()) {
+        request_read(app, agent_id);
+    }
 }
 
 fn request_stop(app: &mut App) {
@@ -439,6 +483,7 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
             KeyCode::PageDown => {
                 transcript.scroll = transcript.scroll.saturating_add(usize::from(PAGE_ROWS));
             }
+            KeyCode::Char('r') => refresh_transcript(app),
             _ => {}
         }
         return;

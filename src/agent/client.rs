@@ -782,13 +782,15 @@ impl AgentConnection {
         })
     }
 
+    /// Request one subagent's saved transcript; the answer comes back under `request_id`.
     pub fn get_subagent_messages(
         &self,
         session_id: String,
         agent_id: String,
+        request_id: String,
     ) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
-            request_id: None,
+            request_id: Some(request_id),
             command: BridgeCommand::GetSubagentMessages { session_id, agent_id },
         })
     }

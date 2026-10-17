@@ -224,6 +224,8 @@ pub enum ClientEvent {
     SubagentMessagesReceived {
         session_id: String,
         agent_id: String,
+        /// The read request this answers.
+        request_id: Option<String>,
         messages: Vec<crate::agent::types::SubagentMessage>,
         error: Option<String>,
     },

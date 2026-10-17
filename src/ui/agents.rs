@@ -9,10 +9,10 @@ use super::config::common::{
 };
 use super::session_picker::fit_with_ellipsis;
 use super::theme;
-use crate::agent::types::SubagentMessageRole;
+use crate::agent::types::{SubagentMessage, SubagentMessageRole};
 use crate::app::agents::{
-    NoticeKind, SubagentRow, SubagentStatus, TranscriptView, WrappedTranscript, launching_call,
-    recent_child_tools, running_subagent_count, subagent_rows,
+    NoticeKind, SubagentRow, SubagentStatus, WrappedTranscript, launching_call, recent_child_tools,
+    running_subagent_count, subagent_rows,
 };
 use crate::app::{App, ToolCallInfo};
 use ratatui::Frame;
@@ -94,7 +94,7 @@ fn notice_lines(app: &App) -> Text<'static> {
 fn hint(app: &App, width: u16) -> String {
     if app.agents.transcript.is_some() {
         return hint_text_with_escape(
-            vec!["Up/Down scroll", "PageUp/PageDown page"],
+            vec!["Up/Down scroll", "r refresh", "PageUp/PageDown page"],
             width,
             "Esc/Left back",
         );
@@ -332,28 +332,29 @@ fn detail_lines(app: &App, row: &SubagentRow<'_>, width: u16) -> Vec<Line<'stati
 }
 
 fn render_transcript(frame: &mut Frame, title_area: Rect, body: Rect, app: &mut App) {
+    let agents = &mut *app.agents;
+    let (Some(read), Some(view)) = (agents.read.as_ref(), agents.transcript.as_mut()) else {
+        return;
+    };
     let subject = app
         .sdk_inventory
         .tasks
         .iter()
-        .find(|task| {
-            app.agents.transcript.as_ref().is_some_and(|view| view.agent_id == task.task_id)
-        })
-        .map(|task| task.subject.clone());
-    let Some(view) = app.agents.transcript.as_mut() else { return };
+        .find(|task| task.task_id == read.agent_id)
+        .map_or_else(|| read.agent_id.clone(), |task| task.subject.clone());
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(TITLE, title_style().fg(theme::RUST_ORANGE)),
             Span::styled(" › ", Style::default().fg(theme::DIM)),
-            Span::styled(subject.unwrap_or_else(|| view.agent_id.clone()), title_style()),
+            Span::styled(subject, title_style()),
         ])),
         title_area,
     );
-    if let Some(error) = &view.error {
+    if let Some(error) = &read.error {
         render_message(frame, body, "Could not read the transcript", error);
         return;
     }
-    let Some(messages) = &view.messages else {
+    let Some(messages) = &read.messages else {
         render_message(
             frame,
             body,
@@ -375,13 +376,14 @@ fn render_transcript(frame: &mut Frame, title_area: Rect, body: Rect, app: &mut 
     if view.wrapped.as_ref().is_none_or(|cached| cached.width != width) {
         // One logical line at a time: the helper caps its result at u16::MAX
         // rows, which a whole long transcript can exceed but one line cannot.
-        let rows = transcript_lines(view)
+        let rows = transcript_lines(messages)
             .into_iter()
             .flat_map(|line| crate::ui::wrap::wrap_lines_to_physical_rows(&[line], width))
             .collect();
         view.wrapped = Some(WrappedTranscript { width, rows });
     }
     let Some(wrapped) = &view.wrapped else { return };
+    // A re-read keeps the position; one that shrank the transcript ends at its last page.
     let max_scroll = wrapped.rows.len().saturating_sub(usize::from(body.height));
     view.scroll = view.scroll.min(max_scroll);
     let visible: Vec<Line<'static>> =
@@ -389,9 +391,9 @@ fn render_transcript(frame: &mut Frame, title_area: Rect, body: Rect, app: &mut 
     frame.render_widget(Paragraph::new(visible), body);
 }
 
-fn transcript_lines(view: &TranscriptView) -> Vec<Line<'static>> {
+fn transcript_lines(messages: &[SubagentMessage]) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    for message in view.messages.iter().flatten() {
+    for message in messages {
         match message.role {
             SubagentMessageRole::Tool => {
                 lines.push(Line::styled(
