@@ -623,6 +623,7 @@ pub(super) fn handle_turn_complete_event(
     finish_ready_turn_exit(app, exit, tool_status);
     request_post_turn_resize_purge_replay_if_needed(app);
     crate::app::session_runtime::request_context_usage_refresh(app);
+    crate::app::config::refresh_session_transcript_if_shown(app);
     if turn_was_active
         && !exit.cancel_requested
         && !matches!(
@@ -668,6 +669,7 @@ pub(super) fn handle_turn_error_event(
         finish_ready_turn_exit(app, exit, model::ToolCallStatus::Failed);
         request_post_turn_resize_purge_replay_if_needed(app);
         crate::app::session_runtime::request_context_usage_refresh(app);
+        crate::app::config::refresh_session_transcript_if_shown(app);
         return;
     }
 
@@ -705,6 +707,7 @@ pub(super) fn handle_turn_error_event(
     app.turn.reset_for_turn_exit();
     request_post_turn_resize_purge_replay_if_needed(app);
     crate::app::session_runtime::request_context_usage_refresh(app);
+    crate::app::config::refresh_session_transcript_if_shown(app);
 }
 
 pub(super) fn handle_user_message_queued_event(app: &mut App, message_uuid: &str) {
