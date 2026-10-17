@@ -588,6 +588,11 @@ export function parseCommandEnvelope(line: string): {
           command: "get_rewind_targets",
           session_id: expectString(raw, "session_id", "get_rewind_targets"),
         };
+      case "export_session_history":
+        return {
+          command: "export_session_history",
+          session_id: expectString(raw, "session_id", "export_session_history"),
+        };
       case "rewind":
         return {
           command: "rewind",

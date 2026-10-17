@@ -123,3 +123,45 @@ async fn forced_connection_shutdown_aborts_the_owned_bridge_task() {
         })
         .await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn history_export_chunks_count_the_updates_the_app_cannot_map() {
+    let (connection, _commands) = crate::agent::client::AgentConnection::test_channel();
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(4);
+    let mut connected_once = true;
+    // An image of a type the app cannot show has no mapped form; the text next to it does.
+    let envelope: crate::agent::wire::EventEnvelope = serde_json::from_value(serde_json::json!({
+        "request_id": "export-1",
+        "event": "session_history_export",
+        "session_id": "s1",
+        "updates": [
+            { "type": "user_message_chunk",
+              "content": { "type": "text", "text": "hello" } },
+            { "type": "user_message_chunk",
+              "content": { "type": "image", "mime_type": "image/x-unsupported", "data": "AAAA" } },
+            { "type": "agent_message_chunk",
+              "content": { "type": "image", "mime_type": "image/png", "data": "" } }
+        ],
+        "last": true,
+        "omitted_updates": 0
+    }))
+    .expect("history export envelope");
+
+    super::event_dispatch::handle_bridge_event(
+        &event_tx,
+        &connection,
+        &mut connected_once,
+        false,
+        envelope,
+    )
+    .await;
+
+    let crate::agent::events::ClientEvent::SessionHistoryChunk { chunk, .. } =
+        event_rx.recv().await.expect("mapped event")
+    else {
+        panic!("expected a history chunk");
+    };
+    assert_eq!(chunk.updates.len(), 1);
+    assert_eq!(chunk.unmapped_updates, 2);
+    assert_eq!(chunk.request_id.as_deref(), Some("export-1"));
+}
