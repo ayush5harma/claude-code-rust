@@ -255,12 +255,50 @@ function optionalLaunchSettings(
   }
   const agent = optionalString(parsed, "agent", `${context}.${key}`);
   const effort = parsed.effort == null ? undefined : expectEffortLevel(parsed, "effort", `${context}.${key}`);
+  const where = `${context}.${key}`;
+  const name = optionalString(parsed, "name", where);
+  const forkSession = optionalBoolean(parsed, "fork_session", where);
+  const additionalDirectories = parsed.additional_directories == null
+    ? []
+    : expectStringArray(parsed, "additional_directories", where);
+  const settings = optionalJsonObject(parsed, "settings", where);
+  const mcpConfigs = parsed.mcp_configs == null
+    ? []
+    : expectJsonObjectArray(parsed, "mcp_configs", where);
+  const strictMcpConfig = optionalBoolean(parsed, "strict_mcp_config", where);
+  const systemPrompt = optionalString(parsed, "system_prompt", where);
+  const appendSystemPrompt = optionalString(parsed, "append_system_prompt", where);
   return {
     ...(model ? { model } : {}),
     ...(permissionMode ? { permission_mode: permissionMode as SessionLaunchSettings["permission_mode"] } : {}),
     ...(agent ? { agent } : {}),
     ...(effort !== undefined ? { effort } : {}),
+    ...(name ? { name } : {}),
+    ...(forkSession ? { fork_session: true } : {}),
+    ...(additionalDirectories.length > 0 ? { additional_directories: additionalDirectories } : {}),
+    ...(settings !== undefined ? { settings } : {}),
+    ...(mcpConfigs.length > 0 ? { mcp_configs: mcpConfigs } : {}),
+    ...(strictMcpConfig ? { strict_mcp_config: true } : {}),
+    ...(systemPrompt !== undefined ? { system_prompt: systemPrompt } : {}),
+    ...(appendSystemPrompt !== undefined ? { append_system_prompt: appendSystemPrompt } : {}),
   };
+}
+
+function expectJsonObjectArray(
+  record: Record<string, unknown>,
+  key: string,
+  context: string,
+): Array<{ [key: string]: Json }> {
+  const value = record[key];
+  if (!Array.isArray(value)) {
+    throw new Error(`${context}.${key} must be an array`);
+  }
+  return value.map((entry, index) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`${context}.${key}[${index}] must be an object`);
+    }
+    return entry as { [key: string]: Json };
+  });
 }
 
 function optionalBoolean(
@@ -578,6 +616,11 @@ export function parseCommandEnvelope(line: string): {
           ...(optionalBoolean(raw, "force", "reload_plugins") !== undefined
             ? { force: optionalBoolean(raw, "force", "reload_plugins") }
             : {}),
+        };
+      case "reload_skills_and_styles":
+        return {
+          command: "reload_skills_and_styles",
+          session_id: expectString(raw, "session_id", "reload_skills_and_styles"),
         };
       case "mcp_status":
       // Rust historically sends `get_mcp_snapshot`; normalize it to the bridge-internal command.

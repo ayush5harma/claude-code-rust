@@ -819,6 +819,13 @@ impl AgentConnection {
         })
     }
 
+    pub fn reload_skills_and_styles(&self, session_id: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::ReloadSkillsAndStyles { session_id },
+        })
+    }
+
     pub fn get_mcp_snapshot(&self, session_id: String) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: None,
@@ -1351,6 +1358,19 @@ mod tests {
         assert_eq!(
             envelope.command,
             BridgeCommand::ReloadPlugins { session_id: "session-1".to_owned(), force: false }
+        );
+    }
+
+    #[test]
+    fn reload_skills_and_styles_sends_bridge_command() {
+        let (conn, mut rx) = AgentConnection::test_channel();
+
+        conn.reload_skills_and_styles("session-1".to_owned()).expect("reload");
+
+        let envelope = rx.try_recv().expect("command");
+        assert_eq!(
+            envelope.command,
+            BridgeCommand::ReloadSkillsAndStyles { session_id: "session-1".to_owned() }
         );
     }
 
