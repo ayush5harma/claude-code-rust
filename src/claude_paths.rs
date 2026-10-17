@@ -36,7 +36,7 @@ impl ClaudePaths {
                 config_dir,
                 preferences,
                 project_dir_name: project_dir_name
-                    .filter(|value| !value.is_empty())
+                    .filter(|value| is_valid_project_dir_name(value))
                     .map(OsStr::to_os_string),
             });
         }
@@ -59,8 +59,52 @@ impl ClaudePaths {
     }
 }
 
+/// The Agent SDK names a project directory after the resolved working
+/// directory, replacing every UTF-16 unit outside `[A-Za-z0-9]` with `-`.
 fn encode_project_path(cwd: &str) -> String {
-    cwd.replace(['/', '\\'], "-").replace(':', "-").trim_start_matches('-').to_owned()
+    resolve_cwd(cwd)
+        .chars()
+        .flat_map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                std::iter::repeat_n(ch, 1)
+            } else {
+                std::iter::repeat_n('-', ch.len_utf16())
+            }
+        })
+        .collect()
+}
+
+/// The SDK resolves symlinks first (`/tmp` is `/private/tmp` on macOS) and
+/// keeps the path as given when it cannot.
+fn resolve_cwd(cwd: &str) -> String {
+    let Ok(resolved) = std::fs::canonicalize(cwd) else {
+        return cwd.to_owned();
+    };
+    let resolved = resolved.to_string_lossy();
+    // Windows canonicalizes to a verbatim path; Node's realpath does not.
+    if let Some(share) = resolved.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{share}")
+    } else if let Some(local) = resolved.strip_prefix(r"\\?\") {
+        local.to_owned()
+    } else {
+        resolved.into_owned()
+    }
+}
+
+/// The SDK ignores a project directory override that is not a plain name or
+/// that names a Windows device.
+fn is_valid_project_dir_name(name: &OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    let lower = name.to_ascii_lowercase();
+    let device = matches!(lower.as_str(), "con" | "prn" | "aux" | "nul")
+        || (lower.len() == 4
+            && (lower.starts_with("com") || lower.starts_with("lpt"))
+            && lower.bytes().nth(3).is_some_and(|byte| byte.is_ascii_digit()));
+    (1..=64).contains(&name.len())
+        && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        && !device
 }
 
 #[cfg(test)]
@@ -95,8 +139,55 @@ mod tests {
 
     #[test]
     fn project_names_are_encoded_for_both_platforms() {
-        assert_eq!(encode_project_path("/home/user/project"), "home-user-project");
+        // Claude Code stores `/Users/me` under `-Users-me`: the leading separator stays.
+        assert_eq!(encode_project_path("/home/user/project"), "-home-user-project");
         assert_eq!(encode_project_path(r"C:\Users\User\project"), "C--Users-User-project");
+    }
+
+    #[test]
+    fn every_non_alphanumeric_utf16_unit_becomes_a_dash() {
+        assert_eq!(encode_project_path("/srv/my.app_v2 (copy)"), "-srv-my-app-v2--copy-");
+        assert_eq!(encode_project_path("/a/\u{e9}"), "-a--");
+        // A character outside the BMP is two UTF-16 units in the SDK's regex.
+        assert_eq!(encode_project_path("/a/\u{1f980}"), "-a---");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_names_follow_symlinks_like_the_sdk() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        let link = dir.path().join("link");
+        std::fs::create_dir(&target).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let resolved = std::fs::canonicalize(&target).unwrap();
+        let expected =
+            resolved.to_str().unwrap().replace(|ch: char| !ch.is_ascii_alphanumeric(), "-");
+        assert_eq!(encode_project_path(link.to_str().unwrap()), expected);
+    }
+
+    #[test]
+    fn project_override_must_be_a_plain_name() {
+        for rejected in ["../escape", "con", "COM1", "lpt9", &"a".repeat(65)] {
+            let paths = ClaudePaths::from_sources(
+                None,
+                Some(OsStr::new("profile")),
+                Some(OsStr::new(rejected)),
+            )
+            .unwrap();
+            assert_eq!(
+                paths.default_memory_file("/any/path"),
+                Path::new("profile/projects/-any-path/memory/MEMORY.md"),
+                "{rejected}"
+            );
+        }
+        let accepted =
+            ClaudePaths::from_sources(None, Some(OsStr::new("profile")), Some(OsStr::new("com10")))
+                .unwrap();
+        assert_eq!(
+            accepted.default_memory_file("/any/path"),
+            Path::new("profile/projects/com10/memory/MEMORY.md")
+        );
     }
 
     #[test]
@@ -113,7 +204,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             default.default_memory_file("/any/path"),
-            Path::new("home/.claude/projects/any-path/memory/MEMORY.md")
+            Path::new("home/.claude/projects/-any-path/memory/MEMORY.md")
         );
     }
 }
