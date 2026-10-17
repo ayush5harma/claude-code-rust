@@ -1436,20 +1436,29 @@ fn trust_prompt_names_the_directory_that_yes_will_save() {
     let keys: Vec<&String> = saved["projects"].as_object().expect("projects").keys().collect();
     assert_eq!(keys.len(), 1, "{keys:?}");
 
-    let rows: Vec<&str> = test.trust_prompt.lines().collect();
-    let content = |row: &str| {
-        let inside = row.trim_start_matches('\u{2502}').trim_end_matches('\u{2502}');
-        inside.strip_prefix(' ').unwrap_or(inside).trim_end().to_owned()
+    let rows: Vec<String> = test
+        .trust_prompt
+        .lines()
+        .map(|row| {
+            let inside = row.trim_start_matches('\u{2502}').trim_end_matches('\u{2502}');
+            inside.strip_prefix(' ').unwrap_or(inside).trim_end().to_owned()
+        })
+        .collect();
+    let row_of = |text: &str| {
+        rows.iter()
+            .position(|row| row.starts_with(text))
+            .unwrap_or_else(|| panic!("no {text:?} row: {}", test.trust_prompt))
     };
-    let question = rows
-        .iter()
-        .position(|row| row.contains("Trust this project directory?"))
-        .expect("question row");
-    // The path may wrap; its rows end where the explanatory text starts.
-    let shown: String = rows[question + 1..]
-        .iter()
-        .map(|row| content(row))
-        .take_while(|row| !row.starts_with("Claude Rust will wait"))
+    let path = row_of("Path: ");
+    assert!(row_of("Trust this project directory?") < row_of("Claude Rust will wait"));
+    assert!(row_of("Claude Rust will wait") < path, "{}", test.trust_prompt);
+    // The path may wrap; its later rows are indented under the label.
+    let shown: String = std::iter::once(&rows[path]["Path: ".len()..])
+        .chain(
+            rows[path + 1..]
+                .iter()
+                .map_while(|row| row.strip_prefix("      ").filter(|rest| !rest.trim().is_empty())),
+        )
         .collect();
     assert_eq!(&shown, keys[0], "{}", test.trust_prompt);
     assert!(Path::new(keys[0]).is_absolute(), "{}", keys[0]);
