@@ -79,11 +79,9 @@ impl BridgeLauncher {
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
         cmd.kill_on_drop(true);
-        cmd.stderr(if bridge_diagnostics_enabled {
-            std::process::Stdio::piped()
-        } else {
-            std::process::Stdio::null()
-        });
+        // Always captured: the bridge writes warnings and errors to stderr even when
+        // detailed diagnostics are off, and the default log records them.
+        cmd.stderr(std::process::Stdio::piped());
         cmd
     }
 }
@@ -628,7 +626,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn command_runs_script_with_diagnostics_disabled() {
+    async fn command_captures_stderr_with_detailed_diagnostics_disabled() {
         let fixture = runtime_fixture().expect("runtime fixture");
         let launcher = BridgeLauncher {
             runtime_path: fixture.runtime_path,
@@ -639,8 +637,11 @@ mod tests {
         assert!(output.status.success(), "child failed: {output:?}");
 
         let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+        let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
         assert!(stdout.contains(&format!("script={}", fixture.script_path.display())));
         assert!(stdout.contains("diag=0"));
+        // Bridge warnings and errors reach the default log through this pipe.
+        assert!(stderr.contains("diagnostics-stderr"));
     }
 
     #[tokio::test]

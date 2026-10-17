@@ -10702,6 +10702,7 @@ test("buildQueryOptions adapts resolved checkpoint preferences and keeps host re
       });
       assert.equal(options.enableFileCheckpointing, enabled ?? true);
       assert.equal(options.agentProgressSummaries, true);
+      assert.equal(options.includeHookEvents, true);
       assert.equal(options.promptSuggestions, true);
       assert.deepEqual(options.disallowedTools, ["ProposeSkills", "ProposeGoal"]);
       assert.deepEqual(options.settings, {

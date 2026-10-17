@@ -637,6 +637,14 @@ fn handle_settings_parse_error(app: &mut App, file: Option<&str>, path: &str, me
         (None, "") => format!("Settings parse error: {trimmed}"),
         (None, path) => format!("Settings parse error at {path}: {trimmed}"),
     };
+    // The transcript row scrolls away, and the default log is where a later report starts.
+    tracing::warn!(
+        target: crate::logging::targets::APP_CONFIG,
+        event_name = "settings_parse_error",
+        message = "settings file could not be parsed",
+        outcome = "failure",
+        error_message = %rendered,
+    );
     push_system_message_with_severity(app, Some(SystemSeverity::Error), &rendered);
 }
 

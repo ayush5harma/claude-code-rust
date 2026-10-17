@@ -2,7 +2,21 @@ import type { BridgeCommand, BridgeEvent } from "../types.js";
 import { redactStartupDetail } from "./startup_failures.js";
 
 const LOG_SCHEMA = "claude-rs-log/v1" as const;
-const DIAGNOSTICS_ENABLED = process.env.CLAUDE_RS_BRIDGE_DIAGNOSTICS === "1";
+/**
+ * `1` is detailed diagnostics (every level, full fields). `0` is the default
+ * baseline the host sets when detailed logging is off: warnings and errors
+ * only, with each field bounded and redacted. Unset (unit tests) writes nothing.
+ */
+const DIAGNOSTICS_MODE = process.env.CLAUDE_RS_BRIDGE_DIAGNOSTICS;
+const DETAILED_DIAGNOSTICS = DIAGNOSTICS_MODE === "1";
+const BASELINE_DIAGNOSTICS = DIAGNOSTICS_MODE === "0";
+/** Longest excerpt of one baseline field, in characters. */
+const BASELINE_FIELD_LIMIT = 240;
+
+/** Whether the host asked for detailed diagnostics (content-bearing fields are allowed). */
+export function detailedDiagnosticsEnabled(): boolean {
+  return DETAILED_DIAGNOSTICS;
+}
 
 export const LOG_TARGETS = {
   APP_AUTH: "app.auth",
@@ -59,9 +73,31 @@ function definedFields(
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
+/**
+ * Baseline fields can reach a log the user never asked to be detailed, so
+ * every string is redacted and bounded and nested values are flattened to a
+ * bounded excerpt rather than carried whole. Which KEYS may reach the default log
+ * is decided once, by the host (`baseline_bridge_field_allowed` in
+ * src/logging/mod.rs), which drops the rest before writing; do not keep a
+ * second list here.
+ */
+function baselineFields(fields: DiagnosticFields): DiagnosticFields {
+  return Object.fromEntries(
+    Object.entries(fields).map(([key, value]) => {
+      if (value === null || typeof value === "number" || typeof value === "boolean") {
+        return [key, value];
+      }
+      const text = typeof value === "string" ? value : (JSON.stringify(value) ?? String(value));
+      return [key, previewText(redactStartupDetail(text), BASELINE_FIELD_LIMIT)];
+    }),
+  );
+}
+
 function writeDiagnostic(level: LogLevel, event: DiagnosticEvent): void {
-  if (!DIAGNOSTICS_ENABLED) {
-    return;
+  if (!DETAILED_DIAGNOSTICS) {
+    if (!BASELINE_DIAGNOSTICS || (level !== "warn" && level !== "error")) {
+      return;
+    }
   }
   const envelope: Record<string, unknown> = {
     schema: LOG_SCHEMA,
@@ -86,7 +122,7 @@ function writeDiagnostic(level: LogLevel, event: DiagnosticEvent): void {
   };
   const fields = definedFields(event.fields);
   if (fields) {
-    envelope.fields = fields;
+    envelope.fields = DETAILED_DIAGNOSTICS ? fields : baselineFields(fields);
   }
   process.stderr.write(`${JSON.stringify(envelope)}\n`);
 }
@@ -249,6 +285,14 @@ function protocolCommandLevel(command: BridgeCommand): LogLevel {
 }
 
 function protocolEventLevel(event: BridgeEvent): LogLevel {
+  // An interrupted turn ends with an abort reason, and the user asked for that:
+  // it is routine, not a warning in the default log.
+  if (
+    event.event === "turn_error" &&
+    (event.terminal_reason === "aborted_streaming" || event.terminal_reason === "aborted_tools")
+  ) {
+    return "debug";
+  }
   switch (event.event) {
     case "initialized":
     case "connected":

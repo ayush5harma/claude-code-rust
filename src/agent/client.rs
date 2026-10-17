@@ -71,10 +71,8 @@ impl BridgeClient {
 
         let stdin = child.stdin.take().context("bridge stdin not available")?;
         let stdout = child.stdout.take().context("bridge stdout not available")?;
-        if bridge_diagnostics_enabled {
-            let stderr = child.stderr.take().context("bridge stderr not available")?;
-            Self::spawn_stderr_logger(stderr);
-        }
+        let stderr = child.stderr.take().context("bridge stderr not available")?;
+        Self::spawn_stderr_logger(stderr);
 
         let (connection, command_rx) = command_channel();
         let command_tx = connection.command_tx;
@@ -1531,5 +1529,32 @@ mod tests {
                 content: None,
             }
         );
+    }
+
+    // The bridge's stderr is always piped, so it must always be drained: an unread pipe
+    // fills at about 64 KiB and stalls the bridge on its next warning. With detailed
+    // diagnostics off (the state in a unit test) a reader gated on them would never run.
+    #[tokio::test]
+    async fn bridge_stderr_is_drained_even_when_detailed_diagnostics_are_off() {
+        assert!(!crate::logging::bridge_diagnostics_enabled());
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = dir.path().join("noisy-bridge.js");
+        std::fs::write(
+            &script,
+            "process.stderr.write('x'.repeat(1 << 20), () => process.exit(0));\n",
+        )
+        .expect("write script");
+        let launcher = crate::agent::bridge::BridgeLauncher {
+            runtime_path: "node".into(),
+            script_path: script,
+        };
+
+        let client = super::BridgeClient::spawn(&launcher).expect("spawn noisy bridge");
+        let status = tokio::time::timeout(Duration::from_secs(20), client.wait())
+            .await
+            .expect("a bridge writing 1 MiB to stderr must not block on an undrained pipe")
+            .expect("wait for bridge");
+
+        assert!(status.success(), "{status:?}");
     }
 }

@@ -36,6 +36,7 @@ import type {
   SessionLaunchSettings,
   SessionUpdate,
   StartupFailure,
+  SystemNoticeSeverity,
   TaskItem,
   ToolCall,
   UserDialogOption,
@@ -201,6 +202,8 @@ export type SessionState = {
   resumeDropsTurn?: string;
   resumeGuardFenceComplete?: boolean;
   deferredBridgeEvents?: Array<{ event: BridgeEvent; requestId?: string }>;
+  /** Hook notices waiting for the connect event, oldest first. */
+  pendingHookNotices?: Array<{ severity: SystemNoticeSeverity; message: string }>;
   deferredAuthRequired?: { detail?: string };
   input: AsyncQueue<SDKUserMessage>;
   connected: boolean;
@@ -857,7 +860,7 @@ export function startSessionTasks(session: SessionState, requestId?: string): vo
       ) {
         session.initializationReady = true;
       } else if (!session.connected) {
-        emitConnectEvent(session);
+        void emitConnectEvent(session);
       } else {
         emitSessionUpdate(session.sessionId, {
           type: "mode_state_update",
@@ -1022,7 +1025,7 @@ export function commitDeferredSession(session: SessionState): void {
   const deferredAuthRequired = session.deferredAuthRequired;
   session.deferredAuthRequired = undefined;
   session.deferConnect = false;
-  emitConnectEvent(session);
+  void emitConnectEvent(session);
   if (deferredAuthRequired) {
     emitAuthRequired(session, deferredAuthRequired.detail);
   }
@@ -1137,6 +1140,9 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     // otherwise ignores the JSON preference. Claude still applies environment restrictions.
     enableFileCheckpointing: fileCheckpointingEnabled(params.launchSettings, params.resolvedSettings),
     agentProgressSummaries: true,
+    // Without it the SDK reports only SessionStart and Setup hooks, so a failed
+    // PreToolUse, PostToolUse or Stop hook would leave no trace.
+    includeHookEvents: true,
     // Proposal tools require native review and lifecycle surfaces that the
     // public headless SDK does not currently expose to this host.
     disallowedTools: ["ProposeSkills", "ProposeGoal"],
