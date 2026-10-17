@@ -216,8 +216,12 @@ impl TerminalTest {
         command.arg("--log-file");
         command.arg(temp.path().join("runtime.log"));
         command.env("RUST_LOG", "warn,app.lifecycle=debug,app.render=debug,bridge.protocol=debug");
-        command.arg("--dir");
-        command.arg(&project);
+        // The app starts in `project`; a test that passes its own `--dir` is resolved
+        // against it.
+        if !args.contains(&"--dir") {
+            command.arg("--dir");
+            command.arg(&project);
+        }
         for arg in args {
             command.arg(arg);
         }
@@ -2332,4 +2336,89 @@ fn ctrl_v_attaches_the_system_clipboard_image_and_sends_it_with_the_prompt() {
     test.assert_prompts(&["[Image #1]"]);
     test.shutdown();
     drop(clipboard);
+}
+
+#[test]
+#[allow(clippy::expect_used)]
+fn a_bad_dir_or_bridge_script_exits_before_the_terminal_is_touched() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let profile = temp.path().join("profile");
+    std::fs::create_dir_all(&profile).expect("profile");
+    let file = temp.path().join("notes.txt");
+    std::fs::write(&file, "").expect("file");
+    let cases = [
+        ("--dir", temp.path().join("missing")),
+        ("--dir", file),
+        ("--bridge-script", temp.path().join("missing-bridge.js")),
+    ];
+    for (flag, path) in cases {
+        let pair = native_pty_system().openpty(pty_size(SHORT_ROWS, COLS)).expect("open pty");
+        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_claude-rs"));
+        command.arg("--no-update-check");
+        command.arg(flag);
+        command.arg(&path);
+        command.cwd(temp.path());
+        command.env("CLAUDE_CONFIG_DIR", &profile);
+        let writer = Arc::new(Mutex::new(pair.master.take_writer().expect("pty writer")));
+        let reader = pair.master.try_clone_reader().expect("pty reader");
+        let process = pair.slave.spawn_command(command).expect("spawn claude-rs");
+        let mut child = TestChild { process, writer: Arc::clone(&writer) };
+        drop(pair.slave);
+        let output = capture_output(reader, writer);
+
+        let status = child.wait_for_exit(WAIT_LIMIT).expect("claude-rs exits on its own");
+        assert_eq!(status.exit_code(), 2, "{flag}");
+        // The child's exit is the signal. ConPTY keeps the pseudo console open after the
+        // child exits, so the PTY never reaches EOF on Windows; wait for the error text the
+        // reader thread has not yet drained instead.
+        let expected = path.display().to_string();
+        let started = Instant::now();
+        while !output.lock().expect("output lock").parser.screen().contents().contains(&expected) {
+            assert!(started.elapsed() < WAIT_LIMIT, "{flag}: error text never reached the screen");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        #[cfg(unix)]
+        while !output.lock().expect("output lock").ended {
+            assert!(started.elapsed() < WAIT_LIMIT, "PTY stayed open after exit");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let output = output.lock().expect("output lock");
+        let screen = output.parser.screen().contents();
+        assert!(screen.contains(flag) && screen.contains(&path.display().to_string()), "{screen}");
+        assert!(!screen.contains("Trust this project"), "{screen}");
+        // Mode changes (alternate screen, focus reporting, keyboard enhancement) are CSI
+        // sequences with a `?`, `<` or `>` marker. ConPTY writes its own on Windows.
+        #[cfg(unix)]
+        {
+            let raw = String::from_utf8_lossy(&output.raw);
+            for marker in ["\x1b[?", "\x1b[<", "\x1b[>"] {
+                assert!(!raw.contains(marker), "{flag}: {}", tail(&raw, 400));
+            }
+        }
+        assert_eq!(std::fs::read_dir(&profile).expect("profile").count(), 0, "{flag}");
+    }
+}
+
+#[test]
+#[allow(clippy::expect_used)]
+fn a_relative_dir_starts_the_session_in_the_absolute_directory_it_names() {
+    // The app runs from `project`, so `--dir .` names it.
+    let mut test = TerminalTest::start_with_options("stream", 3, None, &["--dir", "."], false);
+    // The directory as the platform spells its own working directory: physical on Unix
+    // (macOS temp dirs sit behind a symlink), as given on Windows.
+    let project = test.temp.path().join("project");
+    #[cfg(not(windows))]
+    let project = project.canonicalize().expect("project path");
+
+    let session = test
+        .wait_for("the session request", |test| test.commands("create_session").into_iter().next());
+    assert_eq!(session["cwd"].as_str().map(Path::new), Some(project.as_path()), "{session}");
+    let location = test.wait_for("the footer location", |test| {
+        test.screen().lines().find_map(|line| {
+            let (_, value) = line.split_once("Loc: ")?;
+            Some(value.split_whitespace().next().unwrap_or_default().to_owned())
+        })
+    });
+    assert!(location.ends_with("project"), "Loc: {location}");
+    test.shutdown();
 }
