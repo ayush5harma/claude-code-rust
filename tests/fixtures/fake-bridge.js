@@ -435,6 +435,26 @@ readline
         } });
         break;
       }
+      case 'export_session_history': {
+        // The bridge's resume translation of a saved session, split into two chunks.
+        const tool = { tool_call_id: 'bash-1', title: 'ls', kind: 'execute', status: 'in_progress', content: [], raw_input: { command: 'ls -la' }, locations: [], meta: { claudeCode: { toolName: 'Bash' } } };
+        const edit = { tool_call_id: 'edit-1', title: 'Edit', kind: 'edit', status: 'in_progress', content: [{ type: 'diff', old_path: 'notes.txt', new_path: 'notes.txt', old: 'keep\nold\n', new: 'keep\nnew\n' }], raw_input: { file_path: 'notes.txt' }, locations: [], meta: { claudeCode: { toolName: 'Edit' } } };
+        const chunks = [
+          [
+            { type: 'user_message_chunk', content: { type: 'text', text: 'List the files' }, source_message_uuid: 'u1' },
+            { type: 'agent_message_chunk', content: { type: 'text', text: 'Listing now.' }, source_message_uuid: 'a1' },
+            { type: 'tool_call', tool_call: tool },
+            { type: 'tool_call_update', tool_call_update: { tool_call_id: 'bash-1', fields: { status: 'completed', raw_output: '\u001b[32mREADME.md\u001b[0m\nsrc', content: [{ type: 'content', content: { type: 'text', text: '\u001b[32mREADME.md\u001b[0m\nsrc' } }] } } },
+          ],
+          [
+            { type: 'agent_message_chunk', content: { type: 'text', text: 'Fixing the note.' }, source_message_uuid: 'a2' },
+            { type: 'tool_call', tool_call: edit },
+            { type: 'tool_call_update', tool_call_update: { tool_call_id: 'edit-1', fields: { status: 'completed' } } },
+          ],
+        ];
+        chunks.forEach((updates, index) => send({ event: 'session_history_export', session_id: SESSION, request_id: message.request_id, updates, last: index === chunks.length - 1, omitted_updates: 0 }));
+        break;
+      }
       case 'cancel_turn':
         send({ event: 'turn_interrupt_receipt', session_id: SESSION, still_queued: pending.slice(), request_id: message.request_id });
         if (active) finish({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'aborted_streaming', queued_turn_count: pending.length });
