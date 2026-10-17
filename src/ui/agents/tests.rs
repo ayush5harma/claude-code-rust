@@ -112,6 +112,20 @@ fn rows_show_each_subagents_status_type_and_transcript_under_their_own_title() {
     }
 }
 
+#[test]
+fn both_hints_name_the_page_keys_as_general_help_does() {
+    let (mut app, _commands) = app_with_subagents();
+    let lines = screen(&mut app, 120, 30);
+    let (_, hint) = row_with(&lines, "Esc close");
+    assert!(hint.contains("PageUp/PageDown details"), "{hint}");
+
+    app.agents.transcript =
+        Some(TranscriptView { agent_id: "agent-2".to_owned(), ..TranscriptView::default() });
+    let lines = screen(&mut app, 120, 30);
+    let (_, hint) = row_with(&lines, "Esc/Left back");
+    assert!(hint.contains("PageUp/PageDown page"), "{hint}");
+}
+
 /// Reports one tool call the way the bridge does; `parent` makes it a subagent's own call.
 fn tool_call(
     app: &mut App,

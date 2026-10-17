@@ -81,13 +81,19 @@ fn notice_line(app: &App) -> Option<Line<'static>> {
 fn hint(app: &App, width: u16) -> String {
     if app.agents.transcript.is_some() {
         return hint_text_with_escape(
-            vec!["Up/Down scroll", "PgUp/PgDn page"],
+            vec!["Up/Down scroll", "PageUp/PageDown page"],
             width,
             "Esc/Left back",
         );
     }
     hint_text_with_escape(
-        vec!["Up/Down select", "Enter transcript", "s stop", "r refresh", "PgUp/PgDn details"],
+        vec![
+            "Up/Down select",
+            "Enter transcript",
+            "s stop",
+            "r refresh",
+            "PageUp/PageDown details",
+        ],
         width,
         "Esc close",
     )
