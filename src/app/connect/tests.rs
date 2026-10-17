@@ -55,13 +55,18 @@ fn no_dot_components(path: &std::path::Path) -> bool {
         .any(|part| matches!(part, std::path::Component::CurDir | std::path::Component::ParentDir))
 }
 
+/// The fixture root as the platform spells its own working directory: physical on Unix
+/// (macOS temp dirs sit behind a symlink), as given on Windows.
+fn platform_root(path: &std::path::Path) -> std::path::PathBuf {
+    if cfg!(windows) { path.to_path_buf() } else { path.canonicalize().expect("canonical tempdir") }
+}
+
 #[test]
 fn a_relative_dir_resolves_to_the_absolute_directory_it_names() {
     let base = tempfile::tempdir().expect("tempdir");
     std::fs::create_dir_all(base.path().join("project").join("sub")).expect("project");
-    // Only the fixture root is canonicalized here (macOS temp dirs sit behind a symlink);
-    // every expected child is spelled out by name.
-    let root = dunce::canonicalize(base.path()).expect("canonical tempdir");
+    // Every expected child is spelled out by name under the fixture root.
+    let root = platform_root(base.path());
     let cases = [
         (".", root.clone()),
         ("project", root.join("project")),
@@ -76,10 +81,21 @@ fn a_relative_dir_resolves_to_the_absolute_directory_it_names() {
 }
 
 #[test]
-fn create_app_keeps_the_resolved_dir_for_session_state_and_display() {
+fn an_absolute_dir_is_used_as_given() {
     let base = tempfile::tempdir().expect("tempdir");
-    std::fs::create_dir_all(base.path().join("project").join("sub")).expect("project");
-    let expected = dunce::canonicalize(base.path()).expect("canonical tempdir").join("project");
+    let project = base.path().join("project");
+    std::fs::create_dir_all(&project).expect("project");
+    let elsewhere = tempfile::tempdir().expect("process dir");
+
+    let resolved = super::startup_cwd(Some(&project), elsewhere.path().into());
+
+    assert_eq!(resolved, project);
+}
+
+#[test]
+fn create_app_keeps_the_resolved_dir_for_session_state_and_display() {
+    // Tests run from the package root, which has `src`; `src/..` names that root.
+    let expected = std::env::current_dir().expect("process dir");
     let cli = Cli {
         prompt: None,
         resume: None,
@@ -87,7 +103,7 @@ fn create_app_keeps_the_resolved_dir_for_session_state_and_display() {
         session_options: crate::SessionOptions::default(),
         command: None,
         no_update_check: true,
-        dir: Some(base.path().join("project").join("sub").join("..").join(".")),
+        dir: Some(std::path::Path::new("src").join("..")),
         bridge_script: None,
         enable_logs: false,
         diagnostics_preset: None,
@@ -100,7 +116,8 @@ fn create_app_keeps_the_resolved_dir_for_session_state_and_display() {
 
     assert_eq!(std::path::Path::new(&app.cwd_raw), expected);
     let shown = std::path::Path::new(app.cwd.trim_start_matches('~'));
-    assert!(shown.ends_with("project") && no_dot_components(shown), "Loc: {}", app.cwd);
+    let root_name = expected.file_name().expect("package root name");
+    assert!(shown.ends_with(root_name) && no_dot_components(shown), "Loc: {}", app.cwd);
 }
 
 #[test]

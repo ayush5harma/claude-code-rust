@@ -2404,7 +2404,11 @@ fn a_bad_dir_or_bridge_script_exits_before_the_terminal_is_touched() {
 fn a_relative_dir_starts_the_session_in_the_absolute_directory_it_names() {
     // The app runs from `project`, so `--dir .` names it.
     let mut test = TerminalTest::start_with_options("stream", 3, None, &["--dir", "."], false);
-    let project = dunce::canonicalize(test.temp.path().join("project")).expect("project path");
+    // The directory as the platform spells its own working directory: physical on Unix
+    // (macOS temp dirs sit behind a symlink), as given on Windows.
+    let project = test.temp.path().join("project");
+    #[cfg(not(windows))]
+    let project = project.canonicalize().expect("project path");
 
     let session = test
         .wait_for("the session request", |test| test.commands("create_session").into_iter().next());

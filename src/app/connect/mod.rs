@@ -50,18 +50,32 @@ fn resolve_startup_cwd(cli: &Cli) -> PathBuf {
     startup_cwd(cli.dir.as_deref(), process_cwd)
 }
 
-/// The session's working directory: `--dir` resolved against the process directory
-/// into the canonical absolute form, with `.` and `..` resolved the way the kernel
-/// resolves them. On Unix the process directory is already physical, so `--dir .`
-/// gives the same session directory and `Loc:` as no `--dir` at all.
-/// `--dir` was validated before startup; should it vanish since, the joined path is
-/// kept and the bridge reports the failure.
+/// The session's working directory. An absolute `--dir` is used as given. A relative one
+/// is joined to the process directory and resolved the way the platform resolves its own
+/// working directory, so `--dir .` gives the same session directory and `Loc:` as no
+/// `--dir` at all: physically on Unix, where the process directory is already physical,
+/// and lexically on Windows, which keeps a mapped drive letter and adds no `\\?\` prefix.
+/// `--dir` was validated before startup; should it vanish since, the joined path is kept
+/// and the bridge reports the failure.
 fn startup_cwd(dir: Option<&std::path::Path>, process_cwd: PathBuf) -> PathBuf {
     let Some(dir) = dir else {
         return process_cwd;
     };
+    if dir.is_absolute() {
+        return dir.to_path_buf();
+    }
     let joined = process_cwd.join(dir);
-    dunce::canonicalize(&joined).unwrap_or(joined)
+    resolve_relative_dir(&joined).unwrap_or(joined)
+}
+
+#[cfg(windows)]
+fn resolve_relative_dir(joined: &std::path::Path) -> std::io::Result<PathBuf> {
+    std::path::absolute(joined)
+}
+
+#[cfg(not(windows))]
+fn resolve_relative_dir(joined: &std::path::Path) -> std::io::Result<PathBuf> {
+    joined.canonicalize()
 }
 
 fn extract_app_error(err: &anyhow::Error) -> Option<AppError> {
