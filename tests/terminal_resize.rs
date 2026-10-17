@@ -2387,6 +2387,112 @@ fn status_tab_shows_the_session_name_after_rename() {
     test.shutdown();
 }
 
+const SESSION_NOT_SAVED_WARNING: &str = "Renaming becomes available after this session is saved. Run a command or send a message, then try again.";
+
+/// The rename dialog's rows below its field, inside the borders, up to the
+/// bottom border: `(rows under the field, help line)`.
+fn rename_dialog(test: &TerminalTest, field: &str) -> Option<(Vec<String>, String)> {
+    let screen = test.screen();
+    let lines: Vec<&str> = screen.lines().collect();
+    let title = lines.iter().position(|line| line.contains("Rename session"))?;
+    let inner = |line: &str| line.trim().trim_matches('│').trim().to_owned();
+    let body: Vec<String> = lines[title + 1..]
+        .iter()
+        .take_while(|line| !line.contains('└'))
+        .map(|line| inner(line))
+        .collect();
+    let field_row = body.iter().position(|row| row.contains(field))?;
+    let help = body.iter().rev().find(|row| !row.is_empty())?.clone();
+    Some((body[field_row + 1..].to_vec(), help))
+}
+
+/// The text shown directly beneath the rename field, before the dim hint.
+fn text_beneath_rename_field(rows: &[String]) -> String {
+    rows.iter()
+        .take_while(|row| !row.contains("Leave the field empty"))
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[test]
+fn status_rename_waits_for_the_saved_session_and_reports_only_in_status() {
+    let mut test = TerminalTest::start("status-rename", 3);
+    test.submit("/status", "/status");
+    test.wait_for("the unnamed session in Status", |test| {
+        status_name_row(test, "(unnamed session)")
+    });
+
+    // A fresh session has no transcript: the dialog opens, editable, with
+    // confirmation disabled and the warning beneath the field.
+    test.send(b"r");
+    let (rows, help) = test.wait_for("the not-saved warning", |test| {
+        rename_dialog(test, "Custom session name")
+            .filter(|(rows, _)| text_beneath_rename_field(rows) == SESSION_NOT_SAVED_WARNING)
+    });
+    assert_eq!(help, "Esc cancel", "{rows:?}");
+    test.paste("early");
+    test.wait_for("the edited draft", |test| rename_dialog(test, "early"));
+    test.send(b"\r");
+    test.send(b"\x1b");
+    test.wait_until("the dialog to close", |test| !test.screen().contains("Rename session"));
+
+    // A message saves the session.
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+    test.submit("hello", "hello");
+    test.wait_turn_finished("Saved reply");
+    // The bridge reads commands in order, so a rename sent by that Enter would
+    // be journaled before this prompt's turn finished.
+    assert!(test.commands("rename_session").is_empty(), "Enter must not rename an unsaved session");
+    test.submit("/status", "/status");
+    test.wait_for("Status", |test| status_name_row(test, "(unnamed session)"));
+    test.send(b"r");
+    let (rows, help) = test
+        .wait_for("an enabled rename dialog", |test| rename_dialog(test, "Custom session name"));
+    assert_eq!(text_beneath_rename_field(&rows), "", "the warning is gone");
+    assert_eq!(help, "Enter confirm | Esc cancel");
+
+    // The SDK's failure stays in the dialog with the draft.
+    test.paste("fail-me");
+    test.wait_for("the failing draft", |test| rename_dialog(test, "fail-me"));
+    test.send(b"\r");
+    test.wait_for("the rename failure in the dialog", |test| {
+        rename_dialog(test, "fail-me")
+            .filter(|(rows, _)| rows.iter().any(|row| row.contains("failed to rename session")))
+    });
+    test.send(&[0x7f; 7]);
+    test.paste("demo-488");
+    test.wait_for("the new draft", |test| rename_dialog(test, "demo-488"));
+    test.send(b"\r");
+    test.wait_for("the new name in Status", |test| status_name_row(test, "demo-488"));
+    assert!(!test.screen().contains("Rename session"), "success closes the dialog");
+    let titles: Vec<_> =
+        test.commands("rename_session").iter().map(|command| command["title"].clone()).collect();
+    assert_eq!(titles, ["fail-me", "demo-488"]);
+
+    // Neither outcome reaches the chat.
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+    let chat = test.screen();
+    assert!(!chat.contains("failed to rename") && !chat.contains("Renamed session"), "{chat}");
+
+    // The fixture's `/clear` starts an unsaved session the listing names after the command.
+    test.submit_command("/clear");
+    test.wait_journal("session_replaced");
+    test.submit("/status", "/status");
+    test.wait_for("the cleared session in Status", |test| {
+        status_name_row(test, "(unnamed session)")
+    });
+    assert!(status_name_row(&test, "/clear").is_none());
+    test.send(b"r");
+    test.wait_for("the not-saved warning for the new session", |test| {
+        rename_dialog(test, "Custom session name")
+            .filter(|(rows, _)| text_beneath_rename_field(rows) == SESSION_NOT_SAVED_WARNING)
+    });
+    test.shutdown();
+}
+
 #[test]
 fn reload_reports_the_reloaded_counts_and_then_a_half_that_failed() {
     let mut test = TerminalTest::start("reload", 3);
