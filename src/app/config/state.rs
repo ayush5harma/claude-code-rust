@@ -52,6 +52,15 @@ pub struct PendingSessionTitleChangeState {
     pub kind: PendingSessionTitleChangeKind,
 }
 
+/// Whether the active session's transcript exists yet. The SDK's
+/// `renameSession()` appends to it, so a Status rename waits for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionTranscriptState {
+    Saved,
+    NotSaved,
+    CheckFailed(String),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfigState {
     pub(crate) footer: Box<crate::app::footer::FooterPreferences>,
@@ -69,6 +78,8 @@ pub struct ConfigState {
     pub last_error: Option<String>,
     pub overlay_message: Option<OverlayMessage>,
     pub pending_session_title_change: Option<PendingSessionTitleChangeState>,
+    /// `None` until checked for the active session.
+    pub session_transcript: Option<SessionTranscriptState>,
 }
 
 impl Default for ConfigState {
@@ -89,6 +100,7 @@ impl Default for ConfigState {
             last_error: None,
             overlay_message: None,
             pending_session_title_change: None,
+            session_transcript: None,
         }
     }
 }
@@ -193,6 +205,7 @@ impl ConfigState {
         self.project_footer(path);
         self.pending_settings_request = None;
         self.pending_session_title_change = None;
+        self.session_transcript = None;
         self.status_message = None;
         self.last_error = None;
         if self.setting_overlay().is_none()
@@ -229,6 +242,24 @@ impl ConfigState {
         } else {
             None
         }
+    }
+
+    #[must_use]
+    pub fn session_rename_in_flight(&self) -> bool {
+        matches!(
+            self.pending_session_title_change,
+            Some(PendingSessionTitleChangeState {
+                kind: PendingSessionTitleChangeKind::Rename { .. },
+                ..
+            })
+        )
+    }
+
+    /// The rename dialog confirms only for a saved session with no rename in flight.
+    #[must_use]
+    pub fn session_rename_confirmable(&self) -> bool {
+        self.session_transcript == Some(SessionTranscriptState::Saved)
+            && !self.session_rename_in_flight()
     }
 
     #[must_use]

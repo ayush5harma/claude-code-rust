@@ -654,6 +654,86 @@ mod tests {
         assert!(column > 0);
     }
 
+    /// Renders the rename dialog and returns, for the rows between its field
+    /// and the dim hint, each row's text inside the borders and its colour.
+    fn rename_dialog_rows(
+        transcript: Option<crate::app::config::SessionTranscriptState>,
+    ) -> (Vec<(String, Option<ratatui::style::Color>)>, String) {
+        let mut app = App::test_default();
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+        app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+        app.config.session_transcript = transcript;
+        app.config.overlay = Some(crate::app::config::ConfigOverlayState::SessionRename(
+            crate::app::config::SessionRenameOverlayState {
+                draft: "Review settings".to_owned(),
+                cursor: 15,
+            },
+        ));
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).expect("terminal");
+        terminal.draw(|frame| super::render(frame, &mut app)).expect("draw");
+        let buffer = terminal.backend().buffer();
+        let lines = buffer_lines(buffer);
+        let inner = |line: &str| line.trim().trim_matches('│').trim().to_owned();
+        let field = lines.iter().position(|line| line.contains("Review settings")).expect("field");
+        let hint =
+            lines.iter().position(|line| line.contains("Leave the field empty")).expect("hint row");
+        let rows = (field + 1..hint)
+            .map(|row| {
+                // Each buffer cell is one character, so a char index is a column.
+                let first_text_column = lines[row]
+                    .chars()
+                    .enumerate()
+                    .skip_while(|(_, ch)| *ch != '│')
+                    .skip(1)
+                    .find(|(_, ch)| !ch.is_whitespace() && *ch != '│')
+                    .map(|(column, _)| u16::try_from(column).expect("column"));
+                let y = u16::try_from(row).expect("row");
+                let colour = first_text_column.map(|x| buffer[(x, y)].fg);
+                (inner(&lines[row]), colour)
+            })
+            .collect::<Vec<_>>();
+        let help = lines
+            .iter()
+            .skip(hint)
+            .map(|line| inner(line))
+            .find(|line| line.contains("cancel") || line.contains("close"))
+            .expect("help row");
+        (rows, help)
+    }
+
+    #[test]
+    fn rename_dialog_warns_beneath_the_field_until_the_session_is_saved() {
+        use crate::app::config::SessionTranscriptState;
+        let (rows, help) = rename_dialog_rows(Some(SessionTranscriptState::NotSaved));
+        let warning = rows.iter().map(|(text, _)| text.as_str()).collect::<Vec<_>>().join(" ");
+        assert_eq!(
+            warning,
+            "Renaming becomes available after this session is saved. Run a command or send a message, then try again."
+        );
+        assert!(
+            rows.iter().all(|(_, colour)| *colour == Some(ratatui::style::Color::Yellow)),
+            "{rows:?}"
+        );
+        assert_eq!(help, "Esc cancel");
+
+        let (rows, help) = rename_dialog_rows(Some(SessionTranscriptState::Saved));
+        assert!(rows.is_empty(), "{rows:?}");
+        assert_eq!(help, "Enter confirm | Esc cancel");
+    }
+
+    #[test]
+    fn rename_dialog_shows_a_failed_check_as_an_error() {
+        use crate::app::config::SessionTranscriptState;
+        let error = "Cannot check whether this session is saved: Permission denied (os error 13)";
+        let (rows, help) =
+            rename_dialog_rows(Some(SessionTranscriptState::CheckFailed(error.to_owned())));
+        let shown = rows.iter().map(|(text, _)| text.as_str()).collect::<Vec<_>>().join(" ");
+        assert_eq!(shown, error);
+        assert!(rows.iter().all(|(_, colour)| *colour == Some(ratatui::style::Color::Red)));
+        assert!(!shown.contains("Renaming becomes available"));
+        assert_eq!(help, "Esc cancel");
+    }
+
     #[test]
     fn small_terminal_confirmation_covers_footer_status() {
         let mut app = App::test_default();

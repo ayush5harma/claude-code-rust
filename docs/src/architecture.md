@@ -122,8 +122,11 @@ The bridge announces each live top-level SDK response through the typed `agent_r
 | Reading the active session's title and sending `session_title_update` | Bridge | `agent-sdk/src/bridge/session_title.ts` |
 | Holding the active session's title for the Status tab, its rename draft and title generation | Rust | `src/app/state/session_runtime.rs` |
 | Listing snapshot of all sessions, including each `custom_title` | Bridge, held by Rust | `agent-sdk/src/bridge/events.ts`, `recent_sessions` |
+| Whether the active session is saved, which `renameSession()` requires | Rust | `src/claude_paths.rs`, `src/app/config/status.rs` |
 
 The bridge reads `getSessionInfo().customTitle` after a connect, a replacement, a conversation reset, each top-level turn and each rename or title generation it performs, and sends every title it reads; a read that a later one overtakes is dropped. Rust keeps the active title as one value, strips control characters once in the converter, stores a repeated title idempotently, and clears it when the session id changes or the conversation resets. Neither side derives a title of its own. The session listing is a separate snapshot of all sessions, refreshed by `listSessions()` on connect, replacement and the Status-tab rename and generate actions; the Status tab falls back to it only while the active session has no title. `customTitle` falls back to a generated title, so an unnamed session shows that title after its first turn.
+
+`renameSession()` appends to the session's saved transcript and fails before Claude Code has written one, so the Status rename dialog confirms only once `<session id>.jsonl` exists as a regular file. Rust checks this with one `stat` at the path the SDK uses: the configuration directory, then the project folder named from the resolved working directory with every non-alphanumeric UTF-16 unit replaced by `-` (or a valid `CLAUDE_CODE_PROJECT_DIR_NAME` with `CLAUDE_CONFIG_DIR`); a name longer than 200 characters matches any folder with its shortened prefix, as the SDK's lookup does. `ClaudePaths` owns that mapping for the Status tab's memory file too. A missing path is "not saved"; any other I/O error is reported as a failed check.
 
 ### Notifications
 

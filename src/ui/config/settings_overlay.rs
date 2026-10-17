@@ -4,7 +4,7 @@ use super::overlay::{OverlayChrome, OverlayLayoutSpec, render_overlay_shell};
 use super::theme;
 use crate::agent::settings::{SettingDescriptor, SettingsApplication};
 use crate::app::App;
-use crate::app::config::SettingOverlayState;
+use crate::app::config::{SessionTranscriptState, SettingOverlayState};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Margin, Rect},
@@ -115,9 +115,19 @@ fn stale_context(app: &App, overlay: &SettingOverlayState) -> bool {
         .is_none_or(|snapshot| !snapshot.matches_context(&overlay.context, &app.cwd_raw))
 }
 
+/// Shown beneath the rename field until the SDK can rename the session.
+const SESSION_NOT_SAVED_WARNING: &str = "Renaming becomes available after this session is saved. Run a command or send a message, then try again.";
+
 pub(super) fn render_session_rename_overlay(frame: &mut Frame, area: Rect, app: &App) {
     let Some(overlay) = app.config.session_rename_overlay() else {
         return;
+    };
+    let help = if app.config.session_rename_in_flight() {
+        "Renaming... | Esc close"
+    } else if app.config.session_rename_confirmable() {
+        "Enter confirm | Esc cancel"
+    } else {
+        "Esc cancel"
     };
     let rendered = render_overlay_shell(
         frame,
@@ -127,20 +137,35 @@ pub(super) fn render_session_rename_overlay(frame: &mut Frame, area: Rect, app: 
             min_height: 8,
             width_percent: 72,
             height_percent: 48,
-            preferred_height: 10,
+            preferred_height: 12,
             fullscreen_below: Some((56, 14)),
             inner_margin: Margin { vertical: 1, horizontal: 2 },
         },
         OverlayChrome {
             title: "Rename session",
             subtitle: Some("Set a custom title for the current session"),
-            help: Some("Enter confirm | Esc cancel"),
+            help: Some(help),
             message: app.config.overlay_message.as_ref(),
         },
     );
+    let availability = match app.config.session_transcript.as_ref() {
+        Some(SessionTranscriptState::NotSaved) => {
+            Some((SESSION_NOT_SAVED_WARNING, theme::STATUS_WARNING))
+        }
+        Some(SessionTranscriptState::CheckFailed(error)) => {
+            Some((error.as_str(), theme::STATUS_ERROR))
+        }
+        Some(SessionTranscriptState::Saved) | None => None,
+    };
+    let availability_height = availability
+        .map_or(0, |(text, _)| super::common::wrapped_height(text, rendered.body_area.width));
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(availability_height),
+            Constraint::Min(1),
+        ])
         .split(rendered.body_area);
 
     render_text_input_field(
@@ -150,11 +175,18 @@ pub(super) fn render_session_rename_overlay(frame: &mut Frame, area: Rect, app: 
         overlay.cursor,
         "Custom session name",
     );
+    if let Some((text, color)) = availability {
+        frame.render_widget(
+            Paragraph::new(Line::styled(text, Style::default().fg(color)))
+                .wrap(Wrap { trim: false }),
+            sections[1],
+        );
+    }
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "Leave the field empty to clear the custom session name.",
             Style::default().fg(theme::DIM),
         ))),
-        sections[1],
+        sections[2],
     );
 }

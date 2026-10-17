@@ -53,10 +53,71 @@ impl ClaudePaths {
     }
 
     pub(crate) fn default_memory_file(&self, cwd: &str) -> PathBuf {
-        let project_name =
-            self.project_dir_name.clone().unwrap_or_else(|| encode_project_path(cwd).into());
-        self.config_dir.join("projects").join(project_name).join("memory").join("MEMORY.md")
+        self.projects_dir().join(self.project_dir_name(cwd)).join("memory").join("MEMORY.md")
     }
+
+    /// Whether `<session_id>.jsonl`, the transcript the SDK's `renameSession()`
+    /// appends to, exists as a regular file in the session's project directory.
+    /// An error other than a missing path is returned rather than read as `false`.
+    pub(crate) fn session_transcript_saved(
+        &self,
+        cwd: &str,
+        session_id: &str,
+    ) -> std::io::Result<bool> {
+        let file_name = format!("{session_id}.jsonl");
+        let project_name = self.project_dir_name(cwd);
+        let projects = self.projects_dir();
+        let Some(prefix) = shortened_project_prefix(&project_name) else {
+            return is_regular_file(&projects.join(project_name).join(file_name));
+        };
+        // Claude Code shortens a long name with a hash the SDK cannot reproduce,
+        // so the SDK accepts any directory with the shortened prefix; so does this.
+        let entries = match std::fs::read_dir(&projects) {
+            Err(error) if is_missing(&error) => return Ok(false),
+            entries => entries?,
+        };
+        for entry in entries {
+            let entry = entry?;
+            if entry.file_name().to_str().is_some_and(|name| name.starts_with(&prefix))
+                && is_regular_file(&entry.path().join(&file_name))?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn projects_dir(&self) -> PathBuf {
+        self.config_dir.join("projects")
+    }
+
+    fn project_dir_name(&self, cwd: &str) -> OsString {
+        self.project_dir_name.clone().unwrap_or_else(|| encode_project_path(cwd).into())
+    }
+}
+
+/// Longest project directory name the SDK uses unshortened.
+const MAX_PROJECT_DIR_NAME: usize = 200;
+
+/// The prefix shared by every shortened form of an encoded name that is too long.
+fn shortened_project_prefix(name: &OsStr) -> Option<String> {
+    let name = name.to_str()?;
+    // Encoded names are ASCII, so a byte index is a character index.
+    (name.len() > MAX_PROJECT_DIR_NAME)
+        .then(|| format!("{}-", name.get(..MAX_PROJECT_DIR_NAME).unwrap_or(name)))
+}
+
+fn is_regular_file(path: &Path) -> std::io::Result<bool> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.is_file()),
+        Err(error) if is_missing(&error) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// The SDK treats `ENOENT` and `ENOTDIR` alike: the session is not there.
+fn is_missing(error: &std::io::Error) -> bool {
+    matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory)
 }
 
 /// The Agent SDK names a project directory after the resolved working
@@ -101,7 +162,7 @@ fn is_valid_project_dir_name(name: &OsStr) -> bool {
     let device = matches!(lower.as_str(), "con" | "prn" | "aux" | "nul")
         || (lower.len() == 4
             && (lower.starts_with("com") || lower.starts_with("lpt"))
-            && lower.bytes().nth(3).is_some_and(|byte| byte.is_ascii_digit()));
+            && lower.as_bytes().get(3).is_some_and(u8::is_ascii_digit));
     (1..=64).contains(&name.len())
         && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
         && !device
@@ -164,6 +225,54 @@ mod tests {
         let expected =
             resolved.to_str().unwrap().replace(|ch: char| !ch.is_ascii_alphanumeric(), "-");
         assert_eq!(encode_project_path(link.to_str().unwrap()), expected);
+    }
+
+    fn profile_paths(profile: &Path) -> ClaudePaths {
+        ClaudePaths::from_sources(None, Some(profile.as_os_str()), None).unwrap()
+    }
+
+    #[test]
+    fn a_session_is_saved_once_its_transcript_is_a_regular_file() {
+        let profile = tempfile::tempdir().unwrap();
+        let paths = profile_paths(profile.path());
+        // `/work/app` does not exist, so it is encoded as given.
+        let project = profile.path().join("projects/-work-app");
+        assert!(!paths.session_transcript_saved("/work/app", "s1").unwrap());
+
+        std::fs::create_dir_all(project.join("s1.jsonl")).unwrap();
+        assert!(!paths.session_transcript_saved("/work/app", "s1").unwrap());
+
+        std::fs::write(project.join("s2.jsonl"), "{}\n").unwrap();
+        assert!(paths.session_transcript_saved("/work/app", "s2").unwrap());
+        assert!(!paths.session_transcript_saved("/work/other", "s2").unwrap());
+    }
+
+    #[test]
+    fn a_long_project_name_matches_any_shortened_directory() {
+        let profile = tempfile::tempdir().unwrap();
+        let paths = profile_paths(profile.path());
+        let cwd = format!("/{}", "a".repeat(250));
+        assert!(!paths.session_transcript_saved(&cwd, "s1").unwrap());
+        let shortened = format!("-{}-1x2y3z", "a".repeat(199));
+        let project = profile.path().join("projects").join(shortened);
+        std::fs::create_dir_all(&project).unwrap();
+        assert!(!paths.session_transcript_saved(&cwd, "s1").unwrap());
+        std::fs::write(project.join("s1.jsonl"), "{}\n").unwrap();
+        assert!(paths.session_transcript_saved(&cwd, "s1").unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_project_directory_is_an_error_not_a_missing_session() {
+        use std::os::unix::fs::PermissionsExt;
+        let profile = tempfile::tempdir().unwrap();
+        let paths = profile_paths(profile.path());
+        let project = profile.path().join("projects/-work-app");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::set_permissions(&project, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let result = paths.session_transcript_saved("/work/app", "s1");
+        std::fs::set_permissions(&project, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
     }
 
     #[test]
