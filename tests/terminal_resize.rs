@@ -2555,16 +2555,17 @@ fn agents_view_opens_from_an_empty_composer_stops_a_running_subagent_and_returns
     // Selecting the completed subagent previews the response it ended with.
     test.send(b"\x1b[B");
     test.wait_screen_with("Docs path checked", &["Response", "Transcript: saved"]);
+    // Opening it shows the read the preview came from: the bridge's first answer.
     test.send(b"\r");
     test.wait_screen_with(
         "Inspect the docs",
-        &["System reminder", "Hand the report back when done.", "Docs path checked", "r refresh"],
+        &["System reminder", "Hand the report back when done.", "step 1", "r refresh"],
     );
+    // r reads it again and shows the step the second answer adds.
+    test.send(b"r");
+    test.wait_screen_with("step 2", &["Docs path checked"]);
     let reads = test.commands("get_subagent_messages");
     assert!(reads.iter().all(|read| read["agent_id"] == "agent-done"), "{reads:?}");
-    // r reads the open transcript again and shows what was added since.
-    test.send(b"r");
-    test.wait_screen_with(&format!("step {}", reads.len() + 1), &["Docs path checked"]);
     test.send(b"\x1b");
     test.wait_screen("Review parser");
     test.send(b"\x1b");

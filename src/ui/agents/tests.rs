@@ -437,6 +437,14 @@ fn r_retries_a_transcript_that_could_not_be_read() {
     let read = screen(&mut app, 60, 20);
     row_with(&read, "Parser checked");
     assert!(!read.iter().any(|line| line.contains("Could not read")), "{}", read.join("\n"));
+
+    // A re-read that fails keeps what was read, shown again while the next one runs.
+    press(&mut app, KeyCode::Char('r'));
+    let request = last_read_request(&mut commands);
+    answer(&mut app, &request, Err("transcript unreadable"));
+    row_with(&screen(&mut app, 60, 20), "transcript unreadable");
+    press(&mut app, KeyCode::Char('r'));
+    row_with(&screen(&mut app, 60, 20), "Parser checked");
 }
 
 #[test]
@@ -462,7 +470,7 @@ fn a_completed_subagents_response_is_previewed_in_six_rows_and_read_in_full_as_m
     ];
     press(&mut app, KeyCode::Down);
     let request = last_read_request(&mut commands);
-    answer(&mut app, &request, Ok(transcript.clone()));
+    answer(&mut app, &request, Ok(transcript));
 
     let overview = screen(&mut app, 80, 40);
     let (heading, _) = row_with(&overview, "Response");
@@ -473,8 +481,6 @@ fn a_completed_subagents_response_is_previewed_in_six_rows_and_read_in_full_as_m
     assert!(!overview.iter().any(|row| row.contains("page 3")), "{}", overview.join("\n"));
 
     press(&mut app, KeyCode::Enter);
-    let request = last_read_request(&mut commands);
-    answer(&mut app, &request, Ok(transcript));
     let reader = screen(&mut app, 80, 40);
     let (label, _) = row_with(&reader, "Reply");
     let body = &reader[label + 1..];

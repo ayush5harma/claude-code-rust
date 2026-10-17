@@ -330,7 +330,7 @@ fn detail_lines(app: &App, row: &SubagentRow<'_>, width: u16) -> Vec<Line<'stati
         match response {
             Ok(response) => lines.extend(preview_lines(response, width)),
             Err(error) => lines.push(Line::styled(
-                format!("Could not read the transcript: {error}"),
+                format!("Could not read the transcript: {error}. Press r to try again."),
                 Style::default().fg(theme::STATUS_ERROR),
             )),
         }

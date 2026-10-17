@@ -387,6 +387,7 @@ fn handle_session_update(
                 complete_snapshot = update.is_complete_snapshot,
             );
             apply_task_state_update(app, update);
+            super::agents::tasks_changed(app);
         }
         model::SessionUpdate::UserMessageChunk(_) | model::SessionUpdate::AgentResponseStarted => {}
         model::SessionUpdate::MessageMetadata { role, timestamp, source_message_uuid } => {

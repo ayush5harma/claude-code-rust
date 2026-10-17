@@ -76,8 +76,8 @@ async function readTranscript(
 }
 
 /**
- * The report a subagent hands back to its caller through the `SubagentHandback`
- * tool (Claude Code 2.1.300), often its only answer: no text reply follows it.
+ * The report a subagent writes for its caller through the `SubagentHandback`
+ * tool (as Claude Code 2.1.300 saves it), often its only answer: no text reply follows it.
  */
 function handbackReport(tool: ToolCall): string | undefined {
   if (toolNameFromMeta(tool.meta) !== "SubagentHandback") return undefined;

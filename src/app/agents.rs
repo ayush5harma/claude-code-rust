@@ -10,7 +10,7 @@
 use crate::agent::events::ClientEvent;
 use crate::agent::model::{TaskItem, TaskStatus};
 use crate::agent::types::{SubagentMessage, SubagentMessageRole};
-use crate::app::{App, MessageBlock, ToolCallInfo, ToolCallScope};
+use crate::app::{App, FullscreenView, MessageBlock, SurfaceMode, ToolCallInfo, ToolCallScope};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashSet;
 
@@ -109,6 +109,10 @@ pub(crate) struct AgentsView {
     stop_requested: HashSet<String>,
     /// The transcript last read; the open reader shows it.
     pub read: Option<TranscriptRead>,
+    /// An unanswered response read the selection has moved past. The next one
+    /// waits for its answer, so moving along the list keeps at most one read
+    /// in the session's command lane.
+    read_in_flight: Option<String>,
     pub transcript: Option<TranscriptView>,
     pub notice: Option<Notice>,
     /// Scroll offset of the selected subagent's details.
@@ -365,6 +369,11 @@ fn apply_transcript(
     messages: Vec<SubagentMessage>,
     error: Option<String>,
 ) {
+    if request_id.is_some() && app.agents.read_in_flight.as_deref() == request_id {
+        app.agents.read_in_flight = None;
+        read_selected_response(app, false);
+        return;
+    }
     let Some(read) =
         app.agents.read.as_mut().filter(|read| Some(read.request_id.as_str()) == request_id)
     else {
@@ -430,20 +439,40 @@ fn move_selection(app: &mut App, down: bool) {
     read_selected_response(app, false);
 }
 
-/// Keeps the read on the selected subagent. A completed one with a saved
-/// transcript is read for its response, unless a read made after it completed
-/// already holds it; `again` reads it even then.
+/// Lifecycle rows changed: a selected subagent that completed while the list
+/// is shown is read for its response.
+pub(crate) fn tasks_changed(app: &mut App) {
+    read_selected_response(app, false);
+}
+
+/// Keeps the read on the selected subagent while the list is shown. A completed
+/// one with a saved transcript is read for its response once, after it
+/// completed; `again` (the user's `r`) reads it even then, also after a failure.
 fn read_selected_response(app: &mut App, again: bool) {
-    let Some((task_id, status)) = selected_row(app) else { return };
-    if app.agents.read.as_ref().is_some_and(|read| read.agent_id != task_id) {
-        app.agents.read = None;
-    }
-    if status != SubagentStatus::Completed || app.agents.has_transcript(&task_id) != Some(true) {
+    if app.surface_mode != SurfaceMode::Fullscreen(FullscreenView::Agents)
+        || app.agents.transcript.is_some()
+    {
         return;
     }
-    let held =
-        app.agents.read.as_ref().is_some_and(|read| read.after_completion && read.error.is_none());
-    if again || !held {
+    let Some((task_id, status)) = selected_row(app) else { return };
+    if let Some(passed) = app.agents.read.take_if(|read| read.agent_id != task_id)
+        && passed.messages.is_none()
+        && passed.error.is_none()
+    {
+        app.agents.read_in_flight = Some(passed.request_id);
+    }
+    if status != SubagentStatus::Completed {
+        // A subagent resumed after it completed will end with another response.
+        if let Some(read) = app.agents.read.as_mut() {
+            read.after_completion = false;
+        }
+        return;
+    }
+    if app.agents.has_transcript(&task_id) != Some(true) {
+        return;
+    }
+    let held = app.agents.read.as_ref().is_some_and(|read| read.after_completion);
+    if again || !(held || app.agents.read_in_flight.is_some()) {
         request_read(app, task_id);
     }
 }
@@ -483,7 +512,12 @@ fn open_transcript(app: &mut App) {
         );
         return;
     }
-    if request_read(app, task_id) {
+    // A completed subagent's transcript no longer changes, so the read its
+    // response came from is opened as it is; `r` reads it again.
+    let held = app.agents.read.as_ref().is_some_and(|read| {
+        read.agent_id == task_id && read.after_completion && read.error.is_none()
+    });
+    if held || request_read(app, task_id) {
         app.agents.notice = None;
         app.agents.transcript = Some(TranscriptView::default());
     }
