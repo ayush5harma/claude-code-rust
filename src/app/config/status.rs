@@ -10,6 +10,9 @@ pub(super) fn refresh_status_tab(app: &mut App) {
     }
     request_status_snapshot(app);
     refresh_session_transcript(app);
+    app.config.memory_file =
+        crate::claude_paths::ClaudePaths::resolve(app.settings_home_override.as_deref())
+            .map(|paths| paths.default_memory_file(&app.cwd_raw));
 }
 
 /// A finished turn can have saved the session, which the open Status tab and

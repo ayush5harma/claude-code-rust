@@ -80,6 +80,9 @@ pub struct ConfigState {
     pub pending_session_title_change: Option<PendingSessionTitleChangeState>,
     /// `None` until checked for the active session.
     pub session_transcript: Option<SessionTranscriptState>,
+    /// The Status tab's memory file, resolved when the tab refreshes rather
+    /// than on every draw. `None` when the configuration directory is unknown.
+    pub memory_file: Option<std::path::PathBuf>,
 }
 
 impl Default for ConfigState {
@@ -101,6 +104,7 @@ impl Default for ConfigState {
             overlay_message: None,
             pending_session_title_change: None,
             session_transcript: None,
+            memory_file: None,
         }
     }
 }
@@ -250,6 +254,17 @@ impl ConfigState {
             self.pending_session_title_change,
             Some(PendingSessionTitleChangeState {
                 kind: PendingSessionTitleChangeKind::Rename { .. },
+                ..
+            })
+        )
+    }
+
+    #[must_use]
+    pub fn title_generation_in_flight(&self) -> bool {
+        matches!(
+            self.pending_session_title_change,
+            Some(PendingSessionTitleChangeState {
+                kind: PendingSessionTitleChangeKind::Generate,
                 ..
             })
         )

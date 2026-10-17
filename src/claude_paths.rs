@@ -85,21 +85,33 @@ impl ClaudePaths {
         let Some(prefix) = shortened_project_prefix(&project_name) else {
             return is_regular_file(&projects.join(project_name).join(file_name));
         };
-        // Claude Code shortens a long name with a hash the SDK cannot reproduce,
-        // so the SDK accepts any directory with the shortened prefix; so does this.
+        // Claude Code shortens a long name with a hash suffix that may differ from
+        // the SDK's. This accepts any folder with the shortened prefix, a superset
+        // of the folders the SDK's lookup accepts; if the transcript is in a folder
+        // the SDK rejects, the SDK's rename error reports it. An unreadable folder
+        // does not hide a match in another one.
         let entries = match std::fs::read_dir(&projects) {
             Err(error) if is_missing(&error) => return Ok(false),
             entries => entries?,
         };
+        let mut first_error = None;
         for entry in entries {
-            let entry = entry?;
-            if entry.file_name().to_str().is_some_and(|name| has_project_prefix(name, &prefix))
-                && is_regular_file(&entry.path().join(&file_name))?
-            {
-                return Ok(true);
+            let candidate = entry.and_then(|entry| {
+                let matches = entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| has_project_prefix(name, &prefix));
+                if matches { is_regular_file(&entry.path().join(&file_name)) } else { Ok(false) }
+            });
+            match candidate {
+                Ok(true) => return Ok(true),
+                Ok(false) => {}
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
             }
         }
-        Ok(false)
+        first_error.map_or(Ok(false), Err)
     }
 
     fn projects_dir(&self) -> PathBuf {
@@ -290,23 +302,67 @@ mod tests {
         assert!(paths.session_transcript_saved(&[&cwd], "s1").unwrap());
     }
 
+    /// Makes `dir` unreadable. Returns `false`, with the folder restored, when
+    /// the lock has no effect (root ignores it), so the caller can skip.
+    #[cfg(unix)]
+    fn lock_dir(dir: &Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read_dir(dir).is_ok() {
+            unlock_dir(dir);
+            return false;
+        }
+        true
+    }
+
+    #[cfg(unix)]
+    fn unlock_dir(dir: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn an_unreadable_project_directory_is_an_error_not_a_missing_session() {
-        use std::os::unix::fs::PermissionsExt;
         let profile = tempfile::tempdir().unwrap();
         let paths = profile_paths(profile.path());
         let project = profile.path().join("projects/-work-app");
         std::fs::create_dir_all(&project).unwrap();
-        std::fs::set_permissions(&project, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if !lock_dir(&project) {
+            eprintln!("skipped: permissions do not restrict this user");
+            return;
+        }
         let result = paths.session_transcript_saved(&["/work/app"], "s1");
         let other = profile.path().join("projects/-work-other");
         std::fs::create_dir_all(&other).unwrap();
         std::fs::write(other.join("s1.jsonl"), "{}\n").unwrap();
         let found_elsewhere = paths.session_transcript_saved(&["/work/app", "/work/other"], "s1");
-        std::fs::set_permissions(&project, std::fs::Permissions::from_mode(0o755)).unwrap();
+        unlock_dir(&project);
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
         assert!(found_elsewhere.unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_sibling_folder_does_not_hide_a_long_name_match() {
+        let profile = tempfile::tempdir().unwrap();
+        let paths = profile_paths(profile.path());
+        let cwd = format!("/{}", "a".repeat(250));
+        let prefix = format!("-{}-", "a".repeat(199));
+        let locked = profile.path().join("projects").join(format!("{prefix}locked"));
+        std::fs::create_dir_all(&locked).unwrap();
+        if !lock_dir(&locked) {
+            eprintln!("skipped: permissions do not restrict this user");
+            return;
+        }
+        let only_locked = paths.session_transcript_saved(&[&cwd], "s1");
+        let saved = profile.path().join("projects").join(format!("{prefix}saved"));
+        std::fs::create_dir_all(&saved).unwrap();
+        std::fs::write(saved.join("s1.jsonl"), "{}\n").unwrap();
+        let with_match = paths.session_transcript_saved(&[&cwd], "s1");
+        unlock_dir(&locked);
+        assert_eq!(only_locked.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(with_match.unwrap());
     }
 
     #[test]

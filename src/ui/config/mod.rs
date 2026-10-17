@@ -758,6 +758,36 @@ mod tests {
     }
 
     #[test]
+    fn rename_dialog_says_why_it_waits_for_a_generated_title() {
+        let mut app = App::test_default();
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+        app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+        app.config.session_transcript = Some(crate::app::config::SessionTranscriptState::Saved);
+        app.config.pending_session_title_change =
+            Some(crate::app::config::PendingSessionTitleChangeState {
+                session_id: "session-1".to_owned(),
+                kind: crate::app::config::PendingSessionTitleChangeKind::Generate,
+            });
+        app.config.overlay = Some(crate::app::config::ConfigOverlayState::SessionRename(
+            crate::app::config::SessionRenameOverlayState {
+                draft: "Review settings".to_owned(),
+                cursor: 15,
+            },
+        ));
+        let lines = render_config_lines(100, 32, app);
+        let title = lines.iter().position(|line| line.contains("Rename session")).expect("title");
+        let bottom = title
+            + lines[title..].iter().position(|line| line.contains('└')).expect("bottom border");
+        let dialog: Vec<&String> = lines[title..bottom].iter().collect();
+        let note = dialog
+            .iter()
+            .position(|line| line.contains("A session title is being generated."))
+            .expect("the reason inside the dialog");
+        assert!(dialog[note..].iter().any(|line| line.contains("Esc cancel")));
+        assert!(!dialog.iter().any(|line| line.contains("Enter confirm")));
+    }
+
+    #[test]
     fn rename_dialog_shows_a_failed_check_as_an_error() {
         use crate::app::config::SessionTranscriptState;
         let error = "Cannot check whether this session is saved: Permission denied (os error 13)";

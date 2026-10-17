@@ -115,6 +115,11 @@ fn stale_context(app: &App, overlay: &SettingOverlayState) -> bool {
         .is_none_or(|snapshot| !snapshot.matches_context(&overlay.context, &app.cwd_raw))
 }
 
+/// Why the rename dialog cannot confirm while a generated title is pending:
+/// the session listing that settles one title change cannot tell them apart.
+const TITLE_GENERATION_PENDING: &str =
+    "A session title is being generated. Confirm the rename once it finishes.";
+
 /// Shown beneath the rename field until the SDK can rename the session.
 const SESSION_NOT_SAVED_WARNING: &str = "Renaming becomes available after this session is saved. Run a command or send a message, then try again.";
 
@@ -129,6 +134,10 @@ pub(super) fn render_session_rename_overlay(frame: &mut Frame, area: Rect, app: 
     } else {
         "Esc cancel"
     };
+    let generation_note = app
+        .config
+        .title_generation_in_flight()
+        .then(|| crate::app::config::OverlayMessage::info(TITLE_GENERATION_PENDING));
     let rendered = render_overlay_shell(
         frame,
         area,
@@ -145,7 +154,7 @@ pub(super) fn render_session_rename_overlay(frame: &mut Frame, area: Rect, app: 
             title: "Rename session",
             subtitle: Some("Set a custom title for the current session"),
             help: Some(help),
-            message: app.config.overlay_message.as_ref(),
+            message: generation_note.as_ref().or(app.config.overlay_message.as_ref()),
         },
     );
     let availability = match app.config.session_transcript.as_ref() {

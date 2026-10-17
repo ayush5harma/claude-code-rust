@@ -2305,7 +2305,7 @@ fn status_rename_waits_for_the_saved_session_and_reports_only_in_status() {
     let chat = test.screen();
     assert!(!chat.contains("failed to rename") && !chat.contains("Renamed session"), "{chat}");
 
-    // `/clear` starts an unsaved session the listing names after the command.
+    // The fixture's `/clear` starts an unsaved session the listing names after the command.
     test.submit_command("/clear");
     test.wait_journal("session_replaced");
     test.submit("/status", "/status");

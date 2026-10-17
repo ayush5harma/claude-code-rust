@@ -109,12 +109,9 @@ pub(crate) fn login_method_label(account: &crate::agent::model::AccountInfo) -> 
 }
 
 fn resolve_memory_path(app: &App) -> String {
-    let Some(paths) =
-        crate::claude_paths::ClaudePaths::resolve(app.settings_home_override.as_deref())
-    else {
+    let Some(memory_md) = app.config.memory_file.as_ref() else {
         return "(unable to resolve Claude configuration directory)".to_owned();
     };
-    let memory_md = paths.default_memory_file(&app.cwd_raw);
 
     if memory_md.exists() {
         format!("auto memory ({})", memory_md.display())
@@ -146,6 +143,37 @@ mod tests {
         let app = App::test_default();
         let text = lines_to_string(&status_lines(&app));
         assert!(text.contains(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn memory_row_finds_claude_codes_project_folder() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path().join("project");
+        std::fs::create_dir(&project).expect("project");
+        let mut app = App::test_default();
+        app.settings_home_override = Some(dir.path().join("home"));
+        app.cwd_raw = project.to_string_lossy().into_owned();
+        // Claude Code's folder: the resolved path with every non-alphanumeric
+        // character as `-`, leading separator included (the fixture is ASCII).
+        let folder: String = std::fs::canonicalize(&project)
+            .expect("resolved project")
+            .to_string_lossy()
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+            .collect();
+        let memory = dir.path().join("home/.claude/projects").join(folder).join("memory/MEMORY.md");
+        std::fs::create_dir_all(memory.parent().expect("memory folder")).expect("memory folder");
+        std::fs::write(&memory, "notes").expect("memory file");
+
+        crate::app::config::open_tab(&mut app, crate::app::config::ConfigTab::Status)
+            .expect("status tab");
+
+        let row = status_lines(&app)
+            .into_iter()
+            .map(|line| line.to_string())
+            .find(|line| line.starts_with("Memory:"))
+            .expect("memory row");
+        assert_eq!(row, format!("Memory: auto memory ({})", memory.display()));
     }
 
     #[test]

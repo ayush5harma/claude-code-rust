@@ -803,6 +803,10 @@ fn a_pending_title_generation_holds_the_rename_and_the_reverse() {
     press(&mut app, KeyCode::Char('g'));
     let sent: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).map(|e| e.command).collect();
     assert!(matches!(sent.as_slice(), [BridgeCommand::RenameSession { .. }]), "{sent:?}");
+    assert_eq!(
+        app.config.status_message.as_deref(),
+        Some("The session is being renamed. Generate a title once it finishes.")
+    );
 }
 
 #[test]
@@ -827,6 +831,12 @@ fn status_rename_reports_a_failed_check_as_an_error_and_stays_disabled() {
     let transcript = save_transcript(&dir, "session-1");
     let folder = transcript.parent().expect("project folder").to_path_buf();
     std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o000)).expect("lock");
+    if std::fs::read_dir(&folder).is_ok() {
+        // Root ignores the lock, so there is no failure to observe.
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).expect("unlock");
+        eprintln!("skipped: permissions do not restrict this user");
+        return;
+    }
 
     press(&mut app, KeyCode::Char('r'));
     press(&mut app, KeyCode::Enter);
@@ -915,7 +925,7 @@ async fn clear_rechecks_the_session_that_replaces_a_saved_one() {
             open_tab(&mut app, ConfigTab::Status).expect("status tab");
             assert_eq!(app.config.session_transcript, Some(SessionTranscriptState::Saved));
 
-            // `/clear` starts a session the SDK has not saved yet.
+            // A session change, as `/clear` makes, to a session with no transcript yet.
             let cwd = app.cwd_raw.clone();
             crate::app::handle_client_event(
                 &mut app,
