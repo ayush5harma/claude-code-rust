@@ -71,6 +71,7 @@ pub(crate) fn try_handle_submission(app: &mut App, submission: &ResolvedSubmissi
         AppSlashCommand::NewSession => handle_new_session_submit(app),
         AppSlashCommand::Resume => handle_resume_submit(app),
         AppSlashCommand::Rewind => handle_rewind_submit(app, &args),
+        AppSlashCommand::Export => handle_export_submit(app, text),
     }
 }
 
@@ -525,6 +526,55 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
                     })
                     .await;
             }
+        }
+    });
+    true
+}
+
+fn handle_export_submit(app: &mut App, text: &str) -> bool {
+    // Everything after the command is one path, so spaces in it are kept.
+    let requested =
+        text.trim_start().strip_prefix("/export").map(str::trim).unwrap_or_default().to_owned();
+
+    let Some((conn, sid)) = require_active_session(
+        app,
+        "Cannot export: not connected yet.",
+        "Cannot export: no active session.",
+    ) else {
+        return true;
+    };
+    let session_id = sid.to_string();
+    let request_id = match crate::app::export::begin(app, &session_id, &requested) {
+        Ok(request_id) => request_id,
+        Err(message) => {
+            push_system_message(app, message);
+            return true;
+        }
+    };
+
+    set_command_pending(
+        app,
+        Some("Exporting conversation..."),
+        Some(crate::app::PendingCommandAck::HistoryExport),
+    );
+
+    let tx = app.event_tx.clone();
+    tokio::task::spawn_local(async move {
+        if let Err(e) = conn.export_session_history(session_id.clone(), request_id.clone()) {
+            // Fail the export itself: only its own request-scoped event may end it.
+            let _ = tx
+                .send(ClientEvent::SessionHistoryChunk {
+                    session_id,
+                    chunk: crate::agent::events::HistoryChunk {
+                        request_id: Some(request_id),
+                        updates: Vec::new(),
+                        last: true,
+                        omitted_updates: 0,
+                        unmapped_updates: 0,
+                        error: Some(format!("Failed to run /export: {e}")),
+                    },
+                })
+                .await;
         }
     });
     true

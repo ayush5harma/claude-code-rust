@@ -169,6 +169,9 @@ pub enum BridgeCommand {
     GetRewindTargets {
         session_id: String,
     },
+    ExportSessionHistory {
+        session_id: String,
+    },
     Rewind {
         session_id: String,
         target_user_message_id: String,
@@ -246,6 +249,7 @@ impl BridgeCommand {
             Self::GetContextUsage { .. } => "get_context_usage",
             Self::GetUsage { .. } => "get_usage",
             Self::GetRewindTargets { .. } => "get_rewind_targets",
+            Self::ExportSessionHistory { .. } => "export_session_history",
             Self::Rewind { .. } => "rewind",
             Self::ReloadPlugins { .. } => "reload_plugins",
             Self::GetMcpSnapshot { .. } => "get_mcp_snapshot",
@@ -287,6 +291,7 @@ impl BridgeCommand {
             | Self::GetContextUsage { session_id }
             | Self::GetUsage { session_id }
             | Self::GetRewindTargets { session_id }
+            | Self::ExportSessionHistory { session_id }
             | Self::Rewind { session_id, .. }
             | Self::ReloadPlugins { session_id, .. }
             | Self::GetMcpSnapshot { session_id }
@@ -332,6 +337,7 @@ impl BridgeCommand {
             | Self::GetContextUsage { .. }
             | Self::GetUsage { .. }
             | Self::GetRewindTargets { .. }
+            | Self::ExportSessionHistory { .. }
             | Self::Rewind { .. }
             | Self::ReloadPlugins { .. }
             | Self::GetMcpSnapshot { .. }
@@ -540,6 +546,16 @@ pub enum BridgeEvent {
         targets: Vec<types::RewindTarget>,
         error: Option<String>,
     },
+    /// One chunk of a session's complete saved history, in resume order.
+    SessionHistoryExport {
+        session_id: String,
+        updates: Vec<types::SessionUpdate>,
+        last: bool,
+        #[serde(default)]
+        omitted_updates: u64,
+        #[serde(default)]
+        error: Option<String>,
+    },
     RewindResult {
         session_id: String,
         restore_mode: types::RewindRestoreMode,
@@ -598,6 +614,7 @@ impl BridgeEvent {
             Self::ContextUsage { .. } => "context_usage",
             Self::UsageSnapshot { .. } => "usage_snapshot",
             Self::RewindTargets { .. } => "rewind_targets",
+            Self::SessionHistoryExport { .. } => "session_history_export",
             Self::RewindResult { .. } => "rewind_result",
             Self::McpSnapshot { .. } => "mcp_snapshot",
         }
@@ -636,6 +653,7 @@ impl BridgeEvent {
             | Self::ContextUsage { session_id, .. }
             | Self::UsageSnapshot { session_id, .. }
             | Self::RewindTargets { session_id, .. }
+            | Self::SessionHistoryExport { session_id, .. }
             | Self::RewindResult { session_id, .. }
             | Self::McpSnapshot { session_id, .. } => Some(session_id.as_str()),
             Self::AuthRequired { .. }
@@ -684,6 +702,7 @@ impl BridgeEvent {
             | Self::ContextUsage { .. }
             | Self::UsageSnapshot { .. }
             | Self::RewindTargets { .. }
+            | Self::SessionHistoryExport { .. }
             | Self::RewindResult { .. }
             | Self::McpSnapshot { .. } => None,
         }
@@ -1184,6 +1203,65 @@ mod tests {
                 "session_id": "s1"
             })
         );
+    }
+
+    #[test]
+    fn export_session_history_command_serializes_with_its_request_id() {
+        let env = CommandEnvelope {
+            request_id: Some("export-1".to_owned()),
+            command: BridgeCommand::ExportSessionHistory { session_id: "s1".to_owned() },
+        };
+
+        assert_eq!(
+            serde_json::to_value(&env).expect("serialize"),
+            serde_json::json!({
+                "request_id": "export-1",
+                "command": "export_session_history",
+                "session_id": "s1"
+            })
+        );
+    }
+
+    #[test]
+    fn session_history_export_event_deserializes_chunk_and_failure() {
+        let chunk: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "request_id": "export-1",
+            "event": "session_history_export",
+            "session_id": "s1",
+            "updates": [
+                { "type": "user_message_chunk",
+                  "content": { "type": "text", "text": "hello" },
+                  "source_message_uuid": "u1" }
+            ],
+            "last": false,
+            "omitted_updates": 0
+        }))
+        .expect("deserialize chunk");
+        assert_eq!(chunk.request_id.as_deref(), Some("export-1"));
+        let BridgeEvent::SessionHistoryExport { updates, last, omitted_updates, error, .. } =
+            chunk.event
+        else {
+            panic!("expected a history export chunk");
+        };
+        assert_eq!(updates.len(), 1);
+        assert!(!last);
+        assert_eq!(omitted_updates, 0);
+        assert_eq!(error, None);
+
+        // A failure omits the counters the bridge sends on success only.
+        let failure: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "session_history_export",
+            "session_id": "s1",
+            "updates": [],
+            "last": true,
+            "error": "failed to load session history: boom"
+        }))
+        .expect("deserialize failure");
+        let BridgeEvent::SessionHistoryExport { last, error, .. } = failure.event else {
+            panic!("expected a history export failure");
+        };
+        assert!(last);
+        assert_eq!(error.as_deref(), Some("failed to load session history: boom"));
     }
 
     #[test]
