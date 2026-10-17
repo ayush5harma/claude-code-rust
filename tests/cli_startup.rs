@@ -262,80 +262,147 @@ fn launch_paths_that_exist_are_accepted_for_every_interactive_launch() {
         cli.validate().unwrap_or_else(|error| panic!("{args:?}: {error}"));
     }
 }
+/// Sets `path`'s mode for the length of a test and opens it again on drop, so a failed
+/// assertion still leaves the scratch directory removable.
+#[cfg(unix)]
+struct ModeGuard(std::path::PathBuf);
 
 #[cfg(unix)]
-#[test]
-fn unreadable_dir_and_bridge_script_are_refused() {
-    use std::os::unix::fs::PermissionsExt;
-    let scratch = tempfile::tempdir().expect("scratch directory");
-    let dir = scratch.path().join("locked-dir");
-    let script = scratch.path().join("locked.js");
-    std::fs::create_dir(&dir).expect("dir");
-    std::fs::write(&script, "").expect("script");
-    let locked = std::fs::Permissions::from_mode(0o000);
-    std::fs::set_permissions(&dir, locked.clone()).expect("lock dir");
-    std::fs::set_permissions(&script, locked).expect("lock script");
-    let open = std::fs::Permissions::from_mode(0o755);
-    // Root reads through mode 000, which leaves nothing to refuse: skip explicitly rather
-    // than pass without asserting.
-    if std::fs::read_dir(&dir).is_ok() || std::fs::File::open(&script).is_ok() {
-        std::fs::set_permissions(&dir, open.clone()).expect("unlock dir");
-        std::fs::set_permissions(&script, open).expect("unlock script");
-        eprintln!("skipped: permissions are not enforced for this user (root?)");
-        return;
+impl ModeGuard {
+    #[allow(clippy::expect_used)]
+    fn set(path: &std::path::Path, mode: u32) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+        Self(path.to_path_buf())
     }
-    let results = [
-        Cli::try_parse_from(["claude-rs".as_ref(), "-C".as_ref(), dir.as_os_str()])
-            .expect("parse")
-            .validate(),
-        Cli::try_parse_from(["claude-rs".as_ref(), "--bridge-script".as_ref(), script.as_os_str()])
-            .expect("parse")
-            .validate(),
-    ];
-    // Let the scratch directory be removed.
-    std::fs::set_permissions(&dir, open.clone()).expect("unlock dir");
-    std::fs::set_permissions(&script, open).expect("unlock script");
-    let [dir_result, script_result] = results;
-    let dir_error = dir_result.expect_err("unreadable dir").to_string();
-    let script_error = script_result.expect_err("unreadable script").to_string();
-    assert!(dir_error.contains("--dir") && dir_error.contains("cannot be read"), "{dir_error}");
-    assert!(
-        script_error.contains("--bridge-script") && script_error.contains("cannot be read"),
-        "{script_error}"
-    );
+}
+
+#[cfg(unix)]
+impl Drop for ModeGuard {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+    }
+}
+
+/// Root passes every permission check, which leaves nothing to refuse: such a run skips
+/// explicitly rather than passing without asserting.
+#[cfg(unix)]
+fn permissions_enforced(locked_dir: &std::path::Path) -> bool {
+    let enforced = std::fs::metadata(locked_dir.join("."))
+        .is_err_and(|err| err.kind() == std::io::ErrorKind::PermissionDenied);
+    if !enforced {
+        eprintln!("skipped: permissions are not enforced for this user (root?)");
+    }
+    enforced
 }
 
 #[cfg(unix)]
 #[test]
-fn a_path_behind_an_unsearchable_parent_is_reported_as_inaccessible_not_missing() {
-    use std::os::unix::fs::PermissionsExt;
+fn a_dir_needs_both_read_and_search_permission() {
     let scratch = tempfile::tempdir().expect("scratch directory");
-    let parent = scratch.path().join("locked-parent");
-    std::fs::create_dir(&parent).expect("parent");
-    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o000)).expect("lock");
-    let open = std::fs::Permissions::from_mode(0o755);
-    // Root can search a mode-000 directory, so nothing would be refused.
-    let enforced = std::fs::metadata(parent.join("x"))
-        .is_err_and(|err| err.kind() == std::io::ErrorKind::PermissionDenied);
-    if !enforced {
-        std::fs::set_permissions(&parent, open).expect("unlock");
-        eprintln!("skipped: permissions are not enforced for this user (root?)");
+    let make = |name: &str| {
+        let dir = scratch.path().join(name);
+        std::fs::create_dir(&dir).expect("dir");
+        std::fs::write(dir.join("inside.txt"), "").expect("file inside");
+        dir
+    };
+    // Read without search lists the names but cannot enter the directory or open
+    // anything in it; search without read enters it but cannot list it.
+    let no_search = make("read-only");
+    let no_read = make("search-only");
+    let both = make("read-and-search");
+    let _guards = [
+        ModeGuard::set(&no_search, 0o600),
+        ModeGuard::set(&no_read, 0o300),
+        ModeGuard::set(&both, 0o500),
+    ];
+    if !permissions_enforced(&no_search) {
         return;
     }
-    let behind = parent.join("x.js");
-    let results = [
-        Cli::try_parse_from(["claude-rs".as_ref(), "-C".as_ref(), behind.as_os_str()])
-            .expect("parse")
-            .validate(),
-        Cli::try_parse_from(["claude-rs".as_ref(), "--bridge-script".as_ref(), behind.as_os_str()])
-            .expect("parse")
-            .validate(),
-    ];
-    std::fs::set_permissions(&parent, open).expect("unlock");
-    let [dir_result, script_result] = results;
-    let dir_error = dir_result.expect_err("dir behind locked parent").to_string();
-    let script_error = script_result.expect_err("script behind locked parent").to_string();
-    assert!(dir_error.contains("cannot be accessed"), "{dir_error}");
-    assert!(script_error.contains("cannot be accessed"), "{script_error}");
-    assert!(!script_error.contains("does not exist"), "{script_error}");
+    for (dir, reason) in [(&no_search, "cannot be entered"), (&no_read, "cannot be read")] {
+        let (profile, output) =
+            run_with_scratch_profile(&["--dir".as_ref(), dir.as_os_str()], scratch.path());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{}: {error}", dir.display());
+        assert!(error.contains("--dir") && error.contains(reason), "{error}");
+        assert!(error.contains(&dir.display().to_string()), "{error}");
+        assert_eq!(std::fs::read_dir(profile.path()).expect("profile").count(), 0);
+    }
+    let cli = Cli::try_parse_from(["claude-rs".as_ref(), "-C".as_ref(), both.as_os_str()])
+        .expect("parse");
+    cli.validate().unwrap_or_else(|error| panic!("read and search: {error}"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_dir_behind_an_unsearchable_parent_is_reported_as_inaccessible_not_missing() {
+    let scratch = tempfile::tempdir().expect("scratch directory");
+    let parent = scratch.path().join("locked-parent");
+    std::fs::create_dir_all(parent.join("project")).expect("project");
+    let _guard = ModeGuard::set(&parent, 0o000);
+    if !permissions_enforced(&parent) {
+        return;
+    }
+    let project = parent.join("project");
+    let error = Cli::try_parse_from(["claude-rs".as_ref(), "-C".as_ref(), project.as_os_str()])
+        .expect("parse")
+        .validate()
+        .expect_err("dir behind a locked parent")
+        .to_string();
+    assert!(error.contains("cannot be accessed"), "{error}");
+    assert!(!error.contains("does not exist"), "{error}");
+}
+
+/// The `bridge_script` check of `claude-rs [--bridge-script <script>] doctor --json`.
+#[cfg(unix)]
+#[allow(clippy::expect_used)]
+fn doctor_bridge_script_check(
+    script: &std::path::Path,
+    cwd: &std::path::Path,
+) -> serde_json::Value {
+    let (_profile, output) = run_with_scratch_profile(
+        &["--bridge-script".as_ref(), script.as_os_str(), "doctor".as_ref(), "--json".as_ref()],
+        cwd,
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).expect("doctor json");
+    report["checks"]
+        .as_array()
+        .expect("checks")
+        .iter()
+        .find(|check| check["id"] == "bridge_script")
+        .cloned()
+        .expect("bridge_script check")
+}
+
+#[cfg(unix)]
+#[test]
+fn startup_and_doctor_judge_an_unusable_bridge_script_alike() {
+    let scratch = tempfile::tempdir().expect("scratch directory");
+    let unreadable = scratch.path().join("unreadable.js");
+    std::fs::write(&unreadable, "").expect("script");
+    let parent = scratch.path().join("locked-parent");
+    std::fs::create_dir(&parent).expect("parent");
+    let behind_parent = parent.join("bridge.js");
+    std::fs::write(&behind_parent, "").expect("script behind parent");
+    let _guards = [ModeGuard::set(&unreadable, 0o000), ModeGuard::set(&parent, 0o000)];
+    if !permissions_enforced(&parent) {
+        return;
+    }
+    for (script, reason) in
+        [(&unreadable, "cannot be read"), (&behind_parent, "cannot be accessed")]
+    {
+        let check = doctor_bridge_script_check(script, scratch.path());
+        let verdict = check["message"].as_str().expect("doctor message");
+        assert_eq!(check["status"], "fail", "{}: {check}", script.display());
+        assert!(verdict.contains(reason) && !verdict.contains("does not exist"), "{verdict}");
+
+        let (_profile, output) = run_with_scratch_profile(
+            &["--bridge-script".as_ref(), script.as_os_str()],
+            scratch.path(),
+        );
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{}: {error}", script.display());
+        assert!(error.contains("--bridge-script") && error.contains(verdict), "{error}");
+    }
 }

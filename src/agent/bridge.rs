@@ -98,43 +98,18 @@ pub fn inspect_bridge_script(explicit_script: Option<&Path>) -> BridgeScriptInsp
     let resolver = BridgeScriptResolver::from_process(explicit_script);
     let explicit_path = resolver.explicit_script.map(Path::to_path_buf);
 
-    if let Some(path) = resolver.explicit_script {
-        let is_file = path.is_file();
+    let overridden = resolver
+        .explicit_script
+        .map(|path| (path, ScriptOverride::Explicit))
+        .or_else(|| resolver.env_script.as_deref().map(|path| (path, ScriptOverride::Env)));
+    if let Some((path, source)) = overridden {
+        let error = script_override_problem(path, source);
         return BridgeScriptInspection {
             explicit_path,
             env_path: resolver.env_script.clone(),
             candidates: Vec::new(),
-            resolved_path: is_file.then(|| path.to_path_buf()),
-            error: (!is_file).then(|| {
-                if path.exists() {
-                    format!("bridge script is not a file: {}", path.display())
-                } else {
-                    format!("bridge script does not exist: {}", path.display())
-                }
-            }),
-        };
-    }
-
-    if let Some(path) = resolver.env_script.as_deref() {
-        let is_file = path.is_file();
-        return BridgeScriptInspection {
-            explicit_path,
-            env_path: resolver.env_script.clone(),
-            candidates: Vec::new(),
-            resolved_path: is_file.then(|| path.to_path_buf()),
-            error: (!is_file).then(|| {
-                if path.exists() {
-                    format!(
-                        "bridge script from {BRIDGE_SCRIPT_ENV_VAR} is not a file: {}",
-                        path.display()
-                    )
-                } else {
-                    format!(
-                        "bridge script from {BRIDGE_SCRIPT_ENV_VAR} does not exist: {}",
-                        path.display()
-                    )
-                }
-            }),
+            resolved_path: error.is_none().then(|| path.to_path_buf()),
+            error,
         };
     }
 
@@ -295,16 +270,42 @@ fn resolve_bridge_runtime_path_with(
         .context("failed to resolve bundled Bun bridge runtime")
 }
 
-fn validate_script_path(path: &Path) -> anyhow::Result<PathBuf> {
-    if !path.exists() {
-        return Err(anyhow::Error::new(AppError::BridgeSpawnFailed)
-            .context(format!("bridge script does not exist: {}", path.display())));
+/// Where an overriding bridge script path came from, which names it in a problem.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScriptOverride {
+    Explicit,
+    Env,
+}
+
+/// Why an explicit or environment bridge script cannot be run, or `None` when it can.
+///
+/// The one authority on script usability: startup validation, `doctor` and the launcher
+/// all ask here. A path whose lookup fails for any reason but absence (a parent without
+/// search permission) is inaccessible, not missing, and a file that cannot be opened is
+/// unreadable, because the runtime would fail on it the same way.
+fn script_override_problem(path: &Path, source: ScriptOverride) -> Option<String> {
+    let label = match source {
+        ScriptOverride::Explicit => "bridge script".to_owned(),
+        ScriptOverride::Env => format!("bridge script from {BRIDGE_SCRIPT_ENV_VAR}"),
+    };
+    let shown = path.display();
+    match std::fs::metadata(path) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            Some(format!("{label} does not exist: {shown}"))
+        }
+        Err(err) => Some(format!("{label} cannot be accessed: {shown}: {err}")),
+        Ok(metadata) if !metadata.is_file() => Some(format!("{label} is not a file: {shown}")),
+        Ok(_) => std::fs::File::open(path)
+            .err()
+            .map(|err| format!("{label} cannot be read: {shown}: {err}")),
     }
-    if !path.is_file() {
-        return Err(anyhow::Error::new(AppError::BridgeSpawnFailed)
-            .context(format!("bridge script is not a file: {}", path.display())));
+}
+
+fn validate_script_path(path: &Path, source: ScriptOverride) -> anyhow::Result<PathBuf> {
+    match script_override_problem(path, source) {
+        Some(problem) => Err(anyhow::Error::new(AppError::BridgeSpawnFailed).context(problem)),
+        None => Ok(path.to_path_buf()),
     }
-    Ok(path.to_path_buf())
 }
 
 fn validate_runtime_path(path: &Path) -> anyhow::Result<PathBuf> {
@@ -380,11 +381,11 @@ impl<'a> BridgeScriptResolver<'a> {
 
     fn resolve(&self) -> anyhow::Result<PathBuf> {
         if let Some(path) = self.explicit_script {
-            return validate_script_path(path);
+            return validate_script_path(path, ScriptOverride::Explicit);
         }
 
         if let Some(path) = self.env_script.as_deref() {
-            return validate_script_path(path);
+            return validate_script_path(path, ScriptOverride::Env);
         }
 
         let candidates = self.automatic_candidates();
