@@ -165,8 +165,45 @@ impl Cli {
                 "interactive startup arguments cannot be combined with this subcommand",
             ));
         }
+        if matches!(self.command, None | Some(Command::Resume { .. })) {
+            self.validate_launch_paths()?;
+        }
         Ok(())
     }
+
+    /// Checks `--dir` and `--bridge-script` before the terminal, trust prompt or bridge
+    /// exist, so a bad path is a usage error instead of a failure further in. Only
+    /// interactive launches use them: `doctor` reports on a bad bridge script rather
+    /// than refusing it, and the other support commands never start the bridge.
+    fn validate_launch_paths(&self) -> Result<(), clap::Error> {
+        use clap::CommandFactory;
+        let usage_error = |id: &str, reason: String| {
+            let mut command = Self::command();
+            command.build();
+            // clap renders the label the way its own value errors do ("--dir <DIR>").
+            let flag = command
+                .get_arguments()
+                .find(|arg| arg.get_id() == id)
+                .map_or_else(|| id.to_owned(), ToString::to_string);
+            command.error(
+                clap::error::ErrorKind::ValueValidation,
+                format!("invalid value for '{flag}': {reason}"),
+            )
+        };
+        if let Some(reason) = self.dir.as_deref().and_then(working_dir_problem) {
+            return Err(usage_error("dir", reason));
+        }
+        // The same inspection `doctor` reports, so the two judge a script alike.
+        if let Some(reason) = self
+            .bridge_script
+            .as_deref()
+            .and_then(|script| agent::bridge::inspect_bridge_script(Some(script)).error)
+        {
+            return Err(usage_error("bridge_script", reason));
+        }
+        Ok(())
+    }
+
     /// Normalize both resume spellings into one startup intent.
     #[must_use]
     pub fn startup_launch(&self) -> StartupLaunch {
@@ -189,6 +226,72 @@ impl Cli {
             _ => self.prompt.as_deref(),
         }
     }
+
+    /// The directory `--dir` names, or the process directory without it. The one answer
+    /// for the session, `config` and `doctor`, so they never disagree about `--dir .`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the process directory is needed and cannot be read.
+    pub fn working_dir(&self) -> std::io::Result<std::path::PathBuf> {
+        resolve_working_dir(self.dir.as_deref(), std::env::current_dir)
+    }
+}
+
+/// An absolute `--dir` is used as given. A relative one is joined to the process directory
+/// and resolved the way the platform resolves its own working directory, so `--dir .`
+/// names the same directory as no `--dir` at all: physically on Unix, where the process
+/// directory is already physical, and lexically on Windows, which keeps a mapped drive
+/// letter and adds no `\\?\` prefix. A relative `--dir` that cannot be resolved (support
+/// commands do not validate it, and a launch's may vanish after validation) is kept
+/// joined, so the failure surfaces where the directory is used.
+fn resolve_working_dir(
+    dir: Option<&std::path::Path>,
+    process_cwd: impl FnOnce() -> std::io::Result<std::path::PathBuf>,
+) -> std::io::Result<std::path::PathBuf> {
+    let Some(dir) = dir else {
+        return process_cwd();
+    };
+    if dir.is_absolute() {
+        return Ok(dir.to_path_buf());
+    }
+    let joined = process_cwd()?.join(dir);
+    Ok(resolve_relative_dir(&joined).unwrap_or(joined))
+}
+
+#[cfg(windows)]
+fn resolve_relative_dir(joined: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    std::path::absolute(joined)
+}
+
+#[cfg(not(windows))]
+fn resolve_relative_dir(joined: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    joined.canonicalize()
+}
+
+/// Why `dir` cannot be the session's working directory, judged the way the session will
+/// use it: relative to the current directory, with no `~` expansion of its own. The
+/// session lists the directory (read permission) and enters it and opens files inside it
+/// (search permission), so both are required.
+fn working_dir_problem(dir: &std::path::Path) -> Option<String> {
+    let shown = dir.display();
+    match std::fs::metadata(dir) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Some(format!("directory does not exist: {shown}"));
+        }
+        Err(err) => return Some(format!("directory cannot be accessed: {shown}: {err}")),
+        Ok(metadata) if !metadata.is_dir() => return Some(format!("not a directory: {shown}")),
+        Ok(_) => {}
+    }
+    if let Err(err) = std::fs::read_dir(dir) {
+        return Some(format!("directory cannot be read: {shown}: {err}"));
+    }
+    // Looking up `.` inside the directory is a path lookup through it, which needs search
+    // permission and nothing else: a directory with read but no search permission lists
+    // but fails here, as entering it would. Windows has no search bit and passes.
+    std::fs::metadata(dir.join("."))
+        .err()
+        .map(|err| format!("directory cannot be entered: {shown}: {err}"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -360,6 +463,51 @@ mod tests {
         ConfigPathArgs, ConfigShowArgs, DoctorArgs, LogsArgs,
     };
     use clap::{CommandFactory, Parser};
+
+    /// The fixture root as the platform spells its own working directory: physical on Unix
+    /// (macOS temp dirs sit behind a symlink), as given on Windows.
+    fn platform_root(path: &std::path::Path) -> std::path::PathBuf {
+        if cfg!(windows) {
+            path.to_path_buf()
+        } else {
+            path.canonicalize().expect("canonical tempdir")
+        }
+    }
+
+    #[test]
+    fn a_relative_dir_resolves_to_the_absolute_directory_it_names() {
+        let base = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(base.path().join("project").join("sub")).expect("project");
+        // Every expected child is spelled out by name under the fixture root.
+        let root = platform_root(base.path());
+        let cases = [
+            (".", root.clone()),
+            ("project", root.join("project")),
+            ("./project/./sub", root.join("project").join("sub")),
+            ("project/sub/..", root.join("project")),
+        ];
+        for (dir, expected) in cases {
+            let resolved = super::resolve_working_dir(Some(std::path::Path::new(dir)), || {
+                Ok(base.path().into())
+            })
+            .expect("resolve");
+            assert_eq!(resolved, expected, "--dir {dir}");
+        }
+    }
+
+    #[test]
+    fn an_absolute_dir_is_used_as_given_even_without_a_process_dir() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let project = base.path().join("project");
+        std::fs::create_dir_all(&project).expect("project");
+
+        let resolved = super::resolve_working_dir(Some(&project), || {
+            Err(std::io::Error::other("process directory unavailable"))
+        })
+        .expect("absolute dir needs no process dir");
+
+        assert_eq!(resolved, project);
+    }
 
     #[test]
     fn cli_without_subcommand_starts_new_session() {
