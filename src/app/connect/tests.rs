@@ -29,6 +29,7 @@ fn create_app_defers_file_index_and_routes_untrusted_cwd_to_trust_surface() {
         resume: None,
         continue_session: false,
         session_options: crate::SessionOptions::default(),
+        session_config: crate::SessionConfigArgs::default(),
         command: None,
         no_update_check: true,
         dir: Some(dir.path().to_path_buf()),
@@ -40,7 +41,7 @@ fn create_app_defers_file_index_and_routes_untrusted_cwd_to_trust_surface() {
         log_append: false,
     };
 
-    let app = super::create_app(&cli);
+    let app = super::create_app(&cli, crate::agent::wire::SessionConfig::default());
 
     assert!(app.file_index.root.is_none());
     assert!(app.file_index.scan.is_none());
@@ -64,6 +65,7 @@ fn create_app_keeps_the_resolved_dir_for_session_state_and_display() {
         resume: None,
         continue_session: false,
         session_options: crate::SessionOptions::default(),
+        session_config: crate::SessionConfigArgs::default(),
         command: None,
         no_update_check: true,
         dir: Some(std::path::Path::new("src").join("..")),
@@ -75,7 +77,7 @@ fn create_app_keeps_the_resolved_dir_for_session_state_and_display() {
         log_append: false,
     };
 
-    let app = super::create_app(&cli);
+    let app = super::create_app(&cli, crate::agent::wire::SessionConfig::default());
 
     assert_eq!(std::path::Path::new(&app.cwd_raw), expected);
     let shown = std::path::Path::new(app.cwd.trim_start_matches('~'));

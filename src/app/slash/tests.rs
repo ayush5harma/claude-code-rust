@@ -2180,6 +2180,53 @@ async fn explicit_fast_retry_recovers_unknown_state_after_acknowledgement() {
 }
 
 #[test]
+fn reload_without_a_connection_or_with_arguments_is_refused_before_any_command() {
+    let mut app = App::test_default();
+    assert!(try_handle_submit(&mut app, "/reload"));
+    assert_eq!(app.status, AppStatus::Ready);
+    assert!(app.turn.pending_command_ack.is_none());
+    let MessageBlock::Text(block) = &app.transcript.messages.last().expect("notice").blocks[0]
+    else {
+        panic!("expected text block");
+    };
+    assert_eq!(block.text, "Cannot reload: not connected yet.");
+
+    assert!(try_handle_submit(&mut app, "/reload now"));
+    let MessageBlock::Text(block) = &app.transcript.messages.last().expect("usage").blocks[0]
+    else {
+        panic!("expected text block");
+    };
+    assert_eq!(block.text, "Usage: /reload");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reload_sends_one_bridge_command_and_blocks_input_until_acknowledged() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut app = App::test_default();
+            let mut commands = attach_test_connection(&mut app);
+            app.session_runtime.session_id = Some("sess-1".into());
+
+            assert!(try_handle_submit(&mut app, "/reload"));
+
+            assert_eq!(app.status, AppStatus::CommandPending);
+            assert!(matches!(
+                app.turn.pending_command_ack,
+                Some(super::super::PendingCommandAck::SkillsAndStylesReload)
+            ));
+            tokio::task::yield_now().await;
+            assert_eq!(
+                commands.try_recv().expect("reload command").command,
+                crate::agent::wire::BridgeCommand::ReloadSkillsAndStyles {
+                    session_id: "sess-1".to_owned()
+                }
+            );
+            assert!(commands.try_recv().is_err());
+        })
+        .await;
+}
+
+#[test]
 fn export_without_a_connection_is_refused() {
     let mut app = App::test_default();
 

@@ -18,6 +18,7 @@ const activityScenario = SCENARIO.startsWith('hold-activity');
 const RELEASE_FILE = process.env.FAKE_BRIDGE_RELEASE_FILE;
 const JOURNAL = process.env.FAKE_BRIDGE_JOURNAL;
 let replyNumber = 0;
+let reloads = 0;
 let active = null;
 const pending = [];
 
@@ -358,7 +359,8 @@ readline
       case 'new_session':
       case 'resume_session':
         if (message.command === 'new_session') SESSION = 'fake-session-after-login';
-        if (message.command === 'resume_session') SESSION = message.session_id;
+        // Like the SDK's forkSession, a forked resume continues under a new session ID.
+        if (message.command === 'resume_session') SESSION = message.launch_settings?.fork_session ? `${message.session_id}-fork` : message.session_id;
         if (message.continue_session) SESSION = 'fake-recent-session';
         send({
           event: message.command === 'new_session' ? 'session_replaced' : 'connected',
@@ -402,6 +404,23 @@ readline
           pending.push(message.message_uuid);
           send({ event: 'user_message_queued', session_id: SESSION, message_uuid: message.message_uuid });
         } else streamReply(message.message_uuid);
+        break;
+      case 'reload_skills_and_styles':
+        if (SCENARIO === 'reload-expired') {
+          // The bridge's answer when an earlier request for the session held the reload too long.
+          send({ event: 'skills_and_styles_reload_expired', session_id: SESSION, after_ms: 10000 });
+          break;
+        }
+        // First reload succeeds; the second reloads skills and fails the output styles half.
+        reloads++;
+        send({
+          event: 'skills_and_styles_reloaded',
+          session_id: SESSION,
+          skills: { status: 'reloaded', names: ['deploy', 'lint'] },
+          output_styles: reloads === 1
+            ? { status: 'reloaded', names: ['default', 'Explanatory', 'mine'] }
+            : { status: 'failed', message: 'style directory unreadable' },
+        });
         break;
       case 'inspect_settings':
         if (notificationScenario) {

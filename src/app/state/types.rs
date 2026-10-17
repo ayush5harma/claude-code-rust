@@ -27,6 +27,7 @@ pub struct LoginHint {
 pub enum PendingCommandAck {
     CurrentMode,
     CurrentModel,
+    SkillsAndStylesReload,
     HistoryExport,
     FastMode,
     Ultracode,
