@@ -511,7 +511,8 @@ const EXIT_2_DECISIONS: ReadonlyMap<string, DecisionNotice> = new Map<HookEvent,
   ["TaskCompleted", "none"],
   // Not measured: editing settings.local.json in an SDK session fired no hook.
   ["ConfigChange", "none"],
-  // /compact reports a failed compaction with the hook's output (auto compaction not measured).
+  // /compact reports a failed compaction with the hook's output. Known gap: a
+  // blocked auto compaction was not measured and may reach the user through nothing.
   ["PreCompact", "none"],
   // setModel rejects with the hook's output, and set_model reports the error.
   ["PreModelSwitch", "none"],
@@ -542,7 +543,9 @@ function hookFailureNotice(
 }
 
 function hookDecisionNotice(hookName: string, excerpt: string | undefined): string {
-  return `Hook ${hookName} blocked${excerpt ? `: ${excerpt}` : "."}`;
+  // The stock CLI's wording for the same event ("<hook> hook returned blocking
+  // error"): true whether the hook blocked the action or sent its output to Claude.
+  return `Hook ${hookName} returned a blocking error${excerpt ? `: ${excerpt}` : "."}`;
 }
 
 /** Shows one notice per hook run, held until the connect event if need be. */

@@ -275,16 +275,29 @@ function exitTwoOn(
 // The SDK reports every exit 2 as outcome "error". On these events the hook
 // reference makes it the hook's decision (block the tool call, the prompt or
 // the compaction, keep Claude working, or hand the output to Claude), so a gate
-// must not read "failed" each turn. PreCompact and ConfigChange count although
-// they are not tool or prompt gates.
-test("a hook that exits 2 where exit 2 is a decision is logged at info, never a failure notice", () => {
-  const events = ["PreToolUse", "UserPromptSubmit", "Stop", "PostToolUse", "PreCompact", "ConfigChange"];
+// must not read "failed" each turn. Measured on SDK 0.3.288, the SDK already
+// shows the blocked tool call, prompt, task, compaction or model switch; Stop
+// and SubagentStop keep Claude working, and the rest could not be measured, so
+// none of them gets a notice that could duplicate what the user already sees.
+test("a hook that exits 2 where exit 2 is a decision is logged at info, with no notice", () => {
+  const events = [
+    "PreToolUse",
+    "UserPromptSubmit",
+    "UserPromptExpansion",
+    "Stop",
+    "SubagentStop",
+    "TeammateIdle",
+    "TaskCreated",
+    "TaskCompleted",
+    "ConfigChange",
+    "PreCompact",
+    "PreModelSwitch",
+    "Elicitation",
+    "ElicitationResult",
+  ];
   const { logged, notices } = exitTwoOn(makeSession(), events);
 
-  assert.deepEqual(
-    notices.filter((notice) => notice.severity !== "info"),
-    [],
-  );
+  assert.deepEqual(notices, []);
   // Info stays out of the default log, which keeps only warnings and errors.
   assert.deepEqual(
     logged,
@@ -292,19 +305,21 @@ test("a hook that exits 2 where exit 2 is a decision is logged at info, never a 
   );
 });
 
-// Measured on SDK 0.3.288: after a PostToolUse hook exits 2 only its
-// hook_response carries the output, while a blocked PreToolUse call, prompt or
-// TaskCreate already shows it (a failed tool result or a warning message).
-test("a decision gets one info notice only when nothing else shows it", () => {
-  const events = ["PostToolUse", "PreToolUse", "UserPromptSubmit", "TaskCreated"];
-  const { notices } = exitTwoOn(makeSession(), events);
+// Measured on SDK 0.3.288: after these hooks exit 2 only the hook_response
+// carries the output (the tool result is the tool's own, or the turn ends with
+// an empty result), so one info notice is the only place the user sees it.
+test("a decision nothing else shows gets one info notice, not a failure", () => {
+  const events = ["PostToolUse", "PostToolUseFailure", "PostToolBatch"];
+  const { logged, notices } = exitTwoOn(makeSession(), events);
 
-  assert.equal(notices.length, 1, JSON.stringify(notices));
-  const [notice] = notices;
-  assert.equal(notice?.severity, "info");
-  const message = String(notice?.message);
-  assert.ok(message.includes("PostToolUse:Bash") && message.includes("gate says no"), message);
-  assert.ok(!message.includes("failed"), message);
+  assert.deepEqual(
+    notices,
+    events.map((event) => ({ severity: "info", message: `Hook ${event}:Bash returned a blocking error: gate says no` })),
+  );
+  assert.deepEqual(
+    logged,
+    events.map(() => ({ level: "info", eventName: "sdk_hook_decision" })),
+  );
 });
 
 // Measured on SDK 0.3.288 with a SessionStart command hook that exits 2: the
@@ -442,5 +457,10 @@ test("held hook failures are written after the connect event, then cleared", asy
     (event) => (event.update as Record<string, unknown> | undefined)?.type === "system_notice_update",
   );
   assert.ok(connected >= 0 && notice > connected, JSON.stringify(events.map((event) => event.event)));
+  const written = events[notice]?.update as Record<string, unknown>;
+  assert.deepEqual(
+    { severity: written.severity, message: written.message },
+    { severity: "warning", message: "Hook SessionStart:Bash failed (exit 1): missing env" },
+  );
   assert.equal(session.pendingHookNotices, undefined);
 });
