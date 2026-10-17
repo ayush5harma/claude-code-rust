@@ -34,6 +34,7 @@ pub(crate) enum AppSlashCommand {
     Resume,
     Rewind,
     Reload,
+    Export,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -327,6 +328,14 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         long_description: "Re-read skills and output styles from disk for the active session, so edits apply without restarting.",
         args: NO_ARGS,
     },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Export,
+        name: "/export",
+        usage: "Usage: /export [path]",
+        short_description: "Save the conversation as Markdown",
+        long_description: "Write the session's complete saved history to a Markdown file. Without a path it is created in the session directory; an existing file is never overwritten.",
+        args: NO_ARGS,
+    },
 ];
 
 impl AppSlashCommand {
@@ -366,6 +375,7 @@ impl AppSlashCommand {
             Self::Resume => "/resume",
             Self::Rewind => "/rewind",
             Self::Reload => "/reload",
+            Self::Export => "/export",
         }
     }
 
@@ -467,6 +477,8 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
+            // The optional path is read from the raw text, so any number of words is valid.
+            Self::Export => SubmissionClass::TurnExclusive,
         }
     }
 }
