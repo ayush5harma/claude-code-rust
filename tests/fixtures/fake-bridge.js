@@ -341,6 +341,48 @@ function sessionNameReply(message) {
   if (command === '/rename') update({ type: 'session_title_update', title: args.join(' ') });
 }
 
+// The Status rename's prerequisite: Claude Code saves a session's transcript
+// once it runs a command or a message, at the path the Agent SDK derives from
+// the resolved working directory. The SDK resolves it with the native realpath,
+// which on Windows also expands 8.3 short names such as RUNNER~1 in temp paths.
+function transcriptPath() {
+  const project = fs.realpathSync.native(cwd).replace(/[^a-zA-Z0-9]/g, '-');
+  return path.join(process.env.CLAUDE_CONFIG_DIR, 'projects', project, `${SESSION}.jsonl`);
+}
+
+const listedSession = fields => ({
+  session_id: SESSION, summary: '', last_modified_ms: 1, file_size_bytes: 1, cwd,
+  git_branch: null, custom_title: null, first_prompt: null, ...fields,
+});
+
+// A message saves the session; `/clear` starts an unsaved session whose
+// listing names it after the command, as Claude Code's does.
+function statusRenameReply(message) {
+  const text = message.chunks.map(chunk => chunk.value).join('').trim();
+  send({ event: 'user_message_started', session_id: SESSION, message_uuid: message.message_uuid, source: 'command_lifecycle' });
+  if (text === '/clear') {
+    SESSION = 'fake-session-cleared';
+    send({ event: 'session_replaced', session_id: SESSION, cwd, current_model: model, available_models: [], mode: null, fast_mode_state: 'off', fast_mode_disabled_reason: null, history_updates: null, restored_input: null });
+    send({ event: 'sessions_listed', sessions: [listedSession({ summary: '/clear', first_prompt: '/clear' })] });
+  } else {
+    fs.mkdirSync(path.dirname(transcriptPath()), { recursive: true });
+    fs.appendFileSync(transcriptPath(), `${JSON.stringify({ type: 'user', text })}\n`);
+    send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text: 'Saved reply' } } });
+  }
+  send({ event: 'turn_complete', session_id: SESSION });
+}
+
+// renameSession() appends to the saved transcript and fails without one;
+// the title `fail-me` injects an SDK failure.
+function renameSession(message) {
+  if (message.title === 'fail-me' || !fs.existsSync(transcriptPath())) {
+    send({ event: 'slash_error', session_id: SESSION, message: `failed to rename session: Session ${SESSION} not found` });
+    return;
+  }
+  send({ event: 'session_update', session_id: SESSION, update: { type: 'session_title_update', title: message.title } });
+  send({ event: 'sessions_listed', sessions: [listedSession({ custom_title: message.title })] });
+}
+
 readline
   .createInterface({ input: process.stdin })
   .on('line', raw => {
@@ -393,6 +435,11 @@ readline
           restored_input: null,
         });
         if (SCENARIO.startsWith('resize-') || SCENARIO.startsWith('background-')) send({ event: 'status_snapshot', session_id: SESSION, account: { subscription_type: 'Fixture subscription' } });
+        if (SCENARIO === 'status-rename') {
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'available_commands_update', commands: [
+            { name: 'clear', description: 'Clear conversation history', input_hint: null },
+          ] } });
+        }
         if (SCENARIO === 'session-name') {
           // As the real bridge does after connect: the SDK-advertised commands.
           send({ event: 'session_update', session_id: SESSION, update: { type: 'available_commands_update', commands: [
@@ -438,6 +485,10 @@ readline
       case 'prompt':
         if (SCENARIO === 'session-name') {
           sessionNameReply(message);
+          break;
+        }
+        if (SCENARIO === 'status-rename') {
+          statusRenameReply(message);
           break;
         }
         if (active) {
@@ -514,6 +565,9 @@ readline
         chunks.forEach((updates, index) => send({ event: 'session_history_export', session_id: SESSION, request_id: message.request_id, updates, last: index === chunks.length - 1, omitted_updates: 0 }));
         break;
       }
+      case 'rename_session':
+        renameSession(message);
+        break;
       case 'cancel_turn':
         send({ event: 'turn_interrupt_receipt', session_id: SESSION, still_queued: pending.slice(), request_id: message.request_id });
         if (active) finish({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'aborted_streaming', queued_turn_count: pending.length });

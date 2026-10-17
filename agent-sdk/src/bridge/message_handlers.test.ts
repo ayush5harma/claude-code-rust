@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { replaceProtocolEventWriter } from "./events.js";
+import { emitConnectEvent, replaceProtocolEventWriter } from "./events.js";
+import { bridgeLogger } from "./logger.js";
 import { handleSdkMessage } from "./message_handlers.js";
 import type { SessionState } from "./session_lifecycle.js";
 
@@ -365,4 +369,294 @@ test("SDK context usage Markdown is shown even without a response ID", () => {
   }).map((chunk) => (chunk.content as Record<string, unknown>).text);
 
   assert.deepEqual(texts, ["## Context Usage"]);
+});
+
+/** Every `system_notice_update` the bridge wrote while `run` ran. */
+function noticesWritten(run: () => void): Array<{ severity: unknown; message: unknown }> {
+  const writes: string[] = [];
+  const restore = replaceProtocolEventWriter((line) => {
+    writes.push(line);
+  });
+  try {
+    run();
+  } finally {
+    restore();
+  }
+  return writes
+    .map((line) => (JSON.parse(line) as Record<string, unknown>).update as Record<string, unknown> | undefined)
+    .filter((update): update is Record<string, unknown> => update?.type === "system_notice_update")
+    .map((update) => ({ severity: update.severity, message: update.message }));
+}
+
+function hookResponse(
+  hookEvent: string,
+  fields: Record<string, unknown>,
+  hookId = "hook-1",
+): SDKMessage {
+  return {
+    type: "system",
+    subtype: "hook_response",
+    hook_id: hookId,
+    hook_name: `${hookEvent}:Bash`,
+    hook_event: hookEvent,
+    output: "",
+    stdout: "",
+    stderr: "",
+    session_id: "session-1",
+    uuid: `uuid-${hookId}`,
+    ...fields,
+  } as unknown as SDKMessage;
+}
+
+// Measured on SDK 0.3.288 with a PreToolUse command hook that exits 1: the
+// tool still runs and nothing else reports the failure.
+test("a failed hook with no other feedback is one warning, once", () => {
+  const session = makeSession();
+  const failed = hookResponse("PreToolUse", {
+    outcome: "error",
+    exit_code: 1,
+    stderr: "lint gate: forbidden pattern found\n",
+  });
+  const notices = noticesWritten(() => {
+    handleSdkMessage(session, failed);
+    handleSdkMessage(session, failed);
+  });
+
+  assert.deepEqual(notices, [
+    {
+      severity: "warning",
+      message: "Hook PreToolUse:Bash failed (exit 1): lint gate: forbidden pattern found",
+    },
+  ]);
+});
+
+type LoggedRecord = { level: string; eventName: string };
+
+/** The level and event name of every info, warning and error record logged while `run` ran. */
+function recordsLogged(run: () => void): LoggedRecord[] {
+  const logged: LoggedRecord[] = [];
+  const originals = { info: bridgeLogger.info, warn: bridgeLogger.warn, error: bridgeLogger.error };
+  for (const level of ["info", "warn", "error"] as const) {
+    bridgeLogger[level] = (event) => {
+      logged.push({ level, eventName: event.eventName });
+    };
+  }
+  try {
+    run();
+  } finally {
+    Object.assign(bridgeLogger, originals);
+  }
+  return logged;
+}
+
+/** Log records and notices for one exit-2 `hook_response` per event, in order. */
+function exitTwoOn(
+  session: SessionState,
+  events: string[],
+): { logged: LoggedRecord[]; notices: ReturnType<typeof noticesWritten> } {
+  let notices: ReturnType<typeof noticesWritten> = [];
+  const logged = recordsLogged(() => {
+    notices = noticesWritten(() => {
+      events.forEach((event, index) => {
+        handleSdkMessage(
+          session,
+          hookResponse(event, { outcome: "error", exit_code: 2, stderr: "gate says no" }, `exit-2-${index}`),
+        );
+      });
+    });
+  });
+  return { logged, notices };
+}
+
+// The SDK reports every exit 2 as outcome "error". On these events the hook
+// reference makes it the hook's decision (block the tool call, the prompt or
+// the compaction, keep Claude working, or hand the output to Claude), so a gate
+// must not read "failed" each turn. Measured on SDK 0.3.288, the SDK already
+// shows the blocked tool call, prompt, task, compaction or model switch; Stop
+// and SubagentStop keep Claude working, and the rest could not be measured, so
+// none of them gets a notice that could duplicate what the user already sees.
+test("a hook that exits 2 where exit 2 is a decision is logged at info, with no notice", () => {
+  const events = [
+    "PreToolUse",
+    "UserPromptSubmit",
+    "UserPromptExpansion",
+    "Stop",
+    "SubagentStop",
+    "TeammateIdle",
+    "TaskCreated",
+    "TaskCompleted",
+    "ConfigChange",
+    "PreCompact",
+    "PreModelSwitch",
+    "Elicitation",
+    "ElicitationResult",
+  ];
+  const { logged, notices } = exitTwoOn(makeSession(), events);
+
+  assert.deepEqual(notices, []);
+  // Info stays out of the default log, which keeps only warnings and errors.
+  assert.deepEqual(
+    logged,
+    events.map(() => ({ level: "info", eventName: "sdk_hook_decision" })),
+  );
+});
+
+// Measured on SDK 0.3.288: after these hooks exit 2 only the hook_response
+// carries the output (the tool result is the tool's own, or the turn ends with
+// an empty result), so one info notice is the only place the user sees it.
+test("a decision nothing else shows gets one info notice, not a failure", () => {
+  const events = ["PostToolUse", "PostToolUseFailure", "PostToolBatch"];
+  const { logged, notices } = exitTwoOn(makeSession(), events);
+
+  assert.deepEqual(
+    notices,
+    events.map((event) => ({ severity: "info", message: `Hook ${event}:Bash returned a blocking error: gate says no` })),
+  );
+  assert.deepEqual(
+    logged,
+    events.map(() => ({ level: "info", eventName: "sdk_hook_decision" })),
+  );
+});
+
+// Measured on SDK 0.3.288 with a SessionStart command hook that exits 2: the
+// session starts and the SDK sends nothing but this hook_response, so the
+// failure notice is the only place the user sees the hook's error.
+test("a SessionStart hook that exits 2 cannot block startup, so it is a failure warning and a notice", () => {
+  const session = makeSession();
+  session.connected = false;
+  let logged: LoggedRecord[] = [];
+  noticesWritten(() => {
+    logged = recordsLogged(() => {
+      handleSdkMessage(
+        session,
+        hookResponse("SessionStart", {
+          hook_name: "SessionStart:startup",
+          outcome: "error",
+          exit_code: 2,
+          stderr: "start gate: env missing\n",
+        }),
+      );
+    });
+  });
+
+  assert.deepEqual(logged, [{ level: "warn", eventName: "sdk_hook_failed" }]);
+  assert.deepEqual(session.pendingHookNotices, [
+    { severity: "warning", message: "Hook SessionStart:startup failed (exit 2): start gate: env missing" },
+  ]);
+});
+
+// Notification and PermissionRequest ignore exit 2, WorktreeCreate fails on any
+// non-zero exit, and an event the hook reference does not list (one a newer SDK
+// adds) has no documented decision: all of them stay failures.
+test("exit 2 on an event that ignores it, fails on it, or is unknown is a failure", () => {
+  const events = ["Notification", "PermissionRequest", "WorktreeCreate", "SomeFutureEvent"];
+  const { logged, notices } = exitTwoOn(makeSession(), events);
+
+  assert.deepEqual(
+    logged,
+    events.map(() => ({ level: "warn", eventName: "sdk_hook_failed" })),
+  );
+  assert.deepEqual(
+    notices,
+    events.map((event) => ({ severity: "warning", message: `Hook ${event}:Bash failed (exit 2): gate says no` })),
+  );
+});
+
+test("routine hook activity and a cancelled hook never become notices", () => {
+  const session = makeSession();
+  const notices = noticesWritten(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "hook_started",
+      hook_id: "hook-1",
+      hook_name: "PreToolUse:Bash",
+      hook_event: "PreToolUse",
+      session_id: "session-1",
+    } as unknown as SDKMessage);
+    handleSdkMessage(session, hookResponse("PreToolUse", { outcome: "success", exit_code: 0, output: "ok" }, "ok"));
+    handleSdkMessage(session, hookResponse("Stop", { outcome: "cancelled" }, "cancelled"));
+  });
+
+  assert.deepEqual(notices, []);
+});
+
+test("a hook failure notice carries a bounded, redacted excerpt", () => {
+  const session = makeSession();
+  const notices = noticesWritten(() => {
+    handleSdkMessage(
+      session,
+      hookResponse("PostToolUse", {
+        outcome: "error",
+        exit_code: 1,
+        stderr: `deploy failed api_key=sk-ant-verysecret ${"x".repeat(1_000)}`,
+      }),
+    );
+  });
+
+  const message = String(notices[0]?.message);
+  assert.ok(!message.includes("verysecret"));
+  assert.ok(message.includes("api_key=[redacted]"));
+  assert.ok(message.length < 300, `notice was ${message.length} characters`);
+});
+
+// SessionStart hooks finish before the connect event, and the app ignores
+// updates for a session it has not been told about.
+test("a hook failure before the session connects is held, not written", () => {
+  const session = makeSession();
+  session.connected = false;
+  const notices = noticesWritten(() => {
+    handleSdkMessage(
+      session,
+      hookResponse("SessionStart", { outcome: "error", exit_code: 1, stderr: "missing env" }),
+    );
+  });
+
+  assert.deepEqual(notices, []);
+  assert.deepEqual(session.pendingHookNotices, [
+    { severity: "warning", message: "Hook SessionStart:Bash failed (exit 1): missing env" },
+  ]);
+});
+
+// emitConnectEvent starts an async session-title read that outlives the call and
+// returns it. The read is pointed at an empty scratch config directory and awaited
+// before the writer and the environment are restored, so the test never reads the
+// real ~/.claude and does not depend on how the SDK maps a directory to a project
+// folder (which differs on Windows).
+test("held hook failures are written after the connect event, then cleared", async () => {
+  const configDir = realpathSync(mkdtempSync(join(tmpdir(), "claude-rs-config-")));
+  const session = makeSession();
+  session.sessionId = "2f6c1f0e-1111-4111-8111-aaaaaaaaaaaa";
+  session.cwd = configDir;
+  session.connected = false;
+  session.pendingHookNotices = [{ severity: "warning", message: "Hook SessionStart:Bash failed (exit 1): missing env" }];
+  const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = configDir;
+  const writes: string[] = [];
+  const restore = replaceProtocolEventWriter((line) => {
+    writes.push(line);
+  });
+  try {
+    await emitConnectEvent(session);
+  } finally {
+    restore();
+    if (previousConfigDir === undefined) {
+      delete process.env.CLAUDE_CONFIG_DIR;
+    } else {
+      process.env.CLAUDE_CONFIG_DIR = previousConfigDir;
+    }
+    rmSync(configDir, { recursive: true, force: true });
+  }
+
+  const events = writes.map((line) => JSON.parse(line) as Record<string, unknown>);
+  const connected = events.findIndex((event) => event.event === "connected");
+  const notice = events.findIndex(
+    (event) => (event.update as Record<string, unknown> | undefined)?.type === "system_notice_update",
+  );
+  assert.ok(connected >= 0 && notice > connected, JSON.stringify(events.map((event) => event.event)));
+  const written = events[notice]?.update as Record<string, unknown>;
+  assert.deepEqual(
+    { severity: written.severity, message: written.message },
+    { severity: "warning", message: "Hook SessionStart:Bash failed (exit 1): missing env" },
+  );
+  assert.equal(session.pendingHookNotices, undefined);
 });

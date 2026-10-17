@@ -55,6 +55,7 @@ import {
 } from "./bridge/mcp.js";
 import {
   bridgeLogger,
+  detailedDiagnosticsEnabled,
   LOG_TARGETS,
   logBridgeCommandReceived,
 } from "./bridge/logger.js";
@@ -1123,7 +1124,16 @@ function main(): void {
     try {
       parsed = parseCommandEnvelope(line);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const detailed = detailedDiagnosticsEnabled();
+      // JSON.parse quotes the start of the text in its message, and the line may
+      // be a prompt, so only a detailed log or the validation text of our own
+      // errors (field names, never values) carries the message.
+      const message =
+        error instanceof SyntaxError && !detailed
+          ? "malformed JSON"
+          : error instanceof Error
+            ? error.message
+            : String(error);
       const requestId = requestIdFromCommandLine(line);
       bridgeLogger.error({
         target: LOG_TARGETS.BRIDGE_PROTOCOL,
@@ -1133,9 +1143,10 @@ function main(): void {
         ...(requestId ? { requestId } : {}),
         sizeBytes: Buffer.byteLength(line),
         fields: {
-          preview: line.slice(0, 240),
-          preview_chars: Math.min(line.length, 240),
           error_message: message,
+          ...(detailed
+            ? { preview: line.slice(0, 240), preview_chars: Math.min(line.length, 240) }
+            : {}),
         },
       });
       failConnection(`invalid command envelope: ${message}`, requestId);
