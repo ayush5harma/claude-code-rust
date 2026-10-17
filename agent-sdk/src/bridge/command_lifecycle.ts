@@ -349,12 +349,14 @@ async function resume(
  * conversation and takes the SDK `title` option instead (buildLaunchQueryOptions), leaving the
  * original's title alone.
  *
- * The rename waits for initialization to succeed: the SDK validates MCP servers and settings,
- * and checks sign-in, while the session starts, so a resume that fails there leaves the saved
- * title untouched, and the startup tasks have already reported why. A successful
- * initialization has sent the connect event, so a rename failure, an SDK or disk failure since
- * the app validated the flags, is reported on the connected session like any other error. It
- * does not end the resume: the conversation matters more than its label.
+ * The rename waits for initialization to succeed: the SDK validates MCP servers and settings
+ * while the session starts, so a resume that fails there leaves the saved title untouched, and
+ * the startup tasks have already reported why. A signed-out user initializes successfully, but
+ * the startup tasks then ask for sign-in and the app starts a new session after /login, so the
+ * resumed one is not renamed either. Otherwise the connect event has been sent, so a rename
+ * failure, an SDK or disk failure since the app validated the flags, is reported on the
+ * connected session like any other error. It does not end the resume: the conversation matters
+ * more than its label.
  */
 async function renameResumedSession(
   command: Extract<LifecycleCommand, { command: "resume_session" }>,
@@ -369,6 +371,9 @@ async function renameResumedSession(
   try {
     await awaitSessionInitialization(session);
   } catch {
+    return;
+  }
+  if (session.authHintSent) {
     return;
   }
   try {

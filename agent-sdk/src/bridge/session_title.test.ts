@@ -21,8 +21,9 @@ const CLEARED_SESSION_ID = "22222222-2222-4222-8222-222222222222";
  * prefixed `/test-` steer the session API: fail the next read, hold the next
  * read until a later one starts, or reset the conversation. QUERY_FAIL makes
  * query() throw, INIT_FAIL makes initialization reject after query() has
- * returned, and RENAME_FAIL makes renameSession reject once the title has been
- * read; RENAME_JOURNAL records every title renameSession saves.
+ * returned, SIGNED_OUT makes initialization report an account with no sign-in,
+ * and RENAME_FAIL makes renameSession reject once the title has been read;
+ * RENAME_JOURNAL records every title renameSession saves.
  */
 function writeSdkFixture(fixturePath: string, cwd: string): void {
   const sdkUrl = import.meta.resolve("@anthropic-ai/claude-agent-sdk");
@@ -124,7 +125,8 @@ function writeSdkFixture(fixturePath: string, cwd: string): void {
         },
         async initializationResult() {
           if (process.env.INIT_FAIL) throw new Error("MCP server docs failed to start");
-          return { current_permission_mode: "default", models: [], commands: [], agents: [], account: { apiKeySource: "fixture" }, fast_mode_state: "off" };
+          const account = process.env.SIGNED_OUT ? {} : { apiKeySource: "fixture" };
+          return { current_permission_mode: "default", models: [], commands: [], agents: [], account, fast_mode_state: "off" };
         },
         async getSettings() { return { applied: { model: "opus", effort: "high", ultracodeAvailable: false, ultracodeRequested: false, ultracode: false } }; },
         async supportedCommands() { return []; },
@@ -402,7 +404,23 @@ test("a rename that fails after the resumed session connects reaches the user on
       !bridge.events.some((event) => ["connection_failed", "session_replaced"].includes(event.event as string)),
       JSON.stringify(bridge.events),
     );
-    assert.equal(existsSync(bridge.renames), false);
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("a resume that asks a signed-out user to sign in leaves the saved title unchanged", async () => {
+  // Initialization succeeds without an account; the app then drops the session and, after
+  // /login, starts a new one, so the resumed session must keep its saved title.
+  const bridge = startLaunchBridge({ SIGNED_OUT: "1" });
+  try {
+    bridge.send(resumeWithLaunchName);
+    await bridge.readUntil((event) => event.event === "auth_required");
+    // Lifecycle commands run in order, so this answers only once the resume has finished.
+    bridge.send({ command: "initialize", cwd: process.cwd(), request_id: "barrier" });
+    await bridge.readUntil((event) => event.event === "initialized");
+    assert.equal(existsSync(bridge.renames), false, "a session awaiting sign-in must not be renamed");
+    assert.ok(!bridge.events.some((event) => event.event === "slash_error"), JSON.stringify(bridge.events));
   } finally {
     await bridge.close();
   }
