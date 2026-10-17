@@ -80,7 +80,7 @@ Use support commands when you need a repeatable snapshot of the local environmen
 
 Every run writes a default log of warnings and errors, including failures reported by the bridge and the SDK, without any flag. `claude-rs logs --latest` prints its path, and `--enable-logs` adds the detailed records.
 
-A hook that fails shows one warning in the transcript with its exit code and the start of its output, and the failure is also in the default log. A hook that exits with code 2 is treated as a decision to block (a tool call, a prompt, or a stop), not a failure: no warning is shown and it is recorded only in the detailed log. A hook cancelled by an interrupted turn is not reported at all.
+A hook that fails shows one warning in the transcript with its exit code and the start of its output, and the failure is also in the default log. Exit code 2 depends on the hook event, as in the [hook reference](https://code.claude.com/docs/en/hooks#exit-code-2-behavior-per-event). Where it is the hook's decision, such as blocking a tool call or a prompt, keeping Claude working, or handing the output to Claude after `PostToolUse`, no warning is shown and it is recorded only in the detailed log. Where Claude Code only shows the output to the user or ignores the exit code, such as on `SessionStart` or `Notification`, it is reported as a failure. A hook cancelled by an interrupted turn is not reported at all.
 
 See [Diagnostics](diagnostics.md) for full options, logging presets, bundle contents, and sharing guidance.
 

@@ -234,37 +234,100 @@ test("a failed hook with no other feedback is one warning, once", () => {
   ]);
 });
 
-// Exit 2 is a block decision on every event, and the SDK still reports it as
-// outcome "error": a Stop or PostToolUse gate must not read "failed" each turn.
-test("a hook that exits 2 is a block decision on any event, never a failure notice", () => {
-  const session = makeSession();
-  const events = ["PreToolUse", "UserPromptSubmit", "Stop", "PostToolUse"];
-  const logged: Array<{ level: string; eventName: string }> = [];
+type LoggedRecord = { level: string; eventName: string };
+
+/** The level and event name of every info, warning and error record logged while `run` ran. */
+function recordsLogged(run: () => void): LoggedRecord[] {
+  const logged: LoggedRecord[] = [];
   const originals = { info: bridgeLogger.info, warn: bridgeLogger.warn, error: bridgeLogger.error };
   for (const level of ["info", "warn", "error"] as const) {
     bridgeLogger[level] = (event) => {
       logged.push({ level, eventName: event.eventName });
     };
   }
-  let notices: Array<{ severity: unknown; message: unknown }>;
   try {
+    run();
+  } finally {
+    Object.assign(bridgeLogger, originals);
+  }
+  return logged;
+}
+
+/** Log records and notices for one exit-2 `hook_response` per event, in order. */
+function exitTwoOn(
+  session: SessionState,
+  events: string[],
+): { logged: LoggedRecord[]; notices: ReturnType<typeof noticesWritten> } {
+  let notices: ReturnType<typeof noticesWritten> = [];
+  const logged = recordsLogged(() => {
     notices = noticesWritten(() => {
       events.forEach((event, index) => {
         handleSdkMessage(
           session,
-          hookResponse(event, { outcome: "error", exit_code: 2, stderr: "gate says no" }, `block-${index}`),
+          hookResponse(event, { outcome: "error", exit_code: 2, stderr: "gate says no" }, `exit-2-${index}`),
         );
       });
     });
-  } finally {
-    Object.assign(bridgeLogger, originals);
-  }
+  });
+  return { logged, notices };
+}
+
+// The SDK reports every exit 2 as outcome "error". On these events the hook
+// reference makes it the hook's decision (block the tool call or the prompt,
+// keep Claude working, or hand the output to Claude), so a gate must not read
+// "failed" each turn.
+test("a hook that exits 2 where exit 2 is a decision is logged at info, never a failure notice", () => {
+  const events = ["PreToolUse", "UserPromptSubmit", "Stop", "PostToolUse"];
+  const { logged, notices } = exitTwoOn(makeSession(), events);
 
   assert.deepEqual(notices, []);
   // Info stays out of the default log, which keeps only warnings and errors.
   assert.deepEqual(
+    logged.map((record) => record.level),
+    events.map(() => "info"),
+  );
+});
+
+// Measured on SDK 0.3.288 with a SessionStart command hook that exits 2: the
+// session starts and the SDK sends nothing but this hook_response, so the
+// failure notice is the only place the user sees the hook's error.
+test("a SessionStart hook that exits 2 cannot block startup, so it is a failure warning and a notice", () => {
+  const session = makeSession();
+  session.connected = false;
+  let logged: LoggedRecord[] = [];
+  noticesWritten(() => {
+    logged = recordsLogged(() => {
+      handleSdkMessage(
+        session,
+        hookResponse("SessionStart", {
+          hook_name: "SessionStart:startup",
+          outcome: "error",
+          exit_code: 2,
+          stderr: "start gate: env missing\n",
+        }),
+      );
+    });
+  });
+
+  assert.deepEqual(logged, [{ level: "warn", eventName: "sdk_hook_failed" }]);
+  assert.deepEqual(session.pendingHookNotices, [
+    "Hook SessionStart:startup failed (exit 2): start gate: env missing",
+  ]);
+});
+
+// Notification ignores exit 2, and an event the hook reference does not list
+// (one a newer SDK adds) has no documented decision: both stay failures.
+test("exit 2 on an event that ignores it or an unknown event is a failure", () => {
+  const events = ["Notification", "SomeFutureEvent"];
+  const { logged, notices } = exitTwoOn(makeSession(), events);
+
+  assert.deepEqual(
     logged,
-    events.map(() => ({ level: "info", eventName: "sdk_hook_blocked" })),
+    events.map(() => ({ level: "warn", eventName: "sdk_hook_failed" })),
+  );
+  assert.deepEqual(
+    notices,
+    events.map((event) => ({ severity: "warning", message: `Hook ${event}:Bash failed (exit 2): gate says no` })),
   );
 });
 

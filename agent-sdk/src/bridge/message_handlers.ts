@@ -5,7 +5,7 @@ import { refreshUltracode } from "./ultracode.js";
 import { observeSessionEffort, refreshSessionEffort } from "./effort.js";
 import { emitSessionTitle } from "./session_title.js";
 import { observeSessionModel } from "./session_model.js";
-import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { HookEvent, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
   BridgeCommand,
   SessionUpdate,
@@ -463,14 +463,40 @@ function handleInformationalSystemMessage(
 const HOOK_OUTPUT_EXCERPT_LIMIT = 240;
 /** Most hook notices held for a session that has not connected yet. */
 const PENDING_HOOK_NOTICE_LIMIT = 20;
+/** The exit code a command hook uses to deliver its decision. */
+const DECISION_EXIT_CODE = 2;
 /**
- * A hook that exits 2 is making a decision, not failing: it blocks the action
- * (a tool call, a prompt, a stop) and its output is the reason. The SDK reports
- * every such exit as outcome "error" on every event (measured on 0.3.288), so
- * the exit code is what tells a gate from a crash. A blocking hook is logged
- * and never shown as a failure; any other failure has no other feedback.
+ * Events on which exit 2 is the hook's own decision rather than a failure: it
+ * blocks or rolls back the action, keeps Claude or a subagent working, or hands
+ * the hook's output to Claude. Taken from the per-event table in the hook
+ * reference (https://code.claude.com/docs/en/hooks#exit-code-2-behavior-per-event).
+ * On every other event the reference shows exit 2 to the user only as a hook
+ * error (SessionStart, SessionEnd, ...), ignores it (Notification,
+ * PermissionRequest, ...) or fails the operation as any non-zero exit does
+ * (WorktreeCreate, WorktreeRemove), so it is a failure there. The SDK reports
+ * exit 2 as outcome "error" whatever it means, and for a SessionStart hook
+ * that exits 2 it sends nothing else (measured on 0.3.288). An event missing
+ * here, such as one a newer SDK adds, is a failure too, which keeps it in the
+ * default log.
  */
-const BLOCKING_EXIT_CODE = 2;
+const EXIT_2_DECISION_EVENTS: ReadonlySet<string> = new Set<HookEvent>([
+  "PreToolUse",
+  "PostToolUse",
+  "PostToolUseFailure",
+  "PostToolBatch",
+  "UserPromptSubmit",
+  "UserPromptExpansion",
+  "Stop",
+  "SubagentStop",
+  "TeammateIdle",
+  "TaskCreated",
+  "TaskCompleted",
+  "ConfigChange",
+  "PreCompact",
+  "PreModelSwitch",
+  "Elicitation",
+  "ElicitationResult",
+]);
 
 function hookOutputExcerpt(msg: Record<string, unknown>): string | undefined {
   for (const field of ["stderr", "output", "stdout"]) {
@@ -510,9 +536,9 @@ function emitHookFailureNotice(session: SessionState, notice: string): void {
 /**
  * Handle the SDK's structured hook events. Started and progress messages are
  * routine and stay in the detailed log. A finished hook is logged at its real
- * severity, and a failure the user has no other way to learn about becomes one
- * warning notice. A cancelled hook is ordinary (an interrupted turn cancels
- * its hooks) and is never a notice.
+ * severity: a decision stays in the detailed log, and a failure the user has no
+ * other way to learn about becomes one warning notice. A cancelled hook is
+ * ordinary (an interrupted turn cancels its hooks) and is never a notice.
  */
 function handleHookSystemMessage(
   session: SessionState,
@@ -560,12 +586,12 @@ function handleHookSystemMessage(
   }
 
   const excerpt = hookOutputExcerpt(msg);
-  if (exitCode === BLOCKING_EXIT_CODE) {
+  if (exitCode === DECISION_EXIT_CODE && EXIT_2_DECISION_EVENTS.has(hookEvent)) {
     bridgeLogger.info({
       ...common,
-      eventName: "sdk_hook_blocked",
-      message: "SDK hook blocked the action",
-      outcome: "blocked",
+      eventName: "sdk_hook_decision",
+      message: "SDK hook returned a decision",
+      outcome: "decision",
       fields: { ...common.fields, exit_code: exitCode, output_excerpt: excerpt },
     });
     return true;
