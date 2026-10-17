@@ -71,6 +71,7 @@ pub(crate) fn try_handle_submission(app: &mut App, submission: &ResolvedSubmissi
         AppSlashCommand::NewSession => handle_new_session_submit(app),
         AppSlashCommand::Resume => handle_resume_submit(app),
         AppSlashCommand::Rewind => handle_rewind_submit(app, &args),
+        AppSlashCommand::Reload => handle_reload_submit(app),
         AppSlashCommand::Export => handle_export_submit(app, text),
     }
 }
@@ -526,6 +527,36 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
                     })
                     .await;
             }
+        }
+    });
+    true
+}
+
+fn handle_reload_submit(app: &mut App) -> bool {
+    let Some((conn, sid)) = require_active_session(
+        app,
+        "Cannot reload: not connected yet.",
+        "Cannot reload: no active session.",
+    ) else {
+        return true;
+    };
+
+    set_command_pending(
+        app,
+        Some("Reloading skills and output styles..."),
+        Some(crate::app::PendingCommandAck::SkillsAndStylesReload),
+    );
+
+    let tx = app.event_tx.clone();
+    let session_id = sid.to_string();
+    tokio::task::spawn_local(async move {
+        if let Err(e) = conn.reload_skills_and_styles(session_id.clone()) {
+            let _ = tx
+                .send(ClientEvent::SlashCommandError {
+                    session_id: Some(session_id),
+                    message: format!("Failed to run /reload: {e}"),
+                })
+                .await;
         }
     });
     true

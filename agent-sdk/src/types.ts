@@ -721,6 +721,12 @@ export interface McpServerStatus {
   tools: McpTool[];
 }
 
+/** How one half of a skills-and-styles reload ended. */
+export type ReloadOutcome =
+  | { status: "reloaded"; names: string[] }
+  | { status: "failed"; message: string }
+  | { status: "timed_out"; after_ms: number };
+
 export interface McpSetServersResult {
   added: string[];
   removed: string[];
@@ -1037,6 +1043,10 @@ export type BridgeCommand =
       force?: boolean;
     }
   | {
+      command: "reload_skills_and_styles";
+      session_id: string;
+    }
+  | {
       command: "mcp_status";
       session_id: string;
     }
@@ -1244,6 +1254,17 @@ export type BridgeEvent =
       cache_impact: RuntimeReloadCacheImpact;
     }
   | { event: "runtime_reload_failed"; session_id: string; message: string }
+  | {
+      event: "skills_and_styles_reloaded";
+      session_id: string;
+      skills: ReloadOutcome;
+      output_styles: ReloadOutcome;
+    }
+  | {
+      event: "skills_and_styles_reload_expired";
+      session_id: string;
+      after_ms: number;
+    }
   | {
       event: "session_replaced";
       session_id: string;

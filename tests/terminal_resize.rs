@@ -2387,6 +2387,33 @@ fn status_tab_shows_the_session_name_after_rename() {
     test.shutdown();
 }
 
+#[test]
+fn reload_reports_the_reloaded_counts_and_then_a_half_that_failed() {
+    let mut test = TerminalTest::start("reload", 3);
+    test.submit_command("/reload");
+    test.wait_turn_finished("Reloaded skills (2) and output styles (3)");
+
+    // The skills half still reports as reloaded next to the output styles that failed.
+    test.submit_command("/reload");
+    test.wait_turn_finished("Could not reload output styles: style directory unreadable");
+
+    // /reload is app-owned: it reaches the bridge as its own command, never as a prompt.
+    assert_eq!(test.commands("reload_skills_and_styles").len(), 2);
+    test.assert_prompts(&[]);
+    test.shutdown();
+}
+
+#[test]
+fn reload_that_expired_in_the_bridge_queue_releases_input_with_a_notice() {
+    let mut test = TerminalTest::start("reload-expired", 3);
+    test.submit_command("/reload");
+    // [READY] beside the notice: the reload no longer blocks input.
+    let screen = test.wait_turn_finished("Reload did not start within 10 s");
+    assert!(screen.contains("Nothing was reloaded"), "{screen}");
+    assert_eq!(test.commands("reload_skills_and_styles").len(), 1);
+    test.shutdown();
+}
+
 /// The Markdown the `export` scenario's saved conversation must produce, after the header.
 const EXPORTED_BODY: &str = "## User\n\nList the files\n\n## Assistant\n\nListing now.\n\n### Tool: Bash - ls -la\n\nResult:\n\n```\nREADME.md\nsrc\n```\n\nFixing the note.\n\n### Tool: Edit - notes.txt\n\n```diff\n--- notes.txt\n+++ notes.txt\n@@ -1,2 +1,2 @@\n keep\n-old\n+new\n```\n\n";
 
