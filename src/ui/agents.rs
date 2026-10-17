@@ -416,8 +416,8 @@ fn render_transcript(frame: &mut Frame, title_area: Rect, body: Rect, app: &mut 
     frame.render_widget(Paragraph::new(visible), body);
 }
 
-/// Prompts as written and replies through the chat's Markdown rendering, each
-/// under its label; tool calls as one dim line each.
+/// Prompts and SDK reminders as written and replies through the chat's
+/// Markdown rendering, each under its label; tool calls as one dim line each.
 fn transcript_lines(messages: &[SubagentMessage], width: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for message in messages {
@@ -432,6 +432,14 @@ fn transcript_lines(messages: &[SubagentMessage], width: u16) -> Vec<Line<'stati
             SubagentMessageRole::User => (
                 Line::styled("Prompt", help_style()),
                 message.text.lines().map(|line| Line::from(line.to_owned())).collect(),
+            ),
+            SubagentMessageRole::SystemReminder => (
+                Line::styled("System reminder", Style::default().fg(theme::DIM)),
+                message
+                    .text
+                    .lines()
+                    .map(|line| Line::styled(line.to_owned(), Style::default().fg(theme::DIM)))
+                    .collect(),
             ),
             SubagentMessageRole::Assistant => (
                 Line::styled("Reply", title_style()),

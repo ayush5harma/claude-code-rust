@@ -634,6 +634,8 @@ pub enum SubagentMessageRole {
     User,
     Assistant,
     Tool,
+    /// A reminder the SDK added to the subagent's context, without its XML wrapper.
+    SystemReminder,
 }
 
 /// One readable entry of a saved subagent transcript.

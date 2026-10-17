@@ -423,6 +423,7 @@ readline
         subagentReads += 1;
         send({ event: 'subagent_messages', session_id: SESSION, request_id: message.request_id, agent_id: message.agent_id, messages: [
           { role: 'user', text: 'Inspect the docs' },
+          { role: 'system_reminder', text: 'Hand the report back when done.' },
           { role: 'tool', text: 'ls docs' },
           { role: 'assistant', text: 'Docs path checked' },
           // Each read finds one more step, as a transcript that is still being written grows.

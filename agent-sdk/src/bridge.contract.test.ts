@@ -638,8 +638,11 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
       if (agentId === "agent-unreadable") throw new Error("transcript unreadable");
       const entry = (type, uuid, parentUuid, content) => ({ type, uuid, parentUuid, session_id: sessionId, parent_tool_use_id: null, message: { role: type, content } });
       if (agentId === "agent-handback") return [
-        entry("user", "handback-prompt", null, "Survey the docs"),
-        entry("assistant", "handback-read", "handback-prompt", [{ type: "tool_use", id: "handback-glob", name: "Glob", input: { pattern: "docs/**" } }]),
+        entry("user", "handback-prompt", null, "Survey the docs. Quote <system-reminder>tags</system-reminder> as written."),
+        { ...entry("user", "handback-reminder", "handback-prompt", "<system-reminder>\\nReport through SubagentHandback.\\n</system-reminder>\\n"), is_meta: true },
+        entry("user", "handback-follow-up", "handback-reminder", "<system-reminder>typed by the user</system-reminder>"),
+        entry("assistant", "handback-note", "handback-follow-up", [{ type: "text", text: "Keeping <system-reminder>as written</system-reminder>" }]),
+        entry("assistant", "handback-read", "handback-note", [{ type: "tool_use", id: "handback-glob", name: "Glob", input: { pattern: "docs/**" } }]),
         entry("assistant", "handback-call", "handback-read", [{ type: "tool_use", id: "handback-1", name: "SubagentHandback", input: { message: "## Docs survey\\n\\n- 12 pages\\n- 2 stale links" } }]),
         entry("user", "handback-ack", "handback-call", [{ type: "tool_result", tool_use_id: "handback-1", content: [{ type: "text", text: "Report delivered to your caller." }] }]),
       ];
@@ -1548,11 +1551,15 @@ test("subagent commands read SDK transcripts and stop only a running subagent, l
     const handback = await result("subagent_messages", { command: "get_subagent_messages", agent_id: "agent-handback" });
     const handbackMessages = handback.messages as Array<{ role: string; text: string }>;
     assert.deepEqual(handbackMessages.at(-1), { role: "assistant", text: "## Docs survey\n\n- 12 pages\n- 2 stale links" });
+    // Only the SDK's own reminder loses its wrapper; tags a user or the agent wrote stay.
     assert.deepEqual(handbackMessages.filter(message => message.role !== "tool"), [
-      { role: "user", text: "Survey the docs" },
+      { role: "user", text: "Survey the docs. Quote <system-reminder>tags</system-reminder> as written." },
+      { role: "system_reminder", text: "Report through SubagentHandback." },
+      { role: "user", text: "<system-reminder>typed by the user</system-reminder>" },
+      { role: "assistant", text: "Keeping <system-reminder>as written</system-reminder>" },
       { role: "assistant", text: "## Docs survey\n\n- 12 pages\n- 2 stale links" },
     ]);
-    assert.ok(!handbackMessages.some(message => message.text.includes("SubagentHandback")), JSON.stringify(handbackMessages));
+    assert.ok(!handbackMessages.some(message => message.role === "tool" && message.text.includes("SubagentHandback")), JSON.stringify(handbackMessages));
     const unreadable = await result("subagent_messages", { command: "get_subagent_messages", agent_id: "agent-unreadable" });
     assert.deepEqual([unreadable.agent_id, unreadable.messages, unreadable.error], ["agent-unreadable", [], "transcript unreadable"]);
 

@@ -488,6 +488,31 @@ fn a_completed_subagents_response_is_previewed_in_six_rows_and_read_in_full_as_m
 }
 
 #[test]
+fn an_sdk_reminder_is_labelled_as_one_while_tags_a_user_or_agent_wrote_stay_as_written() {
+    let (mut app, mut commands) = app_with_subagents();
+    let request = open_transcript(&mut app, &mut commands);
+    let prompt = "Quote <system-reminder>tags</system-reminder> as written.";
+    let reply_text = "Keeping <system-reminder>as written</system-reminder>";
+    answer(
+        &mut app,
+        &request,
+        Ok(vec![
+            message(SubagentMessageRole::User, prompt),
+            message(SubagentMessageRole::SystemReminder, "Report through SubagentHandback."),
+            reply(reply_text),
+        ]),
+    );
+    let lines = screen(&mut app, 80, 30);
+    let (reminder, _) = row_with(&lines, "Report through SubagentHandback.");
+    assert_eq!(lines[reminder - 1].trim(), "System reminder", "{}", lines.join("\n"));
+    assert!(!lines[reminder].contains("system-reminder"), "{}", lines[reminder]);
+    let (quoted, _) = row_with(&lines, prompt);
+    assert_eq!(lines[quoted - 1].trim(), "Prompt");
+    let (kept, _) = row_with(&lines, reply_text);
+    assert_eq!(lines[kept - 1].trim(), "Reply");
+}
+
+#[test]
 fn a_transcript_read_while_running_is_not_taken_as_the_response() {
     let (mut app, mut commands) = app_with_subagents();
     apply_transcript_list(&mut app, vec!["agent-1".to_owned()], None);

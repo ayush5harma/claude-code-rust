@@ -1,7 +1,7 @@
 import { getSubagentMessages, listSubagents } from "@anthropic-ai/claude-agent-sdk";
 import type { BridgeCommand, SubagentMessage, ToolCall } from "../types.js";
 import { writeEvent } from "./events.js";
-import { mapSessionMessagesToUpdates } from "./history.js";
+import { mapSessionMessagesToEntries } from "./history.js";
 import { sessionById, type SessionState } from "./session_lifecycle.js";
 import { asRecordOrNull } from "./shared.js";
 import { toolNameFromMeta } from "./tool_calls.js";
@@ -85,9 +85,10 @@ function handbackReport(tool: ToolCall): string | undefined {
   return typeof message === "string" && message.trim() !== "" ? message : undefined;
 }
 
-/** The text a reader follows: prompts, replies and the titles of tool calls. */
-function transcriptEntries(history: Parameters<typeof mapSessionMessagesToUpdates>[0]): SubagentMessage[] {
-  return mapSessionMessagesToUpdates(history).flatMap((update): SubagentMessage[] => {
+/** The text a reader follows: prompts, SDK reminders, replies and the titles of tool calls. */
+function transcriptEntries(history: Parameters<typeof mapSessionMessagesToEntries>[0]): SubagentMessage[] {
+  return mapSessionMessagesToEntries(history).flatMap((update): SubagentMessage[] => {
+    if (update.type === "system_reminder") return [{ role: "system_reminder", text: update.text }];
     if (update.type === "tool_call") {
       const report = handbackReport(update.tool_call);
       return [report === undefined ? { role: "tool", text: update.tool_call.title } : { role: "assistant", text: report }];

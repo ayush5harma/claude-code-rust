@@ -366,9 +366,10 @@ export interface TaskItem {
   source_tool_call_id?: string;
 }
 
-/** One readable entry of a saved subagent transcript. */
+/** One readable entry of a saved subagent transcript. `system_reminder` is a
+ * reminder the SDK added to the subagent's context, without its XML wrapper. */
 export interface SubagentMessage {
-  role: "user" | "assistant" | "tool";
+  role: "user" | "assistant" | "tool" | "system_reminder";
   text: string;
 }
 

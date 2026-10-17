@@ -96,8 +96,16 @@ function agentLaunchFields(tool: ToolCall | undefined): Record<string, unknown> 
   };
 }
 
+/** A saved SDK reminder. A subagent transcript shows it; the chat has no place for one. */
+interface SystemReminderEntry {
+  type: "system_reminder";
+  text: string;
+}
+
+type HistoryEntry = SessionUpdate | SystemReminderEntry;
+
 function pushResumeTaskSystemUpdate(
-  updates: SessionUpdate[],
+  updates: HistoryEntry[],
   tasksById: Map<string, TaskItem>,
   taskToolUseIds: Map<string, string>,
   toolCalls: Map<string, ToolCall>,
@@ -142,7 +150,7 @@ function pushResumeTaskSystemUpdate(
 }
 
 function pushResumeTextChunk(
-  updates: SessionUpdate[],
+  updates: HistoryEntry[],
   role: "user" | "assistant",
   text: string,
   sourceMessageUuid?: string,
@@ -166,7 +174,7 @@ function pushResumeTextChunk(
 }
 
 function pushResumeToolUse(
-  updates: SessionUpdate[],
+  updates: HistoryEntry[],
   toolCalls: Map<string, ToolCall>,
   hiddenToolUseIds: Set<string>,
   block: Record<string, unknown>,
@@ -195,7 +203,7 @@ function pushResumeToolUse(
 }
 
 function pushResumeToolResult(
-  updates: SessionUpdate[],
+  updates: HistoryEntry[],
   toolCalls: Map<string, ToolCall>,
   hiddenToolUseIds: Set<string>,
   block: Record<string, unknown>,
@@ -299,10 +307,18 @@ export function mapSdkSessions(
   return entries;
 }
 
+/** Saved history as the chat's session updates. */
 export function mapSessionMessagesToUpdates(
   messages: SessionMessage[],
 ): SessionUpdate[] {
-  const updates: SessionUpdate[] = [];
+  return mapSessionMessagesToEntries(messages).filter((entry): entry is SessionUpdate => entry.type !== "system_reminder");
+}
+
+/** Saved history as session updates and the SDK reminders between them, in order. */
+export function mapSessionMessagesToEntries(
+  messages: SessionMessage[],
+): HistoryEntry[] {
+  const updates: HistoryEntry[] = [];
   const toolCalls = new Map<string, ToolCall>();
   const hiddenToolUseIds = new Set<string>();
   const tasksById = new Map<string, TaskItem>();
@@ -312,6 +328,10 @@ export function mapSessionMessagesToUpdates(
     const record = asRecordOrNull(entry);
     const presentation = transcriptPresentation(entry);
     if (presentation.kind === "hidden") continue;
+    if (presentation.kind === "system_reminder") {
+      updates.push({ type: "system_reminder", text: presentation.text });
+      continue;
+    }
     if (presentation.kind === "task_notification") {
       const notification = presentation.notification;
       if (notification) pushResumeTaskSystemUpdate(updates, tasksById, taskToolUseIds, toolCalls, notification);

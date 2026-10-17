@@ -1509,13 +1509,15 @@ mod tests {
         assert_eq!(
             event(
                 serde_json::json!({ "event": "subagent_messages", "session_id": "s1", "agent_id": "a1",
-                "messages": [{ "role": "user", "text": "Go" }, { "role": "tool", "text": "ls" }, { "role": "assistant", "text": "Done" }] })
+                "messages": [{ "role": "user", "text": "Go" }, { "role": "system_reminder", "text": "Report back" },
+                    { "role": "tool", "text": "ls" }, { "role": "assistant", "text": "Done" }] })
             ),
             BridgeEvent::SubagentMessages {
                 session_id: "s1".to_owned(),
                 agent_id: "a1".to_owned(),
                 messages: [
                     (types::SubagentMessageRole::User, "Go"),
+                    (types::SubagentMessageRole::SystemReminder, "Report back"),
                     (types::SubagentMessageRole::Tool, "ls"),
                     (types::SubagentMessageRole::Assistant, "Done"),
                 ]
