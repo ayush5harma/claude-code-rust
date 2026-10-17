@@ -46,9 +46,7 @@ fn shorten_cwd(cwd: &std::path::Path) -> String {
 }
 
 fn resolve_startup_cwd(cli: &Cli) -> PathBuf {
-    cli.dir
-        .clone()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+    cli.working_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
 fn extract_app_error(err: &anyhow::Error) -> Option<AppError> {
