@@ -405,6 +405,11 @@ readline
         } else streamReply(message.message_uuid);
         break;
       case 'reload_skills_and_styles':
+        if (SCENARIO === 'reload-expired') {
+          // The bridge's answer when an earlier request for the session held the reload too long.
+          send({ event: 'skills_and_styles_reload_expired', session_id: SESSION, after_ms: 10000 });
+          break;
+        }
         // First reload succeeds; the second reloads skills and fails the output styles half.
         reloads++;
         send({

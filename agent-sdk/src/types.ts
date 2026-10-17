@@ -1246,6 +1246,11 @@ export type BridgeEvent =
       output_styles: ReloadOutcome;
     }
   | {
+      event: "skills_and_styles_reload_expired";
+      session_id: string;
+      after_ms: number;
+    }
+  | {
       event: "session_replaced";
       session_id: string;
       cwd: string;

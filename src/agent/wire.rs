@@ -519,6 +519,10 @@ pub enum BridgeEvent {
         skills: types::ReloadOutcome,
         output_styles: types::ReloadOutcome,
     },
+    SkillsAndStylesReloadExpired {
+        session_id: String,
+        after_ms: u64,
+    },
     SessionReplaced {
         session_id: String,
         cwd: String,
@@ -618,6 +622,7 @@ impl BridgeEvent {
             Self::RuntimeReloadHeld { .. } => "runtime_reload_held",
             Self::RuntimeReloadFailed { .. } => "runtime_reload_failed",
             Self::SkillsAndStylesReloaded { .. } => "skills_and_styles_reloaded",
+            Self::SkillsAndStylesReloadExpired { .. } => "skills_and_styles_reload_expired",
             Self::SessionReplaced { .. } => "session_replaced",
             Self::Initialized { .. } => "initialized",
             Self::SessionsListed { .. } => "sessions_listed",
@@ -660,6 +665,7 @@ impl BridgeEvent {
             | Self::RuntimeReloadHeld { session_id, .. }
             | Self::RuntimeReloadFailed { session_id, .. }
             | Self::SkillsAndStylesReloaded { session_id, .. }
+            | Self::SkillsAndStylesReloadExpired { session_id, .. }
             | Self::SessionReplaced { session_id, .. }
             | Self::SettingsResult { session_id, .. }
             | Self::StatusSnapshot { session_id, .. }
@@ -708,6 +714,7 @@ impl BridgeEvent {
             | Self::RuntimeReloadHeld { .. }
             | Self::RuntimeReloadFailed { .. }
             | Self::SkillsAndStylesReloaded { .. }
+            | Self::SkillsAndStylesReloadExpired { .. }
             | Self::SessionReplaced { .. }
             | Self::Initialized { .. }
             | Self::SessionsListed { .. }
@@ -1251,6 +1258,25 @@ mod tests {
                     names: vec!["deploy".to_owned(), "lint".to_owned()]
                 },
                 output_styles: types::ReloadOutcome::TimedOut { after_ms: 10_000 },
+            }
+        );
+        assert_eq!(decoded.event.session_id(), Some("s1"));
+    }
+
+    #[test]
+    fn skills_and_styles_reload_expired_event_deserializes_bridge_payload() {
+        let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "skills_and_styles_reload_expired",
+            "session_id": "s1",
+            "after_ms": 10000
+        }))
+        .expect("deserialize expired reload");
+
+        assert_eq!(
+            decoded.event,
+            BridgeEvent::SkillsAndStylesReloadExpired {
+                session_id: "s1".to_owned(),
+                after_ms: 10_000
             }
         );
         assert_eq!(decoded.event.session_id(), Some("s1"));

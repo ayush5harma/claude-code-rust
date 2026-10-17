@@ -18,6 +18,7 @@ import { refreshSessionEffort } from "./effort.js";
 import { refreshSessionModel } from "./session_model.js";
 import { readQuerySettings } from "./query_settings.js";
 import { asRecordOrNull } from "./shared.js";
+import type { QueueDeadline } from "./command_scheduler.js";
 import { FastModeVerificationError } from "./session_preferences.js";
 import { SessionObservations } from "./session_observations.js";
 
@@ -26,6 +27,11 @@ const thinkingObservations = new SessionObservations();
 // would keep the composer blocked for the rest of the session. Seen in the fork on 2026-10-13 on
 // a freshly started session (the SDK applied the reload and never acknowledged it); not seen since.
 const RELOAD_REQUEST_TIMEOUT_MS = 10_000;
+// How long /reload may wait behind earlier requests for its session, from when the bridge receives
+// it. Rust blocks input as soon as /reload is submitted, so an earlier request that never finishes
+// (a background context-usage refresh, say) would otherwise keep input blocked. An ordinary earlier
+// request ends well within the bound each SDK reload request already gets.
+const RELOAD_QUEUE_TIMEOUT_MS = 10_000;
 import {
   applyUltracode,
   emitUltracodeUpdate,
@@ -584,6 +590,38 @@ async function reloadSkillsAndStyles(
     },
     requestId,
   );
+}
+
+/** The queue deadline the scheduler applies to a command, if it has one. */
+export function commandQueueDeadline(
+  command: BridgeCommand,
+  requestId: string | undefined,
+): QueueDeadline | undefined {
+  if (command.command !== "reload_skills_and_styles") {
+    return undefined;
+  }
+  const sessionId = command.session_id;
+  return {
+    ms: RELOAD_QUEUE_TIMEOUT_MS,
+    // The scheduler skips the reload once this has answered, so nothing reloads after the notice.
+    onExpired: () => {
+      logReloadOutcome(
+        "skills and output styles",
+        "timeout",
+        "did not start: an earlier request for the session is still running",
+        sessionId,
+        requestId,
+      );
+      writeEvent(
+        {
+          event: "skills_and_styles_reload_expired",
+          session_id: sessionId,
+          after_ms: RELOAD_QUEUE_TIMEOUT_MS,
+        },
+        requestId,
+      );
+    },
+  };
 }
 
 async function settleReload<T>(

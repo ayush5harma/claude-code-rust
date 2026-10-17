@@ -62,7 +62,10 @@ import { BridgeCommandScheduler } from "./bridge/command_scheduler.js";
 import { handleLifecycleCommand } from "./bridge/command_lifecycle.js";
 import { handleInteractionCommand } from "./bridge/command_interactions.js";
 import { handleMcpCommand } from "./bridge/command_mcp.js";
-import { handleSessionControlCommand } from "./bridge/command_session_control.js";
+import {
+  commandQueueDeadline,
+  handleSessionControlCommand,
+} from "./bridge/command_session_control.js";
 import { handleSessionDataCommand } from "./bridge/command_session_data.js";
 import { dispatchSideQuestion } from "./bridge/side_questions.js";
 import { applySessionEffort, applySessionAgent, applySessionFastMode, emitAgentConfigOptionUpdate } from "./bridge/session_preferences.js";
@@ -1125,7 +1128,7 @@ function main(): void {
           parsed.requestId,
         );
       }
-    });
+    }, commandQueueDeadline(parsed.command, parsed.requestId));
   });
 
   rl.on("close", () => {

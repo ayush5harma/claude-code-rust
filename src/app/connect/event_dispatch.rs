@@ -254,6 +254,11 @@ pub(super) async fn handle_bridge_event(
                 .send(ClientEvent::SkillsAndStylesReloaded { session_id, skills, output_styles })
                 .await;
         }
+        crate::agent::wire::BridgeEvent::SkillsAndStylesReloadExpired { session_id, after_ms } => {
+            let _ = event_tx
+                .send(ClientEvent::SkillsAndStylesReloadExpired { session_id, after_ms })
+                .await;
+        }
         crate::agent::wire::BridgeEvent::SessionReplaced {
             session_id,
             cwd,

@@ -184,6 +184,8 @@ pub enum ClientEvent {
         skills: crate::agent::types::ReloadOutcome,
         output_styles: crate::agent::types::ReloadOutcome,
     },
+    /// A `/reload` waited too long behind earlier requests for its session and was skipped.
+    SkillsAndStylesReloadExpired { session_id: String, after_ms: u64 },
     /// Custom slash command replaced the active session.
     SessionReplaced {
         session_id: model::SessionId,
@@ -288,6 +290,7 @@ impl ClientEvent {
             | Self::RuntimeReloadHeld { session_id, .. }
             | Self::RuntimeReloadFailed { session_id, .. }
             | Self::SkillsAndStylesReloaded { session_id, .. }
+            | Self::SkillsAndStylesReloadExpired { session_id, .. }
             | Self::SettingsResultReceived { session_id, .. }
             | Self::StatusSnapshotReceived { session_id, .. }
             | Self::ContextUsageReceived { session_id, .. }

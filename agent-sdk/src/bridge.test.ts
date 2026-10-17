@@ -107,7 +107,11 @@ import {
   sdkMessageDiagnosticFields,
 } from "./bridge/message_handlers.js";
 import { dispatchCancelTurnCommand } from "./bridge/command_dispatch.js";
-import { handleSessionControlCommand } from "./bridge/command_session_control.js";
+import {
+  commandQueueDeadline,
+  handleSessionControlCommand,
+} from "./bridge/command_session_control.js";
+import { BridgeCommandScheduler } from "./bridge/command_scheduler.js";
 import {
   handleSessionDataCommand,
   normalizeStructuredUsage,
@@ -1879,6 +1883,65 @@ test("reload_skills_and_styles reports unanswered output styles next to skills t
       },
     ]);
   } finally {
+    mock.timers.reset();
+  }
+});
+
+test("reload_skills_and_styles queued behind a stalled session request answers after 10 seconds and never reloads later", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  sessions.clear();
+  const session = makeSessionState();
+  const calls: string[] = [];
+  session.query = {
+    reloadSkills: async () => {
+      calls.push("skills");
+      return SKILLS_RELOADED;
+    },
+    reloadOutputStyles: async () => {
+      calls.push("styles");
+      return STYLES_RELOADED;
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+  sessions.set(session.sessionId, session);
+  try {
+    const scheduler = new BridgeCommandScheduler();
+    let releaseStalled!: () => void;
+    const stalled = new Promise<void>((resolve) => {
+      releaseStalled = resolve;
+    });
+    const reloadCommand = {
+      command: "reload_skills_and_styles" as const,
+      session_id: session.sessionId,
+    };
+    const events = await captureBridgeEventsAsync(async () => {
+      // An earlier request for the same session that has not answered yet.
+      const earlier = scheduler.schedule(
+        { command: "get_context_usage", session_id: session.sessionId },
+        () => stalled,
+      );
+      const reload = scheduler.schedule(
+        reloadCommand,
+        () => handleSessionControlCommand(reloadCommand, "req-reload", promptControlDeps()),
+        commandQueueDeadline(reloadCommand, "req-reload"),
+      );
+      mock.timers.tick(10_000);
+      // The earlier request finishes after the deadline; the expired reload must stay skipped.
+      releaseStalled();
+      await Promise.all([earlier, reload]);
+      await scheduler.whenIdle();
+    });
+
+    assert.deepEqual(events, [
+      {
+        request_id: "req-reload",
+        event: "skills_and_styles_reload_expired",
+        session_id: session.sessionId,
+        after_ms: 10_000,
+      },
+    ]);
+    assert.deepEqual(calls, []);
+  } finally {
+    sessions.clear();
     mock.timers.reset();
   }
 });

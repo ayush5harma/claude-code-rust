@@ -62,11 +62,26 @@ fn apply_skills_and_styles_reloaded(
     skills: &ReloadOutcome,
     output_styles: &ReloadOutcome,
 ) {
+    release_pending_reload(app);
+    let (severity, text) = reload_notice(skills, output_styles);
+    notices::emit_system_notice(app, severity, &text);
+}
+
+/// The bridge skips a `/reload` that waited `after_ms` behind earlier requests for its session,
+/// so nothing will reload later and the input it held is released now.
+fn apply_skills_and_styles_reload_expired(app: &mut App, after_ms: u64) {
+    release_pending_reload(app);
+    let text = format!(
+        "Reload did not start within {} s because an earlier request for this session has not finished. Nothing was reloaded; run /reload again later.",
+        after_ms / 1000
+    );
+    notices::emit_system_notice(app, SystemSeverity::Error, &text);
+}
+
+fn release_pending_reload(app: &mut App) {
     if matches!(app.turn.pending_command_ack, Some(PendingCommandAck::SkillsAndStylesReload)) {
         session::clear_pending_command(app);
     }
-    let (severity, text) = reload_notice(skills, output_styles);
-    notices::emit_system_notice(app, severity, &text);
 }
 
 pub(super) fn handle(app: &mut App, event: ClientEvent) {
@@ -115,6 +130,9 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
         }
         ClientEvent::SkillsAndStylesReloaded { session_id: _, skills, output_styles } => {
             apply_skills_and_styles_reloaded(app, &skills, &output_styles);
+        }
+        ClientEvent::SkillsAndStylesReloadExpired { session_id: _, after_ms } => {
+            apply_skills_and_styles_reload_expired(app, after_ms);
         }
         ClientEvent::UsageRefreshStarted { epoch } => {
             if app.session_runtime.session_scope_epoch == epoch {

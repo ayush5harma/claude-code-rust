@@ -2135,6 +2135,43 @@ fn skills_and_styles_reload_result_leaves_an_unrelated_pending_command_alone() {
 }
 
 #[test]
+fn expired_reload_releases_input_even_while_a_title_change_is_pending() {
+    // The title request is the kind of earlier session request that can hold /reload in the
+    // bridge queue; a slash error would be taken as its failure and leave the input blocked.
+    let mut app = make_test_app();
+    app.status = AppStatus::CommandPending;
+    app.turn.pending_command_label = Some("Reloading skills and output styles...".into());
+    app.turn.pending_command_ack = Some(PendingCommandAck::SkillsAndStylesReload);
+    app.config.pending_session_title_change =
+        Some(crate::app::config::PendingSessionTitleChangeState {
+            session_id: "test-session".into(),
+            kind: crate::app::config::PendingSessionTitleChangeKind::Generate,
+        });
+    let before = app.transcript.messages.len();
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SkillsAndStylesReloadExpired {
+            session_id: "test-session".to_owned(),
+            after_ms: 10_000,
+        },
+    );
+
+    assert!(matches!(app.status, AppStatus::Ready), "the composer is released");
+    assert!(app.turn.pending_command_ack.is_none());
+    assert!(app.config.pending_session_title_change.is_some(), "the title request is untouched");
+    assert_eq!(app.transcript.messages.len(), before + 1, "exactly one notice");
+    let Some(MessageBlock::Notice(notice)) =
+        app.transcript.messages.last().and_then(|message| message.blocks.first())
+    else {
+        panic!("expected a notice block");
+    };
+    assert_eq!(notice.severity, SystemSeverity::Error);
+    assert!(notice.text.text.contains("did not start within 10 s"), "{}", notice.text.text);
+    assert!(notice.text.text.contains("Nothing was reloaded"), "{}", notice.text.text);
+}
+
+#[test]
 fn slash_error_for_a_pending_reload_is_noticed_and_releases_it() {
     // The bridge answers an unknown session with a slash error instead of a reload result.
     let mut app = make_test_app();
