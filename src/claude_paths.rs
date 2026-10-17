@@ -57,13 +57,28 @@ impl ClaudePaths {
     }
 
     /// Whether `<session_id>.jsonl`, the transcript the SDK's `renameSession()`
-    /// appends to, exists as a regular file in the session's project directory.
-    /// An error other than a missing path is returned rather than read as `false`.
+    /// appends to, exists as a non-empty regular file in the project directory
+    /// of any of `cwds`. An error other than a missing path is returned rather
+    /// than read as `false`, unless another directory has the transcript.
     pub(crate) fn session_transcript_saved(
         &self,
-        cwd: &str,
+        cwds: &[&str],
         session_id: &str,
     ) -> std::io::Result<bool> {
+        let mut first_error = None;
+        for cwd in cwds {
+            match self.session_transcript_saved_for(cwd, session_id) {
+                Ok(true) => return Ok(true),
+                Ok(false) => {}
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            }
+        }
+        first_error.map_or(Ok(false), Err)
+    }
+
+    fn session_transcript_saved_for(&self, cwd: &str, session_id: &str) -> std::io::Result<bool> {
         let file_name = format!("{session_id}.jsonl");
         let project_name = self.project_dir_name(cwd);
         let projects = self.projects_dir();
@@ -78,7 +93,7 @@ impl ClaudePaths {
         };
         for entry in entries {
             let entry = entry?;
-            if entry.file_name().to_str().is_some_and(|name| name.starts_with(&prefix))
+            if entry.file_name().to_str().is_some_and(|name| has_project_prefix(name, &prefix))
                 && is_regular_file(&entry.path().join(&file_name))?
             {
                 return Ok(true);
@@ -107,9 +122,19 @@ fn shortened_project_prefix(name: &OsStr) -> Option<String> {
         .then(|| format!("{}-", name.get(..MAX_PROJECT_DIR_NAME).unwrap_or(name)))
 }
 
+/// Windows paths are case-insensitive, so the SDK compares the prefix in lower case there.
+fn has_project_prefix(name: &str, prefix: &str) -> bool {
+    if cfg!(windows) {
+        name.get(..prefix.len()).is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+    } else {
+        name.starts_with(prefix)
+    }
+}
+
+/// The SDK skips an empty transcript as if it were missing.
 fn is_regular_file(path: &Path) -> std::io::Result<bool> {
     match std::fs::metadata(path) {
-        Ok(metadata) => Ok(metadata.is_file()),
+        Ok(metadata) => Ok(metadata.is_file() && metadata.len() > 0),
         Err(error) if is_missing(&error) => Ok(false),
         Err(error) => Err(error),
     }
@@ -237,14 +262,18 @@ mod tests {
         let paths = profile_paths(profile.path());
         // `/work/app` does not exist, so it is encoded as given.
         let project = profile.path().join("projects/-work-app");
-        assert!(!paths.session_transcript_saved("/work/app", "s1").unwrap());
+        assert!(!paths.session_transcript_saved(&["/work/app"], "s1").unwrap());
 
         std::fs::create_dir_all(project.join("s1.jsonl")).unwrap();
-        assert!(!paths.session_transcript_saved("/work/app", "s1").unwrap());
+        assert!(!paths.session_transcript_saved(&["/work/app"], "s1").unwrap());
 
+        std::fs::write(project.join("s2.jsonl"), "").unwrap();
+        assert!(!paths.session_transcript_saved(&["/work/app"], "s2").unwrap(), "empty");
         std::fs::write(project.join("s2.jsonl"), "{}\n").unwrap();
-        assert!(paths.session_transcript_saved("/work/app", "s2").unwrap());
-        assert!(!paths.session_transcript_saved("/work/other", "s2").unwrap());
+        assert!(paths.session_transcript_saved(&["/work/app"], "s2").unwrap());
+        assert!(!paths.session_transcript_saved(&["/work/other"], "s2").unwrap());
+        // A session resumed from a sibling worktree keeps its own folder.
+        assert!(paths.session_transcript_saved(&["/work/other", "/work/app"], "s2").unwrap());
     }
 
     #[test]
@@ -252,13 +281,13 @@ mod tests {
         let profile = tempfile::tempdir().unwrap();
         let paths = profile_paths(profile.path());
         let cwd = format!("/{}", "a".repeat(250));
-        assert!(!paths.session_transcript_saved(&cwd, "s1").unwrap());
+        assert!(!paths.session_transcript_saved(&[&cwd], "s1").unwrap());
         let shortened = format!("-{}-1x2y3z", "a".repeat(199));
         let project = profile.path().join("projects").join(shortened);
         std::fs::create_dir_all(&project).unwrap();
-        assert!(!paths.session_transcript_saved(&cwd, "s1").unwrap());
+        assert!(!paths.session_transcript_saved(&[&cwd], "s1").unwrap());
         std::fs::write(project.join("s1.jsonl"), "{}\n").unwrap();
-        assert!(paths.session_transcript_saved(&cwd, "s1").unwrap());
+        assert!(paths.session_transcript_saved(&[&cwd], "s1").unwrap());
     }
 
     #[cfg(unix)]
@@ -270,9 +299,14 @@ mod tests {
         let project = profile.path().join("projects/-work-app");
         std::fs::create_dir_all(&project).unwrap();
         std::fs::set_permissions(&project, std::fs::Permissions::from_mode(0o000)).unwrap();
-        let result = paths.session_transcript_saved("/work/app", "s1");
+        let result = paths.session_transcript_saved(&["/work/app"], "s1");
+        let other = profile.path().join("projects/-work-other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("s1.jsonl"), "{}\n").unwrap();
+        let found_elsewhere = paths.session_transcript_saved(&["/work/app", "/work/other"], "s1");
         std::fs::set_permissions(&project, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(found_elsewhere.unwrap());
     }
 
     #[test]

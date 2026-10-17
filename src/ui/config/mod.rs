@@ -655,8 +655,17 @@ mod tests {
     }
 
     /// Renders the rename dialog and returns, for the rows between its field
-    /// and the dim hint, each row's text inside the borders and its colour.
+    /// and the dim hint or help line, each row's text inside the borders and
+    /// its colour, and the help line.
     fn rename_dialog_rows(
+        transcript: Option<crate::app::config::SessionTranscriptState>,
+    ) -> (Vec<(String, Option<ratatui::style::Color>)>, String) {
+        rename_dialog_rows_at(100, 32, transcript)
+    }
+
+    fn rename_dialog_rows_at(
+        width: u16,
+        height: u16,
         transcript: Option<crate::app::config::SessionTranscriptState>,
     ) -> (Vec<(String, Option<ratatui::style::Color>)>, String) {
         let mut app = App::test_default();
@@ -669,23 +678,34 @@ mod tests {
                 cursor: 15,
             },
         ));
-        let mut terminal = Terminal::new(TestBackend::new(100, 32)).expect("terminal");
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
         terminal.draw(|frame| super::render(frame, &mut app)).expect("draw");
         let buffer = terminal.backend().buffer();
         let lines = buffer_lines(buffer);
-        let inner = |line: &str| line.trim().trim_matches('│').trim().to_owned();
+        // Each buffer cell is one character, so a char index is a column. The
+        // dialog's own columns lie between the corners of its title row.
+        let title = lines.iter().find(|line| line.contains("Rename session")).expect("title row");
+        let left = title.chars().position(|ch| ch == '┌').map_or(0, |column| column + 1);
+        let right = title.chars().position(|ch| ch == '┐').unwrap_or(usize::from(width));
+        let inner = |line: &str| {
+            line.chars().skip(left).take(right - left).collect::<String>().trim().to_owned()
+        };
         let field = lines.iter().position(|line| line.contains("Review settings")).expect("field");
-        let hint =
-            lines.iter().position(|line| line.contains("Leave the field empty")).expect("hint row");
-        let rows = (field + 1..hint)
+        let is_help = |line: &str| line.contains("cancel") || line.contains("close");
+        let end = (field + 1..lines.len())
+            .find(|&row| {
+                let text = inner(&lines[row]);
+                text.is_empty() || text.contains("Leave the field empty") || is_help(&text)
+            })
+            .expect("end of the rows beneath the field");
+        let rows = (field + 1..end)
             .map(|row| {
-                // Each buffer cell is one character, so a char index is a column.
                 let first_text_column = lines[row]
                     .chars()
                     .enumerate()
-                    .skip_while(|(_, ch)| *ch != '│')
-                    .skip(1)
-                    .find(|(_, ch)| !ch.is_whitespace() && *ch != '│')
+                    .skip(left)
+                    .take(right - left)
+                    .find(|(_, ch)| !ch.is_whitespace())
                     .map(|(column, _)| u16::try_from(column).expect("column"));
                 let y = u16::try_from(row).expect("row");
                 let colour = first_text_column.map(|x| buffer[(x, y)].fg);
@@ -694,9 +714,9 @@ mod tests {
             .collect::<Vec<_>>();
         let help = lines
             .iter()
-            .skip(hint)
+            .skip(end)
             .map(|line| inner(line))
-            .find(|line| line.contains("cancel") || line.contains("close"))
+            .find(|line| is_help(line))
             .expect("help row");
         (rows, help)
     }
@@ -719,6 +739,22 @@ mod tests {
         let (rows, help) = rename_dialog_rows(Some(SessionTranscriptState::Saved));
         assert!(rows.is_empty(), "{rows:?}");
         assert_eq!(help, "Enter confirm | Esc cancel");
+    }
+
+    #[test]
+    fn rename_dialog_keeps_the_whole_warning_in_a_short_terminal() {
+        use crate::app::config::SessionTranscriptState;
+        for (width, height) in [(80, 16), (80, 18), (60, 14)] {
+            let (rows, help) =
+                rename_dialog_rows_at(width, height, Some(SessionTranscriptState::NotSaved));
+            let warning = rows.iter().map(|(text, _)| text.as_str()).collect::<Vec<_>>().join(" ");
+            assert_eq!(
+                warning,
+                "Renaming becomes available after this session is saved. Run a command or send a message, then try again.",
+                "{width}x{height}"
+            );
+            assert_eq!(help, "Esc cancel", "{width}x{height}");
+        }
     }
 
     #[test]

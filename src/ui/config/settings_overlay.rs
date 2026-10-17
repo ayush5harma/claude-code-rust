@@ -164,7 +164,8 @@ pub(super) fn render_session_rename_overlay(frame: &mut Frame, area: Rect, app: 
         .constraints([
             Constraint::Length(1),
             Constraint::Length(availability_height),
-            Constraint::Min(1),
+            // The hint yields its row in a short dialog; the warning does not.
+            Constraint::Min(0),
         ])
         .split(rendered.body_area);
 

@@ -255,11 +255,12 @@ impl ConfigState {
         )
     }
 
-    /// The rename dialog confirms only for a saved session with no rename in flight.
+    /// The rename dialog confirms only for a saved session with no title
+    /// change in flight: a pending generation would claim the rename's result.
     #[must_use]
     pub fn session_rename_confirmable(&self) -> bool {
         self.session_transcript == Some(SessionTranscriptState::Saved)
-            && !self.session_rename_in_flight()
+            && self.pending_session_title_change.is_none()
     }
 
     #[must_use]

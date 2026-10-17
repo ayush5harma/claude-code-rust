@@ -755,6 +755,57 @@ fn status_rename_becomes_available_when_a_finished_turn_saved_the_session() {
 }
 
 #[test]
+fn a_resumed_session_is_saved_in_the_folder_it_was_listed_under() {
+    let (dir, mut app, mut rx) = app_with_status_connection();
+    // Saved under a sibling worktree, then resumed from this project.
+    let sibling = dir.path().join("sibling");
+    std::fs::create_dir(&sibling).expect("sibling");
+    let sibling = std::fs::canonicalize(sibling).expect("sibling path");
+    let name: String = sibling
+        .to_string_lossy()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect();
+    let folder = dir.path().join("home/.claude/projects").join(name);
+    std::fs::create_dir_all(&folder).expect("sibling folder");
+    std::fs::write(folder.join("session-1.jsonl"), "{}\n").expect("transcript");
+    app.recent_sessions[0].cwd = Some(sibling.to_string_lossy().into_owned());
+
+    press(&mut app, KeyCode::Char('r'));
+    press(&mut app, KeyCode::Enter);
+
+    assert_eq!(app.config.session_transcript, Some(SessionTranscriptState::Saved));
+    assert_eq!(rename_commands(&mut rx).len(), 1);
+}
+
+#[test]
+fn a_pending_title_generation_holds_the_rename_and_the_reverse() {
+    let (dir, mut app, mut rx) = app_with_status_connection();
+    save_transcript(&dir, "session-1");
+    press(&mut app, KeyCode::Char('g'));
+    press(&mut app, KeyCode::Char('r'));
+    press(&mut app, KeyCode::Enter);
+    let sent: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).map(|e| e.command).collect();
+    assert!(
+        matches!(sent.as_slice(), [BridgeCommand::GenerateSessionTitle { .. }]),
+        "the listing that settles the generation must not settle a rename: {sent:?}"
+    );
+    assert!(matches!(
+        app.config.pending_session_title_change.as_ref().map(|pending| &pending.kind),
+        Some(PendingSessionTitleChangeKind::Generate)
+    ));
+
+    let (dir, mut app, mut rx) = app_with_status_connection();
+    save_transcript(&dir, "session-1");
+    press(&mut app, KeyCode::Char('r'));
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('g'));
+    let sent: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).map(|e| e.command).collect();
+    assert!(matches!(sent.as_slice(), [BridgeCommand::RenameSession { .. }]), "{sent:?}");
+}
+
+#[test]
 fn status_rename_dialog_rechecks_the_session_when_it_opens() {
     let (dir, mut app, mut rx) = app_with_status_connection();
     open_tab(&mut app, ConfigTab::Status).expect("status tab");

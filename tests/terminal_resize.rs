@@ -2264,13 +2264,15 @@ fn status_rename_waits_for_the_saved_session_and_reports_only_in_status() {
     test.send(b"\r");
     test.send(b"\x1b");
     test.wait_until("the dialog to close", |test| !test.screen().contains("Rename session"));
-    assert!(test.commands("rename_session").is_empty(), "Enter must not rename an unsaved session");
 
     // A message saves the session.
     test.send(b"\x1b");
     test.wait_screen("Type a message");
     test.submit("hello", "hello");
     test.wait_turn_finished("Saved reply");
+    // The bridge reads commands in order, so a rename sent by that Enter would
+    // be journaled before this prompt's turn finished.
+    assert!(test.commands("rename_session").is_empty(), "Enter must not rename an unsaved session");
     test.submit("/status", "/status");
     test.wait_for("Status", |test| status_name_row(test, "(unnamed session)"));
     test.send(b"r");

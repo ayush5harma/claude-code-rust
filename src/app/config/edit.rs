@@ -460,6 +460,10 @@ pub(super) fn open_session_rename_overlay(app: &mut App) {
 }
 
 pub(super) fn generate_session_title(app: &mut App) {
+    // One title change at a time: the session listing settles whichever is pending.
+    if app.config.pending_session_title_change.is_some() {
+        return;
+    }
     let Some(session_id) =
         app.session_runtime.session_id.as_ref().map(std::string::ToString::to_string)
     else {
