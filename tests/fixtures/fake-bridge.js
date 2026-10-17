@@ -328,9 +328,10 @@ function sessionNameReply(message) {
 
 // The Status rename's prerequisite: Claude Code saves a session's transcript
 // once it runs a command or a message, at the path the Agent SDK derives from
-// the resolved working directory.
+// the resolved working directory. The SDK resolves it with the native realpath,
+// which on Windows also expands 8.3 short names such as RUNNER~1 in temp paths.
 function transcriptPath() {
-  const project = fs.realpathSync(cwd).replace(/[^a-zA-Z0-9]/g, '-');
+  const project = fs.realpathSync.native(cwd).replace(/[^a-zA-Z0-9]/g, '-');
   return path.join(process.env.CLAUDE_CONFIG_DIR, 'projects', project, `${SESSION}.jsonl`);
 }
 
