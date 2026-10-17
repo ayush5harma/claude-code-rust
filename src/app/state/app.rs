@@ -11,6 +11,8 @@ pub(crate) struct PendingSessionResume {
 pub struct App {
     pub surface_mode: SurfaceMode,
     pub(crate) copy_picker: Option<crate::app::copy::CopyPicker>,
+    /// The `/export` waiting for its history from the bridge.
+    pub(crate) history_export: Option<Box<crate::app::export::PendingExport>>,
     pub(crate) diff_view: Option<Box<crate::app::diff_view::DiffView>>,
     pub(crate) terminal_lifecycle: TerminalLifecycleState,
     pub(crate) terminal_child_cancel: Option<tokio::sync::oneshot::Sender<()>>,
@@ -281,6 +283,7 @@ impl App {
             session_picker: SessionPickerState::default(),
             chat_render: ChatRenderState::default(),
             copy_picker: None,
+            history_export: None,
             diff_view: None,
             mention: None,
             committed_mentions: Vec::new(),

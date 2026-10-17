@@ -36,6 +36,7 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/new-session` | `/new-session` | Start a fresh bridge session in the current folder. |
 | `/resume` | `/resume` | Search and select a session in the fullscreen picker. |
 | `/rewind` | `/rewind <user_message_uuid> <both\|conversation\|code>` | Restore conversation, code, or both to a previous user message. |
+| `/export` | `/export [path]` | Save the complete conversation as a Markdown file. |
 
 Enter completes the selected slash command or argument and submits it when ready. Tab completes without submitting. Exact command names appear ahead of substring matches; arrow keys can select a different match. App commands that still need required arguments stay in the composer; commands with argument choices show those choices, while `/btw` continues as ordinary question text. An empty suggestion menu allows Enter to submit the typed input for normal validation.
 
@@ -56,6 +57,16 @@ Refreshing session metadata keeps the selected session by ID when it still match
 Session selection happens inside the picker; `/resume` has no inline session suggestions or chat arguments. Ordinary command-name completion still completes `/resu` to `/resume`. For direct resume by ID from the terminal, use `claude-rs resume <session_id>`.
 
 Resumed history displays saved Claude command records as readable commands, such as `/rename review-444`, and command output as notices. Internal command context, compaction summaries, and background-task notifications are excluded from the fork list. Ordinary conversation XML remains literal, and saved session content is unchanged.
+
+## Exporting the conversation
+
+`/export [path]` writes the session's saved history to a Markdown file. The history comes from the Agent SDK's saved transcript, translated by the same code a resume uses, not from the chat on screen, so it includes messages the app no longer keeps in memory and history from before a compaction.
+
+Without a path the file is `export-<session-id>-<YYYYMMDDTHHMMSSZ>.md` in the session directory, using the full session ID and the export time in UTC, for example `export-11d785e2-d277-406c-9f99-31d840a3705b-20261013T123045Z.md`. With a path, a relative path is relative to the session directory, a leading `~/` is your home directory, and everything after the command is the path, so spaces need no quoting: `/export ./session notes.md`. On Windows, drive-letter and UNC paths (`C:\Users\me\notes.md`, `\\server\share\notes.md`) are used as given and `~\` also means your home directory. A drive-relative path such as `C:notes.md` is refused, because it points at that drive's current directory and not at the session directory.
+
+The file starts with the session title, ID, directory, model, export time and a `Not included` line naming what is never exported: thinking blocks, images inside tool results, background task state, and timing and other session metadata. Your messages and the assistant's text are written as they were, except that a code fence or HTML comment a message leaves open is closed at the end of that message, and a line that would read as one of the export's own `User`, `Assistant` or `Tool:` headings gets its first `#` escaped, so message text cannot change the file's structure. Saved command output, notices and notifications appear as quoted notes. Each tool call is a heading with the tool name and a short summary of its input, followed by its result in a fenced block and, for edits and new files, a `diff` block. Results over 60 lines or 4,000 characters and diffs over 200 lines are cut with a note saying how much is shown, and terminal colour codes are removed. A session too large to send at once keeps its beginning, and the file ends with a note saying how many later entries were left out. History entries the app cannot show, such as an image of an unsupported type, are counted in a closing note, and an image in a tool result is named where it occurred. Rendering and writing happen on the app's event loop, so the terminal pauses until a very large export is written.
+
+`/export` never overwrites a file and creates no directories. If the default name is taken, it uses `-2`, `-3` and so on before `.md`. If an explicit destination exists (a directory is reported as a directory), or its directory does not, the command reports the error and writes nothing. When it finishes it shows the absolute path it wrote, or the failure.
 
 ## Reviewing Git changes
 

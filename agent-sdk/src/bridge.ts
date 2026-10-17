@@ -1004,6 +1004,7 @@ async function handleCommand(
     case "get_context_usage":
     case "get_usage":
     case "get_rewind_targets":
+    case "export_session_history":
     case "rewind":
       await handleSessionDataCommand(command, requestId, {
         generatePersistedSessionTitle,
