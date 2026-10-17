@@ -43,6 +43,7 @@ import {
   rewindTargetsFromSessionMessages,
   updateAvailableCommands,
   handleReloadPluginsCommand,
+  scheduleBridgeCommand,
 } from "./bridge.js";
 import type { SessionState } from "./bridge.js";
 import { getSessionMessages, type Options, type SessionMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -107,10 +108,7 @@ import {
   sdkMessageDiagnosticFields,
 } from "./bridge/message_handlers.js";
 import { dispatchCancelTurnCommand } from "./bridge/command_dispatch.js";
-import {
-  commandQueueDeadline,
-  handleSessionControlCommand,
-} from "./bridge/command_session_control.js";
+import { handleSessionControlCommand } from "./bridge/command_session_control.js";
 import { BridgeCommandScheduler } from "./bridge/command_scheduler.js";
 import {
   handleSessionDataCommand,
@@ -1892,7 +1890,13 @@ test("reload_skills_and_styles queued behind a stalled session request answers a
   sessions.clear();
   const session = makeSessionState();
   const calls: string[] = [];
+  let answerUsage!: (usage: unknown) => void;
   session.query = {
+    // An earlier request for the same session that has not answered yet.
+    getContextUsage: () =>
+      new Promise((resolve) => {
+        answerUsage = resolve;
+      }),
     reloadSkills: async () => {
       calls.push("skills");
       return SKILLS_RELOADED;
@@ -1905,31 +1909,23 @@ test("reload_skills_and_styles queued behind a stalled session request answers a
   sessions.set(session.sessionId, session);
   try {
     const scheduler = new BridgeCommandScheduler();
-    let releaseStalled!: () => void;
-    const stalled = new Promise<void>((resolve) => {
-      releaseStalled = resolve;
-    });
-    const reloadCommand = {
-      command: "reload_skills_and_styles" as const,
-      session_id: session.sessionId,
-    };
-    const events = await captureBridgeEventsAsync(async () => {
-      // An earlier request for the same session that has not answered yet.
-      const earlier = scheduler.schedule(
-        { command: "get_context_usage", session_id: session.sessionId },
-        () => stalled,
-      );
-      const reload = scheduler.schedule(
-        reloadCommand,
-        () => handleSessionControlCommand(reloadCommand, "req-reload", promptControlDeps()),
-        commandQueueDeadline(reloadCommand, "req-reload"),
-      );
+    const allEvents = await captureBridgeEventsAsync(async () => {
+      // Both commands go through the bridge's own scheduling step, as main() schedules them.
+      const earlier = scheduleBridgeCommand(scheduler, {
+        requestId: "req-usage",
+        command: { command: "get_context_usage", session_id: session.sessionId },
+      });
+      const reload = scheduleBridgeCommand(scheduler, {
+        requestId: "req-reload",
+        command: { command: "reload_skills_and_styles", session_id: session.sessionId },
+      });
       mock.timers.tick(10_000);
       // The earlier request finishes after the deadline; the expired reload must stay skipped.
-      releaseStalled();
+      answerUsage({ percentage: 10, totalTokens: 100, maxTokens: 1000 });
       await Promise.all([earlier, reload]);
       await scheduler.whenIdle();
     });
+    const events = allEvents.filter((event) => event.request_id === "req-reload");
 
     assert.deepEqual(events, [
       {

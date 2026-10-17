@@ -217,7 +217,8 @@ test("a failed operation does not poison its scheduling lane", async () => {
   assert.deepEqual(order, ["failed", "next"]);
 });
 
-test("a command still queued at its deadline is answered once and skipped when its turn comes", async () => {
+// The runner's own timeout turns a lane stranded by the skipped command into a failure, not a hang.
+test("a command still queued at its deadline is answered once and skipped when its turn comes", { timeout: 5_000 }, async () => {
   mock.timers.enable({ apis: ["setTimeout"] });
   try {
     const scheduler = new BridgeCommandScheduler();
@@ -236,6 +237,10 @@ test("a command still queued at its deadline is answered once and skipped when i
       },
       { ms: 10_000, onExpired: () => order.push("queued:expired") },
     );
+    // A skipped command still settles its place in the lane, so later work is not stranded.
+    const later = scheduler.schedule(command("set_model"), async () => {
+      order.push("later");
+    });
 
     mock.timers.tick(9_999);
     assert.deepEqual(order, ["blocker:start"]);
@@ -244,9 +249,13 @@ test("a command still queued at its deadline is answered once and skipped when i
 
     // The earlier request finishes late: the expired command must not run after its answer.
     stalled.resolve();
-    await Promise.all([blocker, queued]);
-    await scheduler.whenIdle();
-    assert.deepEqual(order, ["blocker:start", "queued:expired", "blocker:end"]);
+    await Promise.all([blocker, queued, later]);
+    assert.deepEqual(order, [
+      "blocker:start",
+      "queued:expired",
+      "blocker:end",
+      "later",
+    ]);
   } finally {
     mock.timers.reset();
   }
@@ -257,6 +266,7 @@ test("a command that starts before its queue deadline runs to the end without ex
   try {
     const scheduler = new BridgeCommandScheduler();
     const earlier = deferred();
+    const started = deferred();
     const running = deferred();
     const order: string[] = [];
 
@@ -268,6 +278,7 @@ test("a command that starts before its queue deadline runs to the end without ex
       command("reload_skills_and_styles"),
       async () => {
         order.push("queued:start");
+        started.resolve();
         await running.promise;
         order.push("queued:end");
       },
@@ -276,14 +287,13 @@ test("a command that starts before its queue deadline runs to the end without ex
 
     mock.timers.tick(5_000);
     earlier.resolve();
-    await blocker;
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await started.promise;
     assert.deepEqual(order, ["blocker:end", "queued:start"]);
 
     // The deadline covers the wait only; execution has its own bounds.
     mock.timers.tick(10_000);
     running.resolve();
-    await queued;
+    await Promise.all([blocker, queued]);
     assert.deepEqual(order, ["blocker:end", "queued:start", "queued:end"]);
   } finally {
     mock.timers.reset();

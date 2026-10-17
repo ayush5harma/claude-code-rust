@@ -29,8 +29,8 @@ const thinkingObservations = new SessionObservations();
 const RELOAD_REQUEST_TIMEOUT_MS = 10_000;
 // How long /reload may wait behind earlier requests for its session, from when the bridge receives
 // it. Rust blocks input as soon as /reload is submitted, so an earlier request that never finishes
-// (a background context-usage refresh, say) would otherwise keep input blocked. An ordinary earlier
-// request ends well within the bound each SDK reload request already gets.
+// (a background context-usage refresh, say) would otherwise keep input blocked. Any earlier request
+// that takes longer than this, stalled or merely slow (an MCP reconnect can), makes the reload skip.
 const RELOAD_QUEUE_TIMEOUT_MS = 10_000;
 import {
   applyUltracode,

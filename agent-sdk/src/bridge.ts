@@ -1059,6 +1059,41 @@ async function handleCommand(
   }
 }
 
+/** Schedules one decoded command in its lane, with the queue deadline the command carries. */
+export function scheduleBridgeCommand(
+  scheduler: BridgeCommandScheduler,
+  parsed: { requestId?: string; command: BridgeCommand },
+): Promise<void> | undefined {
+  return scheduler.schedule(parsed.command, async () => {
+    try {
+      await handleCommand(parsed.command, parsed.requestId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      bridgeLogger.error({
+        target: LOG_TARGETS.BRIDGE_PROTOCOL,
+        eventName: "bridge_command_failed",
+        message: "bridge command handler failed",
+        outcome: "failure",
+        ...(parsed.requestId ? { requestId: parsed.requestId } : {}),
+        ...(parsed.command.command === "create_session" ||
+        parsed.command.command === "new_session"
+          ? {}
+          : "session_id" in parsed.command
+            ? { sessionId: parsed.command.session_id }
+            : {}),
+        fields: {
+          bridge_command: parsed.command.command,
+          error_message: message,
+        },
+      });
+      failConnection(
+        `bridge command failed (${parsed.command.command}): ${message}`,
+        parsed.requestId,
+      );
+    }
+  }, commandQueueDeadline(parsed.command, parsed.requestId));
+}
+
 function main(): void {
   bridgeLogger.info({
     target: LOG_TARGETS.BRIDGE_LIFECYCLE,
@@ -1101,34 +1136,7 @@ function main(): void {
       return;
     }
 
-    commandScheduler.schedule(parsed.command, async () => {
-      try {
-        await handleCommand(parsed.command, parsed.requestId);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        bridgeLogger.error({
-          target: LOG_TARGETS.BRIDGE_PROTOCOL,
-          eventName: "bridge_command_failed",
-          message: "bridge command handler failed",
-          outcome: "failure",
-          ...(parsed.requestId ? { requestId: parsed.requestId } : {}),
-          ...(parsed.command.command === "create_session" ||
-          parsed.command.command === "new_session"
-            ? {}
-            : "session_id" in parsed.command
-              ? { sessionId: parsed.command.session_id }
-              : {}),
-          fields: {
-            bridge_command: parsed.command.command,
-            error_message: message,
-          },
-        });
-        failConnection(
-          `bridge command failed (${parsed.command.command}): ${message}`,
-          parsed.requestId,
-        );
-      }
-    }, commandQueueDeadline(parsed.command, parsed.requestId));
+    scheduleBridgeCommand(commandScheduler, parsed);
   });
 
   rl.on("close", () => {
