@@ -59,7 +59,7 @@ An initial prompt whose text matches a subcommand name can be passed after `--`,
 
 `--dir` and `--bridge-script` are checked before the terminal, trust prompt, or bridge start. A missing path, a file where a directory is expected, a directory where the script is expected, a path behind a directory that cannot be searched, a directory without read or search (execute) permission, or a script that cannot be read prints an error naming the flag and exits with status 2. Nothing is saved. Support commands do not refuse them: `claude-rs --bridge-script <PATH> doctor` reports the same bridge script problem as a failed check instead.
 
-A relative `--dir` is resolved against the current directory to its absolute path, with `.` and `..` resolved, before it is used for the session and shown as `Loc:`. `claude-rs --dir .` shows and uses the current directory's path, not `.`.
+A relative `--dir` is resolved against the current directory to its absolute path, with `.` and `..` resolved (following symlinks on Unix, lexically on Windows), before it is used for the session, shown as `Loc:`, or read by `config` and `doctor`. An absolute `--dir` is used as given. `claude-rs --dir .` shows and uses the current directory's path, not `.`.
 
 After the TUI exits, the app prints a resume hint whenever a session was established, using the active or most recently established session id.
 

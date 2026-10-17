@@ -55,43 +55,6 @@ fn no_dot_components(path: &std::path::Path) -> bool {
         .any(|part| matches!(part, std::path::Component::CurDir | std::path::Component::ParentDir))
 }
 
-/// The fixture root as the platform spells its own working directory: physical on Unix
-/// (macOS temp dirs sit behind a symlink), as given on Windows.
-fn platform_root(path: &std::path::Path) -> std::path::PathBuf {
-    if cfg!(windows) { path.to_path_buf() } else { path.canonicalize().expect("canonical tempdir") }
-}
-
-#[test]
-fn a_relative_dir_resolves_to_the_absolute_directory_it_names() {
-    let base = tempfile::tempdir().expect("tempdir");
-    std::fs::create_dir_all(base.path().join("project").join("sub")).expect("project");
-    // Every expected child is spelled out by name under the fixture root.
-    let root = platform_root(base.path());
-    let cases = [
-        (".", root.clone()),
-        ("project", root.join("project")),
-        ("./project/./sub", root.join("project").join("sub")),
-        ("project/sub/..", root.join("project")),
-    ];
-    for (dir, expected) in cases {
-        let resolved = super::startup_cwd(Some(std::path::Path::new(dir)), base.path().into());
-        assert_eq!(resolved, expected, "--dir {dir}");
-        assert!(resolved.is_absolute() && no_dot_components(&resolved), "{}", resolved.display());
-    }
-}
-
-#[test]
-fn an_absolute_dir_is_used_as_given() {
-    let base = tempfile::tempdir().expect("tempdir");
-    let project = base.path().join("project");
-    std::fs::create_dir_all(&project).expect("project");
-    let elsewhere = tempfile::tempdir().expect("process dir");
-
-    let resolved = super::startup_cwd(Some(&project), elsewhere.path().into());
-
-    assert_eq!(resolved, project);
-}
-
 #[test]
 fn create_app_keeps_the_resolved_dir_for_session_state_and_display() {
     // Tests run from the package root, which has `src`; `src/..` names that root.

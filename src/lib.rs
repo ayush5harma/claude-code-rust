@@ -221,6 +221,47 @@ impl Cli {
             _ => self.prompt.as_deref(),
         }
     }
+
+    /// The directory `--dir` names, or the process directory without it. The one answer
+    /// for the session, `config` and `doctor`, so they never disagree about `--dir .`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the process directory is needed and cannot be read.
+    pub fn working_dir(&self) -> std::io::Result<std::path::PathBuf> {
+        resolve_working_dir(self.dir.as_deref(), std::env::current_dir)
+    }
+}
+
+/// An absolute `--dir` is used as given. A relative one is joined to the process directory
+/// and resolved the way the platform resolves its own working directory, so `--dir .`
+/// names the same directory as no `--dir` at all: physically on Unix, where the process
+/// directory is already physical, and lexically on Windows, which keeps a mapped drive
+/// letter and adds no `\\?\` prefix. A relative `--dir` that cannot be resolved (support
+/// commands do not validate it, and a launch's may vanish after validation) is kept
+/// joined, so the failure surfaces where the directory is used.
+fn resolve_working_dir(
+    dir: Option<&std::path::Path>,
+    process_cwd: impl FnOnce() -> std::io::Result<std::path::PathBuf>,
+) -> std::io::Result<std::path::PathBuf> {
+    let Some(dir) = dir else {
+        return process_cwd();
+    };
+    if dir.is_absolute() {
+        return Ok(dir.to_path_buf());
+    }
+    let joined = process_cwd()?.join(dir);
+    Ok(resolve_relative_dir(&joined).unwrap_or(joined))
+}
+
+#[cfg(windows)]
+fn resolve_relative_dir(joined: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    std::path::absolute(joined)
+}
+
+#[cfg(not(windows))]
+fn resolve_relative_dir(joined: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    joined.canonicalize()
 }
 
 /// Why `dir` cannot be the session's working directory, judged the way the session will
@@ -417,6 +458,51 @@ mod tests {
         ConfigPathArgs, ConfigShowArgs, DoctorArgs, LogsArgs,
     };
     use clap::{CommandFactory, Parser};
+
+    /// The fixture root as the platform spells its own working directory: physical on Unix
+    /// (macOS temp dirs sit behind a symlink), as given on Windows.
+    fn platform_root(path: &std::path::Path) -> std::path::PathBuf {
+        if cfg!(windows) {
+            path.to_path_buf()
+        } else {
+            path.canonicalize().expect("canonical tempdir")
+        }
+    }
+
+    #[test]
+    fn a_relative_dir_resolves_to_the_absolute_directory_it_names() {
+        let base = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(base.path().join("project").join("sub")).expect("project");
+        // Every expected child is spelled out by name under the fixture root.
+        let root = platform_root(base.path());
+        let cases = [
+            (".", root.clone()),
+            ("project", root.join("project")),
+            ("./project/./sub", root.join("project").join("sub")),
+            ("project/sub/..", root.join("project")),
+        ];
+        for (dir, expected) in cases {
+            let resolved = super::resolve_working_dir(Some(std::path::Path::new(dir)), || {
+                Ok(base.path().into())
+            })
+            .expect("resolve");
+            assert_eq!(resolved, expected, "--dir {dir}");
+        }
+    }
+
+    #[test]
+    fn an_absolute_dir_is_used_as_given_even_without_a_process_dir() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let project = base.path().join("project");
+        std::fs::create_dir_all(&project).expect("project");
+
+        let resolved = super::resolve_working_dir(Some(&project), || {
+            Err(std::io::Error::other("process directory unavailable"))
+        })
+        .expect("absolute dir needs no process dir");
+
+        assert_eq!(resolved, project);
+    }
 
     #[test]
     fn cli_without_subcommand_starts_new_session() {
