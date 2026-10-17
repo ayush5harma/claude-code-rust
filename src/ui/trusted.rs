@@ -33,29 +33,26 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         QUESTION,
         Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
     ));
-    let has_error = app.trust.last_error.is_some();
+    let error_style = Style::default().fg(theme::STATUS_ERROR);
     let message = match &app.trust.last_error {
-        Some(error) => {
-            Line::from(Span::styled(error.clone(), Style::default().fg(theme::STATUS_ERROR)))
-        }
+        Some(error) => Line::from(Span::styled(error.clone(), error_style)),
         None => Line::from(Span::styled(CHOICE_HINT, Style::default().fg(theme::DIM))),
     };
     let actions = action_lines(app);
     let message_height = wrapped_line_count(Text::from(message.clone()), width);
 
-    // Rows are handed out by priority, not in screen order. The choices come
-    // first, then an error. With two or more rows left the error leaves one of
-    // them to the path, so neither can hide the other; a single row goes to
-    // the error. The path takes what it needs of the rest, cut behind a
-    // leading ellipsis when that is not enough. The question, the hint, the
-    // explanation lines and the blank rows around the path follow in that
-    // order, each only if all of its rows still fit.
+    // Rows are handed out by priority, not in screen order: the choices, then
+    // an error, then the path with what is left (cut behind a leading ellipsis
+    // when that is not enough, and gone only when no row is left). The
+    // question, the hint and the explanation lines follow in that order, each
+    // only if all of its rows still fit, and the blank rows around the path
+    // come last, both or neither.
     let mut free = inner.height;
     let action_rows = wrapped_line_count(Text::from(actions.clone()), width).min(free);
     free -= action_rows;
     let mut message_rows = 0;
-    if has_error {
-        message_rows = message_height.min(if free > 1 { free - 1 } else { free });
+    if app.trust.last_error.is_some() {
+        message_rows = message_height.min(free);
         free -= message_rows;
     }
     let path = path_rows(&app.trust.project_key, width, usize::from(free));
@@ -69,22 +66,22 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         height
     };
     let question_rows = fit(wrapped_line_count(Text::from(question.clone()), width));
-    if !has_error {
+    if app.trust.last_error.is_none() {
         message_rows = fit(message_height);
     }
     let wait_rows = fit(wrapped_line_count(Text::from(WAIT_NOTE), width));
     let review_rows = fit(wrapped_line_count(Text::from(REVIEW_NOTE), width));
-    let gap_above = fit(1);
-    let gap_below = fit(1);
+    // One blank row above the path and one below it, or neither.
+    let gap_rows = fit(2) / 2;
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(question_rows),
             Constraint::Length(wait_rows),
-            Constraint::Length(gap_above),
+            Constraint::Length(gap_rows),
             Constraint::Length(path_height),
-            Constraint::Length(gap_below),
+            Constraint::Length(gap_rows),
             Constraint::Length(review_rows),
             Constraint::Length(message_rows),
             Constraint::Length(action_rows),
@@ -93,24 +90,38 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .split(inner);
 
     let wrap = Wrap { trim: false };
+    // An error whose wrapped rows do not all fit is laid out by columns instead,
+    // ending in an ellipsis if it is still cut, so a cut shows instead of the
+    // text stopping mid-word.
+    let message = match &app.trust.last_error {
+        Some(error) if message_rows < message_height => Paragraph::new(
+            fit_chunks(error, usize::from(width), usize::from(message_rows), Keep::Start)
+                .into_iter()
+                .map(|row| Line::from(Span::styled(row, error_style)))
+                .collect::<Vec<_>>(),
+        ),
+        _ => Paragraph::new(message).wrap(wrap),
+    };
     frame.render_widget(Paragraph::new(question).wrap(wrap), chunks[0]);
     frame.render_widget(Paragraph::new(WAIT_NOTE).wrap(wrap), chunks[1]);
     frame.render_widget(Paragraph::new(path), chunks[3]);
     frame.render_widget(Paragraph::new(REVIEW_NOTE).wrap(wrap), chunks[5]);
-    frame.render_widget(Paragraph::new(message).wrap(wrap), chunks[6]);
+    frame.render_widget(message, chunks[6]);
     frame.render_widget(Paragraph::new(actions).wrap(wrap), chunks[7]);
 }
 
 /// The path in rows of at most `width` columns, the first behind the label
-/// and the rest indented to start under the path. Without room for the label
-/// and one double-width character beside it, the path is drawn unlabelled.
+/// and the rest indented to start under the path. Without room beside the
+/// label for the ellipsis and one double-width character, the path is drawn
+/// unlabelled.
 fn path_rows(path: &str, width: u16, max_rows: usize) -> Vec<Line<'static>> {
     let width = usize::from(width);
     let label_width = PATH_LABEL.width();
     let (label, path_width) =
-        if width >= label_width + 2 { (PATH_LABEL, width - label_width) } else { ("", width) };
+        if width >= label_width + 3 { (PATH_LABEL, width - label_width) } else { ("", width) };
     let bold = Style::default().add_modifier(Modifier::BOLD);
-    path_chunks(path, path_width, max_rows)
+    // The end of a path is what tells projects apart.
+    fit_chunks(path, path_width, max_rows, Keep::End)
         .into_iter()
         .enumerate()
         .map(|(index, chunk)| {
@@ -120,36 +131,49 @@ fn path_rows(path: &str, width: u16, max_rows: usize) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// Cuts `path` into chunks of at most `width` columns. When it needs more than
-/// `max_rows`, keeps the end of the path, which is what tells projects apart,
-/// behind a leading ellipsis.
-fn path_chunks(path: &str, width: usize, max_rows: usize) -> Vec<String> {
-    if path.is_empty() || width == 0 || max_rows == 0 {
+/// The end of a text that survives a cut.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Keep {
+    Start,
+    End,
+}
+
+/// Cuts `text` into chunks of at most `width` columns. When it needs more than
+/// `max_rows`, keeps the `keep` end and puts an ellipsis where it was cut.
+fn fit_chunks(text: &str, width: usize, max_rows: usize, keep: Keep) -> Vec<String> {
+    if text.is_empty() || width == 0 || max_rows == 0 {
         return Vec::new();
     }
-    let rows = chunk_columns(path.chars(), width);
+    let rows = chunk_columns(text.chars(), width);
     if rows.len() <= max_rows {
         return rows;
     }
 
+    // Collected from the kept end, so the cut is always at the back.
+    let from_kept_end: Vec<char> = match keep {
+        Keep::Start => text.chars().collect(),
+        Keep::End => text.chars().rev().collect(),
+    };
     // Double-width characters can leave a column unused at the end of a row, so
     // the first budget may need more rows than it has columns for; shrink it
-    // until the tail, ellipsis included, fits in `max_rows`.
+    // until the kept part, ellipsis included, fits in `max_rows`.
     let mut budget = max_rows * width - 1;
     loop {
-        let mut tail: Vec<char> = Vec::new();
+        let mut kept: Vec<char> = Vec::new();
         let mut used = 0usize;
-        for ch in path.chars().rev() {
+        for &ch in &from_kept_end {
             let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
             if used + ch_width > budget {
                 break;
             }
-            tail.push(ch);
+            kept.push(ch);
             used += ch_width;
         }
-        tail.push(ELLIPSIS);
-        tail.reverse();
-        let rows = chunk_columns(tail.into_iter(), width);
+        kept.push(ELLIPSIS);
+        if keep == Keep::End {
+            kept.reverse();
+        }
+        let rows = chunk_columns(kept.into_iter(), width);
         if rows.len() <= max_rows || budget == 0 {
             return rows;
         }
@@ -379,28 +403,33 @@ mod tests {
     }
 
     #[test]
-    fn trusted_view_keeps_the_error_and_a_path_row_on_a_small_screen() {
-        // Six rows inside, two for the choices. The long error alone wraps to
-        // more than the four left; the short one leaves the path two rows.
-        for error in [SHORT_ERROR, LONG_ERROR] {
+    fn trusted_view_gives_the_error_its_rows_before_the_path_on_a_small_screen() {
+        // At width 40 the short error wraps to two rows and the long one to
+        // five; the choices take two of the rows inside the frame. The error is
+        // shown whole and the path gets only the rows left after it.
+        for (error, height, path_shown) in
+            [(SHORT_ERROR, 8u16, true), (LONG_ERROR, 9, false), (LONG_ERROR, 10, true)]
+        {
             let mut app = App::test_default();
             app.trust.project_key = LONG_PATH.to_owned();
             app.trust.last_error = Some(error.to_owned());
 
-            let rows = inner_rows(&mut app, 40, 8);
+            let rows = inner_rows(&mut app, 40, height);
 
-            let (first, path) = path_region(&rows).unwrap_or_else(|| panic!("{rows:#?}"));
-            let shown = path.concat();
-            let tail = shown.strip_prefix('\u{2026}').unwrap_or_else(|| panic!("{rows:#?}"));
-            assert!(!tail.is_empty() && LONG_PATH.ends_with(tail), "{rows:#?}");
             let choices = choices_at(&rows);
-            let error_rows = &rows[first + path.len()..choices];
-            assert!(
-                error_rows.first().is_some_and(|row| row.starts_with("Invalid trust preferences:")),
-                "{rows:#?}"
+            let region = path_region(&rows);
+            assert_eq!(region.is_some(), path_shown, "{height}: {rows:#?}");
+            let error_start = region.as_ref().map_or(0, |(first, path)| first + path.len());
+            let squash = |text: &str| text.split_whitespace().collect::<String>();
+            assert_eq!(
+                squash(&rows[error_start..choices].concat()),
+                squash(error),
+                "the whole error, between the path and the choices: {rows:#?}"
             );
-            if error == SHORT_ERROR {
-                assert_eq!(error_rows.join(" "), SHORT_ERROR, "{rows:#?}");
+            if let Some((_, path)) = region {
+                let shown = path.concat();
+                let tail = shown.strip_prefix('\u{2026}').unwrap_or_else(|| panic!("{rows:#?}"));
+                assert!(!tail.is_empty() && LONG_PATH.ends_with(tail), "{rows:#?}");
             }
             assert!(
                 !rows.iter().any(|row| row.starts_with("Trust this")
@@ -408,6 +437,56 @@ mod tests {
                     || row.starts_with("Review the project")),
                 "the question and explanation should give way first: {rows:#?}"
             );
+        }
+    }
+
+    #[test]
+    fn trusted_view_gives_the_last_row_to_the_error_and_marks_its_cut() {
+        // Three rows inside: the choices take two, and the error, not the
+        // path, takes the last one.
+        let mut app = App::test_default();
+        app.trust.project_key = LONG_PATH.to_owned();
+        app.trust.last_error = Some(LONG_ERROR.to_owned());
+
+        let rows = inner_rows(&mut app, 40, 5);
+
+        assert!(path_region(&rows).is_none(), "{rows:#?}");
+        assert_eq!(choices_at(&rows), 1, "{rows:#?}");
+        let shown = rows[0]
+            .strip_suffix('\u{2026}')
+            .unwrap_or_else(|| panic!("the cut error has no trailing ellipsis: {rows:#?}"));
+        assert!(
+            shown.starts_with("Invalid trust preferences:") && LONG_ERROR.starts_with(shown),
+            "{rows:#?}"
+        );
+    }
+
+    #[test]
+    fn trusted_view_shows_an_error_in_place_of_the_hint() {
+        let mut app = App::test_default();
+        app.trust.project_key = "/work/project".to_owned();
+        app.trust.last_error = Some(SHORT_ERROR.to_owned());
+
+        let rows = inner_rows(&mut app, 100, 16);
+
+        let choices = choices_at(&rows);
+        assert_eq!(rows[choices - 1], SHORT_ERROR, "{rows:#?}");
+        assert!(rows[choices - 2].starts_with("Review the project"), "{rows:#?}");
+        assert!(!rows.iter().any(|row| row.starts_with("Choose Yes")), "{rows:#?}");
+    }
+
+    #[test]
+    fn trusted_view_spaces_the_path_on_both_sides_or_neither() {
+        for height in 6u16..=16 {
+            let mut app = App::test_default();
+            app.trust.project_key = "/work/project".to_owned();
+
+            let rows = inner_rows(&mut app, 60, height);
+
+            let (first, path) = path_region(&rows).unwrap_or_else(|| panic!("{height}: {rows:#?}"));
+            let blank_above = first > 0 && rows[first - 1].is_empty();
+            let blank_below = rows[first + path.len()].is_empty();
+            assert_eq!(blank_above, blank_below, "{height}: {rows:#?}");
         }
     }
 
