@@ -137,6 +137,12 @@ export type {
   PendingQuestion,
 } from "./bridge/session_lifecycle.js";
 
+export function buildSessionMutationOptions(
+  cwd?: string,
+): import("@anthropic-ai/claude-agent-sdk").SessionMutationOptions | undefined {
+  return cwd ? { dir: cwd } : undefined;
+}
+
 function normalizeRewindTargetText(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
@@ -1000,6 +1006,7 @@ async function handleCommand(
       });
       return;
     case "generate_session_title":
+    case "rename_session":
     case "get_status_snapshot":
     case "get_context_usage":
     case "get_usage":
@@ -1008,6 +1015,7 @@ async function handleCommand(
     case "rewind":
       await handleSessionDataCommand(command, requestId, {
         generatePersistedSessionTitle,
+        buildSessionMutationOptions,
         rewindTargetsFromSessionMessages,
         handleRewind,
       });

@@ -152,7 +152,7 @@ pub(super) fn render_session_rename_overlay(frame: &mut Frame, area: Rect, app: 
     );
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "Runs /rename between turns; the reply shows in chat.",
+            "Leave the field empty to clear the custom session name.",
             Style::default().fg(theme::DIM),
         ))),
         sections[1],

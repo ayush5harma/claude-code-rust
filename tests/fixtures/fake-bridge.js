@@ -312,9 +312,8 @@ function streamReply(messageUuid) {
   }
 }
 
-// A /rename turn as this fixture models it: the command's start, the reply,
-// the turn's end, then the title read back. It sends no result-source start,
-// so the app settles a Status rename at the turn's end.
+// The bridge's translation of a /rename turn: the reply, the result, then
+// the title it reads back once the result is in.
 function sessionNameReply(message) {
   const text = message.chunks.map(chunk => chunk.value).join('');
   const update = update => send({ event: 'session_update', session_id: SESSION, update });

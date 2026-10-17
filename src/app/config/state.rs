@@ -42,24 +42,8 @@ impl PendingSettingsRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PendingSessionTitleChangeKind {
-    /// A Status rename, followed through the turn of its `/rename` prompt.
-    /// `previous_title` is the title the session reported before it.
-    Rename {
-        message_uuid: String,
-        stage: RenameStage,
-        previous_title: Option<String>,
-    },
+    Rename { requested_title: Option<String> },
     Generate,
-}
-
-/// Where a Status rename's `/rename` turn is. The bridge reads the session's
-/// title when a turn's result arrives, so the first title after the rename
-/// turn's result is that turn's outcome, whatever Claude Code named it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RenameStage {
-    Sent,
-    ResultIn,
-    TurnEnded,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

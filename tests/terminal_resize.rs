@@ -2215,25 +2215,6 @@ fn status_tab_shows_the_session_name_after_rename() {
     test.shutdown();
 }
 
-#[test]
-fn status_tab_renames_a_fresh_session_through_its_rename_command() {
-    let mut test = TerminalTest::start("session-name", 3);
-    // No prompt has run, so the session has no saved transcript yet.
-    test.submit("/status", "/status");
-    test.wait_for("the unnamed session in Status", |test| {
-        status_name_row(test, "(unnamed session)")
-    });
-    test.send(b"r");
-    test.wait_screen("Rename session");
-    test.paste("demo-469");
-    test.wait_screen("demo-469");
-    test.send(b"\r");
-
-    test.wait_for("the new name in Status", |test| status_name_row(test, "demo-469"));
-    test.assert_prompts(&["/rename demo-469"]);
-    test.shutdown();
-}
-
 /// The Markdown the `export` scenario's saved conversation must produce, after the header.
 const EXPORTED_BODY: &str = "## User\n\nList the files\n\n## Assistant\n\nListing now.\n\n### Tool: Bash - ls -la\n\nResult:\n\n```\nREADME.md\nsrc\n```\n\nFixing the note.\n\n### Tool: Edit - notes.txt\n\n```diff\n--- notes.txt\n+++ notes.txt\n@@ -1,2 +1,2 @@\n keep\n-old\n+new\n```\n\n";
 

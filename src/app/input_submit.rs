@@ -28,8 +28,18 @@ pub(super) fn submit_input(app: &mut App) {
         dispatch_active_turn_prompt(app, submission.into_text(), inline_pastes);
         return;
     }
-    if let Some(refusal) = idle_turn_refusal(app, &submission) {
-        crate::app::events::push_active_turn_submission_blocked_notice(app, &refusal);
+    if (app.is_agent_turn_active() || !app.pending_user_messages.is_empty())
+        && submission.class().requires_idle_turn()
+    {
+        let label = submission.blocked_label();
+        crate::app::events::push_active_turn_submission_blocked_notice(app, &label);
+        tracing::debug!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "submit_blocked_by_active_turn",
+            message = "submission rejected while agent turn is active",
+            outcome = "blocked",
+            submission = %label,
+        );
         return;
     }
 
@@ -99,45 +109,8 @@ fn dispatch_submission(
     dispatch_prompt_turn(app, &submission.into_text(), inline_pastes);
 }
 
-/// The composer's rule for commands that need an idle turn, shared by every
-/// surface that submits one.
-fn idle_turn_refusal(app: &App, submission: &slash::ResolvedSubmission) -> Option<String> {
-    let turn_busy = app.is_agent_turn_active() || !app.pending_user_messages.is_empty();
-    if !turn_busy || !submission.class().requires_idle_turn() {
-        return None;
-    }
-    let label = submission.blocked_label();
-    tracing::debug!(
-        target: crate::logging::targets::APP_INPUT,
-        event_name = "submit_blocked_by_active_turn",
-        message = "submission rejected while agent turn is active",
-        outcome = "blocked",
-        submission = %label,
-    );
-    Some(crate::app::events::active_turn_submission_blocked_message(&label))
-}
-
-/// Send a Claude Code command on behalf of another surface, such as the Status
-/// tab's rename, as a composer submission of the same text would travel: the
-/// same admission rules, the same session turn, the same reply in the chat.
-/// The composer's draft and attachments stay untouched. Returns the prompt's
-/// message UUID, which the session's start and result events carry.
-pub(crate) fn submit_session_command(app: &mut App, text: &str) -> Result<String, String> {
-    if !app.composer_access().can_submit() {
-        return Err("The session is not ready for commands".to_owned());
-    }
-    let submission = slash::ResolvedSubmission::resolve(text.to_owned());
-    if let Some(refusal) = slash::unsupported_command_refusal(app, &submission)
-        .or_else(|| idle_turn_refusal(app, &submission))
-    {
-        return Err(refusal);
-    }
-    send_prompt_turn(app, &submission.into_text(), Vec::new(), Vec::new())
-        .ok_or_else(|| "The command could not be sent to the session".to_owned())
-}
-
 fn dispatch_prompt_turn(app: &mut App, text: &str, inline_pastes: Vec<String>) {
-    if send_prompt_turn(app, text, app.pending_images.clone(), inline_pastes).is_some() {
+    if send_prompt_turn(app, text, app.pending_images.clone(), inline_pastes) {
         app.input.clear();
         app.pending_images.clear();
     }
@@ -154,8 +127,7 @@ pub(super) fn maybe_submit_initial_prompt(app: &mut App) {
         return;
     }
     let Some(prompt) = app.startup.take_initial_prompt() else { return };
-    if prompt.trim().is_empty() || send_prompt_turn(app, &prompt, Vec::new(), Vec::new()).is_some()
-    {
+    if prompt.trim().is_empty() || send_prompt_turn(app, &prompt, Vec::new(), Vec::new()) {
         return;
     }
     // Keep a failed launch prompt recoverable without overwriting a draft.
@@ -175,9 +147,11 @@ fn send_prompt_turn(
     text: &str,
     images: Vec<super::clipboard_image::ImageAttachment>,
     inline_pastes: Vec<String>,
-) -> Option<String> {
-    let conn = app.session_runtime.conn.clone()?;
-    let sid = app.session_runtime.session_id.clone()?;
+) -> bool {
+    let Some(conn) = app.session_runtime.conn.clone() else { return false };
+    let Some(sid) = app.session_runtime.session_id.clone() else {
+        return false;
+    };
     let input_chars = text.chars().count();
     let session_id = sid.to_string();
     let message_uuid = uuid::Uuid::new_v4().to_string();
@@ -194,7 +168,7 @@ fn send_prompt_turn(
         Ok(resp) => resp,
         Err(error) => {
             crate::app::events::handle_local_prompt_dispatch_error(app, &error.to_string());
-            return None;
+            return false;
         }
     };
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
@@ -218,7 +192,7 @@ fn send_prompt_turn(
         input_chars,
         stop_reason = ?resp.stop_reason,
     );
-    Some(message_uuid)
+    true
 }
 
 fn dispatch_active_turn_prompt(app: &mut App, text: String, inline_pastes: Vec<String>) {

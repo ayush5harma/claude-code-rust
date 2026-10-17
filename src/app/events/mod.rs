@@ -522,7 +522,6 @@ fn handle_session_update(
                 listed.custom_title.clone_from(&title);
             }
             app.session_runtime.session_title = title;
-            crate::app::config::session_rename_title_reported(app);
             super::session_picker::reconcile_selection(app, selected.as_deref());
         }
         model::SessionUpdate::PromptSuggestionUpdate(suggestion) => {
@@ -682,19 +681,16 @@ pub(crate) fn push_submission_feedback_for_owner(
     push_system_message_with_severity(app, Some(severity), message);
 }
 
-pub(crate) fn active_turn_submission_blocked_message(label: &str) -> String {
-    format!(
+pub(crate) fn push_active_turn_submission_blocked_notice(app: &mut App, label: &str) {
+    let message = format!(
         "{label} can only be submitted between agent turns. Wait for the current turn to finish or cancel it explicitly."
-    )
-}
-
-pub(crate) fn push_active_turn_submission_blocked_notice(app: &mut App, message: &str) {
+    );
     notices::upsert_turn_notice(
         app,
         super::NoticeDedupKey::ActiveTurnSubmissionBlocked,
         super::NoticeStage::Informational,
         SystemSeverity::Info,
-        message,
+        &message,
     );
 }
 

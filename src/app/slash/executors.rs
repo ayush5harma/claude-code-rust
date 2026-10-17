@@ -22,17 +22,13 @@ use tokio::sync::mpsc;
 /// Returns `true` if the slash input was fully handled and should not be sent as a prompt.
 /// Returns `false` when the input should continue through the normal prompt path.
 pub(crate) fn try_handle_submission(app: &mut App, submission: &ResolvedSubmission) -> bool {
-    let ResolvedSubmission::Slash { text, args, command, .. } = submission else {
+    let ResolvedSubmission::Slash { text, name, args, command, .. } = submission else {
         return false;
     };
     let args = args.iter().map(String::as_str).collect::<Vec<_>>();
 
     let Some(command) = command else {
-        let Some(refusal) = unsupported_command_refusal(app, submission) else {
-            return false;
-        };
-        push_system_message(app, refusal);
-        return true;
+        return handle_unknown_submit(app, name);
     };
     if submission.class() == SubmissionClass::Invalid {
         push_system_message(app, command.usage());
@@ -872,17 +868,12 @@ fn handle_rewind_submit(app: &mut App, args: &[&str]) -> bool {
     true
 }
 
-/// The composer's refusal for a slash command that neither the app nor the
-/// session offers.
-pub(crate) fn unsupported_command_refusal(
-    app: &App,
-    submission: &ResolvedSubmission,
-) -> Option<String> {
-    let ResolvedSubmission::Slash { name, command: None, .. } = submission else {
-        return None;
-    };
-    (!super::candidates::is_supported_command(app, name))
-        .then(|| format!("{name} is not yet supported"))
+fn handle_unknown_submit(app: &mut App, command_name: &str) -> bool {
+    if super::candidates::is_supported_command(app, command_name) {
+        return false;
+    }
+    push_system_message(app, format!("{command_name} is not yet supported"));
+    true
 }
 
 fn build_docs_mode_markdown(app: &App) -> String {

@@ -628,6 +628,10 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
     }
     export async function getSessionMessages(...args) { return process.env.RESUME_TRANSCRIPT_FIXTURE === "1" ? sdkGetSessionMessages(...args) : []; }
     export async function importSessionToStore(...args) { if (process.env.RESUME_TRANSCRIPT_FIXTURE === "1") await sdkImportSessionToStore(...args); }
+    export async function renameSession(sessionId, title, options) {
+      const existing = saved.get(sessionId) ?? {};
+      saved.set(sessionId, { ...existing, cwd: existing.cwd ?? options?.dir, title });
+    }
     export function query({ prompt, options }) {
       record({ type: "query", cwd: options.cwd, resume: options.resume, model: options.model, effort: options.effort, permissionMode: options.permissionMode, agent: options.agent });
       const state = saved.get(options.resume) ?? { requested: false, effort: "high", cwd: options.cwd };
@@ -918,7 +922,7 @@ test("continue with no previous session starts a new session", async () => {
   } finally { await cleanup(); }
 });
 
-test("fixture session info preserves a seeded title", async () => {
+test("fixture session info preserves and clears a seeded title", async () => {
   const cwd = process.cwd();
   const sessionId = "seeded-session";
   const { bridge, cleanup } = ultracodeFixtureBridge({
@@ -934,6 +938,16 @@ test("fixture session info preserves a seeded title", async () => {
       return update?.type === "session_title_update";
     });
     assert.equal((restored.update as SessionUpdate & { type: "session_title_update" }).title, "Saved title");
+
+    bridge.writeCommand({ command: "rename_session", session_id: sessionId, title: "", request_id: "clear-title" });
+    const cleared = await nextMatching(bridge, event => {
+      const update = event.update as SessionUpdate | undefined;
+      return update?.type === "session_title_update";
+    });
+    assert.equal((cleared.update as SessionUpdate & { type: "session_title_update" }).title, "");
+    const listed = await nextMatching(bridge, event => event.event === "sessions_listed" && event.request_id === "clear-title");
+    const saved = (listed.sessions as BridgeEnvelope[]).find(session => session.session_id === sessionId);
+    assert.equal(saved?.custom_title, undefined);
   } finally { await cleanup(); }
 });
 
