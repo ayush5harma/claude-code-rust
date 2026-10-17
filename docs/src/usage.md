@@ -57,6 +57,10 @@ claude-rs resume <session_id> --model sonnet --effort medium
 
 An initial prompt whose text matches a subcommand name can be passed after `--`, for example `claude-rs -- "doctor"`. Startup arguments cannot be combined with support commands such as `doctor`, `logs`, `config`, or `completions`.
 
+`--dir` and `--bridge-script` are checked before the terminal, trust prompt, or bridge start. A missing path, a file where a directory is expected, a directory where the script is expected, a path behind a directory that cannot be searched, a directory without read or search (execute) permission, or a script that cannot be read prints an error naming the flag and exits with status 2. Nothing is saved. Support commands do not refuse them: `claude-rs --bridge-script <PATH> doctor` reports the same bridge script problem as a failed check instead.
+
+A relative `--dir` is resolved against the current directory to its absolute path, with `.` and `..` resolved (following symlinks on Unix, lexically on Windows), before it is used for the session, shown as `Loc:`, or read by `config` and `doctor`. An absolute `--dir` is used as given. `claude-rs --dir .` shows and uses the current directory's path, not `.`.
+
 After the TUI exits, the app prints a resume hint whenever a session was established, using the active or most recently established session id.
 
 ## Support And Diagnostics
@@ -89,8 +93,8 @@ The installed `claude-rs --help` command exposes these options:
 | `--permission-mode <MODE>` | Set the initial session permission mode without changing saved preferences. |
 | `--agent <NAME>` | Select the main-thread agent for the initial session. |
 | `--no-update-check` | Disable startup update checks. |
-| `-C, --dir <DIR>` | Run in a specific working directory. |
-| `--bridge-script <PATH>` | Use a specific Agent SDK bridge script. |
+| `-C, --dir <DIR>` | Run in a specific working directory, which must exist and be readable and searchable. |
+| `--bridge-script <PATH>` | Use a specific Agent SDK bridge script, which must be a readable file. |
 | `--enable-logs` | Expand the always-on baseline to detailed info-level diagnostics. |
 | `--diagnostics-preset <runtime|session|render|bridge|full>` | Use a named diagnostics filter. |
 | `--log-file <PATH>` | Write tracing diagnostics to a specific file. |
