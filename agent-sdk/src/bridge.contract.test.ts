@@ -974,6 +974,12 @@ test("a launch name renames the resumed session, and a fork takes it as its own 
         launch_settings: { name: "Experiment", ...(fork ? { fork_session: true } : {}) },
       });
       const connected = await nextMatching(bridge, event => event.event === "connected");
+      // A resumed session is renamed after it connects, and its new title is reported after the
+      // rename, so that report is the point where the rename has happened.
+      const reported = fork
+        ? undefined
+        : await nextMatching(bridge, event => (event.update as SessionUpdate | undefined)?.type === "session_title_update"
+          && (event.update as SessionUpdate & { type: "session_title_update" }).title === "Experiment");
       const entries = launchJournal(journal);
       const launch = entries.find(entry => entry.type === "launch");
       const renames = entries.filter(entry => entry.type === "rename");
@@ -988,8 +994,7 @@ test("a launch name renames the resumed session, and a fork takes it as its own 
         assert.equal(launch?.forkSession, undefined);
         assert.equal(launch?.title, undefined);
         assert.deepEqual(renames, [{ type: "rename", sessionId: "saved-session", title: "Experiment", dir: cwd }]);
-        const reported = await nextMatching(bridge, event => (event.update as SessionUpdate | undefined)?.type === "session_title_update");
-        assert.equal((reported.update as SessionUpdate & { type: "session_title_update" }).title, "Experiment");
+        assert.equal(reported?.session_id, "saved-session");
       }
     } finally {
       await cleanup();

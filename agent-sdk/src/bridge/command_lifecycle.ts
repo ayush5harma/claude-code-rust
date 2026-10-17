@@ -324,23 +324,7 @@ async function resume(
         ? { sessionsToCloseAfterConnect: staleSessions }
         : {}),
     });
-    // Renamed only now: the SDK validates MCP servers and settings, and checks sign-in, when the
-    // session starts, so a resume that fails there leaves the saved title untouched.
-    const renameError = await renameResumedSession(command, matched.cwd, requestId, session);
-    if (renameError !== undefined) {
-      // A slash error ends the app's pending resume, so it is sent once the session connects.
-      session.deferredBridgeEvents = [
-        ...(session.deferredBridgeEvents ?? []),
-        {
-          event: {
-            event: "slash_error",
-            session_id: session.sessionId,
-            message: `failed to rename session: ${renameError}`,
-          },
-          ...(requestId ? { requestId } : {}),
-        },
-      ];
-    }
+    await renameResumedSession(command, matched.cwd, requestId, session);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     bridgeLogger.error({
@@ -361,27 +345,34 @@ async function resume(
 }
 
 /**
- * Apply a launch name to the session being resumed, once it has connected, and report the new
- * title. A fork is a new conversation and takes the SDK `title`
- * option instead (buildLaunchQueryOptions), leaving the original's title alone. The app has
- * validated the launch flags before this runs, so a rename failure is an SDK or disk
- * failure: it does not block the resume, because the conversation matters more than its label,
- * and its message is returned for reporting after connect.
+ * Apply a launch name to the session being resumed and report the new title. A fork is a new
+ * conversation and takes the SDK `title` option instead (buildLaunchQueryOptions), leaving the
+ * original's title alone.
+ *
+ * The rename waits for initialization to succeed: the SDK validates MCP servers and settings,
+ * and checks sign-in, while the session starts, so a resume that fails there leaves the saved
+ * title untouched, and the startup tasks have already reported why. A successful
+ * initialization has sent the connect event, so a rename failure, an SDK or disk failure since
+ * the app validated the flags, is reported on the connected session like any other error. It
+ * does not end the resume: the conversation matters more than its label.
  */
 async function renameResumedSession(
   command: Extract<LifecycleCommand, { command: "resume_session" }>,
   cwd: string | undefined,
   requestId: string | undefined,
   session: SessionState,
-): Promise<string | undefined> {
+): Promise<void> {
   const name = command.launch_settings.name;
   if (name === undefined || command.launch_settings.fork_session) {
-    return undefined;
+    return;
+  }
+  try {
+    await awaitSessionInitialization(session);
+  } catch {
+    return;
   }
   try {
     await renameSession(command.session_id, name, cwd ? { dir: cwd } : undefined);
-    await emitSessionTitle(session);
-    return undefined;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     bridgeLogger.warn({
@@ -393,8 +384,10 @@ async function renameResumedSession(
       sessionId: command.session_id,
       fields: { error_message: message },
     });
-    return message;
+    slashError(session.sessionId, `failed to rename session: ${message}`, requestId);
+    return;
   }
+  await emitSessionTitle(session);
 }
 
 async function replace(

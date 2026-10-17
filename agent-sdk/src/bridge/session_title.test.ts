@@ -19,7 +19,10 @@ const CLEARED_SESSION_ID = "22222222-2222-4222-8222-222222222222";
  * /clear starts a new session id that reports the old title. Every prompt is a
  * local command answered with one assistant message and the result. Prompts
  * prefixed `/test-` steer the session API: fail the next read, hold the next
- * read until a later one starts, or reset the conversation.
+ * read until a later one starts, or reset the conversation. QUERY_FAIL makes
+ * query() throw, INIT_FAIL makes initialization reject after query() has
+ * returned, and RENAME_FAIL makes renameSession reject once the title has been
+ * read; RENAME_JOURNAL records every title renameSession saves.
  */
 function writeSdkFixture(fixturePath: string, cwd: string): void {
   const sdkUrl = import.meta.resolve("@anthropic-ai/claude-agent-sdk");
@@ -31,7 +34,11 @@ function writeSdkFixture(fixturePath: string, cwd: string): void {
     let failNextRead = false;
     let holdNextRead = false;
     let releaseHeldRead;
+    let titleRead = false;
+    let onTitleRead;
     export async function getSessionInfo(sessionId) {
+      titleRead = true;
+      onTitleRead?.();
       const release = releaseHeldRead;
       releaseHeldRead = undefined;
       release?.();
@@ -49,6 +56,11 @@ function writeSdkFixture(fixturePath: string, cwd: string): void {
       return title === undefined ? undefined : { sessionId, summary: title, lastModified: 1, customTitle: title, cwd };
     }
     export async function renameSession(sessionId, title) {
+      if (process.env.RENAME_FAIL) {
+        // Fails only once the bridge has announced the session: its connect event reads the title.
+        if (!titleRead) await new Promise((resolve) => { onTitleRead = resolve; });
+        throw new Error("session file is read-only");
+      }
       titles.set(sessionId, title);
       if (process.env.RENAME_JOURNAL) appendFileSync(process.env.RENAME_JOURNAL, title + "\\n");
     }
@@ -110,7 +122,10 @@ function writeSdkFixture(fixturePath: string, cwd: string): void {
           titles.set(sessionId, "Generated name");
           return "Generated name";
         },
-        async initializationResult() { return { current_permission_mode: "default", models: [], commands: [], agents: [], account: { apiKeySource: "fixture" }, fast_mode_state: "off" }; },
+        async initializationResult() {
+          if (process.env.INIT_FAIL) throw new Error("MCP server docs failed to start");
+          return { current_permission_mode: "default", models: [], commands: [], agents: [], account: { apiKeySource: "fixture" }, fast_mode_state: "off" };
+        },
         async getSettings() { return { applied: { model: "opus", effort: "high", ultracodeAvailable: false, ultracodeRequested: false, ultracode: false } }; },
         async supportedCommands() { return []; },
       };
@@ -256,62 +271,64 @@ test("the bridge sends the session API's title through resume, turns, renames, r
   }
 });
 
-test("a launch name renames the resumed session only after it has connected", async () => {
-  for (const failing of [false, true]) {
-    const directory = realpathSync(mkdtempSync(join(tmpdir(), "bridge-launch-name-")));
-    const cwd = join(directory, "project");
-    mkdirSync(cwd);
-    const renames = join(directory, "renames.txt");
-    const fixturePath = join(directory, "sdk-fixture.mjs");
-    const sdkPackage = join(dirname(fileURLToPath(import.meta.resolve("@anthropic-ai/claude-agent-sdk"))), "package.json");
-    writeFileSync(join(directory, "package.json"), JSON.stringify({ version: JSON.parse(readFileSync(sdkPackage, "utf8")).version }));
-    writeSdkFixture(fixturePath, cwd);
-    const loaderPath = join(directory, "loader.mjs");
-    writeFileSync(loaderPath, `
-      import { registerHooks } from "node:module";
-      registerHooks({ resolve(specifier, context, nextResolve) {
-        return specifier === "@anthropic-ai/claude-agent-sdk"
-          ? { url: ${JSON.stringify(pathToFileURL(fixturePath).href)}, shortCircuit: true }
-          : nextResolve(specifier, context);
-      } });
-    `);
-    const bridgePath = join(dirname(fileURLToPath(import.meta.url)), "../bridge.js");
-    const child = spawn(process.execPath, ["--import", pathToFileURL(loaderPath).href, bridgePath], {
-      env: {
-        ...process.env,
-        CLAUDE_CONFIG_DIR: join(directory, "config"),
-        CLAUDE_CODE_PROJECT_DIR_NAME: undefined,
-        QUERY_JOURNAL: join(directory, "query.jsonl"),
-        RENAME_JOURNAL: renames,
-        ...(failing ? { QUERY_FAIL: "1" } : {}),
-        CLAUDE_CODE_EXECUTABLE: "",
-      },
-      stdio: "pipe",
-    });
-    const output = readline.createInterface({ input: child.stdout });
-    const timeout = setTimeout(() => child.kill(), 10_000);
-    const events: Envelope[] = [];
-    const lines = output[Symbol.asyncIterator]();
-    try {
-      child.stdin.write(`${JSON.stringify({
-        command: "resume_session", session_id: SESSION_ID, request_id: "launch-name",
-        launch_settings: { name: "Launch rename" },
-      })}\n`);
+type LaunchBridge = {
+  send: (message: Envelope) => void;
+  readUntil: (done: (event: Envelope) => boolean) => Promise<Envelope>;
+  events: Envelope[];
+  /** Every title the stand-in's renameSession saved, one per line; absent until the first. */
+  renames: string;
+  close: () => Promise<void>;
+};
+
+function startLaunchBridge(fixtureEnv: Record<string, string>): LaunchBridge {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "bridge-launch-name-")));
+  const cwd = join(directory, "project");
+  mkdirSync(cwd);
+  const renames = join(directory, "renames.txt");
+  const fixturePath = join(directory, "sdk-fixture.mjs");
+  const sdkPackage = join(dirname(fileURLToPath(import.meta.resolve("@anthropic-ai/claude-agent-sdk"))), "package.json");
+  writeFileSync(join(directory, "package.json"), JSON.stringify({ version: JSON.parse(readFileSync(sdkPackage, "utf8")).version }));
+  writeSdkFixture(fixturePath, cwd);
+  const loaderPath = join(directory, "loader.mjs");
+  writeFileSync(loaderPath, `
+    import { registerHooks } from "node:module";
+    registerHooks({ resolve(specifier, context, nextResolve) {
+      return specifier === "@anthropic-ai/claude-agent-sdk"
+        ? { url: ${JSON.stringify(pathToFileURL(fixturePath).href)}, shortCircuit: true }
+        : nextResolve(specifier, context);
+    } });
+  `);
+  const bridgePath = join(dirname(fileURLToPath(import.meta.url)), "../bridge.js");
+  const child = spawn(process.execPath, ["--import", pathToFileURL(loaderPath).href, bridgePath], {
+    env: {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: join(directory, "config"),
+      CLAUDE_CODE_PROJECT_DIR_NAME: undefined,
+      QUERY_JOURNAL: join(directory, "query.jsonl"),
+      RENAME_JOURNAL: renames,
+      CLAUDE_CODE_EXECUTABLE: "",
+      ...fixtureEnv,
+    },
+    stdio: "pipe",
+  });
+  const output = readline.createInterface({ input: child.stdout });
+  const timeout = setTimeout(() => child.kill(), 10_000);
+  const events: Envelope[] = [];
+  const lines = output[Symbol.asyncIterator]();
+  return {
+    send: (message) => child.stdin.write(`${JSON.stringify(message)}\n`),
+    readUntil: async (done) => {
       for (;;) {
         const next = await lines.next();
         assert.ok(!next.done, `bridge closed: ${JSON.stringify(events)}`);
         const event = JSON.parse(next.value) as Envelope;
         events.push(event);
-        if (failing ? event.event === "slash_error" : events.some((e) => e.event === "connected") && events.some((e) => isTitleUpdate(e) && titleOf(e) === "Launch rename")) break;
+        if (done(event)) return event;
       }
-      const names = events.map((event) => event.event);
-      if (failing) {
-        assert.equal(existsSync(renames), false, "a resume that failed must not rename the saved session");
-        assert.ok(!names.includes("connected"), JSON.stringify(events));
-      } else {
-        assert.equal(readFileSync(renames, "utf8"), "Launch rename\n");
-      }
-    } finally {
+    },
+    events,
+    renames,
+    close: async () => {
       clearTimeout(timeout);
       output.close();
       if (child.exitCode === null && child.signalCode === null) {
@@ -319,6 +336,74 @@ test("a launch name renames the resumed session only after it has connected", as
         await new Promise<void>((resolve) => child.once("exit", () => resolve()));
       }
       rmSync(directory, { recursive: true, force: true });
+    },
+  };
+}
+
+const resumeWithLaunchName = {
+  command: "resume_session", session_id: SESSION_ID, request_id: "launch-name",
+  launch_settings: { name: "Launch rename" },
+};
+
+test("a launch name renames the resumed session, and a resume that cannot start leaves it alone", async () => {
+  for (const failing of [false, true]) {
+    const bridge = startLaunchBridge(failing ? { QUERY_FAIL: "1" } : {});
+    try {
+      bridge.send(resumeWithLaunchName);
+      if (failing) {
+        await bridge.readUntil((event) => event.event === "slash_error");
+        assert.equal(existsSync(bridge.renames), false, "a resume that failed must not rename the saved session");
+        assert.ok(!bridge.events.some((event) => event.event === "connected"), JSON.stringify(bridge.events));
+      } else {
+        await bridge.readUntil((event) => isTitleUpdate(event) && titleOf(event) === "Launch rename");
+        assert.ok(bridge.events.some((event) => event.event === "connected"), JSON.stringify(bridge.events));
+        assert.equal(readFileSync(bridge.renames, "utf8"), "Launch rename\n");
+      }
+    } finally {
+      await bridge.close();
     }
+  }
+});
+
+test("a resume whose initialization fails leaves the saved title unchanged and reports one failure", async () => {
+  // query() returns a session; only its initialization rejects afterwards.
+  const bridge = startLaunchBridge({ INIT_FAIL: "1" });
+  try {
+    bridge.send(resumeWithLaunchName);
+    await bridge.readUntil((event) => event.event === "connection_failed");
+    // Lifecycle commands run in order, so this answers only once the resume has finished.
+    bridge.send({ command: "initialize", cwd: process.cwd(), request_id: "barrier" });
+    await bridge.readUntil((event) => event.event === "initialized");
+    assert.equal(existsSync(bridge.renames), false, "a resume that failed must not rename the saved session");
+    const failures = bridge.events.filter((event) =>
+      ["connection_failed", "slash_error", "session_resume_failed"].includes(event.event as string));
+    assert.equal(failures.length, 1, JSON.stringify(bridge.events));
+    assert.ok(!bridge.events.some((event) => event.event === "connected"), JSON.stringify(bridge.events));
+  } finally {
+    await bridge.close();
+  }
+});
+
+test("a rename that fails after the resumed session connects reaches the user once and keeps the session", async () => {
+  const bridge = startLaunchBridge({ RENAME_FAIL: "1" });
+  try {
+    bridge.send(resumeWithLaunchName);
+    const connected = await bridge.readUntil((event) => event.event === "connected");
+    assert.equal(connected.session_id, SESSION_ID);
+    // A prompt waits for the resume command to finish, rename included, so its turn is the barrier.
+    bridge.send({ command: "prompt", session_id: SESSION_ID, message_uuid: "after-rename", chunks: [{ kind: "text", value: "hello" }] });
+    const turn = await bridge.readUntil((event) => event.event === "turn_complete");
+    assert.equal(turn.session_id, SESSION_ID);
+    const renameErrors = bridge.events.filter((event) =>
+      event.event === "slash_error" && String(event.message).includes("session file is read-only"));
+    assert.equal(renameErrors.length, 1, JSON.stringify(bridge.events));
+    assert.equal(renameErrors[0]?.session_id, SESSION_ID);
+    assert.ok(
+      !bridge.events.some((event) => ["connection_failed", "session_replaced"].includes(event.event as string)),
+      JSON.stringify(bridge.events),
+    );
+    assert.equal(existsSync(bridge.renames), false);
+  } finally {
+    await bridge.close();
   }
 });
