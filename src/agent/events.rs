@@ -84,11 +84,9 @@ pub enum ClientEvent {
     /// MCP elicitation request that needs auth or other MCP input.
     McpElicitationRequest { session_id: String, request: crate::agent::types::ElicitationRequest },
     /// MCP elicitation completed in the SDK.
-    McpElicitationCompleted {
-        session_id: String,
-        elicitation_id: String,
-        server_name: Option<String>,
-    },
+    McpElicitationSettled { session_id: String, request_id: String, session_closing: bool },
+    /// Transport failed before the SDK could receive this request's response.
+    McpElicitationResponseFailed { session_id: String, request_id: String },
     /// The app's elicitation response entered the outbound bridge FIFO.
     McpElicitationResponseQueued { session_id: String, request_id: String },
     /// MCP auth redirect returned directly by the SDK auth call.
@@ -169,15 +167,24 @@ pub enum ClientEvent {
     },
     /// Terminal ownership returned from a child process.
     TerminalReturnedFromChild { reason: ReleaseReason },
-    /// Session runtime plugin reload completed successfully.
-    RuntimeReloadCompleted { session_id: String },
+    /// Confirmed local-folder attachments from the SDK's current inventory.
+    PluginInventory { session_id: String, plugins: Vec<crate::agent::types::SessionPlugin> },
+    /// Native application completed; component errors and host reconciliation are separate.
+    RuntimeReloadCompleted {
+        session_id: String,
+        request_id: Option<String>,
+        error_count: u32,
+        reconciliation_error: Option<String>,
+    },
     /// A safe plugin reload was held because it would invalidate the prompt cache.
     RuntimeReloadHeld {
         session_id: String,
         cache_impact: crate::agent::types::RuntimeReloadCacheImpact,
+        request_id: Option<String>,
+        error_count: u32,
     },
     /// Session runtime plugin reload failed after dispatch.
-    RuntimeReloadFailed { session_id: String, message: String },
+    RuntimeReloadFailed { session_id: String, request_id: Option<String>, message: String },
     /// How the skills and the output styles halves of a `/reload` each ended.
     SkillsAndStylesReloaded {
         session_id: String,
@@ -230,7 +237,13 @@ pub enum ClientEvent {
         error: Option<String>,
     },
     /// Acknowledgement or rejection of a subagent stop request; not its outcome.
-    SubagentStopResult { session_id: String, task_id: String, error: Option<String> },
+    SubagentStopResult {
+        session_id: String,
+        task_id: String,
+        run_id: Option<String>,
+        request_id: Option<String>,
+        error: Option<String>,
+    },
     /// Rewind target candidates loaded from persisted SDK session history.
     RewindTargetsReceived {
         session_id: String,
@@ -287,7 +300,8 @@ impl ClientEvent {
             | Self::UserDialogRequest { session_id, .. }
             | Self::InteractionCancelled { session_id, .. }
             | Self::McpElicitationRequest { session_id, .. }
-            | Self::McpElicitationCompleted { session_id, .. }
+            | Self::McpElicitationSettled { session_id, .. }
+            | Self::McpElicitationResponseFailed { session_id, .. }
             | Self::McpElicitationResponseQueued { session_id, .. }
             | Self::McpAuthRedirect { session_id, .. }
             | Self::McpOperationError { session_id, .. }
@@ -299,7 +313,8 @@ impl ClientEvent {
             | Self::TurnComplete { session_id, .. }
             | Self::TurnError { session_id, .. }
             | Self::TurnErrorClassified { session_id, .. }
-            | Self::RuntimeReloadCompleted { session_id }
+            | Self::PluginInventory { session_id, .. }
+            | Self::RuntimeReloadCompleted { session_id, .. }
             | Self::RuntimeReloadHeld { session_id, .. }
             | Self::RuntimeReloadFailed { session_id, .. }
             | Self::SkillsAndStylesReloaded { session_id, .. }

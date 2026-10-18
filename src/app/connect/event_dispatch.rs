@@ -119,16 +119,12 @@ pub(super) async fn handle_bridge_event(
         crate::agent::wire::BridgeEvent::ElicitationRequest { session_id, request } => {
             handle_elicitation_request_event(event_tx, &session_id, request).await;
         }
-        crate::agent::wire::BridgeEvent::ElicitationComplete {
-            session_id,
-            elicitation_id,
-            server_name,
-        } => {
+        crate::agent::wire::BridgeEvent::ElicitationSettled { session_id, settlement } => {
             let _ = event_tx
-                .send(ClientEvent::McpElicitationCompleted {
+                .send(ClientEvent::McpElicitationSettled {
                     session_id,
-                    elicitation_id,
-                    server_name,
+                    request_id: settlement.request_id,
+                    session_closing: settlement.session_closing,
                 })
                 .await;
         }
@@ -235,15 +231,41 @@ pub(super) async fn handle_bridge_event(
                 );
             }
         }
-        crate::agent::wire::BridgeEvent::RuntimeReloadCompleted { session_id } => {
-            let _ = event_tx.send(ClientEvent::RuntimeReloadCompleted { session_id }).await;
+        crate::agent::wire::BridgeEvent::PluginInventory { session_id, plugins } => {
+            let _ = event_tx.send(ClientEvent::PluginInventory { session_id, plugins }).await;
         }
-        crate::agent::wire::BridgeEvent::RuntimeReloadHeld { session_id, cache_impact } => {
-            let _ =
-                event_tx.send(ClientEvent::RuntimeReloadHeld { session_id, cache_impact }).await;
+        crate::agent::wire::BridgeEvent::RuntimeReloadCompleted {
+            session_id,
+            error_count,
+            reconciliation_error,
+        } => {
+            let _ = event_tx
+                .send(ClientEvent::RuntimeReloadCompleted {
+                    session_id,
+                    request_id,
+                    error_count,
+                    reconciliation_error,
+                })
+                .await;
+        }
+        crate::agent::wire::BridgeEvent::RuntimeReloadHeld {
+            session_id,
+            cache_impact,
+            error_count,
+        } => {
+            let _ = event_tx
+                .send(ClientEvent::RuntimeReloadHeld {
+                    session_id,
+                    request_id,
+                    cache_impact,
+                    error_count,
+                })
+                .await;
         }
         crate::agent::wire::BridgeEvent::RuntimeReloadFailed { session_id, message } => {
-            let _ = event_tx.send(ClientEvent::RuntimeReloadFailed { session_id, message }).await;
+            let _ = event_tx
+                .send(ClientEvent::RuntimeReloadFailed { session_id, request_id, message })
+                .await;
         }
         crate::agent::wire::BridgeEvent::SkillsAndStylesReloaded {
             session_id,
@@ -337,9 +359,21 @@ pub(super) async fn handle_bridge_event(
                 })
                 .await;
         }
-        crate::agent::wire::BridgeEvent::SubagentStopResult { session_id, task_id, error } => {
-            let _ =
-                event_tx.send(ClientEvent::SubagentStopResult { session_id, task_id, error }).await;
+        crate::agent::wire::BridgeEvent::SubagentStopResult {
+            session_id,
+            task_id,
+            run_id,
+            error,
+        } => {
+            let _ = event_tx
+                .send(ClientEvent::SubagentStopResult {
+                    session_id,
+                    task_id,
+                    run_id,
+                    request_id,
+                    error,
+                })
+                .await;
         }
         crate::agent::wire::BridgeEvent::SessionHistoryExport {
             session_id,

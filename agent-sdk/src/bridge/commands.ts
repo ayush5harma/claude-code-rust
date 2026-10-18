@@ -599,6 +599,7 @@ export function parseCommandEnvelope(line: string): {
           command: "stop_subagent",
           session_id: expectString(raw, "session_id", "stop_subagent"),
           task_id: expectString(raw, "task_id", "stop_subagent"),
+          expected_run_id: optionalString(raw, "expected_run_id", "stop_subagent"),
         };
       case "get_rewind_targets":
         return {
@@ -627,9 +628,14 @@ export function parseCommandEnvelope(line: string): {
           ),
         };
       case "reload_plugins":
+        if (raw.add_plugins !== undefined && (
+          !Array.isArray(raw.add_plugins) || raw.add_plugins.some(value =>
+            typeof value !== "string" || !value.trim())
+        )) throw new Error("reload_plugins.add_plugins must contain nonempty local folder paths");
         return {
           command: "reload_plugins",
           session_id: expectString(raw, "session_id", "reload_plugins"),
+          ...(raw.add_plugins !== undefined ? { add_plugins: raw.add_plugins as string[] } : {}),
           ...(optionalBoolean(raw, "force", "reload_plugins") !== undefined
             ? { force: optionalBoolean(raw, "force", "reload_plugins") }
             : {}),

@@ -123,6 +123,8 @@ fn installed_plugin_entry(id: &str) -> crate::app::plugins::InstalledPluginEntry
 
 fn task_item(id: &str, subject: &str, status: model::TaskStatus) -> model::TaskItem {
     model::TaskItem {
+        run_id: None,
+        parent_task_id: None,
         task_id: id.to_owned(),
         subject: subject.to_owned(),
         description: None,
@@ -133,6 +135,7 @@ fn task_item(id: &str, subject: &str, status: model::TaskStatus) -> model::TaskI
         blocked_by: Vec::new(),
         metadata: None,
         source_tool_call_id: None,
+        source_tool_call_run_id: None,
     }
 }
 
@@ -2205,6 +2208,7 @@ fn auto_compaction_boundary_enriches_started_state_without_manual_success_pendin
 #[test]
 fn duplicate_compaction_updates_share_one_idempotent_lifecycle() {
     let mut app = make_test_app();
+    app.status = AppStatus::Ready;
 
     for _ in 0..2 {
         handle_client_event(
@@ -2215,6 +2219,9 @@ fn duplicate_compaction_updates_share_one_idempotent_lifecycle() {
         );
     }
     assert!(app.turn.compaction.is_active());
+    assert_eq!(app.status, AppStatus::Ready);
+    assert_eq!(app.active_turn_assistant_idx(), None);
+    assert!(app.transcript.messages.is_empty());
 
     for _ in 0..2 {
         handle_client_event(
@@ -2231,6 +2238,9 @@ fn duplicate_compaction_updates_share_one_idempotent_lifecycle() {
 
     assert!(!app.turn.compaction.is_active());
     assert!(app.transcript.messages.is_empty());
+    assert_eq!(app.status, AppStatus::Ready);
+    assert_eq!(app.active_turn_assistant_idx(), None);
+    assert!(app.turn.activity.is_none());
 }
 
 #[test]
@@ -2374,7 +2384,8 @@ fn rate_limit_notices_dedup_and_upgrade_in_place() {
         utilization: Some(0.92),
         rate_limit_type: Some("five_hour".to_owned()),
         limit_scope: None,
-        overage_status: None,
+        overage_enabled: Some(true),
+        overage_status: Some(model::RateLimitStatus::Allowed),
         overage_resets_at: None,
         overage_disabled_reason: None,
         is_using_overage: None,
@@ -2399,8 +2410,11 @@ fn rate_limit_notices_dedup_and_upgrade_in_place() {
     ));
     assert!(matches!(app.transcript.messages[0].blocks.first(), Some(MessageBlock::Notice(_))));
 
-    let rejected_update =
-        model::RateLimitUpdate { status: model::RateLimitStatus::Rejected, ..warning_update };
+    let rejected_update = model::RateLimitUpdate {
+        status: model::RateLimitStatus::Rejected,
+        overage_status: Some(model::RateLimitStatus::Rejected),
+        ..warning_update
+    };
     handle_client_event(
         &mut app,
         session_update(model::SessionUpdate::RateLimitUpdate(rejected_update.clone())),
@@ -2437,6 +2451,7 @@ fn plan_limit_turn_error_upgrades_inline_notice_in_active_assistant() {
             utilization: Some(0.95),
             rate_limit_type: Some("five_hour".to_owned()),
             limit_scope: None,
+            overage_enabled: None,
             overage_status: None,
             overage_resets_at: None,
             overage_disabled_reason: None,
@@ -2485,6 +2500,7 @@ fn different_rate_limit_incident_in_later_turn_keeps_older_notice() {
         utilization: Some(0.95),
         rate_limit_type: Some("five_hour".to_owned()),
         limit_scope: None,
+        overage_enabled: None,
         overage_status: None,
         overage_resets_at: None,
         overage_disabled_reason: None,
@@ -2529,6 +2545,7 @@ fn different_rate_limit_incident_in_later_turn_keeps_older_notice() {
             utilization: None,
             rate_limit_type: Some("daily".to_owned()),
             limit_scope: None,
+            overage_enabled: None,
             overage_status: None,
             overage_resets_at: None,
             overage_disabled_reason: None,
@@ -2569,6 +2586,7 @@ fn turn_notice_tracking_clears_on_turn_complete_and_session_reset() {
             utilization: Some(0.91),
             rate_limit_type: Some("five_hour".to_owned()),
             limit_scope: None,
+            overage_enabled: None,
             overage_status: None,
             overage_resets_at: None,
             overage_disabled_reason: None,
@@ -2596,6 +2614,7 @@ fn turn_notice_tracking_clears_on_turn_complete_and_session_reset() {
             utilization: Some(0.92),
             rate_limit_type: Some("daily".to_owned()),
             limit_scope: None,
+            overage_enabled: None,
             overage_status: None,
             overage_resets_at: None,
             overage_disabled_reason: None,

@@ -226,6 +226,16 @@ function streamReply(messageUuid) {
     alert({ ...proactive, tool_use_id: `upstream-${replyNumber}`, local_sent: true });
     send({ event: 'session_update', session_id: SESSION, update: { type: 'notification_update', notification: { ...proactive, tool_use_id: `replay-${replyNumber}` }, replay: true } });
   }
+  if (SCENARIO === 'tool-times-presentation') {
+    const fixtures = JSON.parse(fs.readFileSync(path.join(__dirname, 'tool-result-times.json'), 'utf8'));
+    for (const item of [fixtures[0], fixtures[2]]) send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call', tool_call: {
+      tool_call_id: item.name, title: item.tool, kind: 'other', status: 'completed', content: [],
+      raw_input: item.input, locations: [], output_metadata: { presentation: item.presentation },
+      meta: { claudeCode: { toolName: item.tool } },
+    } } });
+    send({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'completed', queued_turn_count: 0 });
+    return;
+  }
   if (SCENARIO === 'resize-replay') {
     const text = Array.from({ length: LINES }, (_, index) => `${index + 1}. streamed line ${index + 1}\n`).join('');
     send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text }, source_message_uuid: null } });
@@ -478,6 +488,12 @@ readline
           }, INTERVAL_MS);
         }
         break;
+      case 'elicitation_response':
+        send({ event: 'elicitation_settled', session_id: SESSION, settlement: { request_id: message.elicitation_request_id } });
+        if (message.elicitation_request_id === 'form-a') {
+          send({ event: 'elicitation_settled', session_id: SESSION, settlement: { request_id: 'form-a' } });
+        }
+        break;
       case 'list_subagents':
         send({ event: 'subagents_listed', session_id: SESSION, agent_ids: ['agent-done'] });
         break;
@@ -494,10 +510,19 @@ readline
         break;
       case 'stop_subagent':
         // The acknowledgement first; the lifecycle reports the outcome after it.
-        send({ event: 'subagent_stop_result', session_id: SESSION, task_id: message.task_id });
+        send({ event: 'subagent_stop_result', session_id: SESSION, task_id: message.task_id, run_id: message.expected_run_id, request_id: message.request_id });
         sendTasks([agentTask(message.task_id, 'Review parser', 'completed', 'killed')]);
         break;
       case 'prompt':
+        if (SCENARIO === 'elicitation') {
+          send({ event: 'user_message_queued', session_id: SESSION, message_uuid: message.message_uuid });
+          send({ event: 'user_message_started', session_id: SESSION, message_uuid: message.message_uuid, source: 'command_lifecycle' });
+          const form = (id, message, properties, required, field_order) => send({ event: 'elicitation_request', session_id: SESSION,
+            request: { request_id: id, server_name: 'fixture-forms', message, mode: 'form', requested_schema: { type: 'object', properties, required }, field_order } });
+          form('form-a', 'FIRST-FORM', { amount: { type: 'integer', minimum: 0 }, confirm: { type: 'boolean' }, note: { type: 'string' }, tags: { type: 'array', items: { type: 'string', enum: ['red', 'blue'] } } }, ['amount', 'confirm', 'tags'], ['amount', 'confirm', 'note', 'tags']);
+          form('form-b', 'SECOND-FORM', { label: { type: 'string', minLength: 2 } }, ['label'], ['label']);
+          break;
+        }
         if (SCENARIO === 'session-name') {
           sessionNameReply(message);
           break;
@@ -511,6 +536,18 @@ readline
           send({ event: 'user_message_queued', session_id: SESSION, message_uuid: message.message_uuid });
         } else streamReply(message.message_uuid);
         break;
+      case 'reload_plugins': {
+        if (SCENARIO === 'hold-local-plugin' && !message.force) {
+          send({ event: 'runtime_reload_held', session_id: SESSION, request_id: message.request_id, error_count: 0,
+            cache_impact: { mcp_servers_added: ['plugin:local-fixture:inspect'], mcp_servers_removed: [], invalid_server_name_count: 0 } });
+        } else {
+          send({ event: 'plugin_inventory', session_id: SESSION, plugins: (message.add_plugins ?? []).map(folder => ({
+            name: 'local-fixture', path: path.resolve(cwd, folder), source: 'local-fixture@inline', version: '1.2.3',
+          })) });
+          send({ event: 'runtime_reload_completed', session_id: SESSION, request_id: message.request_id, error_count: 0 });
+        }
+        break;
+      }
       case 'reload_skills_and_styles':
         if (SCENARIO === 'reload-expired') {
           // The bridge's answer when an earlier request for the session held the reload too long.
@@ -530,7 +567,8 @@ readline
         break;
       case 'inspect_settings':
         if (notificationScenario) {
-          notificationAppPath = path.join(process.env.CLAUDE_CONFIG_DIR, 'app-settings.json');
+          notificationAppPath = message.app_settings_path;
+          if (!notificationAppPath) throw new Error('App settings path was not supplied');
           if (!fs.existsSync(notificationAppPath)) fs.writeFileSync(notificationAppPath, JSON.stringify({ notifications: { actionsRequired: true, modelDirected: true, turnComplete: false } }));
         }
         send({ event: 'settings_result', session_id: SESSION, request_id: message.request_id, result: {

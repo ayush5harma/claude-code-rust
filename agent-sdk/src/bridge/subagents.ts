@@ -5,6 +5,7 @@ import { mapSessionMessagesToEntries } from "./history.js";
 import { sessionById, type SessionState } from "./session_lifecycle.js";
 import { asRecordOrNull } from "./shared.js";
 import { toolNameFromMeta } from "./tool_calls.js";
+import { restoreSavedSubagents } from "./saved_subagents.js";
 
 type SubagentCommand = Extract<
   BridgeCommand,
@@ -51,6 +52,7 @@ async function listTranscripts(
   try {
     if (!session) throw new Error(NO_SESSION);
     const agentIds = await listSubagents(session.sessionId, { dir: session.cwd });
+    await restoreSavedSubagents(session, agentIds);
     writeEvent({ event: "subagents_listed", session_id: command.session_id, agent_ids: agentIds }, requestId);
   } catch (error) {
     writeEvent(
@@ -87,7 +89,7 @@ function handbackReport(tool: ToolCall): string | undefined {
 
 /** The text a reader follows: prompts, SDK reminders, replies and the titles of tool calls. */
 function transcriptEntries(history: Parameters<typeof mapSessionMessagesToEntries>[0]): SubagentMessage[] {
-  return mapSessionMessagesToEntries(history).flatMap((update): SubagentMessage[] => {
+  return mapSessionMessagesToEntries(history, true).flatMap((update): SubagentMessage[] => {
     if (update.type === "system_reminder") return [{ role: "system_reminder", text: update.text }];
     if (update.type === "tool_call") {
       const report = handbackReport(update.tool_call);
@@ -104,10 +106,12 @@ async function requestStop(
   requestId?: string,
 ): Promise<void> {
   const session = activeSession(command.session_id);
-  const result = { event: "subagent_stop_result" as const, session_id: command.session_id, task_id: command.task_id };
+  // Capture the operation before awaiting; the task may resume meanwhile.
+  const result = { event: "subagent_stop_result" as const, session_id: command.session_id, task_id: command.task_id, run_id: command.expected_run_id };
   try {
     if (!session) throw new Error(NO_SESSION);
     const task = session.tasksById.get(command.task_id);
+    if (task?.run_id !== command.expected_run_id) throw new Error("This subagent's execution has changed.");
     if (
       task?.status !== "in_progress" ||
       asRecordOrNull(task.metadata)?.task_type !== "local_agent"

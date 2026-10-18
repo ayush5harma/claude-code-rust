@@ -80,13 +80,15 @@ Each save goes to one scope. Press `s` in the list to cycle the save scope throu
 | Project | `./.claude/settings.json` | Defaults shared with the repository. |
 | Local | `./.claude/settings.local.json` | Private defaults for this project. |
 | Managed | Organization policy | Shown for information. Settings restricted by policy are read-only. |
-| App preferences | `claude-code-rust/settings.json` in the OS config directory | This app's own preferences: footer layout, tab-title activity, the `/copy` picker, notification categories and automatic updates. Always saved for the user. |
+| App preferences | `claude-code-rust/settings.json` in the OS config directory, or `<CLAUDE_RS_CONFIG_DIR>/settings.json` when overridden | This app's own preferences: footer layout, tab-title activity, the `/copy` picker, notification categories and automatic updates. Always saved for the user. |
 
 Not every setting can be saved at every scope. A setting that the selected scope cannot hold is read-only until you switch scope; [Settings by pane](#settings-by-pane) lists the restrictions.
 
 Workspace trust is recorded separately in `~/.claude.json`. It is not a settings scope and is never used as a fallback for a setting.
 
 Set `CLAUDE_CONFIG_DIR` before startup to use an isolated Claude profile. User settings then live in `<directory>/settings.json`, workspace trust in `<directory>/.claude.json`, and file credentials in `<directory>/.credentials.json`. Sessions, plugins and authentication use the same directory. Project and Local settings stay in the project, and app preferences and diagnostics keep their normal OS locations.
+
+Set `CLAUDE_RS_CONFIG_DIR` to select a separate directory for this app's preferences. They are read from and saved to `<directory>/settings.json`, including the footer layout, presentation preferences, notification categories and update preferences. An empty or unset value uses the normal OS config location. This override is independent of `CLAUDE_CONFIG_DIR`; diagnostics retain their normal location.
 
 The Settings tab shows saved values. A running session can differ, because workspace trust, managed policy, model capabilities, startup arguments and session commands also apply. The Status tab and the chat footer show what the session is running with.
 
@@ -204,6 +206,10 @@ Hook actions are command, prompt, agent, HTTP and MCP tool. Event names come fro
 
 Saving replaces the `hooks` object at the selected scope. Hooks from other scopes keep merging in. Disable all is a separate On/Off setting.
 
+Command and HTTP actions offer **Failure policy** (`onFailure`): `continue` reports a failed hook and lets the guarded action proceed; `block` treats the failure as exit code 2. Failures include startup errors, timeouts, exit codes other than 0 or 2, and invalid JSON or JSON that does not match the hook schema. Unset uses `continue`. Select the field and press `Delete` to remove only that handler's override, then `Ctrl+S` to save.
+
+The SDK ignores this policy for asynchronous hooks and the Stop, SubagentStop, TaskCompleted and TeammateIdle events. It decides whether an event can block an action. Editing or validating the policy never executes a hook.
+
 ### Editing sandbox settings
 
 Path, domain and command lists use the list editor. Credential protection, TLS termination, Ignored violations and Ripgrep command open forms:
@@ -247,11 +253,14 @@ General also holds the settings described under [Presentation and scrolling](#pr
 | Setting | Key | Notes |
 | --- | --- | --- |
 | Auto compact | `autoCompactEnabled` | Compacts context automatically. |
+| Idle compaction | `idleCompaction` | Off stops compaction while idle. On or Default does not enable the feature. User, Project and Local scopes; saved for the next session. |
 | File checkpoints | `fileCheckpointingEnabled` | Records file snapshots for code rewind. |
 | Automatic memory | `autoMemoryEnabled` | Reads and writes automatic memory for the project. |
 | Directory | `autoMemoryDirectory` | User and Local only; shared Project settings cannot redirect memory. Supports `~/`. |
 | Excluded instructions | `claudeMdExcludes` | One glob or absolute path per entry. Managed instructions cannot be excluded. |
 | Plans directory | `plansDirectory` | Relative paths are relative to the project root. |
+
+Idle compaction follows the SDK's settings cascade. Reset removes the preference at the selected scope and exposes the remaining scope or Default. Its saved On/Off value is a preference, not evidence that idle compaction is available or running; availability remains under SDK control.
 
 ### Permissions
 
@@ -335,11 +344,11 @@ You can keep editing while a save is in progress. Later edits are saved next, us
 
 Model, effort, working directory, Git branch, and context remaining support optional colors. Press `C` to expand a palette directly below the selected field. Arrow keys move between color boxes; the selected color name appears underneath. `Enter` applies and autosaves the choice, while `Esc` or `C` collapses the palette without applying it. Choose `Current` (`Home`) to restore the field's existing appearance. Permission mode, Fast mode, and Ultracode retain their fixed colors. Narrow windows show fewer boxes per row and keep the focused box visible.
 
-Permission mode, model, effort, Ultracode, fast mode, running subagents, working directory, Git branch and context remaining are independent fields. Hiding the model does not hide effort or Ultracode; hiding the directory does not hide the branch. Fields appear only when their session data applies: effort requires a model that supports it, Ultracode requires verified effective state, running subagents requires at least one subagent of the current session still running (see [`/agents`](commands.md#app-owned-commands)), and branch requires a Git branch.
+Permission mode, model, effort, Ultracode, fast mode, running subagents, working directory, Git branch and context remaining are independent fields. Hiding the model does not hide effort or Ultracode; hiding the directory does not hide the branch. Fields appear only when their session data applies: effort requires a model that supports it, Ultracode requires verified effective state, running subagents requires at least one non-ambient subagent of the current session still running (one count per task across resumes, including stopping requests; see [`/agents`](commands.md#app-owned-commands)), and branch requires a Git branch.
 
 Permission and startup MCP-authentication notices remain at the far right and take priority over configured fields. On narrow terminals, paths and branches shorten first, then later fields are omitted, with the left group preceding the right group for overflow priority. The footer never wraps.
 
-The layout is a user-level app preference saved as the `presentation.footer` array in `claude-code-rust/settings.json` in the OS config directory. Each entry has an `id`, a `visible` boolean, a `side` of `left` or `right`, and an optional `color`; array order determines reading order within each group. The field IDs are `permissionMode`, `model`, `effort`, `ultracode`, `fastMode`, `runningSubagents`, `directory`, `gitBranch` and `contextRemaining`. Omitted fields remain available in the dialog but are hidden. An empty array hides all optional fields. Removing the setting restores the built-in layout.
+The layout is a user-level app preference saved as the `presentation.footer` array in the app-preferences file described under [Where settings are saved](#where-settings-are-saved). Each entry has an `id`, a `visible` boolean, a `side` of `left` or `right`, and an optional `color`; array order determines reading order within each group. The field IDs are `permissionMode`, `model`, `effort`, `ultracode`, `fastMode`, `runningSubagents`, `directory`, `gitBranch` and `contextRemaining`. Omitted fields remain available in the dialog but are hidden. An empty array hides all optional fields. Removing the setting restores the built-in layout.
 
 For example, `{ "id": "model", "visible": true, "side": "left", "color": "cyan" }` sets the model color. Omitting `color` keeps its existing appearance. The palette IDs are `red`, `orange`, `amber`, `yellow`, `lime`, `green`, `emerald`, `teal`, `cyan`, `sky`, `blue`, `indigo`, `violet`, `purple`, `fuchsia`, `pink`, `rose`, `white`, `gray`, and `slate`.
 
@@ -414,10 +423,22 @@ The MCP tab shows live session-backed MCP state. Use `/mcp` to inspect servers, 
 
 If no session is active, the tab asks you to open or resume a session first. If the active session reports no MCP servers, the tab shows an empty state rather than editing raw config files.
 
+MCP input requests open a dialog over this tab. Supported forms edit strings, numbers, whole numbers, booleans, single choices, and arrays of string choices, including titled choices and defaults. Required fields and supported length, numeric range, choice-count and date/email/URI/date-time constraints are validated before Accept. `false` and `0` are answers. Optional fields start omitted unless the server supplies a default; `Ctrl+O` includes or omits the focused optional field, so an included empty string differs from omission. Unsupported schemas show a reason and allow Decline or Cancel without offering Accept.
+
+Use `Tab`/`Shift+Tab` or `Up`/`Down` to move between fields and actions. Type or paste into text and numeric fields, use `Left`/`Right` for choices, and `Space` to toggle a boolean or the highlighted multi-choice option. `Enter` advances from a field or activates the selected action. `Ctrl+Enter` accepts when the terminal distinguishes it; navigating to Accept works in every terminal. `Esc` cancels. A validation or send error retains the draft for correction or retry.
+
+Overlapping requests wait in arrival order; the dialog shows the waiting count. A new request does not replace the form being edited. Only the active URL request opens a browser. SDK cancellation removes its matching request, including one still queued. A submitted dialog stays pending until its SDK callback settles, and prevents duplicate submission. Drafts remain in memory for the active session and are discarded on settlement or session teardown; form answers are not written as settings or diagnostic fields.
+
 ## Plugins
 
-The Plugins tab is available through `/plugins`. It shows installed plugins, marketplace plugins, and configured marketplaces.
+The Plugins tab is available through `/plugins`. It shows installed plugins, marketplace plugins, configured marketplaces, and Session attachments.
 
 Supported actions include enabling, disabling, updating, uninstalling, and installing plugins into user, project, or local scopes when those actions are available for the selected plugin.
 
 After plugin changes, the app requests a session runtime plugin reload when an active session is available.
+
+In the Session list, choose **Load local folder** or press `l` outside search. Enter the plugin directory, using an absolute path or a path relative to the session's working directory. The SDK loads it into the current session without installing it into a persistent scope or changing marketplaces. Confirmed folders show **Source: Session**, their folder, and the SDK's source and version when supplied. Select an existing folder and press Enter to load it again after editing its files; `r` reloads the current inventory.
+
+A reload that would invalidate the prompt cache opens an Apply/Decline confirmation. Until Apply, no requested folder is added. Apply submits the same folders; declining keeps the draft and the session's existing plugins. A rejected request keeps the draft for retry. A reload can apply with component errors: the app shows the SDK's error count and reconciles the confirmed plugins, commands, agents and MCP servers. A host reconciliation failure is reported separately and does not imply that the attachment was rolled back.
+
+Confirmed attachments are retained when the bridge replaces or resumes the same active session, including rewind. They are not persisted by the host: after restarting the app or switching away and returning, load the folders again. A fresh session does not inherit them. Before the first prompt after a replacement, press `r` in Session to obtain a new SDK inventory if it is not yet listed. Managed policy, remote environments or an already-running sandbox can reject local folder loading; the SDK's refusal is shown without a persistent-install fallback.

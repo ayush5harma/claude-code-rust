@@ -29,6 +29,24 @@ const OWNED_REGION_ERROR: &str = "refusing to clear outside inline chat owned re
 const WAIT_LIMIT: Duration = Duration::from_secs(60);
 type PtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
+#[derive(Clone, Copy, Default)]
+struct AppProfileFixture<'a> {
+    inherited_directory: Option<&'a Path>,
+    contents: Option<&'a str>,
+}
+
+#[allow(clippy::expect_used)]
+fn configure_test_profiles(command: &mut CommandBuilder, root: &Path) {
+    for (variable, directory) in
+        [("CLAUDE_CONFIG_DIR", "profile"), ("CLAUDE_RS_CONFIG_DIR", "app-config")]
+    {
+        let directory = root.join(directory);
+        std::fs::create_dir_all(&directory).expect("isolated configuration directory");
+        command.env(variable, directory);
+    }
+    command.env_remove("CLAUDE_CODE_PROJECT_DIR_NAME");
+}
+
 struct CapturedTerminal {
     parser: vt100::Parser<ScrollbackCallbacks>,
     raw: Vec<u8>,
@@ -159,6 +177,8 @@ struct TerminalTest {
     output: Arc<Mutex<CapturedTerminal>>,
     journal: PathBuf,
     release_file: PathBuf,
+    /// Release the exclusive Windows fixture lock before removing the temp directory.
+    _auth_spawn_lock: Option<std::fs::File>,
     temp: tempfile::TempDir,
     /// The screen when the test last started acting. A needle found here was
     /// not produced by that action.
@@ -197,12 +217,40 @@ impl TerminalTest {
         has_initial_prompt: bool,
         removed_env: &[&str],
     ) -> Self {
+        Self::start_with_profile(
+            scenario,
+            lines,
+            auth_mode,
+            args,
+            has_initial_prompt,
+            removed_env,
+            AppProfileFixture::default(),
+        )
+    }
+
+    fn start_with_profile(
+        scenario: &str,
+        lines: u16,
+        auth_mode: Option<&str>,
+        args: &[&str],
+        has_initial_prompt: bool,
+        removed_env: &[&str],
+        app_profile: AppProfileFixture<'_>,
+    ) -> Self {
         let temp = tempfile::tempdir().expect("tempdir");
         let profile = temp.path().join("profile");
         let project = temp.path().join("project");
         let journal = temp.path().join("commands.jsonl");
         let release_file = temp.path().join("release");
-        std::fs::create_dir_all(&profile).expect("profile");
+        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_claude-rs"));
+        if let Some(inherited_directory) = app_profile.inherited_directory {
+            command.env("CLAUDE_RS_CONFIG_DIR", inherited_directory);
+        }
+        configure_test_profiles(&mut command, temp.path());
+        if let Some(contents) = app_profile.contents {
+            std::fs::write(temp.path().join("app-config/settings.json"), contents)
+                .expect("app preferences fixture");
+        }
         std::fs::create_dir_all(&project).expect("project");
         if has_initial_prompt {
             std::fs::write(profile.join("settings.json"), r#"{"model":"haiku","effortLevel":"medium","permissions":{"defaultMode":"default"}}"#).expect("saved settings");
@@ -213,7 +261,6 @@ impl TerminalTest {
             .expect("terminal tests need bun or node on PATH");
 
         let pair = native_pty_system().openpty(pty_size(SHORT_ROWS, COLS)).expect("open pty");
-        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_claude-rs"));
         command.arg("--no-update-check");
         command.arg("--log-file");
         command.arg(temp.path().join("runtime.log"));
@@ -228,7 +275,6 @@ impl TerminalTest {
             command.arg(arg);
         }
         command.cwd(&project);
-        command.env("CLAUDE_CONFIG_DIR", &profile);
         command.env("CLAUDE_RS_AGENT_BRIDGE", &bridge);
         command.env("CLAUDE_RS_AGENT_BRIDGE_RUNTIME", runtime);
         command.env("FAKE_BRIDGE_LINES", lines.to_string());
@@ -240,9 +286,8 @@ impl TerminalTest {
         for name in removed_env {
             command.env_remove(name);
         }
-        if let Some(mode) = auth_mode {
-            Self::install_fake_cli(&mut command, temp.path(), mode);
-        }
+        let auth_spawn_lock =
+            auth_mode.and_then(|mode| Self::install_fake_cli(&mut command, temp.path(), mode));
         let writer = Arc::new(Mutex::new(pair.master.take_writer().expect("pty writer")));
         let reader = pair.master.try_clone_reader().expect("pty reader");
         let process = pair.slave.spawn_command(command).expect("spawn claude-rs");
@@ -259,6 +304,7 @@ impl TerminalTest {
             before_action: String::new(),
             settled: true,
             trust_prompt: String::new(),
+            _auth_spawn_lock: auth_spawn_lock,
         };
         // "> Yes" is drawn after everything above it, so seeing it means the
         // whole prompt, directory included, is on screen.
@@ -279,7 +325,11 @@ impl TerminalTest {
     }
 
     /// Puts a fake `claude` CLI that behaves as `mode` first on the app's PATH.
-    fn install_fake_cli(command: &mut CommandBuilder, temp: &Path, mode: &str) {
+    fn install_fake_cli(
+        command: &mut CommandBuilder,
+        temp: &Path,
+        mode: &str,
+    ) -> Option<std::fs::File> {
         let cli_dir = temp.join("bin");
         std::fs::create_dir(&cli_dir).expect("fake CLI directory");
         let cli = cli_dir.join(if cfg!(windows) { "claude.exe" } else { "claude" });
@@ -318,6 +368,24 @@ impl TerminalTest {
         paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
         command.env("PATH", std::env::join_paths(paths).expect("fixture PATH"));
         command.env("FAKE_AUTH_MODE", mode);
+        #[cfg(windows)]
+        if mode == "spawn-error" {
+            use std::os::windows::fs::OpenOptionsExt;
+            // Reject image access before Windows inspects an invalid image,
+            // which can invoke machine-specific compatibility/error handling.
+            let lock = std::fs::OpenOptions::new()
+                .write(true)
+                .share_mode(0)
+                .open(&cli)
+                .expect("exclusive fake CLI lock");
+            assert_eq!(
+                which::which_in("claude", Some(cli.parent().expect("CLI directory")), temp)
+                    .expect("locked fixture stays discoverable"),
+                cli
+            );
+            return Some(lock);
+        }
+        None
     }
 
     fn mark_action(&mut self) {
@@ -2110,6 +2178,49 @@ fn structured_settings_editor_adds_individual_rules_and_preserves_them_on_resize
 }
 
 #[test]
+fn local_plugin_loading_holds_then_applies_the_same_folder_without_persistent_settings() {
+    let mut test = TerminalTest::start_with_auth("hold-local-plugin", 8, Some("plugin-inventory"));
+    test.submit("go", "go");
+    test.wait_journal("reply-held");
+    test.submit("/plugins", "/plugins");
+    test.wait_screen("Plugin inventory refreshed");
+    test.send(b"\x1b[D");
+    test.wait_screen("Session attachments");
+    test.send(b"l");
+    test.wait_screen("Local plugin directory:");
+    let folder = "./plugin folder";
+    std::fs::create_dir(test.temp.path().join("project/plugin folder")).expect("local folder");
+    test.paste(folder);
+    test.wait_screen(folder);
+    test.send(b"\r");
+    test.wait_screen("invalidate prompt cache?");
+    assert_eq!(test.commands("reload_plugins").len(), 1);
+    assert!(!test.screen().contains("Version: 1.2.3"));
+    test.send(b"\x1b[B\r");
+    test.wait_screen_with("Version: 1.2.3", &["Local Fixture", "Source: Session"]);
+    let reloads = test.commands("reload_plugins");
+    assert_eq!(reloads.len(), 2);
+    for reload in &reloads {
+        assert_eq!(reload["add_plugins"], serde_json::json!([folder]));
+    }
+    assert_ne!(reloads[0]["force"], true);
+    assert_eq!(reloads[1]["force"], true);
+    assert_ne!(reloads[0]["request_id"], reloads[1]["request_id"]);
+    for (rows, cols) in [(18, 50), (38, 87), (55, 120)] {
+        test.resize_keeping(rows, cols, &["Local Fixture", "Source: Session"]);
+    }
+    assert!(!test.temp.path().join("profile/settings.json").exists());
+    assert!(!test.temp.path().join("profile/plugins/installed_plugins.json").exists());
+    assert!(!test.temp.path().join("project/.claude/settings.json").exists());
+    test.send(b"\x1b");
+    test.wait_screen("streamed line 8");
+    test.assert_prompts(&["go"]);
+    test.release();
+    test.wait_journal("turn_complete");
+    test.shutdown();
+}
+
+#[test]
 fn guided_hook_creation_survives_resize_and_saves_a_complete_hook_with_existing_data() {
     let mut test = TerminalTest::start("hold-hooks", 8);
     std::fs::write(
@@ -2236,6 +2347,35 @@ fn a_stream_error_preserves_the_next_unsent_draft_through_resize() {
     test.resize_keeping(55, 120, &draft);
     test.resize_keeping(38, 87, &draft);
     test.assert_prompts(&["go"]);
+    test.shutdown();
+}
+
+#[test]
+fn scheduler_and_queue_times_stay_in_their_tool_cards_after_terminal_replay() {
+    let mut test = TerminalTest::start("tool-times-presentation", 0);
+    test.submit("Show saved tool times", "Show saved tool times");
+    test.wait_turn_finished("Notification ID: delivery-a");
+    for dimensions in [None, Some((28, 65)), Some((55, 100))] {
+        if let Some((rows, cols)) = dimensions {
+            test.resize_and_wait_for_draw(rows, cols);
+        }
+        test.wait_until("timestamped tool cards in terminal history", |test| {
+            let rows = test.transcript_rows();
+            let Some(create) = rows.iter().position(|row| row.contains("CronCreate")) else {
+                return false;
+            };
+            let Some(drain) = rows.iter().position(|row| row.contains("ReadNotifications")) else {
+                return false;
+            };
+            create < drain
+                && rows[create..drain].iter().any(|row| row.contains("Next run: 2026-03-29 01:30Z"))
+                && rows[create..drain].iter().any(|row| row.contains("Schedule ID: create-a"))
+                && rows[drain..].iter().any(|row| row.contains("Remaining: 4"))
+                && rows[drain..].iter().any(|row| row.contains("Read at: 2026-03-29 01:10Z"))
+                && rows[drain..].iter().any(|row| row.contains("Notification ID: delivery-a"))
+                && rows[drain..].iter().any(|row| row.contains("Arrived at: 2026-03-29 01:00Z"))
+        });
+    }
     test.shutdown();
 }
 
@@ -2493,7 +2633,7 @@ fn notifications_follow_focus_saved_categories_and_sdk_delivery_provenance_in_a_
     test.select_setting("Notify when Claude requests it");
     test.send(b" "); // On -> Off, immediate acknowledged save.
     test.wait_setting(
-        "profile/app-settings.json",
+        "app-config/settings.json",
         "/notifications/modelDirected",
         Some(&Value::Bool(false)),
     );
@@ -2504,7 +2644,7 @@ fn notifications_follow_focus_saved_categories_and_sdk_delivery_provenance_in_a_
     test.wait_screen_with("Native notice 3", &["[READY]"]);
     assert_eq!(notification_bells(&test), 1);
     let saved: Value = serde_json::from_slice(
-        &std::fs::read(test.temp.path().join("profile/app-settings.json"))
+        &std::fs::read(test.temp.path().join("app-config/settings.json"))
             .expect("saved categories"),
     )
     .expect("category JSON");
@@ -2816,6 +2956,89 @@ fn ctrl_v_attaches_the_system_clipboard_image_and_sends_it_with_the_prompt() {
 }
 
 #[test]
+fn app_preferences_are_isolated_from_an_inherited_profile_for_reads_and_writes() {
+    let inherited = tempfile::tempdir().expect("inherited app profile");
+    let inherited_path = inherited.path().join("settings.json");
+    let original = include_str!("fixtures/app-settings/hidden-subagents.json");
+    std::fs::write(&inherited_path, original).expect("conflicting inherited preferences");
+    let mut preferences: Value = serde_json::from_str(original).expect("app fixture");
+    preferences["presentation"]["footer"][0]["visible"] = Value::Bool(true);
+    let preferences = preferences.to_string();
+    let mut test = TerminalTest::start_with_profile(
+        "agents",
+        3,
+        None,
+        &[],
+        false,
+        &[],
+        AppProfileFixture {
+            inherited_directory: Some(inherited.path()),
+            contents: Some(&preferences),
+        },
+    );
+    test.wait_screen("[AGENTS:1]");
+    test.submit("/config", "/config");
+    test.wait_settings_ready("Footer");
+    let inspections = test.commands("inspect_settings");
+    let inspected_path = inspections.last().expect("settings inspection")["app_settings_path"]
+        .as_str()
+        .expect("app settings path");
+    assert_eq!(
+        Path::new(inspected_path),
+        test.temp.path().join("app-config").join("settings.json"),
+        "verify the selected profile before editing any preferences"
+    );
+    test.select_setting("Footer");
+    test.send(b"\r");
+    test.wait_screen("Running subagents");
+    // The fixture explicitly puts Running subagents first in the editor.
+    test.send(b" ");
+    test.wait_until("footer saved in the isolated app profile", |test| {
+        std::fs::read(test.temp.path().join("app-config/settings.json"))
+            .ok()
+            .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
+            .and_then(|saved| saved["presentation"]["footer"].as_array().cloned())
+            .is_some_and(|fields| {
+                fields
+                    .iter()
+                    .any(|field| field["id"] == "runningSubagents" && field["visible"] == false)
+            })
+    });
+    test.shutdown();
+    assert_eq!(std::fs::read(&inherited_path).expect("inherited preferences"), original.as_bytes());
+    let saved: Value = serde_json::from_slice(
+        &std::fs::read(test.temp.path().join("app-config/settings.json"))
+            .expect("isolated preferences"),
+    )
+    .expect("saved JSON");
+    assert_eq!(saved["unrelated"], "preserve this profile");
+}
+
+#[test]
+fn a_custom_app_profile_can_hide_the_footer_count_without_hiding_subagents() {
+    let mut test = TerminalTest::start_with_profile(
+        "agents",
+        3,
+        None,
+        &[],
+        false,
+        &[],
+        AppProfileFixture {
+            contents: Some(include_str!("fixtures/app-settings/hidden-subagents.json")),
+            ..AppProfileFixture::default()
+        },
+    );
+    test.send(b"\x1b[D");
+    test.wait_screen_with("Check the parser for edge cases", &["Subagents", "running"]);
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+    let footer =
+        test.screen_rows().into_iter().find(|row| row.contains("[READY]")).expect("ready footer");
+    assert!(!footer.contains("AGENTS:"), "custom footer must hide the count: {footer}");
+    test.shutdown();
+}
+
+#[test]
 fn agents_view_opens_from_an_empty_composer_stops_a_running_subagent_and_returns_to_chat() {
     let mut test = TerminalTest::start("agents", 3);
     // A draft keeping Left as cursor movement is covered by the app key tests.
@@ -2836,7 +3059,7 @@ fn agents_view_opens_from_an_empty_composer_stops_a_running_subagent_and_returns
 
     // Selecting the completed subagent previews the response it ended with.
     test.send(b"\x1b[B");
-    test.wait_screen_with("Docs path checked", &["Response", "Transcript: saved"]);
+    test.wait_screen_with("Docs path checked", &["Saved response", "Transcript: saved"]);
     // Opening it shows the read the preview came from: the bridge's first answer.
     test.send(b"\r");
     test.wait_screen_with(
@@ -2869,7 +3092,6 @@ fn agents_view_opens_from_an_empty_composer_stops_a_running_subagent_and_returns
 fn a_bad_dir_or_bridge_script_exits_before_the_terminal_is_touched() {
     let temp = tempfile::tempdir().expect("tempdir");
     let profile = temp.path().join("profile");
-    std::fs::create_dir_all(&profile).expect("profile");
     let file = temp.path().join("notes.txt");
     std::fs::write(&file, "").expect("file");
     let cases = [
@@ -2880,11 +3102,11 @@ fn a_bad_dir_or_bridge_script_exits_before_the_terminal_is_touched() {
     for (flag, path) in cases {
         let pair = native_pty_system().openpty(pty_size(SHORT_ROWS, COLS)).expect("open pty");
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_claude-rs"));
+        configure_test_profiles(&mut command, temp.path());
         command.arg("--no-update-check");
         command.arg(flag);
         command.arg(&path);
         command.cwd(temp.path());
-        command.env("CLAUDE_CONFIG_DIR", &profile);
         let writer = Arc::new(Mutex::new(pair.master.take_writer().expect("pty writer")));
         let reader = pair.master.try_clone_reader().expect("pty reader");
         let process = pair.slave.spawn_command(command).expect("spawn claude-rs");
@@ -2946,5 +3168,53 @@ fn a_relative_dir_starts_the_session_in_the_absolute_directory_it_names() {
         })
     });
     assert!(location.ends_with("project"), "Loc: {location}");
+    test.shutdown();
+}
+
+#[test]
+fn mcp_elicitation_forms_preserve_typed_answers_queue_focus_and_resize_controls() {
+    let mut test = TerminalTest::start("elicitation", 3);
+    test.submit("start forms", "start forms");
+    test.wait_screen_with("FIRST-FORM", &["fixture-forms", "1 waiting", "amount (required)"]);
+    test.send(b"0");
+    test.wait_screen("[0|]");
+    test.send(b"\t");
+    test.wait_screen("\u{203a} confirm (required)");
+    test.send(b"\t"); // Optional note.
+    test.wait_screen("\u{203a} note (optional, omitted)");
+    test.send(b"\x0f"); // Ctrl+O: include an explicitly empty string.
+    test.wait_screen("note (optional, included)");
+    test.send(b"\t"); // Multi-select.
+    test.wait_screen("\u{203a} tags (required)");
+    test.send(b" ");
+    test.wait_screen("[x] red");
+    test.resize_keeping(25, 61, &["tags (required)", "red"]);
+    test.resize_keeping(38, 87, &["tags (required)"]);
+    test.send(b"\t");
+    test.wait_screen("\u{203a} Accept");
+    test.send(b"\r");
+    test.wait_screen_with("SECOND-FORM", &["0 waiting", "label (required)"]);
+    let responses = test.commands("elicitation_response");
+    assert_eq!(responses.len(), 1);
+    assert_eq!(responses[0]["elicitation_request_id"], "form-a");
+    assert_eq!(responses[0]["action"], "accept");
+    assert_eq!(
+        responses[0]["content"],
+        serde_json::json!({"amount":0,"confirm":false,"note":"","tags":["red"]})
+    );
+    test.send(b"\x1b");
+    test.wait_until("second form cancelled", |test| {
+        test.commands("elicitation_response").len() == 2
+    });
+    let responses = test.commands("elicitation_response");
+    assert_eq!(responses[1]["elicitation_request_id"], "form-b");
+    assert_eq!(responses[1]["action"], "cancel");
+    assert!(responses[1].get("content").is_none());
+    assert!(
+        !std::fs::read_to_string(test.temp.path().join("runtime.log"))
+            .unwrap()
+            .contains("FIRST-FORM"),
+        "request content is not diagnostic metadata"
+    );
     test.shutdown();
 }

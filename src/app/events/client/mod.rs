@@ -75,7 +75,8 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         | ClientEvent::TurnErrorClassified { .. }
         | ClientEvent::SlashCommandError { .. } => ClientEventFamily::Turn,
         ClientEvent::McpElicitationRequest { .. }
-        | ClientEvent::McpElicitationCompleted { .. }
+        | ClientEvent::McpElicitationSettled { .. }
+        | ClientEvent::McpElicitationResponseFailed { .. }
         | ClientEvent::McpElicitationResponseQueued { .. }
         | ClientEvent::McpAuthRedirect { .. }
         | ClientEvent::McpOperationError { .. }
@@ -107,6 +108,7 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         | ClientEvent::TerminalReleasedToChild { .. }
         | ClientEvent::TerminalReturnedFromChild { .. }
         | ClientEvent::RuntimeReloadCompleted { .. }
+        | ClientEvent::PluginInventory { .. }
         | ClientEvent::RuntimeReloadHeld { .. }
         | ClientEvent::RuntimeReloadFailed { .. }
         | ClientEvent::SkillsAndStylesReloaded { .. }

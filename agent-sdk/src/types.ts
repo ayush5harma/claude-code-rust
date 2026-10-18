@@ -119,6 +119,7 @@ export interface RateLimitUpdate {
   utilization?: number;
   rate_limit_type?: string;
   limit_scope?: "service" | "channel" | "group_pool";
+  overage_enabled?: boolean;
   overage_status?: RateLimitStatus;
   overage_resets_at?: number;
   overage_disabled_reason?: string;
@@ -239,7 +240,16 @@ export interface ToolNonExecutionMetadata {
   user_feedback?: string;
 }
 
+/** Canonical result sections; timestamps stay typed until the host applies its clock policy. */
+export interface ToolResultPresentation {
+  sections: Array<{
+    fields: Array<{ label: string; value: { type: "text" | "timestamp"; value: string } }>;
+    text?: string;
+  }>;
+}
+
 export interface ToolOutputMetadata {
+  presentation?: ToolResultPresentation;
   timing?: { duration_ms: number; source: "progress" | "task" };
   staged?: boolean;
   structured_content_omitted?: boolean;
@@ -355,6 +365,8 @@ export type TaskUpdateSource =
 
 export interface TaskItem {
   task_id: string;
+  run_id?: string;
+  parent_task_id?: string;
   subject: string;
   description?: string;
   active_form?: string;
@@ -364,6 +376,8 @@ export interface TaskItem {
   blocked_by: string[];
   metadata?: Json;
   source_tool_call_id?: string;
+  /** Run that established the invocation; an older launch can still identify the producer. */
+  source_tool_call_run_id?: string;
 }
 
 /** One readable entry of a saved subagent transcript. `system_reminder` is a
@@ -537,11 +551,12 @@ export interface ElicitationRequest {
   url?: string;
   elicitation_id?: string;
   requested_schema?: Record<string, Json>;
+  field_order: string[];
 }
 
-export interface ElicitationComplete {
-  elicitation_id: string;
-  server_name?: string;
+export interface ElicitationSettlement {
+  request_id: string;
+  session_closing: boolean;
 }
 
 export interface McpAuthRedirect {
@@ -1042,6 +1057,7 @@ export type BridgeCommand =
       command: "stop_subagent";
       session_id: string;
       task_id: string;
+      expected_run_id?: string;
     }
   | {
       command: "get_rewind_targets";
@@ -1062,6 +1078,7 @@ export type BridgeCommand =
       command: "reload_plugins";
       session_id: string;
       force?: boolean;
+      add_plugins?: string[];
     }
   | {
       command: "reload_skills_and_styles";
@@ -1134,6 +1151,13 @@ export type TurnErrorKind =
   | "internal"
   | "other";
 
+export interface SessionPlugin {
+  name: string;
+  path: string;
+  source?: string;
+  version?: string;
+}
+
 export interface RuntimeReloadCacheImpact {
   mcp_servers_added: string[];
   mcp_servers_removed: string[];
@@ -1204,9 +1228,9 @@ export type BridgeEvent =
       request: ElicitationRequest;
     }
   | {
-      event: "elicitation_complete";
+      event: "elicitation_settled";
       session_id: string;
-      completion: ElicitationComplete;
+      settlement: ElicitationSettlement;
     }
   | {
       event: "mcp_auth_redirect";
@@ -1268,11 +1292,13 @@ export type BridgeEvent =
       session_id: string;
       message: string;
     }
-  | { event: "runtime_reload_completed"; session_id: string }
+  | { event: "plugin_inventory"; session_id: string; plugins: SessionPlugin[] }
+  | { event: "runtime_reload_completed"; session_id: string; error_count: number; reconciliation_error?: string }
   | {
       event: "runtime_reload_held";
       session_id: string;
       cache_impact: RuntimeReloadCacheImpact;
+      error_count: number;
     }
   | { event: "runtime_reload_failed"; session_id: string; message: string }
   | {
@@ -1330,6 +1356,7 @@ export type BridgeEvent =
       event: "subagent_stop_result";
       session_id: string;
       task_id: string;
+      run_id?: string;
       error?: string;
     }
   | {

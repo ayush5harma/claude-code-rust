@@ -316,6 +316,7 @@ pub struct RateLimitUpdate {
     pub utilization: Option<f64>,
     pub rate_limit_type: Option<String>,
     pub limit_scope: Option<String>,
+    pub overage_enabled: Option<bool>,
     pub overage_status: Option<RateLimitStatus>,
     pub overage_resets_at: Option<f64>,
     pub overage_disabled_reason: Option<String>,
@@ -323,6 +324,14 @@ pub struct RateLimitUpdate {
     pub surpassed_threshold: Option<f64>,
     pub can_user_purchase_credits: Option<bool>,
     pub has_chargeable_saved_payment_method: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionPlugin {
+    pub name: String,
+    pub path: String,
+    pub source: Option<String>,
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -475,6 +484,7 @@ pub struct BashOutputMetadata {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolOutputMetadata {
+    pub presentation: Option<Box<super::model::ToolResultPresentation>>,
     pub timing: Option<super::model::ToolTiming>,
     #[serde(default)]
     pub staged: bool,
@@ -617,6 +627,8 @@ pub enum TaskUpdateSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskItem {
     pub task_id: String,
+    pub run_id: Option<String>,
+    pub parent_task_id: Option<String>,
     pub subject: String,
     pub description: Option<String>,
     pub active_form: Option<String>,
@@ -626,6 +638,7 @@ pub struct TaskItem {
     pub blocked_by: Vec<String>,
     pub metadata: Option<serde_json::Value>,
     pub source_tool_call_id: Option<String>,
+    pub source_tool_call_run_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -735,6 +748,7 @@ pub enum SessionUpdate {
         utilization: Option<f64>,
         rate_limit_type: Option<String>,
         limit_scope: Option<String>,
+        overage_enabled: Option<bool>,
         overage_status: Option<RateLimitStatus>,
         overage_resets_at: Option<f64>,
         overage_disabled_reason: Option<String>,
@@ -937,6 +951,8 @@ pub struct ElicitationRequest {
     pub url: Option<String>,
     pub elicitation_id: Option<String>,
     pub requested_schema: Option<serde_json::Value>,
+    #[serde(default)]
+    pub field_order: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

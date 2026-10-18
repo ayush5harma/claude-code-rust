@@ -222,6 +222,8 @@ pub enum BridgeCommand {
     StopSubagent {
         session_id: String,
         task_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expected_run_id: Option<String>,
     },
     GetRewindTargets {
         session_id: String,
@@ -240,6 +242,8 @@ pub enum BridgeCommand {
         session_id: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         force: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        add_plugins: Vec<String>,
     },
     ReloadSkillsAndStyles {
         session_id: String,
@@ -506,10 +510,9 @@ pub enum BridgeEvent {
         session_id: String,
         request: types::ElicitationRequest,
     },
-    ElicitationComplete {
+    ElicitationSettled {
         session_id: String,
-        elicitation_id: String,
-        server_name: Option<String>,
+        settlement: ElicitationSettlement,
     },
     McpAuthRedirect {
         session_id: String,
@@ -569,12 +572,22 @@ pub enum BridgeEvent {
         session_id: String,
         message: String,
     },
+    PluginInventory {
+        session_id: String,
+        plugins: Vec<types::SessionPlugin>,
+    },
     RuntimeReloadCompleted {
         session_id: String,
+        #[serde(default)]
+        error_count: u32,
+        #[serde(default)]
+        reconciliation_error: Option<String>,
     },
     RuntimeReloadHeld {
         session_id: String,
         cache_impact: types::RuntimeReloadCacheImpact,
+        #[serde(default)]
+        error_count: u32,
     },
     RuntimeReloadFailed {
         session_id: String,
@@ -636,6 +649,7 @@ pub enum BridgeEvent {
     SubagentStopResult {
         session_id: String,
         task_id: String,
+        run_id: Option<String>,
         error: Option<String>,
     },
     RewindTargets {
@@ -688,7 +702,7 @@ impl BridgeEvent {
             Self::UserDialogRequest { .. } => "user_dialog_request",
             Self::InteractionCancelled { .. } => "interaction_cancelled",
             Self::ElicitationRequest { .. } => "elicitation_request",
-            Self::ElicitationComplete { .. } => "elicitation_complete",
+            Self::ElicitationSettled { .. } => "elicitation_settled",
             Self::McpAuthRedirect { .. } => "mcp_auth_redirect",
             Self::McpOperationError { .. } => "mcp_operation_error",
             Self::McpSetServersResult { .. } => "mcp_set_servers_result",
@@ -701,6 +715,7 @@ impl BridgeEvent {
             Self::SlashError { .. } => "slash_error",
             Self::SessionResumeFailed { .. } => "session_resume_failed",
             Self::RuntimeReloadCompleted { .. } => "runtime_reload_completed",
+            Self::PluginInventory { .. } => "plugin_inventory",
             Self::RuntimeReloadHeld { .. } => "runtime_reload_held",
             Self::RuntimeReloadFailed { .. } => "runtime_reload_failed",
             Self::SkillsAndStylesReloaded { .. } => "skills_and_styles_reloaded",
@@ -734,7 +749,7 @@ impl BridgeEvent {
             | Self::UserDialogRequest { session_id, .. }
             | Self::InteractionCancelled { session_id, .. }
             | Self::ElicitationRequest { session_id, .. }
-            | Self::ElicitationComplete { session_id, .. }
+            | Self::ElicitationSettled { session_id, .. }
             | Self::McpAuthRedirect { session_id, .. }
             | Self::McpOperationError { session_id, .. }
             | Self::McpSetServersResult { session_id, .. }
@@ -747,6 +762,7 @@ impl BridgeEvent {
             | Self::SlashError { session_id, .. }
             | Self::SessionResumeFailed { session_id, .. }
             | Self::RuntimeReloadCompleted { session_id, .. }
+            | Self::PluginInventory { session_id, .. }
             | Self::RuntimeReloadHeld { session_id, .. }
             | Self::RuntimeReloadFailed { session_id, .. }
             | Self::SkillsAndStylesReloaded { session_id, .. }
@@ -786,7 +802,7 @@ impl BridgeEvent {
             | Self::UserDialogRequest { .. }
             | Self::InteractionCancelled { .. }
             | Self::ElicitationRequest { .. }
-            | Self::ElicitationComplete { .. }
+            | Self::ElicitationSettled { .. }
             | Self::McpAuthRedirect { .. }
             | Self::McpOperationError { .. }
             | Self::McpSetServersResult { .. }
@@ -799,6 +815,7 @@ impl BridgeEvent {
             | Self::SlashError { .. }
             | Self::SessionResumeFailed { .. }
             | Self::RuntimeReloadCompleted { .. }
+            | Self::PluginInventory { .. }
             | Self::RuntimeReloadHeld { .. }
             | Self::RuntimeReloadFailed { .. }
             | Self::SkillsAndStylesReloaded { .. }
@@ -821,6 +838,14 @@ impl BridgeEvent {
     }
 }
 
+/// Correlates SDK callback settlement with its original host request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ElicitationSettlement {
+    pub request_id: String,
+    #[serde(default)]
+    pub session_closing: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -828,6 +853,29 @@ mod tests {
     };
     use crate::agent::types;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn saved_scheduler_and_queue_sections_survive_the_wire_without_losing_item_identity() {
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/tool-result-times.json"))
+                .expect("independent SDK result fixtures");
+        for fixture in fixtures.as_array().expect("fixtures") {
+            let event: EventEnvelope = serde_json::from_value(serde_json::json!({
+                "event": "session_update", "session_id": "times",
+                "update": {"type": "tool_call_update", "tool_call_update": {
+                    "tool_call_id": fixture["name"], "fields": {
+                        "output_metadata": {"presentation": fixture["presentation"]}
+                    }
+                }}
+            }))
+            .expect("typed result wire event");
+            let encoded = serde_json::to_value(event).expect("wire round trip");
+            assert_eq!(
+                encoded["update"]["tool_call_update"]["fields"]["output_metadata"]["presentation"],
+                fixture["presentation"]
+            );
+        }
+    }
 
     #[test]
     fn notification_payload_round_trips_original_sdk_metadata_and_replay_provenance() {
@@ -1489,7 +1537,11 @@ mod tests {
                 session_id: "s1".to_owned(),
                 agent_id: "a1".to_owned(),
             },
-            BridgeCommand::StopSubagent { session_id: "s1".to_owned(), task_id: "a1".to_owned() },
+            BridgeCommand::StopSubagent {
+                session_id: "s1".to_owned(),
+                task_id: "a1".to_owned(),
+                expected_run_id: None,
+            },
         ];
         let json: Vec<_> = commands
             .into_iter()
@@ -1543,6 +1595,7 @@ mod tests {
             BridgeEvent::SubagentStopResult {
                 session_id: "s1".to_owned(),
                 task_id: "a1".to_owned(),
+                run_id: None,
                 error: None,
             }
         );
@@ -2075,6 +2128,30 @@ mod tests {
                 matches!(decoded, types::SessionUpdate::AgentActivityUpdate { phase } if phase == expected)
             );
             assert_eq!(serde_json::to_value(decoded).expect("encode activity"), raw);
+        }
+    }
+
+    #[test]
+    fn rate_limit_envelope_preserves_enabled_false_separately_from_unknown() {
+        for enabled in [Some(true), Some(false), None] {
+            let mut raw = serde_json::json!({
+                "event": "session_update", "session_id": "session",
+                "update": {"type": "rate_limit_update", "status": "allowed_warning", "is_using_overage": false}
+            });
+            if let Some(enabled) = enabled {
+                raw["update"]["overage_enabled"] = serde_json::json!(enabled);
+            }
+            let envelope: EventEnvelope = serde_json::from_value(raw).expect("rate limit envelope");
+            let BridgeEvent::SessionUpdate {
+                update:
+                    types::SessionUpdate::RateLimitUpdate { overage_enabled, is_using_overage, .. },
+                ..
+            } = envelope.event
+            else {
+                panic!("rate limit event")
+            };
+            assert_eq!(overage_enabled, enabled);
+            assert_eq!(is_using_overage, Some(false));
         }
     }
 

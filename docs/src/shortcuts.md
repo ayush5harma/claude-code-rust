@@ -26,6 +26,10 @@ See [Presentation and scrolling](settings.md#presentation-and-scrolling) for the
 
 The fullscreen settings surface has its own keys for tabs, panes, search and editors. See [Opening and navigating](settings.md#opening-and-navigating), [Editing a value](settings.md#editing-a-value) and [Lists and structured settings](settings.md#lists-and-structured-settings).
 
+## Plugins
+
+Open `/plugins`. `Left` and `Right` switch between Installed, Plugins, Marketplace and Session; `Up` and `Down` select an entry. Outside search, `l` opens Load local folder. In Session, Enter opens the selected folder for reloading, or the new-folder input; `r` reloads the runtime inventory. In the folder input, Enter requests loading and Esc returns. A held reload defaults to declining; select Apply explicitly to add the same folders and invalidate the prompt cache. Esc declines and keeps the folder draft.
+
 ## Subagents View
 
 `/agents`, or `Left` in an empty input, opens the current session's subagents.
@@ -39,7 +43,7 @@ The fullscreen settings surface has its own keys for tabs, panes, search and edi
 | `Page Up`, `Page Down` | Scroll the selected subagent's details. |
 | `Esc` | Return to chat with the draft unchanged. |
 
-In a transcript, `Up` and `Down` scroll, `Page Up` and `Page Down` scroll by a page, `r` reads the transcript again at the same position (also after a failed read), and `Esc` or `Left` returns to the list.
+In a transcript, `Up` and `Down` scroll, `Page Up` and `Page Down` scroll by a page, `r` reads the whole saved conversation again at the same position (also after a failed read), and `Esc` or `Left` returns to the list. If the agent starts another run, the open transcript stays labeled as a saved snapshot until `r`; returning to the list refreshes the current run's saved-response preview.
 
 ## Chat Input
 
@@ -121,3 +125,18 @@ Letter shortcuts such as `Ctrl+A`, `Ctrl+Y`, or `Ctrl+N` are not permission shor
 | `Esc` | Cancel. |
 | `Tab` | Toggle notes or move focus. |
 | `Shift+Tab` | Move focus backward. |
+
+## MCP input forms
+
+| Shortcut | Action |
+| --- | --- |
+| `Tab`, `Down` | Next field or action. |
+| `Shift+Tab`, `Up` | Previous field or action. |
+| `Left`, `Right` | Move the text cursor or change the highlighted choice. |
+| `Space` | Toggle a boolean or multi-choice option; insert a space in text. |
+| `Ctrl+O` | Include or omit the focused optional field. |
+| `Enter` | Advance from a field or activate the selected action. |
+| `Ctrl+Enter` | Validate and accept, if distinguished by the terminal. |
+| `Esc` | Cancel the active request. |
+
+Type or paste into text and numeric fields. `Home`, `End`, `Backspace` and `Delete` edit the focused text. While a response awaits SDK confirmation, editing and repeated submission are disabled. Queued requests retain their own drafts and activate in arrival order.

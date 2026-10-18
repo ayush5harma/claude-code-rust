@@ -4,9 +4,39 @@ import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { mapSessionMessagesToUpdates } from "./history.js";
+import { mapSessionMessagesToEntries, mapSessionMessagesToUpdates } from "./history.js";
 
-test("resume display restores compaction segments once and preserves SDK branch filtering", () => {
+test("replay admits notification origin.runId before replacing links or historical tool output", () => {
+  const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
+  const launch = (id: string) => ({ ...base, type: "assistant" as const, uuid: id, message: { role: "assistant", content: [{ type: "tool_use", id, name: "Agent", input: { description: id, prompt: id, subagent_type: "fork" } }] } });
+  const edge = (subtype: string, run_id: string, tool_use_id: string, extra = {}) => ({ ...base, type: "system" as const, uuid: crypto.randomUUID(), message: { subtype, task_id: "worker", run_id, tool_use_id, ...extra } });
+  const notification = (runId: string, tool: string, summary: string) => ({ ...base, type: "user" as const, uuid: crypto.randomUUID(), origin: { kind: "task-notification", producer: "session-task", runId }, message: { role: "user", content: `<task-notification><task-id>worker</task-id><tool-use-id>${tool}</tool-use-id><status>completed</status><summary>${summary}</summary></task-notification>` } });
+  const prefix = [launch("launch-A"), edge("task_started", "A", "launch-A", { parent_task_id: "parent", task_type: "local_agent", description: "A" }), notification("A", "launch-A", "A report"), launch("launch-B"), edge("task_started", "B", "launch-B", { description: "B" }), notification("B", "launch-B", "B report")];
+  const accepted = mapSessionMessagesToUpdates(prefix);
+  const replayed = mapSessionMessagesToUpdates([...prefix, notification("A", "launch-A", "late A"), edge("task_progress", "A", "launch-A", { description: "late progress" })]);
+  assert.deepEqual(replayed, accepted, "old run notifications produce no row or tool changes");
+  const row = replayed.filter(update => update.type === "task_state_update").flatMap(update => update.tasks).at(-1);
+  assert.equal(row?.run_id, "B");
+  assert.equal(row?.parent_task_id, "parent");
+  assert.equal(row?.source_tool_call_id, "launch-B");
+  assert.equal((row?.metadata as Record<string, unknown>)?.summary, "B report");
+});
+
+test("history attributes child tools through their producer while a transcript retains the full saved conversation", () => {
+  const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
+  const history = [
+    { ...base, type: "system" as const, uuid: "start", message: { subtype: "task_started", task_id: "worker", run_id: "A", tool_use_id: "launch", task_type: "local_agent", description: "Worker" } },
+    { ...base, type: "assistant" as const, uuid: "child", agent_id: "worker", message: { role: "assistant", content: [{ type: "text", text: "Child report" }, { type: "tool_use", id: "nested", name: "Agent", input: { description: "Nested" } }] } },
+  ];
+  const chat = mapSessionMessagesToUpdates(history);
+  assert.ok(!chat.some(update => update.type === "agent_message_chunk"));
+  const tool = chat.filter(update => update.type === "tool_call").find(update => update.tool_call.tool_call_id === "nested");
+  assert.equal((tool?.tool_call.meta as { claudeCode: { parentToolUseId: string } })?.claudeCode.parentToolUseId, "launch");
+  const transcript = mapSessionMessagesToEntries(history, true);
+  assert.ok(transcript.some(update => update.type === "agent_message_chunk" && update.content.type === "text" && update.content.text === "Child report"));
+});
+
+test("resume restores compaction segments and Unicode separators with SDK branch filtering", () => {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), "claude-rs-transcript-")));
   try {
     const cwd = join(directory, "project");
@@ -17,16 +47,16 @@ test("resume display restores compaction segments once and preserves SDK branch 
     mkdirSync(projectDir, { recursive: true });
     const sessionId = "11111111-1111-4111-8111-111111111111";
     const records: Record<string, unknown>[] = [];
-    const source = "# Notes\r\n\r\n\t**literal**  \r\n";
+    const source = "# Notes\r\n\r\n\t**literal**\u2028retained\u2029too  \r\n";
     const add = (uuid: string, parentUuid: string | null, type: string, message: unknown, extra = {}) => {
       records.push({ uuid, parentUuid, type, message, sessionId, cwd, timestamp: `2026-10-06T10:00:${String(records.length).padStart(2, "0")}.000Z`, ...extra });
     };
-    add("prompt-1", null, "user", { role: "user", content: "First prompt" });
+    add("prompt-1", null, "user", { role: "user", content: "First\u2028prompt\u2029retained" });
     add("tool", "prompt-1", "assistant", { id: "assistant-1", role: "assistant", content: [{ type: "tool_use", id: "read-1", name: "Read", input: { file_path: "notes.md", offset: 60 } }] });
     add("result", "tool", "user", { role: "user", content: [{ type: "tool_result", tool_use_id: "read-1", content: "60\t# Notes\n61\t\n62\t\t**literal**  " }] }, {
       toolUseResult: { type: "text", file: { filePath: "notes.md", content: source, numLines: 3, startLine: 60, totalLines: 100 } },
     });
-    add("answer-1", "result", "assistant", { id: "assistant-2", role: "assistant", content: [{ type: "text", text: "First answer" }] });
+    add("answer-1", "result", "assistant", { id: "assistant-2", role: "assistant", content: [{ type: "text", text: "First\u2028answer\u2029retained" }] });
     add("boundary-1", null, "system", undefined, { subtype: "compact_boundary", logicalParentUuid: "answer-1", compactMetadata: { trigger: "auto", preservedMessages: { anchorUuid: "summary-1", uuids: ["tool", "result", "answer-1"] } } });
     add("summary-1", "boundary-1", "user", { role: "user", content: "Internal summary one" }, { isCompactSummary: true });
     add("prompt-2", "summary-1", "user", { role: "user", content: [{ type: "text", text: "Second prompt" }] });
@@ -65,8 +95,8 @@ test("resume display restores compaction segments once and preserves SDK branch 
     const result = JSON.parse(child.stdout);
     assert.deepEqual(result.uuids, ["prompt-1", "tool", "result", "answer-1", "boundary-1", "summary-1", "prompt-2", "rename", "color", "answer-2", "boundary-2", "summary-2", "prompt-3", "answer-3"]);
     const chunks = result.updates.filter((update: { type: string }) => update.type === "user_message_chunk" || update.type === "agent_message_chunk");
-    assert.deepEqual(chunks.map((update: { content: { text: string } }) => update.content.text), ["First prompt", "First answer", "Second prompt", "/rename review-444", "/color blue", "Second answer", "Third prompt", "Third answer"]);
-    assert.deepEqual(result.targets, [["prompt-3", "Third prompt"], ["prompt-2", "Second prompt"], ["prompt-1", "First prompt"]]);
+    assert.deepEqual(chunks.map((update: { content: { text: string } }) => update.content.text), ["First\u2028prompt\u2029retained", "First\u2028answer\u2029retained", "Second prompt", "/rename review-444", "/color blue", "Second answer", "Third prompt", "Third answer"]);
+    assert.deepEqual(result.targets, [["prompt-3", "Third prompt"], ["prompt-2", "Second prompt"], ["prompt-1", "First\u2028prompt\u2029retained"]]);
     const tools = result.updates.filter((update: { type: string }) => update.type === "tool_call");
     assert.equal(tools.length, 1);
     assert.equal(tools[0].tool_call.tool_call_id, "read-1");
