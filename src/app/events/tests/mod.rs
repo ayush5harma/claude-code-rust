@@ -256,7 +256,7 @@ fn block_snapshot(block: &MessageBlock) -> BlockSnapshot {
                 id: tool_call.id.clone(),
                 title: tool_call.title.clone(),
                 status: tool_call.status,
-                hidden: tool_call.hidden,
+                hidden: tool_call.is_subagent_child(),
             }
         }
         MessageBlock::Welcome(block) => BlockSnapshot::Welcome {
@@ -353,6 +353,7 @@ fn transcript_retraction_removes_tool_blocks_and_rebuilds_indices() {
     let mut stale_tool = tool_call("tool-old", model::ToolCallStatus::Completed);
     stale_tool.source_message_uuids = vec!["assistant-tool".to_owned(), "user-result".to_owned()];
     stale_tool.sdk_tool_name = "Bash".to_owned();
+    stale_tool.kind = model::ToolKind::Execute;
     stale_tool.terminal_id = Some("term-old".to_owned());
     app.transcript.messages.push(assistant_msg(vec![
         MessageBlock::ToolCall(Box::new(stale_tool)),
@@ -438,37 +439,122 @@ fn shorten_unix_path() {
 }
 
 #[test]
-fn register_tool_call_scope_treats_agent_as_subagent_root() {
-    let mut app = make_test_app();
-    let scope = tool_calls::register_tool_call_scope(&mut app, "tool-agent", "Agent", None);
-    assert_eq!(scope, ToolCallScope::SubagentRoot);
+fn tool_metadata_updates_share_scope_with_live_and_historical_presentation() {
+    for name in ["Task", "Agent"] {
+        let mut app = make_test_app();
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::ToolCall(
+                model::ToolCall::new("tool", "Research")
+                    .kind(model::ToolKind::Think)
+                    .meta(serde_json::json!({"claudeCode": {"toolName": "Unknown"}})),
+            )),
+        );
+        assert_eq!(app.tool_call_scope("tool"), Some(ToolCallScope::MainAgent));
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::ToolCallUpdate(
+                model::ToolCallUpdate::new("tool", model::ToolCallUpdateFields::new())
+                    .meta(serde_json::json!({"claudeCode": {"toolName": name}})),
+            )),
+        );
+        assert_eq!(app.tool_call_scope("tool"), Some(ToolCallScope::SubagentRoot));
+        assert!(app.tool_call("tool").unwrap().is_subagent_root_tool());
+        for parent in ["parent-1", "parent-2"] {
+            handle_client_event(
+                &mut app,
+                session_update(model::SessionUpdate::ToolCallUpdate(
+                    model::ToolCallUpdate::new(
+                        "tool",
+                        model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Detached),
+                    )
+                    .meta(serde_json::json!({"claudeCode": {"parentToolUseId": parent}})),
+                )),
+            );
+            let tool = app.tool_call("tool").unwrap();
+            assert_eq!(
+                app.tool_call_scope("tool"),
+                Some(ToolCallScope::SubagentChild { parent_tool_use_id: parent.to_owned() })
+            );
+            assert!(!tool.is_subagent_root_tool());
+            assert!(tool.hidden_unless_focused_interaction());
+            assert_eq!(tool.display().parent_tool_use_id.as_deref(), Some("parent-1"));
+            assert_eq!(tool.display().sdk_tool_name, name);
+        }
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::ToolCallUpdate(model::ToolCallUpdate::new(
+                "tool",
+                model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed),
+            ))),
+        );
+        assert_eq!(app.tool_call("tool").unwrap().parent_tool_use_id.as_deref(), Some("parent-2"));
+        let result = app
+            .transcript
+            .messages
+            .iter()
+            .flat_map(|message| &message.blocks)
+            .find_map(|block| match block {
+                MessageBlock::ToolResult { tool, .. } if tool.id == "tool" => Some(tool),
+                _ => None,
+            })
+            .expect("detached completion in transcript");
+        assert_eq!(result.parent_tool_use_id.as_deref(), Some("parent-2"));
+        assert!(!result.is_subagent_root_tool());
+    }
 }
 
 #[test]
-fn register_tool_call_scope_treats_task_as_subagent_root() {
-    let mut app = make_test_app();
-    let scope = tool_calls::register_tool_call_scope(&mut app, "tool-task", "Task", None);
-    assert_eq!(scope, ToolCallScope::SubagentRoot);
+fn execute_kind_owns_output_handling_across_initial_and_partial_events() {
+    for (name, kind, expected) in [
+        ("CustomExecutor", model::ToolKind::Execute, Some("initial")),
+        ("Bash", model::ToolKind::Other, None),
+        ("bash", model::ToolKind::Other, None),
+    ] {
+        let mut app = make_test_app();
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::ToolCall(
+                model::ToolCall::new("tool", "Command")
+                    .kind(kind)
+                    .raw_output(serde_json::json!("initial"))
+                    .meta(serde_json::json!({"claudeCode": {"toolName": name}})),
+            )),
+        );
+        assert_eq!(app.tool_call("tool").unwrap().terminal_output.as_deref(), expected);
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::ToolCallUpdate(model::ToolCallUpdate::new(
+                "tool",
+                model::ToolCallUpdateFields::new()
+                    .kind(model::ToolKind::Execute)
+                    .raw_output(serde_json::json!("updated")),
+            ))),
+        );
+        assert_eq!(app.tool_call("tool").unwrap().terminal_output.as_deref(), Some("updated"));
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::ToolCallUpdate(
+                model::ToolCallUpdate::new(
+                    "tool",
+                    model::ToolCallUpdateFields::new()
+                        .status(model::ToolCallStatus::Detached)
+                        .raw_output(serde_json::json!("final")),
+                )
+                .meta(serde_json::json!({"claudeCode": {"toolName": "RenamedExecutor"}})),
+            )),
+        );
+        let tool = app.tool_call("tool").unwrap();
+        assert_eq!(tool.terminal_output.as_deref(), Some("final"));
+        assert!(tool.is_execute_tool());
+        assert!(tool.display().is_execute_tool());
+        assert_eq!(tool.display().terminal_output.as_deref(), Some("final"));
+    }
 }
 
+/// A cancelled subagent must not change the scope of the next foreground tool.
 #[test]
-fn register_tool_call_scope_uses_explicit_parent_for_subagent_child() {
-    let mut app = make_test_app();
-    let scope =
-        tool_calls::register_tool_call_scope(&mut app, "tool-child", "Bash", Some("tool-parent"));
-    assert_eq!(
-        scope,
-        ToolCallScope::SubagentChild { parent_tool_use_id: "tool-parent".to_owned() }
-    );
-}
-
-/// Regression: when a Task was cancelled mid-turn, `active_task_ids` was never cleared
-/// because `finalize_in_progress_tool_calls` doesn't call `remove_active_task` and
-/// `clear_tool_scope_tracking` (called on `TurnComplete`) did not clear `active_task_ids`.
-/// The leaked ID caused main-agent tools on the next turn to be classified as Subagent,
-/// which eventually caused main-agent tools to inherit the wrong scope.
-#[test]
-fn turn_complete_after_cancelled_task_leaves_no_stale_active_task_ids() {
+fn turn_complete_after_cancelled_task_preserves_next_tool_scope() {
     let mut app = make_test_app();
 
     // Simulate a Task tool call arriving as InProgress (no Completed update will follow)
@@ -477,14 +563,10 @@ fn turn_complete_after_cancelled_task_leaves_no_stale_active_task_ids() {
         .status(model::ToolCallStatus::InProgress)
         .meta(serde_json::json!({"claudeCode": {"toolName": "Task"}}));
     handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(task_tc)));
-    assert!(app.turn.active_task_ids.contains("task-1"), "task must be tracked while InProgress");
 
     // User cancels then TurnComplete finalizes the turn
     handle_local_cancel_enqueued(&mut app);
     handle_client_event(&mut app, turn_complete(None));
-
-    // Stale task ID must be gone after turn boundary
-    assert!(app.turn.active_task_ids.is_empty(), "stale task id must not survive TurnComplete");
 
     // Next turn: a normal main-agent Glob must get MainAgent scope, not Subagent
     let glob_tc = model::ToolCall::new("glob-1", "Glob **/*.rs")
@@ -932,15 +1014,16 @@ fn powershell_raw_input_update_does_not_populate_terminal_command() {
 }
 
 #[test]
-fn late_tool_update_for_removed_tool_does_not_corrupt_active_task_set() {
+fn late_tool_update_for_removed_tool_does_not_restore_scope_or_transcript() {
     let mut app = make_test_app();
     app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
         "tool-stale",
         model::ToolCallStatus::Completed,
     )))]));
     app.index_tool_call("tool-stale".into(), 0, 0);
-    app.register_tool_call_scope(
-        "tool-stale".into(),
+    crate::app::test_support::set_tool_scope(
+        &mut app,
+        "tool-stale",
         ToolCallScope::SubagentChild { parent_tool_use_id: "task-1".to_owned() },
     );
 
@@ -951,10 +1034,12 @@ fn late_tool_update_for_removed_tool_does_not_corrupt_active_task_set() {
     let update = model::ToolCallUpdate::new(
         "tool-stale",
         model::ToolCallUpdateFields::new().status(model::ToolCallStatus::InProgress),
-    );
+    )
+    .meta(serde_json::json!({"claudeCode": {"parentToolUseId": "task-1"}}));
     handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCallUpdate(update)));
-
-    assert!(app.turn.active_task_ids.is_empty());
+    assert!(app.tool_call_scope("tool-stale").is_none());
+    assert!(!app.has_tool_call("tool-stale"));
+    assert!(app.transcript.messages.is_empty());
 }
 
 #[test]
@@ -1558,7 +1643,6 @@ fn resume_history_clears_foreground_tracking_and_retains_tool_relationships() {
         },
     );
 
-    assert!(app.turn.active_task_ids.is_empty());
     assert_eq!(app.tool_call_scope("resume-task"), Some(ToolCallScope::SubagentRoot));
     let (mi, bi) = app.lookup_tool_call("resume-task").expect("resumed foreground tool");
     let MessageBlock::ToolCall(tool) = &app.transcript.messages[mi].blocks[bi] else {
@@ -1741,11 +1825,11 @@ fn turn_error_clears_manual_compaction_without_success_message() {
     else {
         panic!("expected system error message");
     };
-    let Some(MessageBlock::Text(block)) = blocks.first() else {
-        panic!("expected text block");
+    let Some(MessageBlock::Notice(block)) = blocks.first() else {
+        panic!("expected failure notice");
     };
-    assert!(block.text.contains("Turn failed: adapter failed"));
-    assert!(block.text.contains("Press Ctrl+Q to quit and try again"));
+    assert!(block.text.text.contains("Turn failed: adapter failed"));
+    assert!(block.text.text.contains("Press Ctrl+Q to quit and try again"));
 }
 
 fn turn_error_log_levels(cancelled: bool) -> Vec<(String, String)> {
@@ -1848,7 +1932,7 @@ fn turn_error_plan_limit_shows_next_steps_guidance() {
         },
     );
 
-    assert!(matches!(app.status, AppStatus::Error));
+    assert!(matches!(app.status, AppStatus::Ready));
     let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) =
         app.transcript.messages.last()
     else {
@@ -1857,8 +1941,8 @@ fn turn_error_plan_limit_shows_next_steps_guidance() {
     assert!(matches!(blocks.first(), Some(MessageBlock::Notice(_))));
     let text = first_block_text(app.transcript.messages.last().expect("expected message"));
     assert!(text.contains("Turn blocked by account or plan limits"));
-    assert!(text.contains("Next steps:"));
-    assert!(text.contains("Check quota/billing"));
+    assert!(text.contains("retry here"));
+    assert!(!text.contains("Input disabled"));
 }
 
 #[test]
@@ -1877,7 +1961,7 @@ fn classified_turn_error_plan_limit_uses_guidance_without_text_matching() {
         },
     );
 
-    assert!(matches!(app.status, AppStatus::Error));
+    assert!(matches!(app.status, AppStatus::Ready));
     let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) =
         app.transcript.messages.last()
     else {
@@ -1886,7 +1970,8 @@ fn classified_turn_error_plan_limit_uses_guidance_without_text_matching() {
     assert!(matches!(blocks.first(), Some(MessageBlock::Notice(_))));
     let text = first_block_text(app.transcript.messages.last().expect("expected message"));
     assert!(text.contains("Turn blocked by account or plan limits"));
-    assert!(text.contains("Next steps:"));
+    assert!(text.contains("retry here"));
+    assert!(!text.contains("Input disabled"));
 }
 
 #[test]
@@ -2004,7 +2089,6 @@ fn turn_error_clears_foreground_tracking_without_misclassifying_the_next_tool() 
         },
     );
 
-    assert!(app.turn.active_task_ids.is_empty());
     assert_eq!(app.tool_call_scope("task-1"), Some(ToolCallScope::SubagentRoot));
     let (mi, bi) = app.lookup_tool_call("task-1").expect("failed foreground tool");
     let MessageBlock::ToolCall(tool) = &app.transcript.messages[mi].blocks[bi] else {
@@ -2020,7 +2104,6 @@ fn turn_error_clears_foreground_tracking_without_misclassifying_the_next_tool() 
         )),
     );
     assert_eq!(app.tool_call_scope("next-bash"), Some(ToolCallScope::MainAgent));
-    assert!(app.turn.active_task_ids.is_empty());
 }
 
 #[test]
@@ -2040,8 +2123,8 @@ fn auth_required_clears_active_turn_runtime_tracking() {
         model::ToolCallStatus::InProgress,
     )))]));
     app.bind_active_turn_assistant(0);
-    app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
-    app.insert_active_task("task-1".into());
+    app.index_tool_call("task-1".into(), 0, 0);
+    crate::app::test_support::set_tool_scope(&mut app, "task-1", ToolCallScope::SubagentRoot);
     app.pending_interaction_ids.push("task-1".into());
     app.claim_focus_target(FocusTarget::Permission);
 
@@ -2054,7 +2137,6 @@ fn auth_required_clears_active_turn_runtime_tracking() {
     );
 
     assert_eq!(app.active_turn_assistant_idx(), None);
-    assert!(app.turn.active_task_ids.is_empty());
     assert!(app.pending_interaction_ids.is_empty());
     assert_ne!(app.focus_owner(), FocusOwner::Permission);
     let Some(MessageBlock::ToolCall(tc)) = app.transcript.messages[0].blocks.first() else {
@@ -2110,13 +2192,12 @@ fn connection_failed_clears_active_turn_runtime_tracking() {
         model::ToolCallStatus::InProgress,
     )))]));
     app.bind_active_turn_assistant(0);
-    app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
-    app.insert_active_task("task-1".into());
+    app.index_tool_call("task-1".into(), 0, 0);
+    crate::app::test_support::set_tool_scope(&mut app, "task-1", ToolCallScope::SubagentRoot);
 
     handle_client_event(&mut app, ClientEvent::ConnectionFailed("bridge down".into()));
 
     assert_eq!(app.active_turn_assistant_idx(), None);
-    assert!(app.turn.active_task_ids.is_empty());
     let Some(MessageBlock::ToolCall(tc)) = app.transcript.messages[0].blocks.first() else {
         panic!("expected tool call block");
     };
@@ -2132,8 +2213,8 @@ fn fatal_event_clears_active_turn_runtime_tracking() {
         model::ToolCallStatus::InProgress,
     )))]));
     app.bind_active_turn_assistant(0);
-    app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
-    app.insert_active_task("task-1".into());
+    app.index_tool_call("task-1".into(), 0, 0);
+    crate::app::test_support::set_tool_scope(&mut app, "task-1", ToolCallScope::SubagentRoot);
 
     handle_client_event(
         &mut app,
@@ -2141,7 +2222,6 @@ fn fatal_event_clears_active_turn_runtime_tracking() {
     );
 
     assert_eq!(app.active_turn_assistant_idx(), None);
-    assert!(app.turn.active_task_ids.is_empty());
     let Some(MessageBlock::ToolCall(tc)) = app.transcript.messages[0].blocks.first() else {
         panic!("expected tool call block");
     };
@@ -2374,7 +2454,7 @@ fn fast_mode_disabled_reason_does_not_warn_when_unrequested_or_cooling_down() {
 }
 
 #[test]
-fn rate_limit_notices_dedup_and_upgrade_in_place() {
+fn rate_limit_warnings_do_not_duplicate_or_turn_into_failures() {
     let mut app = make_test_app();
 
     let warning_update = model::RateLimitUpdate {
@@ -2427,13 +2507,13 @@ fn rate_limit_notices_dedup_and_upgrade_in_place() {
     assert_eq!(app.transcript.messages.len(), 1);
     assert!(matches!(
         app.transcript.messages[0].role,
-        MessageRole::System(Some(SystemSeverity::Error))
+        MessageRole::System(Some(SystemSeverity::Warning))
     ));
-    assert!(first_block_text(&app.transcript.messages[0]).contains("Rate limit reached"));
+    assert!(first_block_text(&app.transcript.messages[0]).contains("Approaching rate limit"));
 }
 
 #[test]
-fn plan_limit_turn_error_upgrades_inline_notice_in_active_assistant() {
+fn plan_limit_failure_preserves_the_warning_and_reports_its_own_error() {
     let mut app = make_test_app();
     app.status = AppStatus::Thinking;
     app.transcript.messages.push(user_msg("hello"));
@@ -2478,22 +2558,26 @@ fn plan_limit_turn_error_upgrades_inline_notice_in_active_assistant() {
         },
     );
 
-    assert!(matches!(app.status, AppStatus::Error));
-    assert_eq!(app.transcript.messages.len(), 2);
-    assert_eq!(app.transcript.messages[1].blocks.len(), 2);
-    let Some(MessageBlock::Notice(block)) = app.transcript.messages[1].blocks.get(1) else {
-        panic!("expected inline notice block");
+    assert!(matches!(app.status, AppStatus::Ready));
+    let [MessageBlock::Text(partial), MessageBlock::Notice(warning), MessageBlock::Notice(failure)] =
+        app.transcript.messages[1].blocks.as_slice()
+    else {
+        panic!("partial reply, allowance warning, and terminal failure belong to this response");
     };
-    assert_eq!(block.severity, SystemSeverity::Warning);
-    assert!(block.text.text.contains("Approaching rate limit"));
-    assert!(block.text.text.contains("Turn blocked by account or plan limits"));
+    assert_eq!(partial.text, "partial response");
+    assert_eq!(warning.severity, SystemSeverity::Warning);
+    assert!(warning.text.text.contains("Approaching rate limit"));
+    assert_eq!(failure.severity, SystemSeverity::Error);
+    assert!(failure.text.text.contains("HTTP 429 Too Many Requests"));
+    assert!(!failure.text.text.contains("Approaching rate limit"));
+    assert!(!failure.text.text.contains("5-hour"), "the error must not inherit allowance context");
     assert!(app.turn.notice_refs.is_empty());
 }
 
 #[test]
-fn different_rate_limit_incident_in_later_turn_keeps_older_notice() {
+fn allowance_warnings_in_later_turns_keep_older_notices() {
     let mut app = make_test_app();
-    app.session_runtime.last_rate_limit_update = Some(model::RateLimitUpdate {
+    let warning = model::RateLimitUpdate {
         status: model::RateLimitStatus::AllowedWarning,
         error_code: None,
         resets_at: Some(1_741_280_000.0),
@@ -2508,23 +2592,14 @@ fn different_rate_limit_incident_in_later_turn_keeps_older_notice() {
         surpassed_threshold: None,
         can_user_purchase_credits: None,
         has_chargeable_saved_payment_method: None,
-    });
+    };
     app.status = AppStatus::Thinking;
     app.transcript.messages.push(user_msg("first"));
     app.transcript.messages.push(assistant_msg(vec![]));
     app.bind_active_turn_assistant(1);
 
-    handle_client_event(
-        &mut app,
-        ClientEvent::TurnErrorClassified {
-            session_id: "test-session".to_owned(),
-            message: "HTTP 429 Too Many Requests".to_owned(),
-            class: TurnErrorClass::PlanLimit,
-            queued_turn_count: None,
-            api_error_status: None,
-            terminal_reason: None,
-        },
-    );
+    handle_client_event(&mut app, session_update(model::SessionUpdate::RateLimitUpdate(warning)));
+    handle_client_event(&mut app, turn_complete(None));
     assert_eq!(app.transcript.messages.len(), 2);
     let first_notice_text = match app.transcript.messages[1].blocks.as_slice() {
         [MessageBlock::Notice(block)] => block.text.text.clone(),
@@ -2539,7 +2614,7 @@ fn different_rate_limit_incident_in_later_turn_keeps_older_notice() {
     handle_client_event(
         &mut app,
         session_update(model::SessionUpdate::RateLimitUpdate(model::RateLimitUpdate {
-            status: model::RateLimitStatus::Rejected,
+            status: model::RateLimitStatus::AllowedWarning,
             error_code: None,
             resets_at: Some(1_741_290_000.0),
             utilization: None,

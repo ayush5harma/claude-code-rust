@@ -464,6 +464,7 @@ fn assistant_bash_tool_message(
     let mut tool_call = crate::app::test_support::tool_call_info(id, status);
     tool_call.title = format!("tool {id}");
     tool_call.sdk_tool_name = "Bash".to_owned();
+    tool_call.kind = model::ToolKind::Execute;
     tool_call.terminal_id = Some(terminal_id.to_owned());
     tool_call.terminal_command = Some("echo hi".to_owned());
     tool_call.terminal_output = Some("x".repeat(1024));
@@ -1042,94 +1043,13 @@ fn index_unicode_id() {
     assert_eq!(app.lookup_tool_call("\u{1F600}-tool"), Some((3, 7)));
 }
 
-// active_task_ids
-
-#[test]
-fn active_task_insert_remove() {
-    let mut app = make_test_app();
-    app.insert_active_task("task-1".into());
-    assert!(app.turn.active_task_ids.contains("task-1"));
-    app.remove_active_task("task-1");
-    assert!(!app.turn.active_task_ids.contains("task-1"));
-}
-
-#[test]
-fn remove_nonexistent_task_is_noop() {
-    let mut app = make_test_app();
-    app.remove_active_task("does-not-exist");
-    assert!(app.turn.active_task_ids.is_empty());
-}
-
-// active_task_ids
-
-/// Insert same ID twice - set deduplicates; one remove clears it.
-#[test]
-fn active_task_insert_duplicate() {
-    let mut app = make_test_app();
-    app.insert_active_task("task-1".into());
-    app.insert_active_task("task-1".into());
-    assert_eq!(app.turn.active_task_ids.len(), 1);
-    app.remove_active_task("task-1");
-    assert!(app.turn.active_task_ids.is_empty());
-}
-
-/// Insert many tasks, remove in different order.
-#[test]
-fn active_task_insert_many_remove_out_of_order() {
-    let mut app = make_test_app();
-    for i in 0..100 {
-        app.insert_active_task(format!("task-{i}"));
-    }
-    assert_eq!(app.turn.active_task_ids.len(), 100);
-    // Remove in reverse order
-    for i in (0..100).rev() {
-        app.remove_active_task(&format!("task-{i}"));
-    }
-    assert!(app.turn.active_task_ids.is_empty());
-}
-
-/// Mixed insert/remove interleaving.
-#[test]
-fn active_task_interleaved_insert_remove() {
-    let mut app = make_test_app();
-    app.insert_active_task("a".into());
-    app.insert_active_task("b".into());
-    app.remove_active_task("a");
-    app.insert_active_task("c".into());
-    assert!(!app.turn.active_task_ids.contains("a"));
-    assert!(app.turn.active_task_ids.contains("b"));
-    assert!(app.turn.active_task_ids.contains("c"));
-    assert_eq!(app.turn.active_task_ids.len(), 2);
-}
-
-/// Remove from empty set multiple times - no panic.
-#[test]
-fn active_task_remove_from_empty_repeatedly() {
-    let mut app = make_test_app();
-    for i in 0..100 {
-        app.remove_active_task(&format!("ghost-{i}"));
-    }
-    assert!(app.turn.active_task_ids.is_empty());
-}
-
-/// `clear_tool_scope_tracking` must also clear `active_task_ids`.
-/// Regression test: before the fix, a leaked task ID from a cancelled turn
-/// caused main-agent tools on the next turn to be misclassified as Subagent scope.
-#[test]
-fn clear_tool_scope_tracking_also_clears_active_task_ids() {
-    let mut app = make_test_app();
-    app.insert_active_task("task-leaked".into());
-    assert!(!app.turn.active_task_ids.is_empty());
-    app.clear_tool_scope_tracking();
-    assert!(app.turn.active_task_ids.is_empty(), "active_task_ids must be cleared at turn end");
-}
-
 #[test]
 fn detached_calls_survive_turn_exits_but_finish_when_the_session_ends() {
     let mut app = make_test_app();
     let mut tool =
         crate::app::test_support::tool_call_info("web-1", model::ToolCallStatus::Detached);
     tool.sdk_tool_name = "WebFetch".to_owned();
+    tool.kind = model::ToolKind::Fetch;
     app.transcript.messages.push(ChatMessage::new(
         MessageRole::Assistant,
         vec![MessageBlock::ToolCall(Box::new(tool))],
@@ -1200,14 +1120,15 @@ fn remove_message_tracked_tail_removes_orphaned_tool_indices() {
 }
 
 #[test]
-fn remove_message_tracked_prunes_tool_scope_entries() {
+fn remove_message_tracked_removes_tool_scope_lookup() {
     let mut app = make_test_app();
     app.transcript
         .messages
         .push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
     app.index_tool_call("tool-1".to_owned(), 0, 0);
-    app.register_tool_call_scope(
-        "tool-1".to_owned(),
+    crate::app::test_support::set_tool_scope(
+        &mut app,
+        "tool-1",
         ToolCallScope::SubagentChild { parent_tool_use_id: "task-1".to_owned() },
     );
 

@@ -251,7 +251,7 @@ fn sync_string(current: &mut String, next: String) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{BlockCache, ChatMessage, MessageBlock, MessageRole, ToolCallInfo};
+    use crate::app::{ChatMessage, MessageBlock, MessageRole, ToolCallInfo};
     use serde_json::json;
 
     fn task(id: &str, subject: &str, status: model::TaskStatus) -> model::TaskItem {
@@ -272,26 +272,9 @@ mod tests {
         status: model::ToolCallStatus,
     ) -> ToolCallInfo {
         ToolCallInfo {
-            id: id.to_owned(),
-            source_message_uuids: Vec::new(),
             title: title.to_owned(),
-            sdk_tool_name: sdk_tool_name.to_owned(),
             raw_input: Some(raw_input),
-            raw_input_bytes: 0,
-            locations: Vec::new(),
-            output_metadata: None,
-            task_metadata: None,
-            status,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: None,
-            terminal_command: None,
-            terminal_output: None,
-            terminal_output_len: 0,
-            cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
-            history: crate::app::ToolCallHistory::Live,
+            ..crate::app::test_support::named_tool_call_info(id, sdk_tool_name, status)
         }
     }
 
@@ -442,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn ambient_inventory_task_does_not_enter_active_subagent_tracking() {
+    fn ambient_inventory_task_does_not_create_a_tool_scope() {
         let mut app = App::test_default();
         let mut ambient = background_task("ambient-watch", "watch artifact updates");
         ambient.metadata = Some(serde_json::json!({
@@ -458,7 +441,8 @@ mod tests {
         );
 
         assert_eq!(app.sdk_inventory.tasks.len(), 1);
-        assert!(app.turn.active_task_ids.is_empty());
+        assert!(app.tool_call_scope("ambient-watch").is_none());
+        assert!(!app.has_tool_call("ambient-watch"));
     }
 
     #[test]
