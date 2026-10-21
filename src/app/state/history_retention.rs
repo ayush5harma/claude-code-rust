@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use crate::agent::model;
 use std::collections::HashSet;
@@ -80,9 +79,6 @@ impl super::App {
                 .capacity()
                 .saturating_add(diff.old_text.as_ref().map_or(0, String::capacity))
                 .saturating_add(diff.new_text.capacity()),
-            model::ToolCallContent::FileText(file) => {
-                file.path.capacity().saturating_add(file.text.capacity())
-            }
             model::ToolCallContent::McpResource(resource) => resource
                 .uri
                 .capacity()
@@ -114,6 +110,7 @@ impl super::App {
             .saturating_add(tc.id.capacity())
             .saturating_add(tc.title.capacity())
             .saturating_add(tc.sdk_tool_name.capacity())
+            .saturating_add(tc.parent_tool_use_id.as_ref().map_or(0, String::capacity))
             .saturating_add(tc.terminal_id.as_ref().map_or(0, String::capacity))
             .saturating_add(tc.terminal_command.as_ref().map_or(0, String::capacity))
             .saturating_add(tc.terminal_output.as_ref().map_or(0, String::capacity))
@@ -294,6 +291,9 @@ impl super::App {
         }
         let bytes = Self::measure_message_bytes(&msg);
         self.transcript.messages.insert(insert_idx, msg);
+        if !appended_at_tail {
+            self.transcript.mark_topology_changed();
+        }
         self.transcript.message_retained_bytes.insert(insert_idx, bytes);
         self.transcript.retained_history_bytes =
             self.transcript.retained_history_bytes.saturating_add(bytes);
@@ -321,6 +321,7 @@ impl super::App {
         self.shift_turn_notice_refs_for_remove(idx);
         let removed = self.transcript.messages.remove(idx);
         self.transcript.revision = self.transcript.revision.wrapping_add(1);
+        self.transcript.mark_topology_changed();
         let removed_bytes = self.transcript.message_retained_bytes.remove(idx);
         self.transcript.retained_history_bytes =
             self.transcript.retained_history_bytes.saturating_sub(removed_bytes);
@@ -338,6 +339,7 @@ impl super::App {
     pub(crate) fn clear_messages_tracked(&mut self) {
         self.transcript.revision = self.transcript.revision.wrapping_add(1);
         self.transcript.messages.clear();
+        self.transcript.mark_topology_changed();
         self.transcript.message_retained_bytes.clear();
         self.transcript.retained_history_bytes = 0;
         self.clear_active_turn_assistant();
@@ -368,7 +370,6 @@ impl super::App {
 
     pub(crate) fn rebuild_tool_indices(&mut self) {
         self.transcript.tool_call_index.clear();
-        self.turn.active_task_ids.clear();
 
         let mut pending_interaction_ids = Vec::new();
         for (msg_idx, msg) in self.transcript.messages.iter_mut().enumerate() {
@@ -399,37 +400,7 @@ impl super::App {
                 }
             }
         }
-        self.rebuild_active_task_tracking_from_tool_scopes();
         self.sync_pending_interaction_focus(pending_interaction_ids);
-    }
-
-    fn rebuild_active_task_tracking_from_tool_scopes(&mut self) {
-        self.tool_call_scopes.retain(|id, _| self.transcript.tool_call_index.contains_key(id));
-        self.recent_child_tool_ids.retain(|parent, ids| {
-            ids.retain(|id| self.tool_call_scopes.contains_key(id));
-            self.tool_call_scopes.contains_key(parent) && !ids.is_empty()
-        });
-        let mut roots = Vec::new();
-        for msg in &self.transcript.messages {
-            for block in &msg.blocks {
-                let MessageBlock::ToolCall(tc) = block else {
-                    continue;
-                };
-                match self.tool_call_scopes.get(&tc.id) {
-                    Some(super::ToolCallScope::SubagentRoot) => {
-                        roots.push((tc.id.clone(), tc.status));
-                    }
-                    Some(
-                        super::ToolCallScope::SubagentChild { .. }
-                        | super::ToolCallScope::MainAgent,
-                    )
-                    | None => {}
-                }
-            }
-        }
-        for (id, status) in roots {
-            self.sync_active_task_status(&id, status);
-        }
     }
 
     fn sync_pending_interaction_focus(&mut self, pending_interaction_ids: Vec<String>) {
@@ -630,6 +601,7 @@ impl super::App {
         }
         self.transcript.messages = retained;
         self.transcript.revision = self.transcript.revision.wrapping_add(1);
+        self.transcript.mark_topology_changed();
         self.transcript.message_retained_bytes = retained_bytes;
         self.turn.assistant_message_idx = remapped_active_turn_owner;
         self.remap_turn_notice_refs_after_message_drop(&old_to_new);

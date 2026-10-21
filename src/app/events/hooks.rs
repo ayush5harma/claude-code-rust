@@ -25,22 +25,21 @@ pub(crate) fn flush_pending_hook_notices(app: &mut App) {
     }
     let mode = app.config.hook_notice_mode_effective();
     for run in app.session_runtime.hook_runs.take_pending_notices() {
-        let Some(notice) = run.notice(mode, HOOK_NOTICE_SLOW_THRESHOLD) else { continue };
-        emit_hook_notice(app, &run, notice.failed, &notice.text);
+        let Some(text) = run.notice(mode, HOOK_NOTICE_SLOW_THRESHOLD) else { continue };
+        emit_hook_notice(app, &run, &text);
     }
 }
 
-fn emit_hook_notice(app: &mut App, run: &HookRun, failed: bool, text: &str) {
-    let severity = if failed { SystemSeverity::Warning } else { SystemSeverity::Info };
+fn emit_hook_notice(app: &mut App, run: &HookRun, text: &str) {
     tracing::debug!(
         target: crate::logging::targets::APP_SESSION,
         event_name = "hook_notice_emitted",
         message = "hook notice emitted",
-        outcome = if failed { "failure" } else { "slow" },
+        outcome = "slow",
         hook_event = %run.event,
         hook_id = %run.id,
     );
-    emit_system_notice(app, severity, text);
+    emit_system_notice(app, SystemSeverity::Info, text);
 }
 
 #[cfg(test)]
@@ -112,7 +111,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_hook_is_noticed_as_a_warning_with_its_output() {
+    fn a_failed_hook_is_recorded_but_left_to_the_bridge_to_notice() {
         let mut app = app_with_settings();
         let named = |activity: HookActivity| HookActivity {
             hook_name: "PreToolUse:Bash".to_owned(),
@@ -129,13 +128,9 @@ mod tests {
                 ..report("deny", "PreToolUse", HookPhase::Finished, 30)
             }),
         );
-        assert_eq!(
-            notices(&app),
-            [(
-                SystemSeverity::Warning,
-                "Hook PreToolUse:Bash failed (exit 2): rm -rf is not allowed".to_owned()
-            )]
-        );
+        // The bridge decides whether a failure or a blocking decision needs a notice.
+        assert_eq!(notices(&app), []);
+        assert_eq!(app.session_runtime.hook_runs.summary().failed, 1);
     }
 
     #[test]

@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::prelude::*;
 
@@ -13,9 +12,9 @@ pub struct App {
     pub surface_mode: SurfaceMode,
     pub(crate) copy_picker: Option<crate::app::copy::CopyPicker>,
     pub(crate) search: Option<Box<crate::app::search::SearchState>>,
-    pub(crate) diff_view: Option<Box<crate::app::diff_view::DiffView>>,
     /// The `/export` waiting for its history from the bridge.
-    pub(crate) history_export: Option<crate::app::export::PendingExport>,
+    pub(crate) history_export: Option<Box<crate::app::export::PendingExport>>,
+    pub(crate) diff_view: Option<Box<crate::app::diff_view::DiffView>>,
     /// `/agents` view state; subagent status itself stays in `sdk_inventory.tasks`.
     /// Boxed so `App` stays within the future-size bound of the async tests that own it.
     pub(crate) agents: Box<crate::app::agents::AgentsView>,
@@ -52,10 +51,6 @@ pub struct App {
     pub(crate) file_index_event_rx: std_mpsc::Receiver<file_index::FileIndexEvent>,
     pub spinner_frame: usize,
     pub(crate) spinner_last_advance_at: Option<Instant>,
-    /// Tool scope keyed by tool call ID; used to distinguish main-agent, subagent roots,
-    /// and explicitly owned subagent child tools.
-    pub(crate) tool_call_scopes: HashMap<String, ToolCallScope>,
-    pub(crate) recent_child_tool_ids: HashMap<String, std::collections::VecDeque<String>>,
     pub(crate) agent_shelf_last_redraw: Option<Instant>,
     /// Session-scoped tool interaction IDs, ordered by arrival; the first receives input.
     /// Background controls survive foreground turn exits and clear on session reset.
@@ -145,6 +140,28 @@ impl App {
             }
             AppStatus::Error => ComposerAccess::Blocked(ComposerBlockReason::Error),
             AppStatus::Ready | AppStatus::Thinking | AppStatus::Running => ComposerAccess::Active,
+        }
+    }
+
+    /// Label of the in-flight command shown to the user. Silent commands (no label) keep
+    /// the internal `CommandPending` state without displaying it.
+    #[must_use]
+    pub(crate) fn displayed_pending_command_label(&self) -> Option<&str> {
+        if self.status == AppStatus::CommandPending {
+            self.turn.pending_command_label.as_deref()
+        } else {
+            None
+        }
+    }
+
+    /// Status as presented to the user; a silent pending command presents as `Ready`.
+    #[must_use]
+    pub(crate) fn displayed_status(&self) -> AppStatus {
+        match self.status {
+            AppStatus::CommandPending if self.displayed_pending_command_label().is_none() => {
+                AppStatus::Ready
+            }
+            status => status,
         }
     }
 
@@ -260,8 +277,6 @@ impl App {
             file_index_event_rx: file_index_rx,
             spinner_frame: 0,
             spinner_last_advance_at: None,
-            tool_call_scopes: HashMap::default(),
-            recent_child_tool_ids: HashMap::default(),
             agent_shelf_last_redraw: None,
             pending_interaction_ids: Vec::new(),
             focus: FocusManager::default(),
@@ -274,8 +289,8 @@ impl App {
             chat_render: ChatRenderState::default(),
             copy_picker: None,
             search: None,
-            diff_view: None,
             history_export: None,
+            diff_view: None,
             agents: Box::default(),
             mention: None,
             committed_mentions: Vec::new(),

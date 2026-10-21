@@ -29,8 +29,14 @@ fn open_settings_test_app() -> (TempDir, App) {
     (dir, app)
 }
 
-fn app_with_status_connection() -> (App, crate::agent::client::CommandReceiver) {
+/// A Status-tab session whose Claude home and project live in `TempDir`.
+fn app_with_status_connection() -> (TempDir, App, crate::agent::client::CommandReceiver) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let project = dir.path().join("project");
+    std::fs::create_dir(&project).expect("project");
     let mut app = App::test_default();
+    app.settings_home_override = Some(dir.path().join("home"));
+    app.cwd_raw = project.to_string_lossy().into_owned();
     let rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     // The live title the bridge reported; the listed one may lag behind it.
@@ -47,7 +53,33 @@ fn app_with_status_connection() -> (App, crate::agent::client::CommandReceiver) 
         first_prompt: Some("First prompt".to_owned()),
         tag: None,
     }];
-    (app, rx)
+    (dir, app, rx)
+}
+
+/// Writes the transcript Claude Code saves for `session_id`, at the path the
+/// Agent SDK reads: every non-alphanumeric character of the resolved project
+/// path becomes `-` (the fixture path is ASCII).
+fn save_transcript(dir: &TempDir, session_id: &str) -> PathBuf {
+    let project = std::fs::canonicalize(dir.path().join("project")).expect("project path");
+    let name: String = project
+        .to_string_lossy()
+        // Node's realpath omits Rust's Windows verbatim prefix.
+        .trim_start_matches(r"\\?\")
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect();
+    let folder = dir.path().join("home/.claude/projects").join(name);
+    std::fs::create_dir_all(&folder).expect("project folder");
+    let transcript = folder.join(format!("{session_id}.jsonl"));
+    std::fs::write(&transcript, "{}\n").expect("transcript");
+    transcript
+}
+
+fn rename_commands(rx: &mut crate::agent::client::CommandReceiver) -> Vec<BridgeCommand> {
+    std::iter::from_fn(|| rx.try_recv().ok())
+        .map(|envelope| envelope.command)
+        .filter(|command| matches!(command, BridgeCommand::RenameSession { .. }))
+        .collect()
 }
 
 fn connected_mcp_server_status(
@@ -158,19 +190,17 @@ fn activate_tab_clears_status_and_error_feedback() {
 #[test]
 fn reopen_clears_stale_transient_feedback() {
     let (_dir, mut app) = open_settings_test_app();
+    let _commands = attach_test_connection(&mut app);
+    app.session_runtime.session_id = Some("session-1".into());
     app.config.status_message = Some("stale status".to_owned());
     app.config.last_error = Some("stale error".to_owned());
 
     super::controller::close(&mut app);
     open(&mut app).expect("reopen");
 
-    assert!(app.config.status_message.is_none());
-    assert!(
-        app.config
-            .last_error
-            .as_deref()
-            .is_some_and(|error| error.contains("Settings are currently unavailable"))
-    );
+    assert_ne!(app.config.status_message.as_deref(), Some("stale status"));
+    assert!(app.config.last_error.is_none());
+    assert!(app.config.pending_settings_request.is_some(), "reopening refreshes agent settings");
 }
 
 #[test]
@@ -421,7 +451,7 @@ fn marketplace_add_row_opens_text_input_overlay() {
     handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    let overlay = app.config.add_marketplace_overlay().expect("add marketplace overlay");
+    let overlay = app.config.plugin_source_input_overlay().expect("add marketplace overlay");
     assert_eq!(overlay.draft, "");
     assert_eq!(overlay.cursor, 0);
 }
@@ -439,7 +469,7 @@ fn add_marketplace_overlay_supports_editing_and_escape() {
     handle_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
     handle_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
 
-    let overlay = app.config.add_marketplace_overlay().expect("add marketplace overlay");
+    let overlay = app.config.plugin_source_input_overlay().expect("add marketplace overlay");
     assert_eq!(overlay.draft, "on");
     assert_eq!(overlay.cursor, 1);
 
@@ -460,7 +490,7 @@ fn add_marketplace_overlay_accepts_paste() {
         Event::Paste("anthropics/claude-plugins-official".into()),
     );
 
-    let overlay = app.config.add_marketplace_overlay().expect("add marketplace overlay");
+    let overlay = app.config.plugin_source_input_overlay().expect("add marketplace overlay");
     assert_eq!(overlay.draft, "anthropics/claude-plugins-official");
 }
 
@@ -473,7 +503,7 @@ fn empty_marketplace_source_sets_overlay_error_and_keeps_overlay_open() {
     handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    assert!(app.config.add_marketplace_overlay().is_some());
+    assert!(app.config.plugin_source_input_overlay().is_some());
     let message = app.config.overlay_message.as_ref().expect("overlay message");
     assert_eq!(message.kind, OverlayMessageKind::Error);
     assert_eq!(message.text, "Marketplace source cannot be empty");
@@ -548,7 +578,7 @@ fn plugins_search_accepts_paste_when_focused() {
 
 #[test]
 fn status_tab_r_opens_session_rename_overlay() {
-    let (mut app, _rx) = app_with_status_connection();
+    let (_dir, mut app, _rx) = app_with_status_connection();
 
     handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
 
@@ -561,7 +591,7 @@ fn status_tab_r_opens_session_rename_overlay() {
 
 #[test]
 fn status_rename_uses_listed_unicode_title_while_live_title_is_unavailable() {
-    let (mut app, _rx) = app_with_status_connection();
+    let (_dir, mut app, _rx) = app_with_status_connection();
     app.session_runtime.session_title = None;
     let listed = "\u{1f980}".repeat(20);
     app.recent_sessions[0].custom_title = Some(listed.clone());
@@ -601,7 +631,8 @@ async fn usage_tab_r_triggers_manual_refresh() {
 
 #[test]
 fn status_tab_rename_confirm_sends_bridge_command() {
-    let (mut app, mut rx) = app_with_status_connection();
+    let (dir, mut app, mut rx) = app_with_status_connection();
+    save_transcript(&dir, "session-1");
 
     handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
     for _ in 0.."Current custom title".chars().count() {
@@ -620,7 +651,12 @@ fn status_tab_rename_confirm_sends_bridge_command() {
             title: "Renamed session".to_owned(),
         }
     );
-    assert!(app.config.overlay.is_none());
+    // The dialog keeps the sent draft until the SDK answers.
+    assert_eq!(
+        app.config.session_rename_overlay().map(|overlay| overlay.draft.as_str()),
+        Some("Renamed session")
+    );
+    assert!(!app.config.session_rename_confirmable());
     assert_eq!(app.config.status_message.as_deref(), Some("Renaming session..."));
     assert!(app.config.last_error.is_none());
     assert!(matches!(
@@ -638,7 +674,8 @@ fn status_tab_rename_confirm_sends_bridge_command() {
 
 #[test]
 fn status_tab_rename_empty_confirm_clears_custom_title() {
-    let (mut app, mut rx) = app_with_status_connection();
+    let (dir, mut app, mut rx) = app_with_status_connection();
+    save_transcript(&dir, "session-1");
 
     handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
     for _ in 0.."Current custom title".chars().count() {
@@ -664,7 +701,7 @@ fn status_tab_rename_empty_confirm_clears_custom_title() {
 
 #[test]
 fn status_tab_rename_escape_cancels_without_command() {
-    let (mut app, mut rx) = app_with_status_connection();
+    let (_dir, mut app, mut rx) = app_with_status_connection();
 
     handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
     handle_key(&mut app, KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT));
@@ -675,9 +712,264 @@ fn status_tab_rename_escape_cancels_without_command() {
     assert!(app.config.pending_session_title_change.is_none());
 }
 
+fn press(app: &mut App, code: KeyCode) {
+    handle_key(app, KeyEvent::new(code, KeyModifiers::NONE));
+}
+
+fn turn_complete(session_id: &str) -> crate::agent::events::ClientEvent {
+    crate::agent::events::ClientEvent::TurnComplete {
+        session_id: session_id.to_owned(),
+        queued_turn_count: None,
+        terminal_reason: None,
+    }
+}
+
+#[test]
+fn status_rename_becomes_available_when_a_finished_turn_saved_the_session() {
+    let (dir, mut app, mut rx) = app_with_status_connection();
+    open_tab(&mut app, ConfigTab::Status).expect("status tab");
+    assert_eq!(app.config.session_transcript, Some(SessionTranscriptState::NotSaved));
+
+    press(&mut app, KeyCode::Char('r'));
+    press(&mut app, KeyCode::Char('!'));
+    press(&mut app, KeyCode::Enter);
+    // The dialog stays open and editable, but Enter sends nothing.
+    assert_eq!(
+        app.config.session_rename_overlay().map(|overlay| overlay.draft.as_str()),
+        Some("Current custom title!")
+    );
+    assert!(rename_commands(&mut rx).is_empty());
+    assert!(app.config.pending_session_title_change.is_none());
+
+    // The turn that saved the session ends while the dialog is open.
+    save_transcript(&dir, "session-1");
+    crate::app::handle_client_event(&mut app, turn_complete("session-1"));
+    assert_eq!(app.config.session_transcript, Some(SessionTranscriptState::Saved));
+
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(
+        rename_commands(&mut rx),
+        vec![BridgeCommand::RenameSession {
+            session_id: "session-1".to_owned(),
+            title: "Current custom title!".to_owned(),
+        }]
+    );
+}
+
+#[test]
+fn a_resumed_session_is_saved_in_the_folder_it_was_listed_under() {
+    let (dir, mut app, mut rx) = app_with_status_connection();
+    // Saved under a sibling worktree, then resumed from this project.
+    let sibling = dir.path().join("sibling");
+    std::fs::create_dir(&sibling).expect("sibling");
+    let sibling = std::fs::canonicalize(sibling).expect("sibling path");
+    let name: String = sibling
+        .to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect();
+    let folder = dir.path().join("home/.claude/projects").join(name);
+    std::fs::create_dir_all(&folder).expect("sibling folder");
+    std::fs::write(folder.join("session-1.jsonl"), "{}\n").expect("transcript");
+    app.recent_sessions[0].cwd = Some(sibling.to_string_lossy().into_owned());
+
+    press(&mut app, KeyCode::Char('r'));
+    press(&mut app, KeyCode::Enter);
+
+    assert_eq!(app.config.session_transcript, Some(SessionTranscriptState::Saved));
+    assert_eq!(rename_commands(&mut rx).len(), 1);
+}
+
+#[test]
+fn a_pending_title_generation_holds_the_rename_and_the_reverse() {
+    let (dir, mut app, mut rx) = app_with_status_connection();
+    save_transcript(&dir, "session-1");
+    press(&mut app, KeyCode::Char('g'));
+    press(&mut app, KeyCode::Char('r'));
+    press(&mut app, KeyCode::Enter);
+    let sent: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).map(|e| e.command).collect();
+    assert!(
+        matches!(sent.as_slice(), [BridgeCommand::GenerateSessionTitle { .. }]),
+        "the listing that settles the generation must not settle a rename: {sent:?}"
+    );
+    assert!(matches!(
+        app.config.pending_session_title_change.as_ref().map(|pending| &pending.kind),
+        Some(PendingSessionTitleChangeKind::Generate)
+    ));
+
+    let (dir, mut app, mut rx) = app_with_status_connection();
+    save_transcript(&dir, "session-1");
+    press(&mut app, KeyCode::Char('r'));
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('g'));
+    let sent: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).map(|e| e.command).collect();
+    assert!(matches!(sent.as_slice(), [BridgeCommand::RenameSession { .. }]), "{sent:?}");
+    assert_eq!(
+        app.config.status_message.as_deref(),
+        Some("The session is being renamed. Generate a title once it finishes.")
+    );
+}
+
+#[test]
+fn status_rename_dialog_rechecks_the_session_when_it_opens() {
+    let (dir, mut app, mut rx) = app_with_status_connection();
+    open_tab(&mut app, ConfigTab::Status).expect("status tab");
+    save_transcript(&dir, "session-1");
+    // Nothing refreshed the check since the file appeared; opening the dialog does.
+    assert_eq!(app.config.session_transcript, Some(SessionTranscriptState::NotSaved));
+
+    press(&mut app, KeyCode::Char('r'));
+    press(&mut app, KeyCode::Enter);
+
+    assert_eq!(rename_commands(&mut rx).len(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn status_rename_reports_a_failed_check_as_an_error_and_stays_disabled() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, mut app, mut rx) = app_with_status_connection();
+    let transcript = save_transcript(&dir, "session-1");
+    let folder = transcript.parent().expect("project folder").to_path_buf();
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o000)).expect("lock");
+    if std::fs::read_dir(&folder).is_ok() {
+        // Root ignores the lock, so there is no failure to observe.
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).expect("unlock");
+        eprintln!("skipped: permissions do not restrict this user");
+        return;
+    }
+
+    press(&mut app, KeyCode::Char('r'));
+    press(&mut app, KeyCode::Enter);
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).expect("unlock");
+
+    assert!(
+        matches!(
+            app.config.session_transcript,
+            Some(SessionTranscriptState::CheckFailed(ref error)) if error.starts_with("Cannot check whether this session is saved: ")
+        ),
+        "{:?}",
+        app.config.session_transcript
+    );
+    assert!(rename_commands(&mut rx).is_empty());
+}
+
+#[test]
+fn a_failed_rename_stays_in_the_dialog_with_its_draft() {
+    let (dir, mut app, mut rx) = app_with_status_connection();
+    save_transcript(&dir, "session-1");
+    press(&mut app, KeyCode::Char('r'));
+    press(&mut app, KeyCode::Char('2'));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(rename_commands(&mut rx).len(), 1);
+
+    crate::app::handle_client_event(
+        &mut app,
+        crate::agent::events::ClientEvent::SlashCommandError {
+            session_id: Some("session-1".to_owned()),
+            message: "failed to rename session: Session session-1 not found".to_owned(),
+        },
+    );
+
+    assert_eq!(
+        app.config.session_rename_overlay().map(|overlay| overlay.draft.as_str()),
+        Some("Current custom title2")
+    );
+    assert_eq!(
+        app.config.overlay_message,
+        Some(OverlayMessage::error("failed to rename session: Session session-1 not found"))
+    );
+    assert!(app.transcript.messages.is_empty(), "the failure stays out of the chat");
+    // The kept draft can be sent again.
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(rename_commands(&mut rx).len(), 1);
+}
+
+#[test]
+fn a_successful_rename_closes_the_dialog_and_reports_in_status_only() {
+    let (dir, mut app, mut rx) = app_with_status_connection();
+    save_transcript(&dir, "session-1");
+    press(&mut app, KeyCode::Char('r'));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(rename_commands(&mut rx).len(), 1);
+
+    crate::app::handle_client_event(
+        &mut app,
+        crate::agent::events::ClientEvent::SessionsListed {
+            sessions: vec![crate::agent::types::SessionListEntry {
+                session_id: "session-1".to_owned(),
+                summary: String::new(),
+                last_modified_ms: 1,
+                file_size_bytes: 2,
+                cwd: None,
+                git_branch: None,
+                custom_title: Some("Current custom title".to_owned()),
+                first_prompt: None,
+                tag: None,
+            }],
+            request_id: None,
+        },
+    );
+
+    assert!(app.config.overlay.is_none());
+    assert_eq!(
+        app.config.status_message.as_deref(),
+        Some("Renamed session to Current custom title")
+    );
+    assert!(app.transcript.messages.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn clear_rechecks_the_session_that_replaces_a_saved_one() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (dir, mut app, mut rx) = app_with_status_connection();
+            save_transcript(&dir, "session-1");
+            open_tab(&mut app, ConfigTab::Status).expect("status tab");
+            assert_eq!(app.config.session_transcript, Some(SessionTranscriptState::Saved));
+
+            // A session change, as `/clear` makes, to a session with no transcript yet.
+            let cwd = app.cwd_raw.clone();
+            crate::app::handle_client_event(
+                &mut app,
+                crate::agent::events::ClientEvent::SessionReplaced {
+                    session_id: crate::agent::model::SessionId::new("session-2"),
+                    cwd,
+                    current_model: crate::agent::model::CurrentModel::new(
+                        "sonnet", "Sonnet", "Sonnet",
+                    ),
+                    available_models: vec![],
+                    mode: None,
+                    fast_mode_state: crate::agent::model::FastModeState::Off,
+                    fast_mode_disabled_reason: None,
+                    ultracode: None,
+                    history_updates: vec![],
+                    restored_input: None,
+                },
+            );
+            assert_eq!(app.config.session_transcript, Some(SessionTranscriptState::NotSaved));
+
+            press(&mut app, KeyCode::Char('r'));
+            press(&mut app, KeyCode::Enter);
+            assert!(app.config.session_rename_overlay().is_some());
+            assert!(rename_commands(&mut rx).is_empty());
+
+            save_transcript(&dir, "session-2");
+            crate::app::handle_client_event(&mut app, turn_complete("session-2"));
+            press(&mut app, KeyCode::Enter);
+            assert!(matches!(
+                rename_commands(&mut rx).as_slice(),
+                [BridgeCommand::RenameSession { session_id, .. }] if session_id == "session-2"
+            ));
+        })
+        .await;
+}
+
 #[test]
 fn status_tab_g_generates_session_title_from_current_title_fallback() {
-    let (mut app, mut rx) = app_with_status_connection();
+    let (_dir, mut app, mut rx) = app_with_status_connection();
 
     handle_key(&mut app, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
 
@@ -700,7 +992,7 @@ fn status_tab_g_generates_session_title_from_current_title_fallback() {
 
 #[test]
 fn status_tab_g_requires_existing_session_metadata() {
-    let (mut app, mut rx) = app_with_status_connection();
+    let (_dir, mut app, mut rx) = app_with_status_connection();
     app.session_runtime.session_title = None;
     app.recent_sessions[0].custom_title = None;
     app.recent_sessions[0].summary.clear();
@@ -882,6 +1174,41 @@ fn true_dynamic_mcp_server_offers_matching_config_remove_action() {
         &server,
         super::mcp::McpServerActionKind::RemoveDynamicConfig
     ));
+}
+
+#[test]
+fn session_plugin_mcp_server_survives_persistent_inventory_refresh_and_opens_its_session_row() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Mcp;
+    app.plugins.last_inventory_refresh_at = Some(std::time::Instant::now());
+    app.plugins.session_plugins = vec![crate::agent::types::SessionPlugin {
+        name: "Notion".to_owned(),
+        path: "C:/plugins/notion".to_owned(),
+        source: Some("Notion@inline".to_owned()),
+        version: None,
+    }];
+    app.mcp.servers = vec![notion_mcp_server_status()];
+    super::reconcile_stale_plugin_mcp_servers(&mut app);
+    assert_eq!(
+        app.mcp.servers.len(),
+        1,
+        "persistent CLI inventory cannot remove a confirmed session plugin server"
+    );
+    let actions = available_mcp_actions(&app, &app.mcp.servers[0]);
+    assert!(!actions.contains(&super::mcp::McpServerActionKind::RemoveDynamicConfig));
+    let selected_index = actions
+        .iter()
+        .position(|action| *action == super::mcp::McpServerActionKind::ManagePlugin)
+        .expect("manage session plugin");
+    app.config.overlay = Some(ConfigOverlayState::McpDetails(McpDetailsOverlayState {
+        server_name: "plugin:Notion:notion".to_owned(),
+        selected_index,
+    }));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.config.active_tab, ConfigTab::Plugins);
+    assert_eq!(app.plugins.active_tab, crate::app::plugins::PluginsViewTab::Session);
+    assert_eq!(app.plugins.session_plugins[app.plugins.session_selected_index].name, "Notion");
+    assert!(app.config.installed_plugin_actions_overlay().is_none());
 }
 
 #[test]
@@ -1147,7 +1474,11 @@ fn mcp_config_remove_success_reloads_runtime_without_extra_snapshot() {
     let envelope = rx.try_recv().expect("runtime reload command");
     assert_eq!(
         envelope.command,
-        BridgeCommand::ReloadPlugins { session_id: "session-1".to_owned(), force: false }
+        BridgeCommand::ReloadPlugins {
+            session_id: "session-1".to_owned(),
+            force: false,
+            add_plugins: Vec::new()
+        }
     );
     assert!(app.mcp.in_flight);
     assert!(rx.try_recv().is_err());
@@ -1613,7 +1944,11 @@ fn mcp_tab_refresh_key_requests_snapshot() {
     let envelope = rx.try_recv().expect("runtime reload command");
     assert_eq!(
         envelope.command,
-        BridgeCommand::ReloadPlugins { session_id: "session-1".to_owned(), force: false }
+        BridgeCommand::ReloadPlugins {
+            session_id: "session-1".to_owned(),
+            force: false,
+            add_plugins: Vec::new()
+        }
     );
     let envelope = rx.try_recv().expect("mcp snapshot command");
     assert_eq!(
@@ -1771,13 +2106,13 @@ fn mcp_auth_actions_follow_bridge_capabilities() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn elicitation_response_precedes_the_follow_up_snapshot_request() {
+async fn elicitation_transport_ack_keeps_the_request_until_sdk_settlement() {
     tokio::task::LocalSet::new()
         .run_until(Box::pin(async {
             let mut app = App::test_default();
             let mut commands = attach_test_connection(&mut app);
             app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-            app.mcp.pending_elicitation = Some(crate::agent::types::ElicitationRequest {
+            app.mcp.elicitations.insert(crate::agent::types::ElicitationRequest {
                 request_id: "request-1".to_owned(),
                 server_name: "server-1".to_owned(),
                 message: "Continue?".to_owned(),
@@ -1785,16 +2120,16 @@ async fn elicitation_response_precedes_the_follow_up_snapshot_request() {
                 url: None,
                 elicitation_id: None,
                 requested_schema: None,
+                field_order: vec![],
             });
 
             super::mcp::send_mcp_elicitation_response(
                 &mut app,
                 "request-1",
                 crate::agent::types::ElicitationAction::Decline,
-                None,
             );
 
-            assert!(app.mcp.pending_elicitation.is_some());
+            assert!(!app.mcp.elicitations.is_empty());
             let response = commands.recv_envelope().await.expect("elicitation response");
             assert!(matches!(
                 response.command,
@@ -1815,7 +2150,18 @@ async fn elicitation_response_precedes_the_follow_up_snapshot_request() {
             ));
             crate::app::events::handle_client_event(&mut app, queued);
 
-            assert!(app.mcp.pending_elicitation.is_none());
+            assert!(!app.mcp.elicitations.is_empty());
+            assert!(app.mcp.elicitations.active().unwrap().sending);
+            assert!(commands.try_recv().is_err());
+            crate::app::events::handle_client_event(
+                &mut app,
+                crate::agent::events::ClientEvent::McpElicitationSettled {
+                    session_id: "session-1".to_owned(),
+                    request_id: "request-1".to_owned(),
+                    session_closing: false,
+                },
+            );
+            assert!(app.mcp.elicitations.is_empty());
             let snapshot = commands.recv_envelope().await.expect("follow-up snapshot");
             assert!(matches!(snapshot.command, BridgeCommand::GetMcpSnapshot { .. }));
         }))

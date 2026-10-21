@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -7,7 +6,9 @@ pub struct AvailableCommand {
     pub name: String,
     pub description: String,
     pub input_hint: Option<String>,
+    #[serde(default)]
     pub aliases: Vec<String>,
+    #[serde(default)]
     pub builtin: bool,
 }
 
@@ -88,7 +89,20 @@ impl AvailableAgent {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, clap::ValueEnum)]
+/// Variants are declared from lowest to highest, so the derived order is the effort order.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    clap::ValueEnum,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum EffortLevel {
     Low,
@@ -167,6 +181,7 @@ pub struct AvailableModel {
     pub display_name: String,
     pub description: Option<String>,
     pub supports_effort: bool,
+    #[serde(default)]
     pub supported_effort_levels: Vec<EffortLevel>,
     pub supports_adaptive_thinking: Option<bool>,
     pub supports_fast_mode: Option<bool>,
@@ -240,6 +255,7 @@ pub struct CurrentModel {
     pub display_name_long: String,
     pub catalog_id: Option<String>,
     pub supports_effort: bool,
+    #[serde(default)]
     pub supported_effort_levels: Vec<EffortLevel>,
     pub supports_fast_mode: Option<bool>,
     pub supports_auto_mode: Option<bool>,
@@ -267,6 +283,12 @@ impl CurrentModel {
             supports_adaptive_thinking: None,
             is_authoritative: false,
         }
+    }
+
+    /// Effort levels a session on this model may request.
+    #[must_use]
+    pub fn selectable_effort_levels(&self) -> &[EffortLevel] {
+        if self.supports_effort { &self.supported_effort_levels } else { &[] }
     }
 
     #[must_use]

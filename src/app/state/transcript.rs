@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -9,7 +8,11 @@ use super::render_budget;
 #[derive(Default)]
 pub struct Transcript {
     pub messages: Vec<ChatMessage>,
+    /// Bumped whenever messages are added, removed or rebuilt; transcript search (`app::search`)
+    /// rebuilds its rows when it changes.
     pub(crate) revision: u64,
+    /// Changes to existing message positions invalidate an in-progress traversal.
+    topology_revision: u64,
     /// Cached approximate retained bytes for each message, parallel to `messages`.
     pub(super) message_retained_bytes: Vec<usize>,
     /// Rolling total of `message_retained_bytes`.
@@ -29,6 +32,14 @@ pub struct Transcript {
 }
 
 impl Transcript {
+    pub(crate) const fn topology_revision(&self) -> u64 {
+        self.topology_revision
+    }
+
+    pub(super) fn mark_topology_changed(&mut self) {
+        self.topology_revision = self.topology_revision.wrapping_add(1);
+    }
+
     #[must_use]
     pub fn new(messages: Vec<ChatMessage>) -> Self {
         Self { messages, ..Self::default() }

@@ -1,13 +1,14 @@
 import { confirmedColorFromResult } from "./session_color.js";
 import { observeMainAgentStream, resetMainAgentActivity, responseNeverStreamed } from "./activity.js";
 import { nativeNotification } from "./notifications.js";
+import { updateSessionPlugins } from "./plugin_inventory.js";
 import { elapsedNumber, messageMetadata, turnTiming } from "./presentation_metadata.js";
 import { refreshUltracode } from "./ultracode.js";
 import { observeSessionEffort, refreshSessionEffort } from "./effort.js";
 import { emitSessionTitle } from "./session_title.js";
-import { handleHookSystemMessage } from "./hook_activity.js";
+import { forwardHookActivity } from "./hook_activity.js";
 import { observeSessionModel } from "./session_model.js";
-import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { HookEvent, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
   BridgeCommand,
   SessionUpdate,
@@ -27,6 +28,7 @@ import {
 import {
   writeEvent,
   emitSessionUpdate,
+  emitSystemNoticeUpdate,
   emitConnectEvent,
   emitSessionReplacedEvent,
 } from "./events.js";
@@ -44,7 +46,6 @@ import {
   emitToolResultUpdate,
   finalizeOpenToolCalls,
   emitToolProgressUpdate,
-  emitToolSummaryUpdate,
   ensureToolCallVisible,
   resolveTaskToolUseId,
   defersTaskNotificationCompletion,
@@ -60,7 +61,7 @@ import {
   applyTaskLifecycleState,
   observeTaskChildModel,
 } from "./tasks.js";
-import { linkTaskToolUse, unlinkTaskToolUse } from "./task_links.js";
+import { unlinkTaskToolUse } from "./task_links.js";
 import {
   emitAuthRequired,
   classifyTurnErrorKind,
@@ -392,22 +393,6 @@ function logSdkMessageOrigin(
   });
 }
 
-function emitSystemNoticeUpdate(
-  session: SessionState,
-  severity: SystemNoticeSeverity,
-  message: string,
-): void {
-  const trimmed = message.trim();
-  if (!trimmed) {
-    return;
-  }
-  emitSessionUpdate(session.sessionId, {
-    type: "system_notice_update",
-    severity,
-    message: trimmed,
-  });
-}
-
 const MAX_INFORMATIONAL_DEDUP_KEYS = 256;
 
 function shouldEmitInformationalMessage(
@@ -478,6 +463,198 @@ function handleInformationalSystemMessage(
   }
 }
 
+/** Longest hook output excerpt in a log record or a notice, in characters. */
+const HOOK_OUTPUT_EXCERPT_LIMIT = 240;
+/** Most hook notices held for a session that has not connected yet. */
+const PENDING_HOOK_NOTICE_LIMIT = 20;
+/** The exit code a command hook uses to deliver its decision. */
+const DECISION_EXIT_CODE = 2;
+/**
+ * Whether the bridge shows an exit-2 decision: "notice" when it was measured
+ * that nothing else in the SDK stream reaches the user, "none" otherwise.
+ */
+type DecisionNotice = "notice" | "none";
+/**
+ * Events on which exit 2 is the hook's own decision rather than a failure: it
+ * blocks or rolls back the action, keeps Claude or a subagent working, or hands
+ * the hook's output to Claude. Taken from the per-event table in the hook
+ * reference (https://code.claude.com/docs/en/hooks#exit-code-2-behavior-per-event).
+ * On every other event the reference shows exit 2 to the user only as a hook
+ * error (SessionStart, SessionEnd, ...), ignores it (Notification,
+ * PermissionRequest, ...) or fails the operation as any non-zero exit does
+ * (WorktreeCreate, WorktreeRemove), so it is a failure there. The SDK reports
+ * exit 2 as outcome "error" whatever it means, and for a SessionStart hook
+ * that exits 2 it sends nothing else (measured on 0.3.288). An event missing
+ * here, such as one a newer SDK adds, is a failure too, which keeps it in the
+ * default log.
+ *
+ * The value was measured on SDK 0.3.288 with a command hook that exits 2 on
+ * each event, unless the entry says otherwise. Only a decision measured to reach
+ * the user through nothing but its hook_response gets a notice, so a notice is
+ * never a duplicate; an unmeasured event stays in the detailed log.
+ */
+const EXIT_2_DECISIONS: ReadonlyMap<string, DecisionNotice> = new Map<HookEvent, DecisionNotice>([
+  // The blocked call's tool result is the hook's output, marked as an error.
+  ["PreToolUse", "none"],
+  // Only the hook_response carries the output; the tool result is unchanged.
+  ["PostToolUse", "notice"],
+  ["PostToolUseFailure", "notice"],
+  // Only the hook_response carries the output; the turn ends with an empty result.
+  ["PostToolBatch", "notice"],
+  // A warning informational message and the turn result carry the output.
+  ["UserPromptSubmit", "none"],
+  ["UserPromptExpansion", "none"],
+  // Claude or the subagent keeps working, and the stock CLI shows nothing either.
+  ["Stop", "none"],
+  ["SubagentStop", "none"],
+  // Not measured: it needs an agent team.
+  ["TeammateIdle", "none"],
+  // The failed TaskCreate or TaskUpdate result is the hook's output.
+  ["TaskCreated", "none"],
+  ["TaskCompleted", "none"],
+  // Not measured: editing settings.local.json in an SDK session fired no hook.
+  ["ConfigChange", "none"],
+  // /compact reports a failed compaction with the hook's output. Known gap: a
+  // blocked auto compaction was not measured and may reach the user through nothing.
+  ["PreCompact", "none"],
+  // setModel rejects with the hook's output, and set_model reports the error.
+  ["PreModelSwitch", "none"],
+  // Not measured: they need an MCP server that elicits.
+  ["Elicitation", "none"],
+  ["ElicitationResult", "none"],
+]);
+
+function hookOutputExcerpt(msg: Record<string, unknown>): string | undefined {
+  for (const field of ["stderr", "output", "stdout"]) {
+    const text = trimmedStringField(msg, field);
+    if (text) {
+      return Array.from(redactStartupDetail(text))
+        .slice(0, HOOK_OUTPUT_EXCERPT_LIMIT)
+        .join("");
+    }
+  }
+  return undefined;
+}
+
+function hookFailureNotice(
+  hookName: string,
+  exitCode: number | undefined,
+  excerpt: string | undefined,
+): string {
+  const exit = exitCode === undefined ? "" : ` (exit ${exitCode})`;
+  return `Hook ${hookName} failed${exit}${excerpt ? `: ${excerpt}` : "."}`;
+}
+
+function hookDecisionNotice(hookName: string, excerpt: string | undefined): string {
+  // The stock CLI's wording for the same event ("<hook> hook returned blocking
+  // error"): true whether the hook blocked the action or sent its output to Claude.
+  return `Hook ${hookName} returned a blocking error${excerpt ? `: ${excerpt}` : "."}`;
+}
+
+/** Shows one notice per hook run, held until the connect event if need be. */
+function emitHookNotice(
+  session: SessionState,
+  hookId: string,
+  severity: SystemNoticeSeverity,
+  message: string,
+): void {
+  if (!shouldEmitInformationalMessage(session, severity, message, hookId)) {
+    return;
+  }
+  if (session.connected) {
+    emitSystemNoticeUpdate(session, severity, message);
+    return;
+  }
+  // SessionStart hooks finish before the SDK answers its initialize request,
+  // and the app ignores updates for a session it has not been told about.
+  const pending = session.pendingHookNotices ?? [];
+  if (pending.length < PENDING_HOOK_NOTICE_LIMIT) {
+    pending.push({ severity, message });
+  }
+  session.pendingHookNotices = pending;
+}
+
+/**
+ * Handle the SDK's structured hook events. Started and progress messages are
+ * routine and stay in the detailed log. A finished hook is logged at its real
+ * severity: a decision stays in the detailed log and becomes one info notice
+ * when nothing else shows it, and a failure the user has no other way to learn
+ * about becomes one warning notice. A cancelled hook is ordinary (an
+ * interrupted turn cancels its hooks) and is never a notice.
+ */
+function handleHookSystemMessage(
+  session: SessionState,
+  subtype: string,
+  msg: Record<string, unknown>,
+): boolean {
+  if (subtype !== "hook_started" && subtype !== "hook_progress" && subtype !== "hook_response") {
+    return false;
+  }
+  // Every run feeds the Status tab's hook history and the slow-hook notices.
+  forwardHookActivity(session, msg);
+  const hookId = trimmedStringField(msg, "hook_id");
+  const hookName = trimmedStringField(msg, "hook_name");
+  const hookEvent = trimmedStringField(msg, "hook_event");
+  if (!hookId || !hookName || !hookEvent) {
+    return true;
+  }
+  const common = {
+    target: LOG_TARGETS.BRIDGE_SDK,
+    sessionId: session.sessionId,
+    fields: { hook_id: hookId, hook_name: hookName, hook_event: hookEvent },
+  };
+  if (subtype !== "hook_response") {
+    bridgeLogger.debug({
+      ...common,
+      eventName: `sdk_${subtype}`,
+      message: `SDK ${subtype.replace("_", " ")} received`,
+      outcome: "success",
+    });
+    return true;
+  }
+
+  const outcome = msg.outcome;
+  const exitCode =
+    typeof msg.exit_code === "number" && Number.isInteger(msg.exit_code)
+      ? msg.exit_code
+      : undefined;
+  if (outcome !== "error") {
+    bridgeLogger.debug({
+      ...common,
+      eventName: "sdk_hook_finished",
+      message: "SDK hook finished",
+      outcome: outcome === "cancelled" ? "cancelled" : "success",
+      fields: { ...common.fields, exit_code: exitCode },
+    });
+    return true;
+  }
+
+  const excerpt = hookOutputExcerpt(msg);
+  const decision = exitCode === DECISION_EXIT_CODE ? EXIT_2_DECISIONS.get(hookEvent) : undefined;
+  if (decision !== undefined) {
+    bridgeLogger.info({
+      ...common,
+      eventName: "sdk_hook_decision",
+      message: "SDK hook returned a decision",
+      outcome: "decision",
+      fields: { ...common.fields, exit_code: exitCode, output_excerpt: excerpt },
+    });
+    if (decision === "notice") {
+      emitHookNotice(session, hookId, "info", hookDecisionNotice(hookName, excerpt));
+    }
+    return true;
+  }
+  bridgeLogger.warn({
+    ...common,
+    eventName: "sdk_hook_failed",
+    message: "SDK hook failed",
+    outcome: "failure",
+    fields: { ...common.fields, exit_code: exitCode, output_excerpt: excerpt },
+  });
+  emitHookNotice(session, hookId, "warning", hookFailureNotice(hookName, exitCode, excerpt));
+  return true;
+}
+
 function trimmedStringField(
   msg: Record<string, unknown>,
   field: string,
@@ -509,6 +686,14 @@ function emitPluginLoadErrors(session: SessionState, value: unknown): void {
     const category = boundedDiagnosticString(error?.type) ?? "generic-error";
     const message = boundedDiagnosticString(error?.message) ?? "Unknown plugin load failure";
     const path = boundedDiagnosticString(error?.path);
+    bridgeLogger.warn({
+      target: LOG_TARGETS.APP_SESSION,
+      eventName: "plugin_load_failed",
+      message: "plugin failed to load",
+      outcome: "failure",
+      sessionId: session.sessionId,
+      fields: { plugin, category, error_message: message },
+    });
     emitSystemNoticeUpdate(
       session,
       "warning",
@@ -718,17 +903,9 @@ export function taskSystemToolFields(
 ): ToolCallUpdateFields | undefined {
   const messageTaskMetadata = sdkTaskMetadata(msg);
   if (subtype === "task_started") {
-    const description =
-      typeof msg.description === "string" ? msg.description : "";
-    if (!description) {
-      return undefined;
-    }
+    // The launch description is not tool output; the row keeps its own content.
     const fields: ToolCallUpdateFields = {
       status: "in_progress",
-      ...(!(toolPreservesTaskNotificationOutput(toolCall) && toolCall.raw_output) ? { raw_output: description,
-      content: [
-        { type: "content", content: { type: "text", text: description } },
-      ] } : {}),
       ...(messageTaskMetadata ? { task_metadata: messageTaskMetadata } : {}),
     };
     return Object.keys(fields).length === 1 && fields.status === toolCall.status ? undefined : fields;
@@ -741,7 +918,7 @@ export function taskSystemToolFields(
     }
     const fields: ToolCallUpdateFields = {
       status: "in_progress",
-      ...(!(toolPreservesTaskNotificationOutput(toolCall) && toolCall.raw_output) ? {
+      ...(!toolPreservesTaskNotificationOutput(toolCall) ? {
         raw_output: progress,
         content: [{ type: "content", content: { type: "text", text: progress } }],
       } : {}),
@@ -785,7 +962,8 @@ export function taskSystemToolFields(
   if (messageTaskMetadata) {
     fields.task_metadata = messageTaskMetadata;
   }
-  if (summary && (!toolPreservesTaskNotificationOutput(toolCall) || toolCall.status === "detached")) {
+  // A deferred completion is followed by the real tool result, so its summary is never shown.
+  if (summary && !deferCompletion && (!toolPreservesTaskNotificationOutput(toolCall) || toolCall.status === "detached")) {
     const output = toolPreservesTaskNotificationOutput(toolCall) && toolCall.raw_output
       ? `${toolCall.raw_output}\n${summary}` : summary;
     fields.raw_output = output;
@@ -820,9 +998,8 @@ export function handleTaskSystemMessage(
   const taskId = typeof msg.task_id === "string" ? msg.task_id : "";
   const explicitToolUseId =
     typeof msg.tool_use_id === "string" ? msg.tool_use_id : "";
-  if (taskId && explicitToolUseId) {
-    linkTaskToolUse(session, taskId, explicitToolUseId);
-  }
+  // Admission precedes every link, output, timing and tool mutation.
+  if (!applyTaskLifecycleState(session, subtype, msg)) return true;
   const toolUseId = resolveTaskToolUseId(session, msg);
   bridgeLogger.debug({
     target: LOG_TARGETS.APP_TOOL,
@@ -863,7 +1040,6 @@ export function handleTaskSystemMessage(
     });
   }
   if (!toolUseId) {
-    applyTaskLifecycleState(session, subtype, msg);
     if (subtype === "task_updated" && taskId) {
       bridgeLogger.debug({
         target: LOG_TARGETS.APP_TOOL,
@@ -888,7 +1064,6 @@ export function handleTaskSystemMessage(
   const fields = taskSystemToolFields(toolCall, subtype, msg);
   // The task row is separate state with its own transition rule, so a tool
   // call that already finished does not decide whether its task settles.
-  applyTaskLifecycleState(session, subtype, msg);
   if (!normalizeToolCallUpdateFields(toolCall, fields ?? {}, subtype as "task_started" | "task_progress" | "task_updated" | "task_notification")) return true;
   const taskDuration = elapsedNumber(asRecordOrNull(msg.usage)?.duration_ms);
   if (taskDuration !== undefined && Number.isSafeInteger(Math.round(taskDuration))) {
@@ -1133,6 +1308,7 @@ export function handleContentBlock(
   const blockType = typeof block.type === "string" ? block.type : "";
 
   if (blockType === "text") {
+    if (linkage?.parentToolUseId) return;
     const text = typeof block.text === "string" ? block.text : "";
     if (text) {
       emitSessionUpdate(session.sessionId, {
@@ -1229,6 +1405,7 @@ export function handleStreamEvent(
     const delta = event.delta as Record<string, unknown>;
     const deltaType = typeof delta.type === "string" ? delta.type : "";
     if (deltaType === "text_delta") {
+      if (parentToolUseId) return;
       const text = typeof delta.text === "string" ? delta.text : "";
       if (text) {
         emitSessionUpdate(session.sessionId, {
@@ -1248,6 +1425,16 @@ export function handleAssistantMessage(
   message: Record<string, unknown>,
 ): void {
   observeTaskChildModel(session, message);
+  const producer = trimmedStringField(message, "agent_id");
+  const parent = trimmedStringField(message, "parent_tool_use_id") ?? (producer ? session.taskToolUseIds.get(producer) ?? session.tasksById.get(producer)?.source_tool_call_id : undefined);
+  if (producer || parent) {
+    const payload = asRecordOrNull(message.message);
+    for (const item of Array.isArray(payload?.content) ? payload.content : []) {
+      const block = asRecordOrNull(item);
+      if (block && block.type !== "text" && block.type !== "thinking") handleContentBlock(session, block, { source: "assistant", parentToolUseId: parent, metadata: sdkCorrelationMetadata(message), sourceMessageUuid: sourceMessageUuid(message) });
+    }
+    return;
+  }
   const response = session.mainAgentResponse;
   const completed = asRecordOrNull(message.message);
   // The SDK also emits assistant frames for individual completed blocks with
@@ -1608,7 +1795,9 @@ export function handleResultMessage(
   if (color) emitSessionUpdate(session.sessionId, { type: "session_color_update", color });
   if (session.connected) void import("./status_line.js").then(({ scheduleStatusLine }) => scheduleStatusLine(session));
   const subtype = typeof message.subtype === "string" ? message.subtype : "";
-  if (subtype === "success") {
+  // SDKResultSuccess also carries API failures: is_error marks the result
+  // text as an error, and terminal_reason describes how the turn ended.
+  if (subtype === "success" && message.is_error !== true && terminalReason !== "api_error") {
     session.lastAssistantError = undefined;
     finalizeOpenToolCalls(session, "completed");
     writeEvent({
@@ -1622,8 +1811,11 @@ export function handleResultMessage(
     return;
   }
 
-  const errors =
-    Array.isArray(message.errors) &&
+  const errors = subtype === "success"
+    ? (typeof message.result === "string" && message.result.trim().length > 0
+      ? [message.result]
+      : [])
+    : Array.isArray(message.errors) &&
     message.errors.every((entry) => typeof entry === "string")
       ? (message.errors as string[])
       : [];
@@ -1653,7 +1845,9 @@ export function handleResultMessage(
     return;
   }
   const assistantError = session.lastAssistantError;
-  const authHint = errors.find((entry) => looksLikeAuthRequired(entry));
+  const authHint = assistantError === "invalid_request"
+    ? undefined
+    : errors.find((entry) => looksLikeAuthRequired(entry));
   if (authHint) {
     emitAuthRequired(session, authHint);
   }
@@ -1662,7 +1856,9 @@ export function handleResultMessage(
   }
   finalizeOpenToolCalls(session, "failed");
   const errorKind = classifyTurnErrorKind(subtype, errors, assistantError);
-  const fallback = subtype ? `turn failed: ${subtype}` : "turn failed";
+  const fallback = subtype === "success"
+    ? "turn failed: API error"
+    : subtype ? `turn failed: ${subtype}` : "turn failed";
   const apiErrorStatus = numberField(
     message,
     "api_error_status",
@@ -1948,6 +2144,7 @@ export function handleSdkMessage(
       const incomingSessionId =
         typeof msg.session_id === "string" ? msg.session_id : session.sessionId;
       updateSessionId(session, incomingSessionId);
+      updateSessionPlugins(session, msg.plugins);
       if (session.connected) {
         void refreshUltracode(session);
       }
@@ -1963,7 +2160,7 @@ export function handleSdkMessage(
       );
 
       if (!session.connected) {
-        emitConnectEvent(session);
+        void emitConnectEvent(session);
       } else if (previousSessionId !== session.sessionId) {
         emitSessionReplacedEvent(session);
       } else {
@@ -2145,16 +2342,14 @@ export function handleSdkMessage(
       if (!elicitationId) {
         return;
       }
-      writeEvent({
-        event: "elicitation_complete",
-        session_id: session.sessionId,
-        completion: {
-          elicitation_id: elicitationId,
-          ...(typeof msg.mcp_server_name === "string"
-            ? { server_name: msg.mcp_server_name }
-            : {}),
-        },
-      });
+      // URL completion identity is server + elicitation ID, never the callback ID.
+      if (typeof msg.mcp_server_name === "string") {
+        for (const pending of session.pendingElicitations.values()) {
+          if (pending.serverName === msg.mcp_server_name && pending.elicitationId === elicitationId) {
+            pending.resolve({ action: "accept" });
+          }
+        }
+      }
       return;
     }
 
@@ -2304,20 +2499,7 @@ export function handleSdkMessage(
   }
 
   if (type === "tool_use_summary") {
-    const summary = typeof msg.summary === "string" ? msg.summary : "";
-    const toolIds = Array.isArray(msg.preceding_tool_use_ids)
-      ? msg.preceding_tool_use_ids.filter(
-          (id): id is string => typeof id === "string",
-        )
-      : [];
-    if (summary && toolIds.length > 0) {
-      for (const toolUseId of toolIds) {
-        if (session.hiddenToolUseIds.has(toolUseId)) {
-          continue;
-        }
-        emitToolSummaryUpdate(session, toolUseId, summary);
-      }
-    }
+    // Tool rows always keep their real result; SDK summaries are not displayed.
     return;
   }
 
@@ -2412,7 +2594,8 @@ export function handleSdkMessage(
   }
 
   if (type === "user") {
-    const userMetadata = messageMetadata(msg, "user");
+    const child = Boolean(trimmedStringField(msg, "agent_id") || trimmedStringField(msg, "parent_tool_use_id"));
+    const userMetadata = child ? undefined : messageMetadata(msg, "user");
     if (userMetadata) emitSessionUpdate(session.sessionId, userMetadata);
     const notification = parseDetachedToolNotification(msg);
     if (notification && session.toolCalls.has(notification.toolUseId)) {
@@ -2431,7 +2614,7 @@ export function handleSdkMessage(
       }
       return;
     }
-    const externalMessageUpdate = externalMessageUpdateFromSdkUser(msg);
+    const externalMessageUpdate = child ? undefined : externalMessageUpdateFromSdkUser(msg);
     if (externalMessageUpdate) {
       emitSessionUpdate(session.sessionId, externalMessageUpdate);
     }
@@ -2460,13 +2643,14 @@ export function handleSdkMessage(
   }
 
   if (type === "assistant") {
-    if (msg.error === "authentication_failed") {
+    const child = Boolean(trimmedStringField(msg, "agent_id") || trimmedStringField(msg, "parent_tool_use_id"));
+    if (!child && msg.error === "authentication_failed") {
       emitAuthRequired(session);
     }
-    if (
+    if (!child && (
       msg.parent_tool_use_id === null ||
       msg.parent_tool_use_id === undefined
-    ) {
+    )) {
       emitUserMessageStarted(session, msg, "assistant");
     }
     handleAssistantMessage(session, msg);

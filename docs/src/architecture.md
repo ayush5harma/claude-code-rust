@@ -1,227 +1,100 @@
 # Architecture
 
-Claude Code Rust is split into a native Rust terminal app and a TypeScript Agent SDK bridge.
+Claude Code Rust is a terminal application with two local components: a Rust process owns the interface and application state; a TypeScript bridge translates between the app and Anthropic's Agent SDK. Read [Development](development.md) to run a checkout and [Testing](testing.md) to validate a change.
 
 ## Runtime Shape
 
-The Rust binary owns the terminal UI and process lifecycle. It parses CLI options with Clap, starts a Tokio runtime, and runs the app inside a `LocalSet` because parts of the terminal and child-process runtime are not `Send`.
+```text
+Keyboard / terminal events
+           |
+           v
+Rust app state and event loop <----> Rust terminal rendering
+           |
+     NDJSON commands / events
+           |
+           v
+TypeScript bridge <----> Claude Agent SDK <----> Claude services and tools
+```
 
-The app then starts or resumes a bridge session and renders the chat view directly in the terminal.
+Rust starts a Tokio runtime and runs the app inside a `LocalSet`, which supports the non-`Send` parts of terminal and child-process handling. The bridge is a child process running under Bun. Newline-delimited JSON (NDJSON) carries one command or event envelope per line over its standard input and output.
 
-The session picker lists metadata returned by the public Agent SDK, including a saved tag. Tag edits and confirmed deletion use `tagSession()` and `deleteSession()` against the exact selected session ID and SDK-reported project directory. The bridge rejects deletion of a live session; mutation results carry a request ID and a fresh SDK list, so the picker updates after acknowledgment rather than changing local metadata optimistically. Opening the picker with `/resume` sends a `list_sessions` request under its own request ID and shows a loading state until that listing arrives, because the list the bridge sends when a session connects cannot include the active session once it has a transcript, nor sessions another process wrote since; the answer also puts the selection on the active session, which the list marks `[current]`.
+Support commands such as `doctor`, CLI help, completions and manual generation take a separate path before an interactive session starts. Detailed launch resolution belongs in [Startup and launch settings](subsystems.md#startup-and-launch-settings).
 
-Interactive startup arguments resolve into one launch intent: a new session, a specified resume ID, the session picker, or the latest session in the working directory. Session overrides are applied through the existing launch-settings boundary and released after the initial session is selected. Session configuration flags such as `--add-dir` travel through the same boundary but are kept for every session the process starts, as Claude Code keeps them for its process; Rust resolves their paths against the working directory and checks that they exist before the bridge starts, and the bridge maps each to its Agent SDK option. The bridge's runtime guard prompt is an invariant of every session: system prompt flags add to it or replace the preset around it, never remove it. Initial prompts use normal prompt queue admission once startup dialogs are complete.
+## Follow one prompt
 
-Support commands run before bridge resolution. Shell completions and manual pages are generated from the same Clap command definitions as CLI help, so neither requires the bridge or authentication.
+1. Startup resolves the working directory and launch arguments. The app handles trust, authentication and session selection before admitting an initial prompt.
+2. The composer submits a prompt through the application's existing input and command path. The bridge client sends a command envelope over stdin.
+3. The TypeScript bridge maps the command to the active SDK session. The SDK supplies model output, tool activity and interaction requests.
+4. The bridge converts those results into typed events. Rust applies them to the relevant session state; permission and question requests become interactive UI.
+5. Rendering projects the canonical transcript into terminal rows. Finished output enters terminal scrollback; the live reply, composer and footer remain in the active area.
+6. A permission answer or other interaction travels back through the command path. Completion, cancellation and failure are handled by their lifecycle owners, rather than inferred from displayed text.
+
+The invariant reference explains the identity checks, saved-history behavior and failure paths behind this flow. In particular, saved history must not cause another desktop notification, and a transport acknowledgement does not by itself prove that an operation completed.
 
 ## Rust Terminal App
 
-Important Rust areas:
-
 | Area | Responsibility |
 | --- | --- |
-| `src/main.rs` | Process entrypoint, runtime setup, logging setup, and exit behavior. |
-| `src/lib.rs` | CLI arguments, subcommands, and diagnostics presets. |
-| `src/agent/` | Bridge process resolution, NDJSON client, wire types, and bridge error handling. |
-| `src/app/` | App state, lifecycle, sessions, config, permissions, input, slash commands, plugins, MCP, usage, and trust. |
-| `src/ui/` | Ratatui rendering for messages, markdown, diffs, tool calls, config tabs, help, autocomplete, and input. |
+| `src/main.rs` | Process entrypoint, runtime, logging and exit behavior. |
+| `src/lib.rs` | CLI arguments, subcommands and diagnostics presets. |
+| `src/agent/` | Bridge resolution, process client, wire types and bridge errors. |
+| `src/app/` | Application state, lifecycle, sessions, input, permissions, settings and trust. |
+| `src/ui/` | Ratatui and Crossterm rendering of chat, tools, dialogs and fullscreen views. |
 
-The current runtime uses inline terminal-owned rendering rather than an older fullscreen-only model. Fullscreen views are still used for config, help, status, usage, MCP, plugin and subagent surfaces. The reasons for that change are described in [I rebuilt Claude Code's terminal UI in Rust. Then I deleted 12,000 lines of it.](https://medium.com/@simonrothgang/i-rebuilt-claude-codes-terminal-ui-in-rust-then-i-deleted-12-000-lines-of-it-e8593a200452)
+The normal conversation renders inline. Fullscreen views temporarily use the alternate screen and return to chat when closed. Transcript layout, insertion into terminal scrollback, and resize replay have separate responsibilities; see [Transcript rendering](subsystems.md#transcript-rendering) and [Resize replay](subsystems.md#resize-replay) before changing that path.
 
 ## Agent SDK Bridge
 
-In packaged npm installs, the Rust process resolves a private Bun runtime named `claude-rs-bridge-bun` or `claude-rs-bridge-bun.exe` from the installed package layout. That runtime runs:
+`agent-sdk/src/bridge.ts` and the modules under `agent-sdk/src/bridge/` adapt SDK commands, callbacks and history into the application's protocol. The runtime executes the compiled `agent-sdk/dist/bridge.js`; editing TypeScript requires rebuilding it.
 
-```text
-agent-sdk/dist/bridge.js
-```
+The paired wire definitions are `src/agent/wire.rs` and `agent-sdk/src/types.ts`. Update both in one change when the transport contract changes. These definitions describe the internal Rust/bridge boundary, not a supported third-party SDK.
 
-The TypeScript bridge wraps `@anthropic-ai/claude-agent-sdk`. Rust and TypeScript communicate over stdin/stdout using newline-delimited JSON command and event envelopes.
+The SDK owns subprocess option serialization. The bridge forwards its argument array without reconstructing it. Assistant text and Markdown links are preserved across streaming, completed replies and saved history; structured citation objects are not transported to Rust as source references.
 
-Rust sends commands such as session creation, session resume, prompt submission, permission responses, MCP actions, and runtime refresh requests. The bridge sends events such as assistant messages, tool updates, permission requests, question requests, available commands, modes, models, usage, and errors.
+## Where a change belongs
+
+| Change | Start here | Relevant coverage |
+| --- | --- | --- |
+| Launch flag or startup behavior | `src/lib.rs`, launch resolution, bridge session lifecycle | `tests/cli_startup.rs`, `tests/docs_cli_contract.rs` |
+| Saved setting or structured editor | Bridge settings catalog/service; Rust config state and UI | Bridge settings tests, `tests/config_flow.rs` |
+| Slash command or composer interaction | App command and input handling, bridge dispatch where needed | `tests/slash_input_flow.rs`, bridge command tests |
+| Transcript layout, resizing or shutdown | UI layout and application terminal lifecycle | `tests/terminal_resize.rs` and rendering unit tests |
+| SDK event or wire change | Bridge event projection and Rust conversion/consumer | Bridge contract tests plus the affected Rust workflow |
+| Installer or package contents | `scripts/`, npm launcher and platform mapping | The `npm-package-layout` CI job; [Packaging](packaging.md) |
+
+The [testing guide](testing.md) maps these areas to executable checks. For a cross-boundary change, follow the actual input through its consumer and observable outcome before choosing tests.
 
 ## Subsystems
 
-Each subsection names the owner of a concern and the invariants that keep the Rust side and the bridge from holding two versions of the same state.
+Each link below owns the detailed rules for that concern.
 
-### Settings and trust
-
-| Concern | Owner | Location |
-| --- | --- | --- |
-| Setting catalog: IDs, labels, kinds, choices, writable scopes, panes, editor schemas | Bridge | `agent-sdk/src/bridge/settings_catalog.ts`, `settings_layout.ts` |
-| Saved-value resolution across scopes | Agent SDK | public `resolveSettings()` |
-| Mutation validation and targeted JSON writes | Bridge | `agent-sdk/src/bridge/settings_service.ts` |
-| Config window, edit drafts, acknowledgement tracking | Rust | `src/app/config/`, `src/ui/config/` |
-| Workspace trust state and store | Rust | `src/app/trust/` |
-| App preferences file and updater state | Rust | `src/app/settings.rs` |
-
-Rust receives catalog descriptors and sanitized snapshots over NDJSON and renders them. It does not merge settings files, mirror scope rules, or supply defaults for unset values. Saved defaults stay separate from active session choices: a settings save never becomes a session flag override. Snapshots and pending drafts are invalidated when the session scope changes. Offline `claude-rs config` inspection is a separate read-only view of the physical files and does not resolve the cascade.
-
-A `--settings` value is the session's flag-settings layer. The SDK accepts one such layer, as a path or an object, so the bridge parses the user's JSON and lays its own host restrictions over it (`feedbackDrafts: "off"`, and `crossSessionInbound: "refuse"` unless the flag value or the saved cascade says `accept` or `refuse`); Rust only reads the file text. The Config snapshot does not include this layer.
-
-The snapshot is the SDK's raw file cascade. The running session additionally applies trust, managed policy, capability restrictions and explicit session choices, so an observed session value can differ from the saved one. SDK provenance is reported per top-level key, which does not prove that a particular leaf is enforced policy. `resolveSettings()` does not execute `policyHelper`.
-
-The write path has one implementation for every setting, including the app-owned `presentation.*`, `notifications.*` and `updates.*` leaves:
-
-1. The bridge validates the value and the target scope against the catalog immediately before saving. Only the edited leaf is validated through the SDK's resolver, so unknown keys, newer settings and unrelated invalid values survive.
-2. The current file is read and only the target key is patched. Reset removes the key and empty ancestor objects.
-3. A revision of the displayed target detects conflicting edits. Unrelated external edits are incorporated into the fresh document; a conflict refreshes the snapshot and keeps the editor draft.
-4. The write takes a cooperative lock, rechecks the file bytes, and replaces the file atomically. An external editor that ignores the lock can still race between the final recheck and the replacement; this is not a filesystem compare-and-swap.
-5. The acknowledgement is correlated with its originating mutation, so a delayed result cannot close a different editor. A pending save keeps the last acknowledged value visible.
-
-Structured editors and their advanced JSON view share this one mutation and persistence path. Inspection and validation never execute hooks or credential helpers and never resolve secret files or environment variables.
-
-Default effort targets `modelSettings.<canonical model>.effortLevel`. SDK model metadata selects the target: aliases and dated, context and provider spellings are normalized to the canonical key, and unknown model identities stay read-only. Mutation context checks stop an outdated edit from targeting a different model after Default model changes.
-
-Workspace trust never uses the config snapshot as authority. Trust acceptance reads the current preferences document and preserves unrelated authentication and MCP data. Shared atomic file replacement is an I/O mechanism, not a domain resolver.
-
-Automatic updates uses the same catalog and writer for the User-only `updates.autoInstall` leaf, and the Rust updater owns its application. Startup prompt selection skips the manual window when the preference is enabled, background check results return through the app event queue, and a normal post-TUI exit reads fresh saved consent and cached release metadata before selecting the installer. An install chosen in the update window runs in the terminal. An automatic install is handed to a detached run of the same executable through the hidden `update-worker` subcommand, which holds an OS file lock, sends installer output to its own log, stops the installer process tree at a time limit, and saves the outcome against the settings file because it has no session. The next start reads that outcome and shows a failure once the launch transcript is settled. Updater metadata saves omit the editable preference and preserve it, along with the presentation and notification namespaces, under the shared document lock. Checking is independent of installation.
-
-### Presentation and timing
-
-A successful text Read reaches Rust as `file_text` tool content: the file's own lines and the number of the first one, taken by the bridge from the SDK's structured result rather than from the line-numbered text the model sees. Rust shows one source line per row behind a dim line-number gutter, wraps long lines under the text column, applies the head/tail cap to source lines before wrapping, and never parses line numbers back out of text. Markdown files are shown as source. Search, the verbose view and export read the same text.
-
-Shell output keeps the colour and style the program asked for, and nothing else. `src/ui/ansi.rs` is the one control-sequence filter: a single linear pass that maps SGR sequences (reset, bold, dim, italic, underline, their off codes, the 16 standard and bright colours, 256-colour and truecolour foreground and background) to styles and drops every other escape sequence and control character, including OSC titles and OSC 8 hyperlinks, cursor movement, erase, mode changes, DCS/APC strings and C1 controls. Unknown or malformed SGR parameters are dropped, and an SGR sequence over 128 bytes is ignored. Existing `NO_COLOR` handling remains in effect.
-
-Tool titles share a one-line display projection and a source-keyed inline cache in the existing block cache. Shell command titles render literally; other tool titles retain Markdown styling. Full titles and command inputs remain canonical data. Spinner/status chrome, metadata badges and width clipping stay live, while unchanged title content survives body updates and resize. Inline cache bytes participate in the existing render budget and eviction workflow.
-
-| Concern | Owner | Location |
-| --- | --- | --- |
-| Normalizing SDK wall timestamps, result elapsed and API timing, tool and task elapsed metadata | Bridge | `agent-sdk/src/bridge/presentation_metadata.ts` |
-| Each message's clock and timing provenance, stored on the canonical transcript message | Rust | `src/app/presentation.rs` |
-| One formatter for locale, clock presets, custom patterns and timezone | Rust | `src/app/presentation.rs` |
-
-Message Markdown is parsed once per text block and width. Tables and top-level code blocks are laid out in `src/ui/document_table.rs` because they need the terminal width; everything else goes through `tui-markdown` with claude-rs's style sheet in `src/ui/markdown.rs`. A code block is drawn as indented, shaded rows behind a dim rail with its language as a label row, highlighted with the same theme as other code and wrapped at the cell, so the displayed code is the code as written; the fence lines are not shown. Code inside a list item or a quote stays with its container. The canonical text, which `/copy` uses, is never rewritten.
-
-Presentation preferences are projections of the acknowledged config snapshot; Rust keeps no second presentation store. History replay removes locally observed times and preserves native timestamps without reordering messages. Completed duration rows go through the same scrollback boundary and commit protocol as other transcript rows.
-
-### Transcript reading and `/copy`
-
-Chat reading owns a stable transcript-segment anchor and a rendered-text position; the saved Auto-scroll setting controls only the following policy. Reading suspends scrollback insertion, survives reflow of retained content, and returns to ordinary incremental history commits through an explicit keymap action.
-
-Shutdown redraws the live viewport without resetting committed history. Reading returns to live output so its viewport copy does not remain beside native scrollback. The terminal owner finishes pending resize recovery and transcript replay before restoration; an explicit force interrupt can stop that recovery.
-
-`/copy` derives its material from the canonical response text and the text-joining rule shared with rendering, then writes through the clipboard boundary shared with MCP authorization. Its picker owns only the current selection and retry state.
-
-### Turn activity and thinking
-
-| Concern | Owner | Location |
-| --- | --- | --- |
-| Interpreting the live main-agent activity phase from SDK stream events | Bridge | `agent-sdk/src/bridge/activity.ts` |
-| Presentation decision from the typed `agent_activity_update` phase, turn liveness, pending interactions, compaction and cancellation | Rust | `src/app/activity.rs` |
-
-Only top-level `message_start` and indexed `thinking` or `redacted_thinking` block boundaries select the thinking phase, including blocks with empty or omitted text. A matching block stop, response stop or completion, retry or fallback, result or error, conversation replacement and session close reset it. SDK stream wrapper UUIDs identify individual frames; the API response ID scopes the ordered block stream and correlates completed assistant messages. A per-block assistant frame with a null stop reason keeps that scope open, and only a terminal, aborted or error frame closes its response. Stops carry no response ID and follow the SDK's ordered response boundaries. The same correlation decides where reply text comes from: a streamed response is shown from its deltas, and a completed top-level message whose response never streamed, such as a local command's reply, is shown from that message once; error messages report through the turn result. Subagent frames and completed history never start main-agent thinking. `system/thinking_tokens` estimates stay diagnostics, because they carry neither a response or block identity nor a matching stop.
-
-Rust consumes the typed phases without interpreting SDK content and never infers thinking from text, tools or silence. One derived decision assigns the activity heading to the active assistant, or to the composer for standalone work without an assistant message. SDK thinking appears separately in the active assistant output as a temporary live row that is never committed to history. Waiting or completing without output removes the temporary heading and activity; real assistant output keeps its heading. Composer-only headings and the composer activity block never enter transcript or history output.
-
-A turn keeps one verb and one shuffled traversal of the shared welcome tips, advanced by monotonic deadlines on the TUI wake loop, including under reduced motion. `spinnerTipsEnabled` from the acknowledged snapshot controls only the tip text; activity, its heading and SDK thinking are independent of it.
-
-### Background tool execution
-
-The bridge normalizes confirmed launch results and SDK task lifecycle events into the existing `Detached` tool status. Requested background flags and host elapsed time do not confirm a handoff. Task-to-tool correlation survives foreground turn completion and resume; stale progress and repeated launch acknowledgements cannot reopen terminal execution. Live and replay use the same task adapters and transition rules.
-
-Rust keeps execution state on the original `ToolCallInfo`. Its history projection freezes the launch at its creation position with the fixed `↗` icon, allowing the transcript prefix to enter terminal history while the task runs independently. Actual completion, failure or stopping appends one separately identified result linked to that tool. The session owns pending interactions; foreground turn reset preserves background controls, which remain mutable at the end of the live region during transcript replay after resize. Cache and retention accounting include the frozen projections without adding them to the execution index or foreground activity set.
-
-A task row's lifecycle state is separate from its tool call. A notification that follows a finished tool call still settles the row, and only a new start or another outcome changes a settled row. Every lifecycle edge (start, progress, update, notification, and a `TaskStop` result) marks its row `sdk_lifecycle_task` and clears the `sdk_background_task` marker of a row the inventory created. A background snapshot removes only rows that still carry the background marker, so a subagent keeps its row when it leaves `background_tasks_changed`, whether the outcome arrives before or after that snapshot. A `TaskList` snapshot replaces plan tasks while retaining runtime rows, and Rust never counts a lifecycle-marked row as a plan step.
-
-### Agents view
-
-| Concern | Owner | Location |
-| --- | --- | --- |
-| Live subagent status, from the SDK task lifecycle | Bridge | `agent-sdk/src/bridge/tasks.ts` |
-| Saved transcript ids and messages, stop requests | Agent SDK, called by the bridge | `listSubagents()`, `getSubagentMessages()`, `Query.stopTask()` in `agent-sdk/src/bridge/subagents.ts` |
-| Which tasks are subagents, their status (with stopping), the shared selection, transcript view and sent stop requests | Rust | `src/app/agents.rs` |
-| One row projection for the footer shelf, the `Ctrl+T` list and the view | Rust | `src/ui/agent_rows.rs` |
-| The view's list, the selected agent's details and the transcript | Rust | `src/ui/agents.rs` |
-
-The view is the one agent inspector: the footer shelf is the glance, `Ctrl+T` gives the list, and `Enter` there opens the view on the same selection. It lists the active session's `local_agent` lifecycle rows from the task state Rust already holds, one per task id; there is no second task store and no polling. The footer shelf counts the rows the lifecycle reports as running. Answers for another session are ignored. A row has a transcript only when `listSubagents()` returned its task id, which is read when the view opens and on `r`. A transcript read never changes a row's status. A stop request is offered only for a running row. Once it is sent the row shows stopping, its acknowledgement does not change that, and only the lifecycle reports it stopped. A rejected request is shown as an error and leaves the row as it was. The bridge refuses to stop a task it does not hold as a running subagent, and runs the request outside the session command lane because `stopTask()` can stay pending until its query ends.
-
-The bridge announces each live top-level SDK response through the typed `agent_response_started` update before sending its text. A response triggered by a background completion receives a fresh mutable assistant owner even when no user prompt is pending; history replay does not activate live responses. The renderer groups consecutive visible assistant messages under one speaker label, carrying speaker context across content already inserted into terminal history. Streaming ownership, message identities and tool insertion order remain separate from that visual grouping.
-
-### Agent progress and inspection
-
-The bridge normalizes task progress into the existing task metadata: `usage` (`total_tokens`, `tool_uses`, `duration_ms`), `last_tool_name`, `summary`, and the child's resolved `model` and `model_display`. Child assistant messages may precede task linkage; the bridge remembers their model by parent tool-use ID and emits a task update when the linked model changes. Background inventory snapshots preserve lifecycle-owned metadata and cannot erase a completed agent's history merely because membership changes arrive before its completion event.
-
-Rust's task inventory remains the status authority. The footer shelf, the `Ctrl+T` list and the Agents view share the same agent-row projection and renderer, and the list and view share one selection by task id. Requested model aliases and agent-definition defaults remain distinguishable from a model observed in a child response. A bounded index of the last eight child tool-call IDs per parent is maintained on tool events and pruned with transcript retention; rendering reads this index without scanning the transcript or performing I/O. Local observation times extend reported running durations, and the visible shelf requests at most one redraw per second when no other animation is active.
-
-The shelf includes running agents and agents finished during the current continuous delegation wave; the task list and the Agents view retain prior agent history.
-
-### Session title
-
-| Concern | Owner | Location |
-| --- | --- | --- |
-| Reporting and changing a session's title | Agent SDK | public `getSessionInfo()`, `renameSession()` |
-| Reading the active session's title and sending `session_title_update` | Bridge | `agent-sdk/src/bridge/session_title.ts` |
-| Holding the active session's title for the Status tab, its rename draft and title generation | Rust | `src/app/state/session_runtime.rs` |
-| Listing snapshot of all sessions, including each `custom_title` | Bridge, held by Rust | `agent-sdk/src/bridge/events.ts`, `recent_sessions` |
-
-The bridge reads `getSessionInfo().customTitle` after a connect, a replacement, a conversation reset, each top-level turn and each rename or title generation it performs, and sends every title it reads; a read that a later one overtakes is dropped. Rust keeps the active title as one value, strips control characters once in the converter, stores a repeated title idempotently, and clears it when the session id changes or the conversation resets. Neither side derives a title of its own. The session listing is a separate snapshot of all sessions, refreshed by `listSessions()` on connect, replacement and the Status-tab rename and generate actions; the Status tab falls back to it only while the active session has no title. `customTitle` falls back to a generated title, so an unnamed session shows that title after its first turn.
-
-A launch name (`-n, --name`) travels in the launch settings and the bridge applies it, because only the bridge knows which SDK path fits: the SDK's `title` option for a new or forked session, whose transcript file does not exist until its first turn and so cannot be renamed yet, and `renameSession()` for a resumed session, before it connects, because the SDK keeps a resumed session's persisted title over `title`. A resumed session also passes its title (the launch name, or the saved title the SDK reports) as `title`, which on a resume only names the process that other clients list, for example in `claude agents`, and leaves the transcript alone. Either way the title reaches Rust through the same `getSessionInfo()` reads.
-
-### Hook activity
-
-| Concern | Owner | Location |
-| --- | --- | --- |
-| Asking the SDK for hook events (`includeHookEvents`) and normalising `hook_started`, `hook_progress` and `hook_response` into one `hook_activity` session update | Bridge | `agent-sdk/src/bridge/hook_activity.ts` |
-| Hook runs, their durations, the notice rule and its threshold | Rust | `src/app/state/hook_runs.rs` |
-| Which finished hooks leave a notice (`presentation.hookNotices`) | Bridge catalog, Rust reads the snapshot | `settings_catalog.ts`, `src/app/events/hooks.rs` |
-| Launch milestones and their placement on one timeline | Rust | `src/app/state/startup_timeline.rs` |
-
-The bridge forwards what the SDK declares: hook id, name and event, phase, outcome, exit code and a bounded output excerpt (stderr for a failure, combined output otherwise). It reads no hook files or settings. The SDK declares no hook timing, so each update carries the epoch milliseconds at which the bridge saw it, and Rust derives a duration from the started and finished observations. SessionStart hooks finish before the SDK answers its initialize request, and Rust drops session updates for a session it does not know yet, so the bridge holds hook updates until it sends the connect event and sends them right after it.
-
-Rust keeps the last 200 runs of the active session and clears them when the session id changes or the conversation resets. A run that finishes is judged once for a notice. Until the first settings snapshot is acknowledged it waits, so startup never decides from a guessed preference. The Startup section of the Status tab places the bridge's wall-clock stamps on the monotonic timeline through the wall-clock reading taken at app start, and counts only SessionStart hooks that finished before the connect.
-
-### Notifications
-
-| Concern | Owner | Location |
-| --- | --- | --- |
-| Focus suppression, category enablement, terminal capability detection, transport selection, SDK delivery identities, external delivery boundary | Rust | `src/app/notify.rs` |
-| Projecting native notices and verified proactive tool results into notification origins | Bridge | `agent-sdk/src/bridge/notifications.ts` |
-| Shared wire and runtime payload | Rust | `src/agent/notifications.rs` |
-| Session provenance validation and presentation of native notices | Rust | `src/app/events/notifications.rs` |
-
-Delivery waits for the first acknowledged settings snapshot, so startup cannot send using guessed preferences. Saved categories are read from that snapshot; there is no mirrored notification configuration struct. Local interaction handlers notify only after accepting a real waiting request, and pending-interaction ownership rejects duplicates. Turn completion sends only for an active, non-cancelled turn and skips SDK abortion reasons.
-
-In the bridge, native key, UUID, session, original priority, color and timeout stay structured metadata. Proactive intent requires the actual `PushNotification` tool with `status: proactive` input, followed by a successful result without non-execution metadata. Delivery-report discovery is shared with tool rendering in `tooling.ts`; strings displayed in the transcript are never parsed to recover delivery decisions. Public `isReplay` provenance is carried through tool-result mapping.
-
-General native notices are transcript-only because the SDK supplies no universal delivery category. Proactive fallback requires an explicit `localSent: false` and no native suppression other than `no_transport`; `pushSent` describes mobile transport and is kept separately. Unknown or missing delivery reports do not authorize another local send.
-
-Replay never delivers. `load_resume_history` observes notifications as replay and primes terminal tool identities, including older histories without delivery reports. The manager keeps a bounded ledger of session/UUID and session/tool-ID identities across reconnects; native replacement keys are not event identities. Live suppression consumes an event instead of queuing it for a later focus change.
-
-## Packaging
-
-The npm install is split across a root command package and platform payload packages.
-
-The root package is `claude-code-rust`. It exposes the `claude-rs` command through the npm launcher and includes the built Agent SDK bridge under:
-
-```text
-bin/claude-rs.js
-agent-sdk/dist/bridge.js
-```
-
-The platform packages are selected through root package optional dependencies. They include the native Rust binary and private Bun runtime. The exact package mapping lives in `scripts/shared/npm-package-config.mjs`; supported npm payloads currently cover Linux x64/arm64 glibc, Windows x64/arm64, and macOS x64/arm64.
-
-At runtime, npm's generated shim starts `bin/claude-rs.js`. The launcher selects the matching platform package, sets `CLAUDE_RS_AGENT_BRIDGE` to the root package bridge script, and spawns the native binary. The native binary resolves the bundled Bun runtime from the platform package `bin/` directory. No npm `postinstall` script, install-time binary download, or global Bun is required.
-
-## Release Model
-
-Release packaging is designed around immutable artifacts:
-
-- Native binaries are built on GitHub-hosted runners for Linux x64 glibc, Linux arm64 glibc, Windows x64, Windows arm64, macOS x64, and macOS arm64.
-- Private Bun runtime files are staged into each platform package as third-party runtime artifacts.
-- Generated npm package directories are verified against allowlisted package contents before packing.
-- Unix install archives include man pages generated by the packaging host's staged native binary. The Unix installer links those pages beside its command directory and removes only its own links on uninstall.
-- Packed npm tarballs are smoke-tested before publication.
-- GitHub Releases include native binaries, npm tarballs, package-content manifests, build metadata, and `SHA256SUMS`.
-- The release workflow generates and verifies build provenance attestations for native binaries before npm publication.
-- npm publication uses Trusted Publishing rather than a long-lived npm token.
-- The root package remains the user-facing npm install package and depends optionally on platform payload packages.
-
-Source builds are different: `cargo build` or `cargo install --path .` produce only the Rust binary. They do not build or install the JavaScript bridge or private Bun runtime. Build the bridge with Node.js 24/npm and provide it through the checkout fallback, `--bridge-script`, or `CLAUDE_RS_AGENT_BRIDGE`. Debug builds can use `CLAUDE_RS_AGENT_BRIDGE_RUNTIME` to point at a local Bun runtime; release npm installs use only the bundled runtime. See [Development](development.md) for the exact steps.
+| Concern | Detailed reference |
+| --- | --- |
+| MCP input requests | [Queue ownership, validation, settlement and teardown](subsystems.md#mcp-elicitation-ownership) |
+| Settings and trust | [Catalog, scope resolution, writes, trust and updates](subsystems.md#settings-and-trust) |
+| Presentation and timing | [Metadata provenance and formatting](subsystems.md#presentation-and-timing) |
+| Transcript rendering | [Canonical content and resumable row production](subsystems.md#transcript-rendering) |
+| Resize replay | [Preparation, insertion, cancellation and shutdown](subsystems.md#resize-replay) |
+| Transcript reading | [Stable anchors and following policy](subsystems.md#transcript-reading) |
+| Response copying | [Canonical text and clipboard boundary](subsystems.md#copy) |
+| Turn activity | [SDK activity and presentation decisions](subsystems.md#turn-activity-and-thinking) |
+| Background tools | [Run identity and lifecycle outcomes](subsystems.md#background-tool-execution) |
+| Subagents | [Discovery, saved transcripts and stop requests](subsystems.md#subagents-view) |
+| Agent progress and the shelf | [Usage metadata, shared row projection and the task list](subsystems.md#agent-progress-and-the-footer-shelf) |
+| Hooks | [Hook messages, timing notices and the Status timeline](subsystems.md#hook-activity) |
+| Session picker | [SDK listing, tags, deletion and compact-first resume](subsystems.md#session-picker) |
+| Session titles | [SDK title ownership and rename persistence](subsystems.md#session-title) |
+| Notifications | [Delivery eligibility, deduplication and replay](subsystems.md#notifications) |
+| Plugin attachments | [Reload, confirmation and session lifetime](subsystems.md#session-plugin-attachments) |
 
 ## Boundaries
 
-Claude Code Rust owns the terminal UI, local settings surface, bridge process management, and event rendering. Anthropic owns the Agent SDK, authentication, service behavior, billing, models, and upstream Claude Code semantics.
+Claude Code Rust owns the terminal UI, local settings surface, bridge process management and event rendering. Anthropic owns the SDK, authentication and service behavior, billing, models and upstream Claude Code semantics.
 
-The project does not depend on Agent SDK package subpath exports such as `/browser`, `/bridge`, or `/assistant` as the runtime path. The runtime path is the local TypeScript bridge in this repository.
+The application uses its local TypeScript bridge as the SDK integration point. SDK package subpath exports such as `/browser`, `/bridge` and `/assistant` are not the application's runtime entry point.
+
+## Related maintainer guides
+
+- [Packaging and release invariants](packaging.md): artifact layout, generation and verification.
+- [Governance](governance.md): repository protection and publication authority.
+- [Test and validate changes](testing.md): checks for each affected area.

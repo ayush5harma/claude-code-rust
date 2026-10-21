@@ -12,7 +12,7 @@ pub(super) const fn selection_marker(selected: bool) -> &'static str {
     if selected { "›" } else { " " }
 }
 
-pub(super) fn selection_style(selected: bool) -> Style {
+pub(in crate::ui) fn selection_style(selected: bool) -> Style {
     if selected { Style::default().bg(theme::fill()) } else { Style::default() }
 }
 
@@ -118,11 +118,11 @@ pub(in crate::ui) fn render_message(frame: &mut Frame, area: Rect, title: &str, 
     );
 }
 
-pub(super) fn section_heading(title: &str) -> Line<'static> {
+pub(in crate::ui) fn section_heading(title: &str) -> Line<'static> {
     Line::styled(title.to_owned(), accent_style())
 }
 
-pub(super) fn detail_kv(key: &str, value: &str, value_color: Color) -> Line<'static> {
+pub(in crate::ui) fn detail_kv(key: &str, value: &str, value_color: Color) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("{key}: "), Style::default().fg(theme::tertiary())),
         Span::styled(value.to_owned(), Style::default().fg(value_color)),

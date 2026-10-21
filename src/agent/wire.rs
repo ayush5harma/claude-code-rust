@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use crate::agent::types;
 use serde::{Deserialize, Serialize};
@@ -38,24 +37,25 @@ impl SessionLaunchSettings {
     }
 }
 
-/// Launch configuration that applies to every session the process starts. Paths are
-/// absolute; the bridge maps each field to its Agent SDK option.
+/// Launch configuration kept for every session the process starts, unlike the initial-session
+/// fields above. The app has already resolved paths to absolute ones and checked that files
+/// were readable and JSON parsed; the bridge maps each field to its Agent SDK option.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_directories: Vec<String>,
-    /// Unparsed JSON text of a settings object; the bridge parses and merges it.
+    /// A settings object for the SDK's flag-settings layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub settings: Option<String>,
-    /// Unparsed JSON texts of MCP configs, in command-line order.
+    pub settings: Option<serde_json::Map<String, serde_json::Value>>,
+    /// The `mcpServers` object of each `--mcp-config`, in command-line order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub mcp_configs: Vec<String>,
+    pub mcp_configs: Vec<serde_json::Map<String, serde_json::Value>>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub strict_mcp_config: bool,
-    /// Replaces Claude Code's system prompt; the bridge keeps its runtime guard appended.
+    /// Replaces the default system prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
-    /// Appended after the bridge's runtime guard.
+    /// Appended to the system prompt, after the bridge's own instruction.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub append_system_prompt: Option<String>,
 }
@@ -229,6 +229,8 @@ pub enum BridgeCommand {
     StopSubagent {
         session_id: String,
         task_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expected_run_id: Option<String>,
     },
     GetRewindTargets {
         session_id: String,
@@ -247,6 +249,8 @@ pub enum BridgeCommand {
         session_id: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         force: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        add_plugins: Vec<String>,
     },
     ReloadSkillsAndStyles {
         session_id: String,
@@ -526,10 +530,9 @@ pub enum BridgeEvent {
         session_id: String,
         request: types::ElicitationRequest,
     },
-    ElicitationComplete {
+    ElicitationSettled {
         session_id: String,
-        elicitation_id: String,
-        server_name: Option<String>,
+        settlement: ElicitationSettlement,
     },
     McpAuthRedirect {
         session_id: String,
@@ -592,12 +595,22 @@ pub enum BridgeEvent {
     SessionsListFailed {
         message: String,
     },
+    PluginInventory {
+        session_id: String,
+        plugins: Vec<types::SessionPlugin>,
+    },
     RuntimeReloadCompleted {
         session_id: String,
+        #[serde(default)]
+        error_count: u32,
+        #[serde(default)]
+        reconciliation_error: Option<String>,
     },
     RuntimeReloadHeld {
         session_id: String,
         cache_impact: types::RuntimeReloadCacheImpact,
+        #[serde(default)]
+        error_count: u32,
     },
     RuntimeReloadFailed {
         session_id: String,
@@ -605,8 +618,12 @@ pub enum BridgeEvent {
     },
     SkillsAndStylesReloaded {
         session_id: String,
-        skills: Vec<String>,
-        output_styles: Vec<String>,
+        skills: types::ReloadOutcome,
+        output_styles: types::ReloadOutcome,
+    },
+    SkillsAndStylesReloadExpired {
+        session_id: String,
+        after_ms: u64,
     },
     SessionReplaced {
         session_id: String,
@@ -662,6 +679,7 @@ pub enum BridgeEvent {
     SubagentStopResult {
         session_id: String,
         task_id: String,
+        run_id: Option<String>,
         error: Option<String>,
     },
     RewindTargets {
@@ -714,7 +732,7 @@ impl BridgeEvent {
             Self::UserDialogRequest { .. } => "user_dialog_request",
             Self::InteractionCancelled { .. } => "interaction_cancelled",
             Self::ElicitationRequest { .. } => "elicitation_request",
-            Self::ElicitationComplete { .. } => "elicitation_complete",
+            Self::ElicitationSettled { .. } => "elicitation_settled",
             Self::McpAuthRedirect { .. } => "mcp_auth_redirect",
             Self::McpOperationError { .. } => "mcp_operation_error",
             Self::McpSetServersResult { .. } => "mcp_set_servers_result",
@@ -728,9 +746,11 @@ impl BridgeEvent {
             Self::SessionResumeFailed { .. } => "session_resume_failed",
             Self::SessionsListFailed { .. } => "sessions_list_failed",
             Self::RuntimeReloadCompleted { .. } => "runtime_reload_completed",
+            Self::PluginInventory { .. } => "plugin_inventory",
             Self::RuntimeReloadHeld { .. } => "runtime_reload_held",
             Self::RuntimeReloadFailed { .. } => "runtime_reload_failed",
             Self::SkillsAndStylesReloaded { .. } => "skills_and_styles_reloaded",
+            Self::SkillsAndStylesReloadExpired { .. } => "skills_and_styles_reload_expired",
             Self::SessionReplaced { .. } => "session_replaced",
             Self::Initialized { .. } => "initialized",
             Self::SessionsListed { .. } => "sessions_listed",
@@ -761,7 +781,7 @@ impl BridgeEvent {
             | Self::UserDialogRequest { session_id, .. }
             | Self::InteractionCancelled { session_id, .. }
             | Self::ElicitationRequest { session_id, .. }
-            | Self::ElicitationComplete { session_id, .. }
+            | Self::ElicitationSettled { session_id, .. }
             | Self::McpAuthRedirect { session_id, .. }
             | Self::McpOperationError { session_id, .. }
             | Self::McpSetServersResult { session_id, .. }
@@ -774,9 +794,11 @@ impl BridgeEvent {
             | Self::SlashError { session_id, .. }
             | Self::SessionResumeFailed { session_id, .. }
             | Self::RuntimeReloadCompleted { session_id, .. }
+            | Self::PluginInventory { session_id, .. }
             | Self::RuntimeReloadHeld { session_id, .. }
             | Self::RuntimeReloadFailed { session_id, .. }
             | Self::SkillsAndStylesReloaded { session_id, .. }
+            | Self::SkillsAndStylesReloadExpired { session_id, .. }
             | Self::SessionReplaced { session_id, .. }
             | Self::SettingsResult { session_id, .. }
             | Self::StatusSnapshot { session_id, .. }
@@ -814,7 +836,7 @@ impl BridgeEvent {
             | Self::UserDialogRequest { .. }
             | Self::InteractionCancelled { .. }
             | Self::ElicitationRequest { .. }
-            | Self::ElicitationComplete { .. }
+            | Self::ElicitationSettled { .. }
             | Self::McpAuthRedirect { .. }
             | Self::McpOperationError { .. }
             | Self::McpSetServersResult { .. }
@@ -828,9 +850,11 @@ impl BridgeEvent {
             | Self::SessionResumeFailed { .. }
             | Self::SessionsListFailed { .. }
             | Self::RuntimeReloadCompleted { .. }
+            | Self::PluginInventory { .. }
             | Self::RuntimeReloadHeld { .. }
             | Self::RuntimeReloadFailed { .. }
             | Self::SkillsAndStylesReloaded { .. }
+            | Self::SkillsAndStylesReloadExpired { .. }
             | Self::SessionReplaced { .. }
             | Self::Initialized { .. }
             | Self::SessionsListed { .. }
@@ -850,6 +874,14 @@ impl BridgeEvent {
     }
 }
 
+/// Correlates SDK callback settlement with its original host request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ElicitationSettlement {
+    pub request_id: String,
+    #[serde(default)]
+    pub session_closing: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -857,6 +889,29 @@ mod tests {
     };
     use crate::agent::types;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn saved_scheduler_and_queue_sections_survive_the_wire_without_losing_item_identity() {
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/tool-result-times.json"))
+                .expect("independent SDK result fixtures");
+        for fixture in fixtures.as_array().expect("fixtures") {
+            let event: EventEnvelope = serde_json::from_value(serde_json::json!({
+                "event": "session_update", "session_id": "times",
+                "update": {"type": "tool_call_update", "tool_call_update": {
+                    "tool_call_id": fixture["name"], "fields": {
+                        "output_metadata": {"presentation": fixture["presentation"]}
+                    }
+                }}
+            }))
+            .expect("typed result wire event");
+            let encoded = serde_json::to_value(event).expect("wire round trip");
+            assert_eq!(
+                encoded["update"]["tool_call_update"]["fields"]["output_metadata"]["presentation"],
+                fixture["presentation"]
+            );
+        }
+    }
 
     #[test]
     fn notification_payload_round_trips_original_sdk_metadata_and_replay_provenance() {
@@ -870,6 +925,42 @@ mod tests {
         let envelope: EventEnvelope =
             serde_json::from_value(payload.clone()).expect("notification event");
         assert_eq!(serde_json::to_value(envelope).expect("serialize notification"), payload);
+    }
+
+    #[test]
+    fn read_source_and_line_metadata_survive_the_wire() {
+        let source = "# Notes\r\n\r\n\t**literal**  \r\n";
+        let event: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "session_update", "session_id": "s1",
+            "update": { "type": "tool_call_update", "tool_call_update": {
+                "tool_call_id": "read-1", "fields": {
+                    "status": "completed", "raw_output": source,
+                    "content": [{ "type": "content", "content": { "type": "text", "text": source } }],
+                    "output_metadata": { "read": { "file_path": "notes.md", "start_line": 60 } }
+                }
+            }}
+        }))
+        .expect("Read update");
+        let encoded = serde_json::to_value(&event).expect("serialize Read update");
+        let decoded: EventEnvelope = serde_json::from_value(encoded).expect("decode Read update");
+        let BridgeEvent::SessionUpdate {
+            update: types::SessionUpdate::ToolCallUpdate { tool_call_update },
+            ..
+        } = decoded.event
+        else {
+            panic!("expected tool update")
+        };
+        assert_eq!(tool_call_update.tool_call_id, "read-1");
+        let fields = tool_call_update.fields;
+        assert_eq!(fields.raw_output.as_deref(), Some(source));
+        assert_eq!(
+            serde_json::to_value(fields.content).expect("content"),
+            serde_json::json!([{ "type": "content", "content": { "type": "text", "text": source } }])
+        );
+        assert_eq!(
+            fields.output_metadata.expect("metadata").read,
+            Some(types::ReadOutputMetadata { file_path: "notes.md".into(), start_line: 60 })
+        );
     }
 
     #[test]
@@ -1317,10 +1408,8 @@ mod tests {
             command: BridgeCommand::ReloadSkillsAndStyles { session_id: "s1".to_owned() },
         };
 
-        let json = serde_json::to_value(&env).expect("serialize");
-
         assert_eq!(
-            json,
+            serde_json::to_value(&env).expect("serialize"),
             serde_json::json!({ "command": "reload_skills_and_styles", "session_id": "s1" })
         );
         assert_eq!(env.command.session_id(), Some("s1"));
@@ -1331,8 +1420,8 @@ mod tests {
         let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
             "event": "skills_and_styles_reloaded",
             "session_id": "s1",
-            "skills": ["deploy", "lint"],
-            "output_styles": ["default", "Explanatory", "mine"]
+            "skills": { "status": "reloaded", "names": ["deploy", "lint"] },
+            "output_styles": { "status": "timed_out", "after_ms": 10000 }
         }))
         .expect("deserialize reload result");
 
@@ -1340,15 +1429,45 @@ mod tests {
             decoded.event,
             BridgeEvent::SkillsAndStylesReloaded {
                 session_id: "s1".to_owned(),
-                skills: vec!["deploy".to_owned(), "lint".to_owned()],
-                output_styles: vec![
-                    "default".to_owned(),
-                    "Explanatory".to_owned(),
-                    "mine".to_owned()
-                ],
+                skills: types::ReloadOutcome::Reloaded {
+                    names: vec!["deploy".to_owned(), "lint".to_owned()]
+                },
+                output_styles: types::ReloadOutcome::TimedOut { after_ms: 10_000 },
             }
         );
         assert_eq!(decoded.event.session_id(), Some("s1"));
+    }
+
+    #[test]
+    fn skills_and_styles_reload_expired_event_deserializes_bridge_payload() {
+        let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "skills_and_styles_reload_expired",
+            "session_id": "s1",
+            "after_ms": 10000
+        }))
+        .expect("deserialize expired reload");
+
+        assert_eq!(
+            decoded.event,
+            BridgeEvent::SkillsAndStylesReloadExpired {
+                session_id: "s1".to_owned(),
+                after_ms: 10_000
+            }
+        );
+        assert_eq!(decoded.event.session_id(), Some("s1"));
+    }
+
+    #[test]
+    fn failed_reload_outcome_deserializes_the_bridge_message() {
+        let decoded: types::ReloadOutcome = serde_json::from_value(
+            serde_json::json!({ "status": "failed", "message": "style directory unreadable" }),
+        )
+        .expect("deserialize outcome");
+
+        assert_eq!(
+            decoded,
+            types::ReloadOutcome::Failed { message: "style directory unreadable".to_owned() }
+        );
     }
 
     #[test]
@@ -1454,7 +1573,11 @@ mod tests {
                 session_id: "s1".to_owned(),
                 agent_id: "a1".to_owned(),
             },
-            BridgeCommand::StopSubagent { session_id: "s1".to_owned(), task_id: "a1".to_owned() },
+            BridgeCommand::StopSubagent {
+                session_id: "s1".to_owned(),
+                task_id: "a1".to_owned(),
+                expected_run_id: None,
+            },
         ];
         let json: Vec<_> = commands
             .into_iter()
@@ -1474,13 +1597,15 @@ mod tests {
         assert_eq!(
             event(
                 serde_json::json!({ "event": "subagent_messages", "session_id": "s1", "agent_id": "a1",
-                "messages": [{ "role": "user", "text": "Go" }, { "role": "tool", "text": "ls" }, { "role": "assistant", "text": "Done" }] })
+                "messages": [{ "role": "user", "text": "Go" }, { "role": "system_reminder", "text": "Report back" },
+                    { "role": "tool", "text": "ls" }, { "role": "assistant", "text": "Done" }] })
             ),
             BridgeEvent::SubagentMessages {
                 session_id: "s1".to_owned(),
                 agent_id: "a1".to_owned(),
                 messages: [
                     (types::SubagentMessageRole::User, "Go"),
+                    (types::SubagentMessageRole::SystemReminder, "Report back"),
                     (types::SubagentMessageRole::Tool, "ls"),
                     (types::SubagentMessageRole::Assistant, "Done"),
                 ]
@@ -1506,6 +1631,7 @@ mod tests {
             BridgeEvent::SubagentStopResult {
                 session_id: "s1".to_owned(),
                 task_id: "a1".to_owned(),
+                run_id: None,
                 error: None,
             }
         );
@@ -1984,8 +2110,9 @@ mod tests {
             fork_session: true,
             config: Box::new(super::SessionConfig {
                 additional_directories: vec!["/work/shared".to_owned()],
-                settings: Some(r#"{"model":"haiku"}"#.to_owned()),
-                mcp_configs: vec![r#"{"mcpServers":{}}"#.to_owned()],
+                settings: serde_json::from_str(r#"{"model":"haiku"}"#).ok(),
+                mcp_configs: serde_json::from_str(r#"[{"docs":{"command":"docs-mcp"}}]"#)
+                    .expect("MCP servers"),
                 strict_mcp_config: true,
                 system_prompt: Some("You are a release bot.".to_owned()),
                 append_system_prompt: Some("End with DONE.".to_owned()),
@@ -1998,7 +2125,8 @@ mod tests {
                 "model": "haiku", "permission_mode": "plan", "effort": "max", "agent": "reviewer",
                 "name": "Release prep", "fork_session": true,
                 "additional_directories": ["/work/shared"],
-                "settings": "{\"model\":\"haiku\"}", "mcp_configs": ["{\"mcpServers\":{}}"],
+                "settings": {"model": "haiku"},
+                "mcp_configs": [{"docs": {"command": "docs-mcp"}}],
                 "strict_mcp_config": true, "system_prompt": "You are a release bot.",
                 "append_system_prompt": "End with DONE."
             })
@@ -2036,6 +2164,30 @@ mod tests {
                 matches!(decoded, types::SessionUpdate::AgentActivityUpdate { phase } if phase == expected)
             );
             assert_eq!(serde_json::to_value(decoded).expect("encode activity"), raw);
+        }
+    }
+
+    #[test]
+    fn rate_limit_envelope_preserves_enabled_false_separately_from_unknown() {
+        for enabled in [Some(true), Some(false), None] {
+            let mut raw = serde_json::json!({
+                "event": "session_update", "session_id": "session",
+                "update": {"type": "rate_limit_update", "status": "allowed_warning", "is_using_overage": false}
+            });
+            if let Some(enabled) = enabled {
+                raw["update"]["overage_enabled"] = serde_json::json!(enabled);
+            }
+            let envelope: EventEnvelope = serde_json::from_value(raw).expect("rate limit envelope");
+            let BridgeEvent::SessionUpdate {
+                update:
+                    types::SessionUpdate::RateLimitUpdate { overage_enabled, is_using_overage, .. },
+                ..
+            } = envelope.event
+            else {
+                panic!("rate limit event")
+            };
+            assert_eq!(overage_enabled, enabled);
+            assert_eq!(is_using_overage, Some(false));
         }
     }
 

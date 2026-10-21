@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::super::{
     App, MessageBlock, TextBlock, TextBlockSpacing, TextSplitDecision, TextSplitKind,
@@ -224,6 +223,7 @@ mod tests {
             &mut app,
             100,
             &std::collections::BTreeSet::new(),
+            None,
         );
         let text = rendered
             .rows()

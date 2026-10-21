@@ -48,7 +48,11 @@ pub(crate) fn render(frame: &mut Frame, app: &App) {
     let agents = super::agent_rows::session_agent_rows(app);
     if !agents.is_empty() {
         rows.push(Line::from("Agents"));
-        let selected = app.agents.selected_index(&agents);
+        let selected = app
+            .agents
+            .selected_task_id
+            .as_deref()
+            .and_then(|id| agents.iter().position(|row| row.task.task_id == id));
         let columns = super::agent_rows::AgentColumns::for_rows(&agents);
         for (index, row) in agents.iter().enumerate() {
             if Some(index) == selected {
@@ -73,8 +77,7 @@ pub(crate) fn render(frame: &mut Frame, app: &App) {
         .tasks
         .iter()
         .filter(|task| {
-            !crate::app::tasks::is_user_plan_task(task)
-                && !crate::app::agents::is_subagent_task(task)
+            !crate::app::tasks::is_user_plan_task(task) && !crate::app::agents::is_subagent(task)
         })
         .collect();
     if !other.is_empty() {

@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use crate::agent::client::AgentConnection;
 use crate::agent::model;
@@ -38,7 +37,8 @@ pub struct SessionRuntimeState {
     pub runtime_session_state: Option<model::RuntimeSessionState>,
     /// Latest prompt suggestion from the SDK, shown in the input hint band.
     pub prompt_suggestion: Option<String>,
-    /// Latest rate-limit telemetry from the SDK.
+    /// Latest rate-limit telemetry from the SDK. The footer's `rateLimits` field falls back
+    /// to it while no usage snapshot has been read.
     pub last_rate_limit_update: Option<model::RateLimitUpdate>,
     /// Account info from the bridge status snapshot (email, org, subscription).
     pub account_info: Option<model::AccountInfo>,

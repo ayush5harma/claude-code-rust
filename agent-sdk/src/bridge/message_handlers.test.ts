@@ -1,10 +1,238 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { replaceProtocolEventWriter } from "./events.js";
+import { emitConnectEvent, replaceProtocolEventWriter } from "./events.js";
+import { bridgeLogger } from "./logger.js";
 import { handleSdkMessage } from "./message_handlers.js";
 import { rememberColorPrompt } from "./session_color.js";
-import { type SessionState, updateSessionId } from "./session_lifecycle.js";
+import { type SessionState, sessions, updateSessionId } from "./session_lifecycle.js";
+import { handleSubagentCommand } from "./subagents.js";
+import { createToolCall } from "./tooling.js";
+import { emitToolResultUpdate, finalizeOpenToolCalls } from "./tool_calls.js";
+
+function taskScenario(run: (session: SessionState, emit: (message: Record<string, unknown>) => void, writes: string[]) => void): void {
+  const session = makeSession();
+  const writes: string[] = [];
+  const restore = replaceProtocolEventWriter(line => { writes.push(line); });
+  try { run(session, message => handleSdkMessage(session, { session_id: session.sessionId, uuid: crypto.randomUUID(), ...message } as unknown as SDKMessage), writes); }
+  finally { restore(); }
+}
+
+test("each API-rejected send reports its error even when only the first emits a rate limit update", () => taskScenario((session, emit, writes) => {
+  const errorText = "You've hit your session limit · resets 1:30pm (Europe/Berlin)";
+  for (const [index, prompt] of ["hello", "okay", "hello"].entries()) {
+    const before = writes.length;
+    const userUuid = `user-${index}`;
+    emit({ type: "user", uuid: userUuid, message: { role: "user", content: prompt } });
+    emit({ type: "assistant", error: "rate_limit", user_message_uuid: userUuid, message: { id: `reply-${index}`, content: [{ type: "text", text: errorText }] } });
+    if (index === 0) {
+      emit({ type: "rate_limit_event", rate_limit_info: { status: "rejected", rateLimitType: "five_hour", resetsAt: 1792409400 } });
+    }
+    emit({ type: "result", subtype: "success", is_error: true, terminal_reason: "api_error", result: errorText, user_message_uuid: userUuid, queued_turn_count: 0 });
+    const events = writes.slice(before).map(line => JSON.parse(line));
+    assert.deepEqual(events.filter(event => event.event === "turn_error" || event.event === "turn_complete"), [{
+      event: "turn_error", session_id: session.sessionId, message: errorText,
+      error_kind: "plan_limit", assistant_error: "rate_limit", sdk_result_subtype: "success",
+      terminal_reason: "api_error", queued_turn_count: 0,
+    }]);
+    assert.equal(events.filter(event => event.update?.type === "rate_limit_update").length, index === 0 ? 1 : 0);
+    assert.equal(events.some(event => event.update?.type === "agent_message_chunk"), false, "the error is carried once through turn_error");
+  }
+}));
+
+test("either result failure signal reports API error text without an assistant or rate limit event", () => {
+  for (const failure of [{ is_error: true }, { terminal_reason: "api_error" }]) {
+    taskScenario((session, emit, writes) => {
+      session.toolCalls.set("pending", createToolCall("pending", "Read", {}, null));
+      emit({ type: "result", subtype: "success", result: "HTTP 429: request rejected", api_error_status: 429, ...failure });
+      const events = writes.map(line => JSON.parse(line));
+      const error = events.find(event => event.event === "turn_error");
+      assert.equal(error?.message, "HTTP 429: request rejected");
+      assert.equal(error?.error_kind, "plan_limit");
+      assert.equal(error?.api_error_status, 429);
+      assert.equal(events.some(event => event.event === "turn_complete"), false);
+      assert.equal(session.toolCalls.get("pending")?.status, "failed");
+    });
+  }
+});
+
+test("a successful recovery discards an earlier assistant error and does not leak it into the next failure", () => taskScenario((_session, emit, writes) => {
+  emit({ type: "assistant", error: "rate_limit", message: { content: [{ type: "text", text: "temporary rejection" }] } });
+  emit({ type: "assistant", message: { id: "recovered", content: [{ type: "text", text: "Recovered answer" }] } });
+  emit({ type: "result", subtype: "success", is_error: false, terminal_reason: "completed", result: "Recovered answer" });
+  const events = writes.map(line => JSON.parse(line));
+  assert.equal(events.filter(event => event.event === "turn_complete").length, 1);
+  assert.equal(events.some(event => event.event === "turn_error"), false);
+  assert.equal(events.find(event => event.update?.type === "agent_message_chunk")?.update.content.text, "Recovered answer");
+  emit({ type: "result", subtype: "error_during_execution", errors: ["A separate failure"] });
+  const nextError = JSON.parse(writes.at(-1) ?? "null");
+  assert.equal(nextError.event, "turn_error");
+  assert.equal(nextError.message, "A separate failure");
+  assert.equal(nextError.error_kind, "other");
+  assert.equal(nextError.assistant_error, undefined);
+}));
+
+test("SDK 0.3.302 run ordering rejects late lifecycle and inventory frames before all mutations", () => {
+  for (const [taskType, toolName] of [["local_agent", "Agent"], ["local_bash", "Bash"], ["local_workflow", "Workflow"], ["local_mcp", "mcp__test__work"]]) {
+    taskScenario((session, emit, writes) => {
+      session.toolCalls.set("launch-A", createToolCall("launch-A", toolName, {}, null));
+      session.toolCalls.set("launch-B", createToolCall("launch-B", toolName, {}, null));
+      const edge = (subtype: string, run_id: string, extra = {}) => emit({ type: "system", subtype, task_id: "worker", run_id, ...extra });
+      edge("task_started", "A", { tool_use_id: "launch-A", task_type: taskType, description: "A", parent_task_id: "parent" });
+      edge("task_notification", "A", { status: "failed", summary: "old failure", error: "old error", end_time: 123 });
+      const oldTool = structuredClone(session.toolCalls.get("launch-A"));
+      edge("task_started", "B", { tool_use_id: "launch-B", description: "B", is_backgrounded: true });
+      const current = structuredClone(session.tasksById.get("worker"));
+      const currentTool = structuredClone(session.toolCalls.get("launch-B"));
+      const before = writes.length;
+      edge("task_progress", "A", { tool_use_id: "launch-A", description: "late A", usage: { duration_ms: 999 } });
+      edge("task_notification", "A", { tool_use_id: "launch-A", status: "stopped", summary: "late outcome" });
+      assert.equal(writes.length, before, "stale edges emit no tool updates or notifications");
+      emit({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "worker", run_id: "A", task_type: taskType }] });
+      assert.deepEqual(session.tasksById.get("worker"), current);
+      assert.equal(session.taskToolUseIds.get("worker"), "launch-B");
+      assert.deepEqual(session.toolCalls.get("launch-A"), oldTool);
+      assert.deepEqual(session.toolCalls.get("launch-B"), currentTool);
+      assert.equal(current?.parent_task_id, "parent");
+      assert.equal((current?.metadata as Record<string, unknown>)?.error, undefined);
+      assert.equal((current?.metadata as Record<string, unknown>)?.summary, undefined);
+      edge("task_notification", "B", { status: "completed", summary: "B done" });
+      edge("task_started", "B", { description: "delayed start" });
+      assert.equal(session.tasksById.get("worker")?.status, "completed");
+    });
+  }
+});
+
+test("a newer run may first appear completed without reopening a historical terminal tool", () => taskScenario((session, emit) => {
+  session.toolCalls.set("launch", createToolCall("launch", "Agent", {}, null));
+  const edge = (run_id: string, extra = {}) => emit({ type: "system", subtype: "task_notification", task_id: "worker", run_id, status: "completed", ...extra });
+  emit({ type: "system", subtype: "task_started", task_id: "worker", tool_use_id: "launch", run_id: "A", task_type: "local_agent", description: "Worker" });
+  edge("A", { status: "stopped", summary: "A stopped", error: "A error" });
+  const tool = structuredClone(session.toolCalls.get("launch"));
+  edge("B", { summary: "B done" });
+  const task = session.tasksById.get("worker");
+  assert.equal(task?.run_id, "B");
+  assert.equal(task?.source_tool_call_id, "launch");
+  assert.equal(task?.source_tool_call_run_id, "A");
+  assert.equal((task?.metadata as Record<string, unknown>)?.error, undefined);
+  assert.equal((task?.metadata as Record<string, unknown>)?.summary, "B done");
+  assert.deepEqual(session.toolCalls.get("launch"), tool);
+  // Messages still identify the task's producer through its established
+  // launch, without claiming that invocation executed the newer run.
+  emit({ type: "assistant", agent_id: "worker", message: { content: [{ type: "tool_use", id: "child-B", name: "Read", input: { file_path: "notes" } }] } });
+  assert.equal((session.toolCalls.get("child-B")?.meta as { claudeCode: { parentToolUseId: string } })?.claudeCode.parentToolUseId, "launch");
+  emit({ type: "system", subtype: "task_notification", task_id: "worker", tool_use_id: "launch", status: "failed", summary: "unversioned A" });
+  assert.equal((session.tasksById.get("worker")?.metadata as Record<string, unknown>)?.summary, "B done");
+}));
+
+test("synthesized launch acknowledgements cannot reopen a recorded task outcome", () => {
+  for (const run_id of [undefined, "A"]) taskScenario((session, emit) => {
+    session.toolCalls.set("launch", createToolCall("launch", "Agent", {}, null));
+    emit({ type: "system", subtype: "task_started", task_id: "worker", run_id, tool_use_id: "launch", task_type: "local_agent", description: "Worker" });
+    emit({ type: "system", subtype: "task_notification", task_id: "worker", run_id, tool_use_id: "launch", status: "completed", summary: "Actual report" });
+    const tool = structuredClone(session.toolCalls.get("launch"));
+    emitToolResultUpdate(session, "launch", false, { isAsync: true, status: "async_launched", agentId: "worker", description: "Launch ack", outputFile: "worker.output" });
+    assert.equal(session.tasksById.get("worker")?.status, "completed");
+    assert.equal((session.tasksById.get("worker")?.metadata as Record<string, unknown>)?.summary, "Actual report");
+    assert.deepEqual(session.toolCalls.get("launch"), tool);
+  });
+});
+
+test("children of a background resume without a new launch survive parent-turn completion and failure", () => {
+  for (const outcome of ["completed", "failed"] as const) taskScenario((session, emit) => {
+    emit({ type: "system", subtype: "task_started", task_id: "worker", run_id: "A", tool_use_id: "launch", task_type: "local_agent", description: "Worker" });
+    emit({ type: "system", subtype: "task_notification", task_id: "worker", run_id: "A", status: "stopped", summary: "A stopped" });
+    emit({ type: "system", subtype: "task_started", task_id: "worker", run_id: "B", is_backgrounded: true, description: "B resumed" });
+    emit({ type: "assistant", agent_id: "worker", message: { content: [{ type: "tool_use", id: "child", name: "Read", input: { file_path: "notes" } }] } });
+    finalizeOpenToolCalls(session, outcome);
+    assert.equal(session.toolCalls.get("launch")?.status, "killed", "the launch remains historical");
+    assert.equal(session.toolCalls.get("child")?.status, "in_progress", "the task's child is independent of the parent turn");
+    assert.equal(session.tasksById.get("worker")?.run_id, "B");
+  });
+});
+
+test("first-known runs enrich unversioned launches and missing runs need matching invocation evidence", () => taskScenario((session, emit) => {
+  emit({ type: "system", subtype: "task_started", task_id: "worker", tool_use_id: "launch", task_type: "local_agent", description: "Original launch", prompt: "Original prompt" });
+  emit({ type: "system", subtype: "task_progress", task_id: "worker", run_id: "B", description: "Working" });
+  assert.equal(session.tasksById.get("worker")?.source_tool_call_id, "launch");
+  assert.equal((session.tasksById.get("worker")?.metadata as Record<string, unknown>)?.prompt, "Original prompt");
+  const current = structuredClone(session.tasksById.get("worker"));
+  for (const tool_use_id of [undefined, "old-launch"]) emit({ type: "system", subtype: "task_notification", task_id: "worker", tool_use_id, status: "failed", summary: "unidentified" });
+  assert.deepEqual(session.tasksById.get("worker"), current);
+  emit({ type: "system", subtype: "task_notification", task_id: "worker", tool_use_id: "launch", status: "completed", summary: "matched" });
+  assert.equal(session.tasksById.get("worker")?.run_id, "B");
+  assert.equal(session.tasksById.get("worker")?.status, "completed");
+}));
+
+test("removed inventory rows remember only their absent run and empty snapshots still interrupt live work", () => taskScenario((session, emit) => {
+  const listed = (run_id: string) => emit({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "worker", run_id, task_type: "local_agent" }] });
+  listed("B");
+  emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });
+  listed("A");
+  assert.equal(session.tasksById.has("worker"), false);
+  listed("C");
+  assert.equal(session.tasksById.get("worker")?.run_id, "C");
+  emit({ type: "system", subtype: "task_started", task_id: "worker", run_id: "C", task_type: "local_agent", description: "C" });
+  emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });
+  assert.equal((session.tasksById.get("worker")?.metadata as Record<string, unknown>)?.terminal_status, "interrupted");
+  listed("C");
+  assert.equal(session.tasksById.get("worker")?.status, "in_progress");
+}));
+
+test("a removed snapshot-only row still accepts its same-run lifecycle outcome", () => taskScenario((session, emit) => {
+  emit({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "worker", run_id: "B", task_type: "local_agent" }] });
+  emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });
+  assert.equal(session.tasksById.has("worker"), false);
+  emit({ type: "system", subtype: "task_notification", task_id: "worker", run_id: "A", status: "completed", summary: "old A" });
+  assert.equal(session.tasksById.has("worker"), false);
+  emit({ type: "system", subtype: "task_notification", task_id: "worker", run_id: "B", status: "completed", summary: "Actual B report", task_type: "local_agent" });
+  assert.equal(session.tasksById.get("worker")?.status, "completed");
+  assert.equal(session.tasksById.get("worker")?.run_id, "B");
+  assert.equal((session.tasksById.get("worker")?.metadata as Record<string, unknown>)?.summary, "Actual B report");
+}));
+
+test("agent_id attributes nested Agent calls to their producer and keeps child replies and errors out of the main turn", () => taskScenario((session, emit, writes) => {
+  emit({ type: "system", subtype: "task_started", task_id: "B", run_id: "B1", tool_use_id: "launch-B", task_type: "local_agent", description: "B" });
+  const before = writes.length;
+  emit({ type: "assistant", agent_id: "B", parent_tool_use_id: null, error: "authentication_failed", context_usage: {}, message: { id: "child", content: [{ type: "text", text: "Private child reply" }, { type: "tool_use", id: "launch-C", name: "Agent", input: { description: "C" } }] } });
+  emit({ type: "user", agent_id: "B", message: { content: "Child user prompt" } });
+  const child = session.toolCalls.get("launch-C");
+  assert.equal((child?.meta as { claudeCode?: { parentToolUseId?: string } })?.claudeCode?.parentToolUseId, "launch-B");
+  assert.equal(session.tasksById.has("C"), false, "the producer's Agent call does not identify its new child");
+  assert.equal(session.lastAssistantError, undefined);
+  assert.equal(session.authHintSent, false);
+  const updates = writes.slice(before).map(line => JSON.parse(line) as { event: string; update?: { type: string } });
+  assert.ok(updates.every(event => event.update?.type === "tool_call"));
+  emit({ type: "assistant", agent_id: "B", parent_tool_use_id: "explicit-parent", message: { content: [{ type: "tool_use", id: "nested", name: "Bash", input: { command: "pwd" } }] } });
+  assert.equal((session.toolCalls.get("nested")?.meta as { claudeCode: { parentToolUseId: string } })?.claudeCode.parentToolUseId, "explicit-parent");
+}));
+
+test("stale expected-run stops never call the SDK and responses retain the dispatched operation", async () => {
+  const session = makeSession();
+  session.tasksById.set("worker", { task_id: "worker", run_id: "B", subject: "Worker", status: "in_progress", blocks: [], blocked_by: [], metadata: { task_type: "local_agent" } });
+  let calls = 0;
+  let resolveStop: (() => void) | undefined;
+  session.query = { stopTask: async () => { calls++; await new Promise<void>(resolve => { resolveStop = resolve; }); } } as unknown as SessionState["query"];
+  sessions.set(session.sessionId, session);
+  const writes: string[] = [];
+  const restore = replaceProtocolEventWriter(line => { writes.push(line); });
+  try {
+    for (const expected_run_id of ["A", undefined]) await handleSubagentCommand({ command: "stop_subagent", session_id: session.sessionId, task_id: "worker", expected_run_id }, "stale");
+    assert.equal(calls, 0);
+    const pending = handleSubagentCommand({ command: "stop_subagent", session_id: session.sessionId, task_id: "worker", expected_run_id: "B" }, "stop-B");
+    assert.equal(calls, 1);
+    const task = session.tasksById.get("worker");
+    if (task) task.run_id = "C";
+    resolveStop?.(); await pending;
+    const result = JSON.parse(writes.at(-1) ?? "null") as { request_id: string; run_id: string; error?: string };
+    assert.equal(result.request_id, "stop-B");
+    assert.equal(result.run_id, "B");
+    assert.equal(result.error, undefined);
+  } finally { restore(); sessions.delete(session.sessionId); }
+});
 
 function makeSession(): SessionState {
   return {
@@ -250,6 +478,7 @@ test("a backgrounded subagent keeps its lifecycle row after it leaves the backgr
     task_type: "local_agent",
     subagent_type: "general-purpose",
     sdk_lifecycle_task: true,
+    is_backgrounded: true,
     output_file: "",
     summary: "ok",
     terminal_status: "completed",
@@ -258,7 +487,7 @@ test("a backgrounded subagent keeps its lifecycle row after it leaves the backgr
   assert.equal(session.tasksById.has("shell-1"), false);
 });
 
-test("a subagent remains visible when it leaves the background snapshot before its outcome", () => {
+test("a subagent that leaves the background snapshot before its outcome stops counting as running, then takes its real outcome", () => {
   const session = makeSession();
   const emit = (message: Record<string, unknown>) =>
     handleSdkMessage(session, { session_id: "session-1", uuid: crypto.randomUUID(), ...message } as unknown as SDKMessage);
@@ -270,10 +499,11 @@ test("a subagent remains visible when it leaves the background snapshot before i
       { task_id: "agent-1", task_type: "local_agent", description: "Background sleep" },
       { task_id: "snapshot-only", task_type: "local_agent", description: "No lifecycle start" },
     ] });
+    assert.equal(session.tasksById.get("agent-1")?.status, "in_progress", "listed rows keep running");
     emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });
-    const waiting = session.tasksById.get("agent-1");
-    assert.equal(waiting?.status, "in_progress", "snapshot departure does not infer completion");
-    assert.deepEqual(waiting?.metadata, { task_type: "local_agent", sdk_lifecycle_task: true });
+    const unlisted = session.tasksById.get("agent-1");
+    assert.equal(unlisted?.status, "completed", "a running row the snapshot no longer lists is not running");
+    assert.deepEqual(unlisted?.metadata, { task_type: "local_agent", sdk_lifecycle_task: true, is_backgrounded: true, terminal_status: "interrupted" }, "no outcome is invented");
     assert.equal(session.tasksById.has("snapshot-only"), false, "a background-only row leaves with the snapshot");
     emit({ type: "system", subtype: "task_notification", task_id: "agent-1", status: "completed", summary: "ok" });
   } finally {
@@ -285,7 +515,70 @@ test("a subagent remains visible when it leaves the background snapshot before i
   assert.ok(!updates.some(update => update?.removed_task_ids?.includes("agent-1")));
   const final = updates.flatMap(update => update?.tasks ?? []).filter(task => task.task_id === "agent-1").at(-1);
   assert.equal(final?.status, "completed");
-  assert.deepEqual(final?.metadata, { task_type: "local_agent", sdk_lifecycle_task: true, summary: "ok", terminal_status: "completed" });
+  assert.deepEqual(final?.metadata, { task_type: "local_agent", sdk_lifecycle_task: true, is_backgrounded: true, summary: "ok", terminal_status: "completed" });
+});
+
+function terminalStatus(metadata: unknown): unknown {
+  return (metadata as Record<string, unknown> | undefined)?.terminal_status;
+}
+
+test("a relisted interrupted subagent runs again and its real outcome still wins", () => {
+  const session = makeSession();
+  const emit = (message: Record<string, unknown>) =>
+    handleSdkMessage(session, { session_id: "session-1", uuid: crypto.randomUUID(), ...message } as unknown as SDKMessage);
+  const restore = replaceProtocolEventWriter(() => {});
+  try {
+    emit({ type: "system", subtype: "task_started", task_id: "agent-1", task_type: "local_agent", description: "Background sleep" });
+    emit({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "agent-1", task_type: "local_agent" }] });
+    emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });
+    assert.equal(session.tasksById.get("agent-1")?.status, "completed", "dropped: settled as interrupted");
+    emit({ type: "system", subtype: "task_progress", task_id: "agent-1", summary: "still going" });
+    assert.equal(session.tasksById.get("agent-1")?.status, "in_progress", "progress revives an interrupted row");
+    emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });
+    assert.equal(session.tasksById.get("agent-1")?.status, "completed", "dropped again");
+    emit({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "agent-1", task_type: "local_agent" }] });
+    const relisted = session.tasksById.get("agent-1");
+    assert.equal(relisted?.status, "in_progress", "a relisted row is live");
+    assert.equal(terminalStatus(relisted?.metadata), undefined, "the inferred status is cleared");
+    emit({ type: "system", subtype: "task_notification", task_id: "agent-1", status: "failed", summary: "boom" });
+    const final = session.tasksById.get("agent-1");
+    assert.equal(final?.status, "completed", "the wire has no failed status");
+    assert.equal(terminalStatus(final?.metadata), "failed");
+  } finally {
+    restore();
+  }
+});
+
+test("a subagent with a recorded outcome is not revived by a relisting or later progress", () => {
+  const session = makeSession();
+  const emit = (message: Record<string, unknown>) =>
+    handleSdkMessage(session, { session_id: "session-1", uuid: crypto.randomUUID(), ...message } as unknown as SDKMessage);
+  const restore = replaceProtocolEventWriter(() => {});
+  try {
+    emit({ type: "system", subtype: "task_started", task_id: "agent-1", task_type: "local_agent", description: "Background sleep" });
+    emit({ type: "system", subtype: "task_notification", task_id: "agent-1", status: "completed", summary: "ok" });
+    emit({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "agent-1", task_type: "local_agent" }] });
+    emit({ type: "system", subtype: "task_progress", task_id: "agent-1", summary: "late" });
+    const row = session.tasksById.get("agent-1");
+    assert.equal(row?.status, "completed");
+    assert.equal(terminalStatus(row?.metadata), "completed");
+  } finally {
+    restore();
+  }
+});
+
+test("a foreground subagent the snapshot never listed keeps running when a snapshot arrives", () => {
+  const session = makeSession();
+  const emit = (message: Record<string, unknown>) =>
+    handleSdkMessage(session, { session_id: "session-1", uuid: crypto.randomUUID(), ...message } as unknown as SDKMessage);
+  const restore = replaceProtocolEventWriter(() => {});
+  try {
+    emit({ type: "system", subtype: "task_started", task_id: "agent-fg", task_type: "local_agent", description: "Foreground" });
+    emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });
+  } finally {
+    restore();
+  }
+  assert.equal(session.tasksById.get("agent-fg")?.status, "in_progress");
 });
 
 test("SDK context usage Markdown is shown even without a response ID", () => {
@@ -594,3 +887,293 @@ for (const lifecycle of [
     assert.equal(updates.at(-1)?.tasks[0]?.metadata.sdk_lifecycle_task, true);
   });
 }
+
+/** Every `system_notice_update` the bridge wrote while `run` ran. */
+function noticesWritten(run: () => void): Array<{ severity: unknown; message: unknown }> {
+  const writes: string[] = [];
+  const restore = replaceProtocolEventWriter((line) => {
+    writes.push(line);
+  });
+  try {
+    run();
+  } finally {
+    restore();
+  }
+  return writes
+    .map((line) => (JSON.parse(line) as Record<string, unknown>).update as Record<string, unknown> | undefined)
+    .filter((update): update is Record<string, unknown> => update?.type === "system_notice_update")
+    .map((update) => ({ severity: update.severity, message: update.message }));
+}
+
+function hookResponse(
+  hookEvent: string,
+  fields: Record<string, unknown>,
+  hookId = "hook-1",
+): SDKMessage {
+  return {
+    type: "system",
+    subtype: "hook_response",
+    hook_id: hookId,
+    hook_name: `${hookEvent}:Bash`,
+    hook_event: hookEvent,
+    output: "",
+    stdout: "",
+    stderr: "",
+    session_id: "session-1",
+    uuid: `uuid-${hookId}`,
+    ...fields,
+  } as unknown as SDKMessage;
+}
+
+// Measured on SDK 0.3.288 with a PreToolUse command hook that exits 1: the
+// tool still runs and nothing else reports the failure.
+test("a failed hook with no other feedback is one warning, once", () => {
+  const session = makeSession();
+  const failed = hookResponse("PreToolUse", {
+    outcome: "error",
+    exit_code: 1,
+    stderr: "lint gate: forbidden pattern found\n",
+  });
+  const notices = noticesWritten(() => {
+    handleSdkMessage(session, failed);
+    handleSdkMessage(session, failed);
+  });
+
+  assert.deepEqual(notices, [
+    {
+      severity: "warning",
+      message: "Hook PreToolUse:Bash failed (exit 1): lint gate: forbidden pattern found",
+    },
+  ]);
+});
+
+type LoggedRecord = { level: string; eventName: string };
+
+/** The level and event name of every info, warning and error record logged while `run` ran. */
+function recordsLogged(run: () => void): LoggedRecord[] {
+  const logged: LoggedRecord[] = [];
+  const originals = { info: bridgeLogger.info, warn: bridgeLogger.warn, error: bridgeLogger.error };
+  for (const level of ["info", "warn", "error"] as const) {
+    bridgeLogger[level] = (event) => {
+      logged.push({ level, eventName: event.eventName });
+    };
+  }
+  try {
+    run();
+  } finally {
+    Object.assign(bridgeLogger, originals);
+  }
+  return logged;
+}
+
+/** Log records and notices for one exit-2 `hook_response` per event, in order. */
+function exitTwoOn(
+  session: SessionState,
+  events: string[],
+): { logged: LoggedRecord[]; notices: ReturnType<typeof noticesWritten> } {
+  let notices: ReturnType<typeof noticesWritten> = [];
+  const logged = recordsLogged(() => {
+    notices = noticesWritten(() => {
+      events.forEach((event, index) => {
+        handleSdkMessage(
+          session,
+          hookResponse(event, { outcome: "error", exit_code: 2, stderr: "gate says no" }, `exit-2-${index}`),
+        );
+      });
+    });
+  });
+  return { logged, notices };
+}
+
+// The SDK reports every exit 2 as outcome "error". On these events the hook
+// reference makes it the hook's decision (block the tool call, the prompt or
+// the compaction, keep Claude working, or hand the output to Claude), so a gate
+// must not read "failed" each turn. Measured on SDK 0.3.288, the SDK already
+// shows the blocked tool call, prompt, task, compaction or model switch; Stop
+// and SubagentStop keep Claude working, and the rest could not be measured, so
+// none of them gets a notice that could duplicate what the user already sees.
+test("a hook that exits 2 where exit 2 is a decision is logged at info, with no notice", () => {
+  const events = [
+    "PreToolUse",
+    "UserPromptSubmit",
+    "UserPromptExpansion",
+    "Stop",
+    "SubagentStop",
+    "TeammateIdle",
+    "TaskCreated",
+    "TaskCompleted",
+    "ConfigChange",
+    "PreCompact",
+    "PreModelSwitch",
+    "Elicitation",
+    "ElicitationResult",
+  ];
+  const { logged, notices } = exitTwoOn(makeSession(), events);
+
+  assert.deepEqual(notices, []);
+  // Info stays out of the default log, which keeps only warnings and errors.
+  assert.deepEqual(
+    logged,
+    events.map(() => ({ level: "info", eventName: "sdk_hook_decision" })),
+  );
+});
+
+// Measured on SDK 0.3.288: after these hooks exit 2 only the hook_response
+// carries the output (the tool result is the tool's own, or the turn ends with
+// an empty result), so one info notice is the only place the user sees it.
+test("a decision nothing else shows gets one info notice, not a failure", () => {
+  const events = ["PostToolUse", "PostToolUseFailure", "PostToolBatch"];
+  const { logged, notices } = exitTwoOn(makeSession(), events);
+
+  assert.deepEqual(
+    notices,
+    events.map((event) => ({ severity: "info", message: `Hook ${event}:Bash returned a blocking error: gate says no` })),
+  );
+  assert.deepEqual(
+    logged,
+    events.map(() => ({ level: "info", eventName: "sdk_hook_decision" })),
+  );
+});
+
+// Measured on SDK 0.3.288 with a SessionStart command hook that exits 2: the
+// session starts and the SDK sends nothing but this hook_response, so the
+// failure notice is the only place the user sees the hook's error.
+test("a SessionStart hook that exits 2 cannot block startup, so it is a failure warning and a notice", () => {
+  const session = makeSession();
+  session.connected = false;
+  let logged: LoggedRecord[] = [];
+  noticesWritten(() => {
+    logged = recordsLogged(() => {
+      handleSdkMessage(
+        session,
+        hookResponse("SessionStart", {
+          hook_name: "SessionStart:startup",
+          outcome: "error",
+          exit_code: 2,
+          stderr: "start gate: env missing\n",
+        }),
+      );
+    });
+  });
+
+  assert.deepEqual(logged, [{ level: "warn", eventName: "sdk_hook_failed" }]);
+  assert.deepEqual(session.pendingHookNotices, [
+    { severity: "warning", message: "Hook SessionStart:startup failed (exit 2): start gate: env missing" },
+  ]);
+});
+
+// Notification and PermissionRequest ignore exit 2, WorktreeCreate fails on any
+// non-zero exit, and an event the hook reference does not list (one a newer SDK
+// adds) has no documented decision: all of them stay failures.
+test("exit 2 on an event that ignores it, fails on it, or is unknown is a failure", () => {
+  const events = ["Notification", "PermissionRequest", "WorktreeCreate", "SomeFutureEvent"];
+  const { logged, notices } = exitTwoOn(makeSession(), events);
+
+  assert.deepEqual(
+    logged,
+    events.map(() => ({ level: "warn", eventName: "sdk_hook_failed" })),
+  );
+  assert.deepEqual(
+    notices,
+    events.map((event) => ({ severity: "warning", message: `Hook ${event}:Bash failed (exit 2): gate says no` })),
+  );
+});
+
+test("routine hook activity and a cancelled hook never become notices", () => {
+  const session = makeSession();
+  const notices = noticesWritten(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "hook_started",
+      hook_id: "hook-1",
+      hook_name: "PreToolUse:Bash",
+      hook_event: "PreToolUse",
+      session_id: "session-1",
+    } as unknown as SDKMessage);
+    handleSdkMessage(session, hookResponse("PreToolUse", { outcome: "success", exit_code: 0, output: "ok" }, "ok"));
+    handleSdkMessage(session, hookResponse("Stop", { outcome: "cancelled" }, "cancelled"));
+  });
+
+  assert.deepEqual(notices, []);
+});
+
+test("a hook failure notice carries a bounded, redacted excerpt", () => {
+  const session = makeSession();
+  const notices = noticesWritten(() => {
+    handleSdkMessage(
+      session,
+      hookResponse("PostToolUse", {
+        outcome: "error",
+        exit_code: 1,
+        stderr: `deploy failed api_key=sk-ant-verysecret ${"x".repeat(1_000)}`,
+      }),
+    );
+  });
+
+  const message = String(notices[0]?.message);
+  assert.ok(!message.includes("verysecret"));
+  assert.ok(message.includes("api_key=[redacted]"));
+  assert.ok(message.length < 300, `notice was ${message.length} characters`);
+});
+
+// SessionStart hooks finish before the connect event, and the app ignores
+// updates for a session it has not been told about.
+test("a hook failure before the session connects is held, not written", () => {
+  const session = makeSession();
+  session.connected = false;
+  const notices = noticesWritten(() => {
+    handleSdkMessage(
+      session,
+      hookResponse("SessionStart", { outcome: "error", exit_code: 1, stderr: "missing env" }),
+    );
+  });
+
+  assert.deepEqual(notices, []);
+  assert.deepEqual(session.pendingHookNotices, [
+    { severity: "warning", message: "Hook SessionStart:Bash failed (exit 1): missing env" },
+  ]);
+});
+
+// emitConnectEvent starts an async session-title read that outlives the call and
+// returns it. The read is pointed at an empty scratch config directory and awaited
+// before the writer and the environment are restored, so the test never reads the
+// real ~/.claude and does not depend on how the SDK maps a directory to a project
+// folder (which differs on Windows).
+test("held hook failures are written after the connect event, then cleared", async () => {
+  const configDir = realpathSync(mkdtempSync(join(tmpdir(), "claude-rs-config-")));
+  const session = makeSession();
+  session.sessionId = "2f6c1f0e-1111-4111-8111-aaaaaaaaaaaa";
+  session.cwd = configDir;
+  session.connected = false;
+  session.pendingHookNotices = [{ severity: "warning", message: "Hook SessionStart:Bash failed (exit 1): missing env" }];
+  const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = configDir;
+  const writes: string[] = [];
+  const restore = replaceProtocolEventWriter((line) => {
+    writes.push(line);
+  });
+  try {
+    await emitConnectEvent(session);
+  } finally {
+    restore();
+    if (previousConfigDir === undefined) {
+      delete process.env.CLAUDE_CONFIG_DIR;
+    } else {
+      process.env.CLAUDE_CONFIG_DIR = previousConfigDir;
+    }
+    rmSync(configDir, { recursive: true, force: true });
+  }
+
+  const events = writes.map((line) => JSON.parse(line) as Record<string, unknown>);
+  const connected = events.findIndex((event) => event.event === "connected");
+  const notice = events.findIndex(
+    (event) => (event.update as Record<string, unknown> | undefined)?.type === "system_notice_update",
+  );
+  assert.ok(connected >= 0 && notice > connected, JSON.stringify(events.map((event) => event.event)));
+  const written = events[notice]?.update as Record<string, unknown>;
+  assert.deepEqual(
+    { severity: written.severity, message: written.message },
+    { severity: "warning", message: "Hook SessionStart:Bash failed (exit 1): missing env" },
+  );
+  assert.equal(session.pendingHookNotices, undefined);
+});

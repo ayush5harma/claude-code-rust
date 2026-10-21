@@ -1,24 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! The `/agents` view of the active session's subagents: the one inspector the
-//! footer shelf and the Ctrl+T list lead to.
+//! The `/agents` view of the active session's subagents, and the Ctrl+T task
+//! list that leads to it.
 //!
 //! Rows and their live status come from the task lifecycle the bridge
-//! normalizes into `sdk_inventory.tasks`, projected once by
-//! `ui::agent_rows::session_agent_rows`. This module holds only view state and
+//! normalizes into `sdk_inventory.tasks`. This module holds only view state and
 //! the outcome of its own requests: which saved transcripts the SDK lists, the
 //! transcript being read, and the stop requests it has sent.
 
 use crate::agent::events::ClientEvent;
 use crate::agent::model::{TaskItem, TaskStatus};
-use crate::agent::types::SubagentMessage;
-use crate::app::App;
-use crate::ui::agent_rows::{AgentRow, session_agent_rows};
+use crate::agent::types::{SubagentMessage, SubagentMessageRole};
+use crate::app::{App, FullscreenView, SurfaceMode, ToolCallInfo};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 const SUBAGENT_TASK_TYPE: &str = "local_agent";
 const PAGE_ROWS: u16 = 10;
+/// Child tool calls the details list for one subagent, newest first.
+const RECENT_CHILD_TOOLS: usize = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SubagentStatus {
@@ -29,6 +29,9 @@ pub(crate) enum SubagentStatus {
     Completed,
     Failed,
     Stopped,
+    /// Was running when its process went away (a resumed session, or a missed
+    /// notification). Not running, and no outcome is known.
+    Interrupted,
 }
 
 impl SubagentStatus {
@@ -40,6 +43,7 @@ impl SubagentStatus {
             Self::Completed => "completed",
             Self::Failed => "failed",
             Self::Stopped => "stopped",
+            Self::Interrupted => "interrupted",
         }
     }
 
@@ -61,53 +65,200 @@ pub(crate) struct Notice {
     pub text: String,
 }
 
+/// One subagent's saved transcript as this view last read it.
+#[derive(Debug)]
+pub(crate) struct TranscriptRead {
+    pub agent_id: String,
+    pub run_id: Option<String>,
+    pub saved_snapshot: bool,
+    pending: bool,
+    /// The request this read waits on; an answer to any earlier one is superseded.
+    request_id: String,
+    /// The last successful answer; `None` until one arrives. It stays shown
+    /// while a later request for the same subagent is pending.
+    pub messages: Option<Vec<SubagentMessage>>,
+    /// Why the latest request failed.
+    pub error: Option<String>,
+    /// Whether the current run had completed when this request was sent.
+    after_completion: bool,
+}
+
+#[derive(Debug)]
+struct PendingStop {
+    run_id: Option<String>,
+    request_id: String,
+}
+
+/// The open transcript reader, showing `AgentsView::read`.
 #[derive(Debug, Default)]
 pub(crate) struct TranscriptView {
-    pub agent_id: String,
-    /// `None` until the SDK answers.
-    pub messages: Option<Vec<SubagentMessage>>,
-    pub error: Option<String>,
-    pub scroll: u16,
+    pub scroll: usize,
+    /// The messages wrapped to the width they were last drawn at, so a frame
+    /// wraps nothing until the width or the messages change.
+    pub wrapped: Option<WrappedTranscript>,
+}
+
+#[derive(Debug)]
+pub(crate) struct WrappedTranscript {
+    pub width: u16,
+    pub rows: Vec<ratatui::text::Line<'static>>,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct AgentsView {
-    /// The agent chosen in the Ctrl+T list or this view. `None` selects nothing,
-    /// so `s` and Enter never act on a row the user did not choose.
+    /// The chosen subagent. It never moves to another row on its own, so `s`
+    /// and Enter act only on a subagent the user chose or the view opened on.
     pub selected_task_id: Option<String>,
     /// Ids `listSubagents()` returned; `None` until the first answer.
     pub transcript_ids: Option<HashSet<String>>,
     pub listing: bool,
-    stop_requested: HashSet<String>,
+    /// Why the last transcript check failed. The ids it could not refresh are
+    /// kept, and the next successful check clears it.
+    pub list_error: Option<String>,
+    stop_requested: HashMap<String, PendingStop>,
+    /// The transcript last read; the open reader shows it.
+    pub read: Option<TranscriptRead>,
+    /// An unanswered response read the selection has moved past. The next one
+    /// waits for its answer, so moving along the list keeps at most one read
+    /// in the session's command lane.
+    read_in_flight: Option<String>,
     pub transcript: Option<TranscriptView>,
     pub notice: Option<Notice>,
-    /// Scroll offset of the selected agent's details.
+    /// Scroll offset of the selected subagent's details.
     pub detail_scroll: u16,
+}
+
+pub(crate) struct SubagentRow<'a> {
+    pub task: &'a TaskItem,
+    pub status: SubagentStatus,
+}
+
+impl SubagentRow<'_> {
+    pub(crate) fn subagent_type(&self) -> Option<&str> {
+        metadata_str(self.task, "subagent_type")
+    }
+
+    pub(crate) fn summary(&self) -> Option<&str> {
+        // The SDK often repeats the description as the summary.
+        metadata_str(self.task, "summary")
+            .filter(|summary| !summary.trim().is_empty() && *summary != self.task.subject)
+    }
+
+    /// Why a failed subagent failed, as the lifecycle reported it.
+    pub(crate) fn failure(&self) -> Option<&str> {
+        if self.status != SubagentStatus::Failed {
+            return None;
+        }
+        metadata_str(self.task, "error").or_else(|| metadata_str(self.task, "terminal_reason"))
+    }
+
+    /// The prompt the lifecycle reported, for a subagent whose Agent call is gone.
+    pub(crate) fn prompt(&self) -> Option<&str> {
+        metadata_str(self.task, "prompt")
+    }
+}
+
+/// Last saved reply read after this run completed, or the read error.
+/// Persistence can lag the lifecycle: this is a preview, not a run's result.
+pub(crate) fn saved_response<'a>(
+    app: &'a App,
+    row: &SubagentRow<'_>,
+) -> Option<Result<&'a str, &'a str>> {
+    if row.status != SubagentStatus::Completed {
+        return None;
+    }
+    let read = app.agents.read.as_ref().filter(|read| {
+        read.agent_id == row.task.task_id
+            && read.run_id == row.task.run_id
+            && read.after_completion
+            && !read.saved_snapshot
+    })?;
+    if let Some(error) = &read.error {
+        return Some(Err(error));
+    }
+    let messages = read.messages.as_ref()?;
+    let reply =
+        messages.iter().rev().find(|message| message.role == SubagentMessageRole::Assistant);
+    reply.map(|message| Ok(message.text.as_str()))
+}
+
+/// The Agent call that launched a subagent, when the transcript still holds it.
+pub(crate) fn launching_call<'a>(app: &'a App, task: &TaskItem) -> Option<&'a ToolCallInfo> {
+    app.tool_call(task.source_tool_call_id.as_deref()?)
+}
+
+/// The subagent's own tool calls the session has seen, newest first.
+pub(crate) fn recent_child_tools<'a>(app: &'a App, task: &TaskItem) -> Vec<&'a ToolCallInfo> {
+    let Some(parent) = task.source_tool_call_id.as_deref() else { return Vec::new() };
+    let mut children: Vec<_> = app
+        .indexed_tool_calls()
+        .filter(|(_, tool)| tool.parent_tool_use_id.as_deref() == Some(parent))
+        .collect();
+    children.sort_unstable_by_key(|(position, _)| std::cmp::Reverse(*position));
+    children.into_iter().take(RECENT_CHILD_TOOLS).map(|(_, tool)| tool).collect()
 }
 
 fn metadata_str<'a>(task: &'a TaskItem, key: &str) -> Option<&'a str> {
     task.metadata.as_ref()?.as_object()?.get(key)?.as_str()
 }
 
-/// The one rule for which tasks are subagents; the bridge's stop check uses the same.
-pub(crate) fn is_subagent_task(task: &TaskItem) -> bool {
-    metadata_str(task, "task_type") == Some(SUBAGENT_TASK_TYPE)
+/// Ambient tasks are housekeeping, not activity, and the SDK asks hosts to
+/// keep them out of indicators.
+fn is_ambient(task: &TaskItem) -> bool {
+    task.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.as_object()?.get("ambient")?.as_bool())
+        .unwrap_or(false)
 }
 
-/// A subagent's status: the lifecycle's, shown as stopping once this view asked it to stop.
-pub(crate) fn subagent_status(app: &App, task: &TaskItem) -> SubagentStatus {
+pub(crate) fn is_subagent(task: &TaskItem) -> bool {
+    metadata_str(task, "task_type") == Some(SUBAGENT_TASK_TYPE) && !is_ambient(task)
+}
+
+fn lifecycle_status(task: &TaskItem) -> SubagentStatus {
     match task.status {
         TaskStatus::Pending => SubagentStatus::Pending,
-        TaskStatus::InProgress if app.agents.stop_requested.contains(&task.task_id) => {
-            SubagentStatus::Stopping
-        }
         TaskStatus::InProgress => SubagentStatus::Running,
         TaskStatus::Completed => match metadata_str(task, "terminal_status") {
             Some("failed") => SubagentStatus::Failed,
             Some("killed" | "stopped") => SubagentStatus::Stopped,
+            Some("interrupted") => SubagentStatus::Interrupted,
             _ => SubagentStatus::Completed,
         },
     }
+}
+
+/// The session's subagent rows in lifecycle order, one per task id.
+pub(crate) fn subagent_rows(app: &App) -> Vec<SubagentRow<'_>> {
+    app.sdk_inventory
+        .tasks
+        .iter()
+        .filter(|task| is_subagent(task))
+        .map(|task| {
+            let status = match lifecycle_status(task) {
+                SubagentStatus::Running
+                    if app
+                        .agents
+                        .stop_requested
+                        .get(&task.task_id)
+                        .is_some_and(|stop| stop.run_id == task.run_id) =>
+                {
+                    SubagentStatus::Stopping
+                }
+                status => status,
+            };
+            SubagentRow { task, status }
+        })
+        .collect()
+}
+
+/// Subagents the lifecycle reports as running, including those asked to stop.
+pub(crate) fn running_subagent_count(app: &App) -> usize {
+    app.sdk_inventory
+        .tasks
+        .iter()
+        .filter(|task| is_subagent(task) && lifecycle_status(task).is_running())
+        .count()
 }
 
 impl AgentsView {
@@ -117,7 +268,7 @@ impl AgentsView {
     }
 
     /// The chosen row among `rows`, if one is chosen and still listed.
-    pub(crate) fn selected_index(&self, rows: &[AgentRow<'_>]) -> Option<usize> {
+    pub(crate) fn selected_index(&self, rows: &[SubagentRow<'_>]) -> Option<usize> {
         let id = self.selected_task_id.as_deref()?;
         rows.iter().position(|row| row.task.task_id == id)
     }
@@ -140,43 +291,35 @@ fn notice(app: &mut App, kind: NoticeKind, text: impl Into<String>) {
     app.agents.notice = Some(Notice { kind, text: text.into() });
 }
 
-/// Opens the view on the first agent (Left Arrow on an empty composer, `/agents`).
+/// Opens the view on the first running subagent, else the first one.
 pub(crate) fn open(app: &mut App) {
     open_at(app, None);
 }
 
-/// Opens the Ctrl+T task list, keeping a still-listed agent selected, else the first.
+/// Opens the Ctrl+T task list, keeping a still-listed subagent selected, else the first.
 pub(crate) fn open_task_list(app: &mut App) {
-    let rows = session_agent_rows(app);
+    let rows = subagent_rows(app);
     if app.agents.selected_index(&rows).is_none() {
-        let first = rows.first().map(|row| row.task.task_id.clone());
-        app.agents.selected_task_id = first;
+        app.agents.selected_task_id = rows.first().map(|row| row.task.task_id.clone());
         app.agents.detail_scroll = 0;
     }
-    crate::app::view::set_fullscreen_view(app, crate::app::FullscreenView::Tasks);
+    crate::app::view::set_fullscreen_view(app, FullscreenView::Tasks);
 }
 
-/// Drops a selection whose agent is no longer listed, so the selection never
-/// moves to another agent on its own.
-pub(crate) fn forget_unlisted_selection(app: &mut App) {
-    let listed = app.agents.selected_task_id.as_deref().is_none_or(|id| {
-        app.sdk_inventory.tasks.iter().any(|task| task.task_id == id && is_subagent_task(task))
-    });
-    if !listed {
-        app.agents.selected_task_id = None;
-    }
-}
-
-/// Opens the view with `selected` chosen, or the first row when `None`.
+/// Opens the view with `selected` chosen; `None` picks the first running subagent, else the first.
 fn open_at(app: &mut App, selected: Option<String>) {
-    let selected =
-        selected.or_else(|| session_agent_rows(app).first().map(|row| row.task.task_id.clone()));
+    let selected = selected.or_else(|| {
+        let rows = subagent_rows(app);
+        let first = rows.iter().find(|row| row.status.is_running()).or_else(|| rows.first());
+        first.map(|row| row.task.task_id.clone())
+    });
     app.agents.transcript = None;
     app.agents.notice = None;
     app.agents.selected_task_id = selected;
     app.agents.detail_scroll = 0;
     crate::app::view::set_fullscreen_view(app, crate::app::FullscreenView::Agents);
     request_transcript_list(app);
+    read_selected_response(app, false);
 }
 
 fn close(app: &mut App) {
@@ -188,14 +331,12 @@ fn request_transcript_list(app: &mut App) {
     let Some((session_id, conn)) = active_session(app) else { return };
     match conn.list_subagents(session_id) {
         Ok(()) => app.agents.listing = true,
-        Err(error) => {
-            notice(app, NoticeKind::Error, format!("Could not check transcripts: {error}"));
-        }
+        Err(error) => app.agents.list_error = Some(error.to_string()),
     }
 }
 
 /// Applies the bridge's answer to one of this view's requests. An answer for
-/// another session arrives after a switch and describes agents no longer shown.
+/// another session arrives after a switch and describes subagents no longer shown.
 pub(crate) fn apply_client_event(app: &mut App, event: ClientEvent) {
     let (ClientEvent::SubagentsListed { session_id, .. }
     | ClientEvent::SubagentMessagesReceived { session_id, .. }
@@ -216,11 +357,11 @@ pub(crate) fn apply_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::SubagentsListed { agent_ids, error, .. } => {
             apply_transcript_list(app, agent_ids, error);
         }
-        ClientEvent::SubagentMessagesReceived { agent_id, messages, error, .. } => {
-            apply_transcript(app, &agent_id, messages, error);
+        ClientEvent::SubagentMessagesReceived { agent_id, request_id, messages, error, .. } => {
+            apply_transcript(app, &agent_id, request_id.as_deref(), messages, error);
         }
-        ClientEvent::SubagentStopResult { task_id, error, .. } => {
-            apply_stop_result(app, &task_id, error);
+        ClientEvent::SubagentStopResult { task_id, run_id, request_id, error, .. } => {
+            apply_stop_result(app, &task_id, run_id.as_deref(), request_id.as_deref(), error);
         }
         _ => {}
     }
@@ -228,34 +369,65 @@ pub(crate) fn apply_client_event(app: &mut App, event: ClientEvent) {
 
 pub(crate) fn apply_transcript_list(app: &mut App, agent_ids: Vec<String>, error: Option<String>) {
     app.agents.listing = false;
-    match error {
-        Some(error) => {
-            notice(app, NoticeKind::Error, format!("Could not check transcripts: {error}"));
-        }
-        None => app.agents.transcript_ids = Some(agent_ids.into_iter().collect()),
+    if error.is_none() {
+        app.agents.transcript_ids = Some(agent_ids.into_iter().collect());
     }
+    app.agents.list_error = error;
+    read_selected_response(app, false);
 }
 
+/// Applies the answer to the latest read request; an answer to an earlier
+/// request, for this subagent or another, changes nothing.
 fn apply_transcript(
     app: &mut App,
     agent_id: &str,
+    request_id: Option<&str>,
     messages: Vec<SubagentMessage>,
     error: Option<String>,
 ) {
-    let Some(transcript) = app.agents.transcript.as_mut().filter(|view| view.agent_id == agent_id)
+    if request_id.is_some() && app.agents.read_in_flight.as_deref() == request_id {
+        app.agents.read_in_flight = None;
+        read_selected_response(app, false);
+        return;
+    }
+    let Some(read) =
+        app.agents.read.as_mut().filter(|read| {
+            read.agent_id == agent_id && Some(read.request_id.as_str()) == request_id
+        })
     else {
         return;
     };
-    transcript.messages = Some(messages);
-    transcript.error = error;
+    read.pending = false;
+    if read.saved_snapshot {
+        return;
+    }
+    match error {
+        // A failed re-read keeps what was read before for the next retry.
+        Some(error) => read.error = Some(error),
+        None => read.messages = Some(messages),
+    }
+    if let Some(view) = app.agents.transcript.as_mut() {
+        view.wrapped = None;
+    }
 }
 
-fn apply_stop_result(app: &mut App, task_id: &str, error: Option<String>) {
+fn apply_stop_result(
+    app: &mut App,
+    task_id: &str,
+    run_id: Option<&str>,
+    request_id: Option<&str>,
+    error: Option<String>,
+) {
+    if !app.agents.stop_requested.get(task_id).is_some_and(|stop| {
+        stop.run_id.as_deref() == run_id && Some(stop.request_id.as_str()) == request_id
+    }) {
+        return;
+    }
     match error {
         Some(error) => {
             app.agents.stop_requested.remove(task_id);
-            // A stop that loses the race with the agent's own outcome is refused
-            // as not running; the row already shows how the agent ended.
+            // A stop that loses the race with the subagent's own outcome is
+            // refused as not running; the row already shows how it ended.
             if app
                 .sdk_inventory
                 .tasks
@@ -266,9 +438,9 @@ fn apply_stop_result(app: &mut App, task_id: &str, error: Option<String>) {
             }
         }
         // The lifecycle can report the outcome before the acknowledgement.
-        None if app.sdk_inventory.tasks.iter().any(|task| {
-            task.task_id == task_id && subagent_status(app, task) == SubagentStatus::Stopping
-        }) =>
+        None if subagent_rows(app)
+            .iter()
+            .any(|row| row.task.task_id == task_id && row.status == SubagentStatus::Stopping) =>
         {
             notice(app, NoticeKind::Info, "Stop requested. The status changes when it stops.");
         }
@@ -277,14 +449,13 @@ fn apply_stop_result(app: &mut App, task_id: &str, error: Option<String>) {
 }
 
 fn selected_row(app: &App) -> Option<(String, SubagentStatus)> {
-    let rows = session_agent_rows(app);
+    let rows = subagent_rows(app);
     let row = rows.get(app.agents.selected_index(&rows)?)?;
     Some((row.task.task_id.clone(), row.status))
 }
 
-/// Moves the shared selection; the Ctrl+T list and this view follow the same rows.
 fn move_selection(app: &mut App, down: bool) {
-    let rows = session_agent_rows(app);
+    let rows = subagent_rows(app);
     if rows.is_empty() {
         return;
     }
@@ -298,6 +469,115 @@ fn move_selection(app: &mut App, down: bool) {
         app.agents.detail_scroll = 0;
     }
     app.agents.selected_task_id = Some(id);
+    read_selected_response(app, false);
+}
+
+/// Lifecycle rows changed: a selected subagent that completed while the list
+/// is shown is read for its response.
+pub(crate) fn tasks_changed(app: &mut App) {
+    app.agents.stop_requested.retain(|id, stop| {
+        app.sdk_inventory.tasks.iter().any(|task| {
+            task.task_id == *id
+                && task.run_id == stop.run_id
+                && task.status == TaskStatus::InProgress
+        })
+    });
+    if let Some(read) = app.agents.read.as_mut() {
+        let current_run = app
+            .sdk_inventory
+            .tasks
+            .iter()
+            .find(|task| task.task_id == read.agent_id)
+            .map(|task| &task.run_id);
+        if current_run != Some(&read.run_id) {
+            read.saved_snapshot = true;
+            read.after_completion = false;
+            if read.pending {
+                app.agents.read_in_flight = Some(read.request_id.clone());
+                read.pending = false;
+            }
+        }
+    }
+    read_selected_response(app, false);
+}
+
+/// Keeps the read on the selected subagent while the list is shown. A completed
+/// one with a saved transcript is read for its response once, after it
+/// completed; `again` (the user's `r`) reads it even then, also after a failure.
+fn read_selected_response(app: &mut App, again: bool) {
+    if app.surface_mode != SurfaceMode::Fullscreen(FullscreenView::Agents)
+        || app.agents.transcript.is_some()
+    {
+        return;
+    }
+    let Some((task_id, status)) = selected_row(app) else { return };
+    if let Some(passed) =
+        app.agents.read.take_if(|read| read.agent_id != task_id || read.saved_snapshot)
+        && passed.pending
+    {
+        app.agents.read_in_flight = Some(passed.request_id);
+    }
+    if status != SubagentStatus::Completed {
+        // A subagent resumed after it completed will end with another response.
+        if let Some(read) = app.agents.read.as_mut() {
+            read.after_completion = false;
+        }
+        return;
+    }
+    if app.agents.has_transcript(&task_id) != Some(true) {
+        return;
+    }
+    let held = app.agents.read.as_ref().is_some_and(|read| read.after_completion);
+    if again || !(held || app.agents.read_in_flight.is_some()) {
+        request_read(app, task_id);
+    }
+}
+
+/// Asks for `agent_id`'s saved transcript. What was read before for the same
+/// subagent stays shown, at the same position, until the answer replaces it,
+/// except a read from before it completed once it has: that is not its response.
+fn request_read(app: &mut App, agent_id: String) -> bool {
+    if app.agents.read_in_flight.is_some() {
+        return false;
+    }
+    let Some((session_id, conn)) = active_session(app) else { return false };
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let run_id = app
+        .sdk_inventory
+        .tasks
+        .iter()
+        .find(|task| task.task_id == agent_id)
+        .and_then(|task| task.run_id.clone());
+    if let Err(error) = conn.get_subagent_messages(session_id, agent_id.clone(), request_id.clone())
+    {
+        notice(app, NoticeKind::Error, format!("Could not read the transcript: {error}"));
+        return false;
+    }
+    let after_completion = subagent_rows(app)
+        .iter()
+        .any(|row| row.task.task_id == agent_id && row.status == SubagentStatus::Completed);
+    let messages = app
+        .agents
+        .read
+        .take()
+        .filter(|read| {
+            read.agent_id == agent_id
+                && read.run_id == run_id
+                && !read.saved_snapshot
+                && (read.after_completion || !after_completion)
+        })
+        .and_then(|read| read.messages);
+    app.agents.read = Some(TranscriptRead {
+        agent_id,
+        run_id,
+        saved_snapshot: false,
+        pending: true,
+        request_id,
+        messages,
+        error: None,
+        after_completion,
+    });
+    true
 }
 
 fn open_transcript(app: &mut App) {
@@ -310,13 +590,22 @@ fn open_transcript(app: &mut App) {
         );
         return;
     }
-    let Some((session_id, conn)) = active_session(app) else { return };
-    if let Err(error) = conn.get_subagent_messages(session_id, task_id.clone()) {
-        notice(app, NoticeKind::Error, format!("Could not read the transcript: {error}"));
-        return;
+    // Open the saved conversation already read; persistence can still change.
+    // The user explicitly refreshes it with `r`.
+    let held = app.agents.read.as_ref().is_some_and(|read| {
+        read.agent_id == task_id && read.after_completion && read.error.is_none()
+    });
+    if held || request_read(app, task_id) {
+        app.agents.notice = None;
+        app.agents.transcript = Some(TranscriptView::default());
     }
-    app.agents.notice = None;
-    app.agents.transcript = Some(TranscriptView { agent_id: task_id, ..TranscriptView::default() });
+}
+
+/// Reads the open transcript again, also after a failed read.
+fn refresh_transcript(app: &mut App) {
+    if let Some(agent_id) = app.agents.read.as_ref().map(|read| read.agent_id.clone()) {
+        request_read(app, agent_id);
+    }
 }
 
 fn request_stop(app: &mut App) {
@@ -330,11 +619,18 @@ fn request_stop(app: &mut App) {
         }
     }
     let Some((session_id, conn)) = active_session(app) else { return };
-    // Keep the row selected after it stops running and sorts below the running rows.
+    // Keep the row selected after it stops running.
     app.agents.selected_task_id = Some(task_id.clone());
-    match conn.stop_subagent(session_id, task_id.clone()) {
+    let run_id = app
+        .sdk_inventory
+        .tasks
+        .iter()
+        .find(|task| task.task_id == task_id)
+        .and_then(|task| task.run_id.clone());
+    let request_id = uuid::Uuid::new_v4().to_string();
+    match conn.stop_subagent(session_id, task_id.clone(), run_id.clone(), request_id.clone()) {
         Ok(()) => {
-            app.agents.stop_requested.insert(task_id);
+            app.agents.stop_requested.insert(task_id, PendingStop { run_id, request_id });
             app.agents.notice = None;
         }
         Err(error) => {
@@ -343,7 +639,7 @@ fn request_stop(app: &mut App) {
     }
 }
 
-/// Keys of the Ctrl+T task list: Up/Down choose an agent, Enter inspects it in
+/// Keys of the Ctrl+T task list: Up/Down choose a subagent, Enter inspects it in
 /// this view, and Esc or the toggle key returns to the chat.
 pub(crate) fn handle_list_key(app: &mut App, key: KeyEvent) {
     use crate::app::keymap::{AppAction, KeyAction, KeyContext};
@@ -377,11 +673,20 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
     }
     if let Some(transcript) = app.agents.transcript.as_mut() {
         match key.code {
-            KeyCode::Esc | KeyCode::Left => app.agents.transcript = None,
+            KeyCode::Esc | KeyCode::Left => {
+                app.agents.transcript = None;
+                // The subagent may have completed while its transcript was open.
+                read_selected_response(app, false);
+            }
             KeyCode::Up => transcript.scroll = transcript.scroll.saturating_sub(1),
             KeyCode::Down => transcript.scroll = transcript.scroll.saturating_add(1),
-            KeyCode::PageUp => transcript.scroll = transcript.scroll.saturating_sub(PAGE_ROWS),
-            KeyCode::PageDown => transcript.scroll = transcript.scroll.saturating_add(PAGE_ROWS),
+            KeyCode::PageUp => {
+                transcript.scroll = transcript.scroll.saturating_sub(usize::from(PAGE_ROWS));
+            }
+            KeyCode::PageDown => {
+                transcript.scroll = transcript.scroll.saturating_add(usize::from(PAGE_ROWS));
+            }
+            KeyCode::Char('r') => refresh_transcript(app),
             _ => {}
         }
         return;
@@ -398,7 +703,10 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Enter => open_transcript(app),
         KeyCode::Char('s') => request_stop(app),
-        KeyCode::Char('r') => request_transcript_list(app),
+        KeyCode::Char('r') => {
+            request_transcript_list(app);
+            read_selected_response(app, true);
+        }
         _ => {}
     }
 }

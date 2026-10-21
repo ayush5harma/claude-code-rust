@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::catalog::{KeyActionDescriptor, action_catalog, action_descriptor};
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -24,7 +23,10 @@ pub enum AppAction {
     CancelTurn,
     SubmitInput,
     FocusPromptOrAcceptSuggestion,
-    CycleMode,
+    NextMode,
+    PreviousMode,
+    IncreaseEffort,
+    DecreaseEffort,
     ScrollChatUp,
     ScrollChatDown,
     FollowChat,

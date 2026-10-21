@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 //! Rendering helpers for SDK task-state tools.
 
@@ -375,7 +374,12 @@ mod tests {
             None,
         );
 
-        let rendered = rendered_line_texts(&super::super::standard::render_tool_call_body(&tc, 80));
+        let rendered =
+            rendered_line_texts(&super::super::standard::ToolBodyCursor::default().render(
+                &tc,
+                80,
+                &crate::ui::layout_control::LayoutControl::uninterrupted(),
+            ));
 
         assert!(!rendered.iter().any(|line| line.contains("Subject:")));
         assert!(rendered.iter().any(|line| line.contains("Description: Validate the branch")));
@@ -391,7 +395,12 @@ mod tests {
             Some("Activity: Scaffolding Next.js app"),
         );
 
-        let rendered = rendered_line_texts(&super::super::standard::render_tool_call_body(&tc, 80));
+        let rendered =
+            rendered_line_texts(&super::super::standard::ToolBodyCursor::default().render(
+                &tc,
+                80,
+                &crate::ui::layout_control::LayoutControl::uninterrupted(),
+            ));
 
         assert!(!rendered.iter().any(|line| line.contains("Status:")));
         assert!(rendered.iter().any(|line| line.contains("Activity: Scaffolding Next.js app")));
@@ -406,7 +415,12 @@ mod tests {
             Some("Retrieval status: not ready\nTask type: local bash\nStatus: running"),
         );
 
-        let rendered = rendered_line_texts(&super::super::standard::render_tool_call_body(&tc, 80));
+        let rendered =
+            rendered_line_texts(&super::super::standard::ToolBodyCursor::default().render(
+                &tc,
+                80,
+                &crate::ui::layout_control::LayoutControl::uninterrupted(),
+            ));
 
         assert!(rendered.iter().any(|line| line.contains("Task ID: task-1")));
         assert!(rendered.iter().any(|line| line.contains("Block: yes")));
@@ -424,7 +438,12 @@ mod tests {
             Some("Message: Stopped task\nTask ID: task-1\nTask type: bash\nCommand: npm run watch"),
         );
 
-        let rendered = rendered_line_texts(&super::super::standard::render_tool_call_body(&tc, 80));
+        let rendered =
+            rendered_line_texts(&super::super::standard::ToolBodyCursor::default().render(
+                &tc,
+                80,
+                &crate::ui::layout_control::LayoutControl::uninterrupted(),
+            ));
 
         assert!(rendered.iter().any(|line| line.contains("Task ID: task-1")));
         assert!(rendered.iter().any(|line| line.contains("Message: Stopped task")));
@@ -454,7 +473,11 @@ mod tests {
         assert_eq!(marker.content.as_ref(), format!("{TASK_MARKER_PENDING} "));
         assert_eq!(marker.style.fg, Some(theme::tertiary()));
 
-        let body = super::super::standard::render_tool_call_body(&tc, 80);
+        let body = super::super::standard::ToolBodyCursor::default().render(
+            &tc,
+            80,
+            &crate::ui::layout_control::LayoutControl::uninterrupted(),
+        );
         assert!(rendered_line_texts(&body).iter().any(|line| line.contains("Deleted task")));
         let deleted = body
             .iter()
@@ -470,7 +493,12 @@ mod tests {
         let tc =
             task_tool_call("TaskGet", json!({ "taskId": "task-missing" }), Some("Task not found"));
 
-        let rendered = rendered_line_texts(&super::super::standard::render_tool_call_body(&tc, 80));
+        let rendered =
+            rendered_line_texts(&super::super::standard::ToolBodyCursor::default().render(
+                &tc,
+                80,
+                &crate::ui::layout_control::LayoutControl::uninterrupted(),
+            ));
 
         assert!(rendered.iter().any(|line| line.contains("Task not found")));
     }
@@ -485,7 +513,12 @@ mod tests {
             ),
         );
 
-        let rendered = rendered_line_texts(&super::super::standard::render_tool_call_body(&tc, 80));
+        let rendered =
+            rendered_line_texts(&super::super::standard::ToolBodyCursor::default().render(
+                &tc,
+                80,
+                &crate::ui::layout_control::LayoutControl::uninterrupted(),
+            ));
 
         assert_eq!(rendered.len(), super::super::TOOL_BODY_MAX_LINES);
         assert!(rendered.iter().any(|line| line.contains("Task 6")));

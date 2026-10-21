@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::prelude::*;
 
@@ -79,7 +78,7 @@ impl App {
 
     pub fn bump_session_scope_epoch(&mut self) {
         self.session_runtime.bump_session_scope_epoch();
-        self.config.invalidate_session();
+        self.config.invalidate_session(self.global_settings_path.as_deref());
         // Side-question work belongs to this conversation scope, not the next one.
         self.btw.clear();
         self.agents.clear_session();

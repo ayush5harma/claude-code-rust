@@ -70,7 +70,8 @@ impl FrameBench {
         } else {
             self.confirmed.clone()
         };
-        let serialized = serialize_live_rows_with_boundaries_excluding(app, self.width, &excluded);
+        let serialized =
+            serialize_live_rows_with_boundaries_excluding(app, self.width, &excluded, None);
         app.surface_dirty.chat.take_repaint();
         let composer = ChatTerminalSession::build_composer_surface(app, self.width);
         let mut history_plan = ChatTerminalSession::prepare_static_history_flush(
@@ -78,7 +79,19 @@ impl FrameBench {
             self.width,
             self.confirmed.clone(),
         );
-        let plan = plan_chat_frame(app, &serialized, &mut history_plan, &composer, self.height);
+        // As `draw_incremental` does once a replay has finished laying out.
+        if app.chat_render.viewport.is_reading() {
+            history_plan.live_rows = serialized.rows().to_vec();
+            history_plan.excluded_rows = 0;
+        }
+        let plan = plan_chat_frame(
+            app,
+            &serialized,
+            &history_plan.live_rows,
+            &composer,
+            self.height,
+            false,
+        );
         let viewport_height = plan.requested_layout.viewport_height;
         let area = Rect::new(0, self.height - viewport_height, self.width, viewport_height);
         self.terminal

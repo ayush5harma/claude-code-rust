@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use crate::app::input_atoms::{self, InputAtomKind};
 use crate::app::mention;
@@ -222,6 +221,11 @@ pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {
     let content_width = MessageLayout::new(area_width).content_width;
     let input_lines = app.input.measure_visual_lines(content_width, MAX_INPUT_HEIGHT);
     hint.saturating_add(input_lines).saturating_add(INPUT_VERTICAL_PAD * 2)
+}
+
+/// Field height for read-only status rows rendered in place of the draft.
+pub(crate) fn status_field_height(status_rows: usize) -> u16 {
+    u16::try_from(status_rows).unwrap_or(u16::MAX).saturating_add(INPUT_VERTICAL_PAD * 2)
 }
 
 #[cfg(test)]

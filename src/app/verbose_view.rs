@@ -25,7 +25,7 @@ pub(crate) fn open(app: &mut App) -> bool {
             match block {
                 MessageBlock::Text(text) => push_text(&mut rows, &mut truncated, &text.text),
                 MessageBlock::ToolCall(tool) | MessageBlock::ToolResult { tool, .. }
-                    if !tool.hidden =>
+                    if !tool.hidden_unless_focused_interaction() =>
                 {
                     let tool = tool.display();
                     push_row(&mut rows, &mut truncated, &format!("  Tool: {}", tool.title));
@@ -119,7 +119,7 @@ mod tests {
         visible.content.push("visible-result".into());
         let mut hidden =
             crate::app::test_support::tool_call_info("hidden", model::ToolCallStatus::Completed);
-        hidden.hidden = true;
+        hidden.parent_tool_use_id = Some("subagent-root".to_owned());
         hidden.content.push("hidden-private-value".into());
         app.transcript.messages.push(ChatMessage::new(
             MessageRole::Assistant,

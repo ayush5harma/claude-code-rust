@@ -1,27 +1,60 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
+use super::ToolCallInfo;
 use super::prelude::*;
-use crate::app::ToolCallInfo;
 
 impl App {
-    pub(crate) fn sync_tool_call_history(&mut self, id: &str) {
-        let Some((mi, bi)) = self.lookup_tool_call(id) else {
-            return;
-        };
-        let result = match self
-            .transcript
-            .messages
-            .get_mut(mi)
-            .and_then(|message| message.blocks.get_mut(bi))
-        {
-            Some(MessageBlock::ToolCall(tool)) => tool.sync_history(),
+    pub(crate) fn tool_call_at(&self, mi: usize, bi: usize) -> Option<&ToolCallInfo> {
+        match self.transcript.messages.get(mi)?.blocks.get(bi)? {
+            MessageBlock::ToolCall(tool) => Some(tool),
             _ => None,
-        };
+        }
+    }
+
+    pub(crate) fn tool_call_at_mut(&mut self, mi: usize, bi: usize) -> Option<&mut ToolCallInfo> {
+        match self.transcript.messages.get_mut(mi)?.blocks.get_mut(bi)? {
+            MessageBlock::ToolCall(tool) => Some(tool),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn tool_call(&self, id: &str) -> Option<&ToolCallInfo> {
+        let (mi, bi) = self.lookup_tool_call(id)?;
+        self.tool_call_at(mi, bi)
+    }
+
+    /// Return `Some` when the mutation changed the tool, carrying any extracted value.
+    pub(crate) fn mutate_tool_call<T>(
+        &mut self,
+        id: &str,
+        mutate: impl FnOnce(&mut ToolCallInfo) -> Option<T>,
+    ) -> Option<T> {
+        let (mi, bi) = self.lookup_tool_call(id)?;
+        let tool = self.tool_call_at_mut(mi, bi)?;
+        let result = mutate(tool)?;
+        tool.invalidate_render_cache();
+        self.finish_block_change(mi, bi);
+        Some(result)
+    }
+
+    /// Complete a content change after the block's own render cache is invalidated.
+    pub(crate) fn finish_block_change(&mut self, mi: usize, bi: usize) {
         self.sync_render_cache_slot(mi, bi);
         self.recompute_message_retained_bytes(mi);
+        self.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+    }
+
+    /// Returns whether the tool block changed; the caller syncs its cache slot,
+    /// retained bytes, and layout once together with its own changes.
+    pub(crate) fn sync_tool_call_history(&mut self, mi: usize, bi: usize) -> bool {
+        let Some(tool) = self.tool_call_at_mut(mi, bi) else {
+            return false;
+        };
+        let was_frozen = tool.has_frozen_launch();
+        let result = tool.sync_history();
+        let froze = !was_frozen && tool.has_frozen_launch();
         let Some((id, tool)) = result else {
-            return;
+            return froze;
         };
         let block = MessageBlock::ToolResult { id, tool };
         if let Some(owner) = self.active_turn_assistant_idx() {
@@ -30,63 +63,21 @@ impl App {
         } else {
             self.push_message_tracked(ChatMessage::new(MessageRole::Assistant, vec![block], None));
         }
-    }
-    /// Track a Task/Agent tool call as active (in-progress subagent).
-    pub fn insert_active_task(&mut self, id: String) {
-        self.turn.active_task_ids.insert(id);
+        true
     }
 
-    pub(crate) fn sync_active_task_status(&mut self, id: &str, status: model::ToolCallStatus) {
-        if matches!(status, model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress) {
-            self.insert_active_task(id.to_owned());
-        } else {
-            self.remove_active_task(id);
-        }
-    }
-
-    /// Remove a Task/Agent tool call from the active set (completed/failed).
-    pub fn remove_active_task(&mut self, id: &str) {
-        self.turn.active_task_ids.remove(id);
-    }
-
-    pub fn register_tool_call_scope(&mut self, id: String, scope: ToolCallScope) {
-        if let ToolCallScope::SubagentChild { parent_tool_use_id } = &scope {
-            let children =
-                self.recent_child_tool_ids.entry(parent_tool_use_id.clone()).or_default();
-            if !children.contains(&id) {
-                if children.len() == 8 {
-                    children.pop_front();
-                }
-                children.push_back(id.clone());
-            }
-        }
-        self.tool_call_scopes.insert(id, scope);
-    }
-
-    pub(crate) fn recent_child_tools<'a>(
-        &'a self,
-        parent_id: &str,
-    ) -> impl Iterator<Item = &'a ToolCallInfo> {
-        self.recent_child_tool_ids
-            .get(parent_id)
-            .into_iter()
-            .flat_map(|ids| ids.iter().rev())
-            .filter_map(|id| self.lookup_tool_call(id))
-            .filter_map(|(mi, bi)| match self.transcript.messages.get(mi)?.blocks.get(bi)? {
-                MessageBlock::ToolCall(tool) => Some(tool.as_ref()),
-                _ => None,
-            })
+    pub(crate) fn indexed_tool_calls(
+        &self,
+    ) -> impl Iterator<Item = ((usize, usize), &ToolCallInfo)> {
+        self.transcript
+            .tool_call_index
+            .values()
+            .filter_map(|&(mi, bi)| self.tool_call_at(mi, bi).map(|tool| ((mi, bi), tool)))
     }
 
     #[must_use]
     pub fn tool_call_scope(&self, id: &str) -> Option<ToolCallScope> {
-        self.tool_call_scopes.get(id).cloned()
-    }
-
-    pub fn clear_tool_scope_tracking(&mut self) {
-        self.tool_call_scopes.clear();
-        self.recent_child_tool_ids.clear();
-        self.turn.active_task_ids.clear();
+        self.tool_call(id).map(ToolCallInfo::scope)
     }
 
     /// Look up the (`message_index`, `block_index`) for a tool call ID.
@@ -128,19 +119,17 @@ impl App {
     }
 
     fn tool_belongs_to_background_execution<'a>(&'a self, mut id: &'a str) -> bool {
-        for _ in 0..=self.tool_call_scopes.len() {
-            if self.lookup_tool_call(id).is_some_and(|(mi, bi)| {
-                matches!(&self.transcript.messages[mi].blocks[bi], MessageBlock::ToolCall(tool)
-                    if tool.status == model::ToolCallStatus::Detached)
-            }) {
-                return true;
-            }
-            let Some(ToolCallScope::SubagentChild { parent_tool_use_id }) =
-                self.tool_call_scopes.get(id)
-            else {
+        for _ in 0..=self.transcript.tool_call_index.len() {
+            let Some(tool) = self.tool_call(id) else {
                 return false;
             };
-            id = parent_tool_use_id;
+            if tool.status == model::ToolCallStatus::Detached {
+                return true;
+            }
+            let Some(parent) = tool.parent_tool_use_id.as_deref() else {
+                return false;
+            };
+            id = parent;
         }
         false
     }
@@ -163,7 +152,6 @@ impl App {
         let mut cleared_interaction = false;
         let mut changed_message_indices = Vec::new();
         let mut changed_slots = Vec::new();
-        let mut settled_tools = Vec::new();
         let background_tools: std::collections::HashSet<String> = if include_detached {
             std::collections::HashSet::new()
         } else {
@@ -176,7 +164,6 @@ impl App {
                     let tc = tc.as_mut();
                     if !tc.status.is_terminal() && !background_tools.contains(&tc.id) {
                         tc.status = new_status;
-                        settled_tools.push(tc.id.clone());
                         tc.invalidate_render_cache();
                         changed_slots.push((msg_idx, block_idx));
                         if tc.pending_permission.take().is_some() {
@@ -195,10 +182,8 @@ impl App {
         }
 
         for (msg_idx, block_idx) in changed_slots {
+            self.sync_tool_call_history(msg_idx, block_idx);
             self.sync_render_cache_slot(msg_idx, block_idx);
-        }
-        for id in settled_tools {
-            self.sync_tool_call_history(&id);
         }
 
         for msg_idx in changed_message_indices.iter().copied() {
@@ -297,12 +282,5 @@ impl App {
         };
         let _ = self.finalize_tool_calls(new_status, include_detached);
         let _ = self.clear_inline_tool_interactions_excluding(&preserved_tools);
-        if include_detached {
-            self.clear_tool_scope_tracking();
-        } else {
-            // Tool scope belongs to the session: detached agents and their descendants
-            // can still emit events after the foreground turn ends.
-            self.turn.active_task_ids.clear();
-        }
     }
 }

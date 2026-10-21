@@ -1,5 +1,6 @@
 import { flushPendingHookActivity } from "./hook_activity.js";
 import { emitSessionTitle } from "./session_title.js";
+import { emitSessionPluginInventory } from "./plugin_inventory.js";
 import {
   listSessions,
   type ListSessionsOptions,
@@ -10,6 +11,7 @@ import type {
   BridgeEventEnvelope,
   McpOperationError,
   SessionUpdate,
+  SystemNoticeSeverity,
 } from "../types.js";
 import { buildModeState } from "./commands.js";
 import { mapSdkSessions } from "./history.js";
@@ -153,9 +155,11 @@ export function emitSessionResumeFailed(
 export function emitRuntimeReloadCompleted(
   sessionId: string,
   requestId?: string,
+  errorCount = 0,
+  reconciliationError?: string,
 ): void {
   writeEvent(
-    { event: "runtime_reload_completed", session_id: sessionId },
+    { event: "runtime_reload_completed", session_id: sessionId, error_count: errorCount, ...(reconciliationError ? { reconciliation_error: reconciliationError } : {}) },
     requestId,
   );
 }
@@ -164,9 +168,10 @@ export function emitRuntimeReloadHeld(
   sessionId: string,
   cacheImpact: import("../types.js").RuntimeReloadCacheImpact,
   requestId?: string,
+  errorCount = 0,
 ): void {
   writeEvent(
-    { event: "runtime_reload_held", session_id: sessionId, cache_impact: cacheImpact },
+    { event: "runtime_reload_held", session_id: sessionId, cache_impact: cacheImpact, error_count: errorCount },
     requestId,
   );
 }
@@ -191,6 +196,22 @@ export function emitMcpOperationError(
     { event: "mcp_operation_error", session_id: sessionId, error },
     requestId,
   );
+}
+
+export function emitSystemNoticeUpdate(
+  session: SessionState,
+  severity: SystemNoticeSeverity,
+  message: string,
+): void {
+  const trimmed = message.trim();
+  if (!trimmed) {
+    return;
+  }
+  emitSessionUpdate(session.sessionId, {
+    type: "system_notice_update",
+    severity,
+    message: trimmed,
+  });
 }
 
 export function emitSessionUpdate(
@@ -355,7 +376,11 @@ function logConnectEventEmission(
   });
 }
 
-export function emitConnectEvent(session: SessionState): void {
+/**
+ * Writes the connect event and everything held until it. Returns the session-title
+ * read it starts in the background; callers do not wait for it.
+ */
+export function emitConnectEvent(session: SessionState): Promise<void> {
   const staleSessions = session.sessionsToCloseAfterConnect;
   if (staleSessions) {
     for (const stale of staleSessions) {
@@ -381,6 +406,7 @@ export function emitConnectEvent(session: SessionState): void {
   session.connectRequestId = undefined;
   session.connected = true;
   void import("./status_line.js").then(({ scheduleStatusLine }) => scheduleStatusLine(session));
+  emitSessionPluginInventory(session);
   session.authHintSent = false;
   const deferredBridgeEvents = session.deferredBridgeEvents;
   session.deferredBridgeEvents = undefined;
@@ -394,14 +420,18 @@ export function emitConnectEvent(session: SessionState): void {
   }
   emitAvailableAgentsSnapshot(session);
   flushPendingHookActivity(session);
-  void emitSessionTitle(session);
+  for (const { severity, message } of session.pendingHookNotices ?? []) {
+    emitSystemNoticeUpdate(session, severity, message);
+  }
+  session.pendingHookNotices = undefined;
+  const titleRead = emitSessionTitle(session);
   session.resumeUpdates = undefined;
   session.restoredInput = undefined;
 
   session.sessionsToCloseAfterConnect = undefined;
   if (!staleSessions || staleSessions.length === 0) {
     refreshSessionsList();
-    return;
+    return titleRead;
   }
   const closeTask = (async () => {
     // Lazy import to break circular dependency at module-evaluation time.
@@ -415,6 +445,7 @@ export function emitConnectEvent(session: SessionState): void {
     refreshSessionsList();
   })();
   trackSessionCloseTask(closeTask);
+  return titleRead;
 }
 
 export function emitSessionReplacedEvent(
@@ -424,6 +455,7 @@ export function emitSessionReplacedEvent(
   const bridgeEvent = buildConnectBridgeEvent(session, "session_replaced");
   logConnectEventEmission(session, "session_replaced", requestId);
   writeEvent(bridgeEvent, requestId);
+  emitSessionPluginInventory(session);
   emitAvailableCommandsSnapshot(session);
   emitAvailableAgentsSnapshot(session);
   void emitSessionTitle(session);

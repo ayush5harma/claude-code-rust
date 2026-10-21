@@ -2,28 +2,33 @@
 
 `fake-bridge.js` is a local NDJSON peer for the real `claude-rs` binary. The PTY tests exercise terminal rendering, resizing, input delivery, and shutdown without calling a model or using credentials. They do not validate the real SDK or terminal font rendering.
 
+`sdk-settings-runtime.mjs` is a separate fixture for the bridge's native settings contract tests. Each invocation uses a temporary project and profile with provider credentials removed. Command hooks fail harmlessly with exit code 7; HTTP hooks return 500 from a loopback server. The same server supplies model responses, allowing the tests to prove whether a failure blocks the guarded request. Idle-preference probes initialize the SDK without submitting a model prompt.
+
 Run the suite with `cargo test --all-features --test terminal_resize -- --test-threads=1`. Bun or Node and `rustc` must be available on `PATH`; the auth tests compile a small native fake CLI into their temporary directory.
+
+`sdk-plugin-runtime.mjs` exercises the pinned SDK's local-folder contract with temporary plugin manifests and commands, a local model stub and a local MCP server. It checks deduplication, malformed and missing folders, partial application, cache-impact holds, applying the same folder, explicit restoration on resume and isolation of fresh sessions. It uses a temporary Claude profile without provider credentials and closes its own queries and servers before removing the fixture directory. The bridge test runs it with an independent timeout; it does not prove managed-policy or remote/sandbox behavior.
 
 The PR workflow runs this suite on Ubuntu, Windows, and macOS, and requires all three platform jobs to pass. Windows uses ConPTY; Linux and macOS use native Unix PTYs. Windows receives complete paste actions; Unix additionally exercises fragmented control sequences and UTF-8 scalars. Exact Unicode payloads, including combining accents, are checked in the journal on every platform. Submission waits out the application's existing paste Enter suppression window.
 
 | Scenario | First turn |
 | --- | --- |
+| `tool-times-presentation` | Emits completed CronCreate and ReadNotifications cards from the shared timestamp contract fixture, with UTC clock preferences, for per-card association and resize/replay checks. |
 | `stream` | Streams text and completes normally. |
 | `hold-success` | Streams text, waits for the release file, then completes. |
 | `hold-error` | Streams text, waits for the release file, then emits a service error. |
 | `hold-eof` | Streams text, waits for the release file, then closes stdout by exiting. |
 | `hold-malformed` | Streams text, waits for the release file, then writes invalid NDJSON and remains alive for shutdown. |
+| `hold-local-plugin` | Holds the assistant turn while a local-folder reload returns a cache-impact confirmation; Apply publishes a confirmed Session plugin with SDK source/version. The test supplies a native fake CLI for read-only persistent inventory and verifies that no plugin settings or installation records are written. |
 | `permission` | Starts a tool, requests an allow/deny decision, then completes after the correlated response. |
 | `question` | Starts a tool, requests a destination selection, then completes after the correlated answer or cancellation. |
 | `disconnect-during-auth` | Connects normally, then exits when the release file appears while the auth child owns stdin. |
 | `resize-ready` | Streams a completed transcript for scrollback checks across zoom and reading-mode resizes. |
 | `resize-replay` | Emits a large completed reply in one chunk for interruption and replay-budget checks. |
 | `resize-code` | Completes the first reply, then holds a second reply inside an unfinished code block. |
-| `read-result` | Emits a completed Read of a four-line markdown file as `file_text` content, so a test can check one source line per row behind a line-number gutter. |
 | `bash-colour` | Emits a completed Bash call whose output carries SGR colours, an OSC 8 hyperlink, a title change and a cursor-up, so a test can check which cells are coloured and that the rest never reach the terminal. |
 | `hook-activity` | Sends a slow and a fast SessionStart hook right after connecting, then answers the first prompt after a failed PreToolUse hook. |
 | `export` | Answers `export_session_history` with a short conversation (messages, a Bash call with output, an Edit with a diff) in two chunks under the command's request id. |
-| `reload` | Answers the first `reload_skills_and_styles` command with two skills and three output styles, and every later one with a `slash_error`. |
+| `reload` | Answers the first `reload_skills_and_styles` command with two skills and three output styles reloaded, and every later one with the skills reloaded and the output styles failed. |
 | `render-corpus` | Resumes the shared render corpus as history, then streams its long reply in 200 chunks on the first prompt. |
 | `session-accent` | Sends confirmed color updates for `/color purple` and `/color default`; replacement checks the session-ID fallback. |
 | `resume-large` / `resume-large-fail` | Lists a 2 MiB saved session and returns a successful or failed compact-first turn after the picker choice. |
@@ -31,8 +36,11 @@ The PR workflow runs this suite on Ubuntu, Windows, and macOS, and requires all 
 | `session-refresh` | Lists only a saved session around connect, then answers `list_sessions` (sent when the picker opens) with the saved and the active session once the release file appears. |
 | `session-management` | Lists a saved and active session; acknowledges tag and confirmed delete by exact ID with refreshed SDK-style metadata. |
 | `verbose-bash` | Answers the first prompt with a completed Bash call whose output arrives both as update content and as raw output, then a short reply. |
-| `agents` | Connects with two running subagents (their Agent calls with a requested model alias, worktree isolation and prompt; resolved models; usage; one child Read), a completed subagent and a background shell, as normalized task lifecycle rows. Lists a saved transcript only for the completed subagent and returns its messages. A stop request is acknowledged at once; its `killed` lifecycle row follows only after the release file appears (barrier `subagent-stopped`), so the row can be seen stopping first. Prompts stream normally. |
+| `agents` | Connects with a running subagent that reports its prompt, a completed subagent and a background shell, as normalized task lifecycle rows. Lists a saved transcript only for the completed subagent, returns its messages, an SDK reminder among them, under the read's request id with one more step on each read, and answers a stop request with an acknowledgement followed by a separate `killed` lifecycle row. Prompts stream normally. |
+| `agents-list` | Connects with two running subagents (their Agent calls with a requested model alias, worktree isolation and prompt; resolved models; usage; one child Read), a completed subagent and a background shell, for the footer shelf, the Ctrl+T list and the `/agents` details. Transcripts, stops and prompts behave as in `agents`. |
 | `agents-resumed` | Connects with the `history_updates` of `resumed-agents.json`: the bridge's replay of a saved session whose two background subagents have no saved start record, one completed and one stopped. Lists a saved transcript for both. |
+| `reload-expired` | Answers every `reload_skills_and_styles` command with `skills_and_styles_reload_expired`, as the bridge does when the reload waited too long behind an earlier request. |
+| `status-rename` | Advertises `/clear`. A message writes the session's transcript where the Agent SDK looks for it (`<CLAUDE_CONFIG_DIR>/projects/<resolved cwd, non-alphanumerics as ->/<session>.jsonl`) and replies `Saved reply`; `/clear` replaces the session with an unsaved one listed with `/clear` as summary and first prompt. Real Claude Code saves the new session at once (its `/clear` records); the fixture leaves it unsaved so the test sees the check rerun for the new session id. `rename_session` fails, as `renameSession()` does, without that transcript or for the title `fail-me`; otherwise it reports the title and lists the session with it. |
 
 `FAKE_BRIDGE_JOURNAL` records commands, events, and the `reply-held` coordination point as JSONL. `FAKE_BRIDGE_RELEASE_FILE` lets a test release a held turn after exercising the UI. Reply length and interval remain configurable with `FAKE_BRIDGE_LINES`, `FAKE_BRIDGE_FOLLOW_UP_LINES`, and `FAKE_BRIDGE_INTERVAL_MS`.
 
@@ -42,9 +50,11 @@ The tests cover queued/start ordering, cancellation followed by another turn, pe
 
 Resize tests inspect native terminal scrollback as well as the visible screen, including one-row terminals, reading mode, unfinished code blocks, and a new resize interrupting an active transcript replay. They wait for draws at the requested dimensions and require every completed reply row to remain accessible.
 
-`fake-claude.rs` is a native stand-in for `claude auth login`, placed first on the child app's `PATH`. It reads one line from inherited stdin, records it inside the isolated profile, and waits for a release file. It can succeed using a clearly invalid fixture token or fail with exit code 7. The spawn-failure case uses an invalid executable on Windows and an executable script with a missing interpreter on Unix; plain executable text can run through a shell on macOS and does not reliably trigger a spawn error. The tests verify that the real TUI stays silent during child ownership, sends all input to the child, restores usable typing and paste after resizing, and stops an owned child during fatal shutdown. They do not exercise browser OAuth, real credential renewal, or the installed Claude CLI.
+`fake-claude.rs` is a native stand-in for `claude auth login`, placed first on the child app's `PATH`. It reads one line from inherited stdin, records it inside the isolated profile, and waits for a release file. It can succeed using a clearly invalid fixture token or fail with exit code 7. The spawn-failure case keeps the fake executable exclusively locked on Windows, so discovery succeeds but process creation fails before image inspection; Unix uses an executable script with a missing interpreter, because plain executable text can run through a shell on macOS. The tests verify that the real TUI stays silent during child ownership, sends all input to the child, restores usable typing and paste after resizing, and stops an owned child during fatal shutdown. They do not exercise browser OAuth, real credential renewal, or the installed Claude CLI.
 
-Each test owns its temporary project, configuration directory, fake CLI, journal, and diagnostics log. No model, subscription, or user credential file is used. Add protocol behavior alongside a real workflow test; the search-retained scenario checks navigation over supplied history updates, while SDK history reconstruction and cancellation races remain outside this fixture's coverage.
+Each test owns its temporary project, Claude profile (`CLAUDE_CONFIG_DIR`), app-preferences profile (`CLAUDE_RS_CONFIG_DIR`), fake CLI, journal, and diagnostics log. The shared launcher overrides inherited profile locations on the child process without changing the test runner's environment. Fresh app profiles exercise production defaults; custom configurations under `app-settings/` are immutable fixtures copied into a test's own profile before launch. Tests that exercise preference writes inspect that same isolated file. No model, subscription, or user credential file is used. Add protocol behavior alongside a real workflow test; session resume/history reconstruction and SDK-specific cancellation races remain outside this fixture's coverage.
+
+`tool-result-times.json` supplies independent SDK result and expected bridge-section pairs shared by TypeScript normalization/replay tests and Rust wire/rendering tests. Explicit epoch milliseconds (including the fractional milliseconds observed in SDK 0.3.302) and RFC3339 instants cover scheduler offsets, two jobs in the repeated Europe/Berlin daylight-saving hour, partial notification drains and older results without optional timestamps. This fixture does not calculate a schedule or deliver a notification.
 
 ## Render corpus
 

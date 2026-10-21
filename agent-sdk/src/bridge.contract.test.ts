@@ -384,6 +384,46 @@ test("resume restores background acknowledgements and routes task-only outcomes 
   }
 });
 
+const PROMPT_ENVELOPE = '{"command":"prompt","chunks":[{"kind":"text","value":"my private plan for the merger"';
+
+test("a malformed command envelope writes none of its content to the default log", async () => {
+  const bridge = new SpawnedBridge({ CLAUDE_RS_BRIDGE_DIAGNOSTICS: "0" });
+  let message: string;
+  try {
+    bridge.writeRaw(`${PROMPT_ENVELOPE}\n`);
+    const envelope = await bridge.nextEnvelope();
+    assertProtocolEvent(envelope, "connection_failed");
+    message = String(envelope.message);
+  } finally {
+    await bridge.stop();
+  }
+
+  const records = bridge.stderrLines.map((line) => JSON.parse(line) as Record<string, unknown>);
+  const decode = records.find((record) => record.event_name === "bridge_command_decode_failed");
+  assert.ok(decode, bridge.stderrLines.join("\n"));
+  assert.equal(decode.size_bytes, PROMPT_ENVELOPE.length);
+  for (const text of [...bridge.stderrLines, message]) {
+    assert.ok(!text.includes("private plan"), text);
+  }
+  assert.equal("preview" in (decode.fields as Record<string, unknown>), false);
+});
+
+test("a malformed command envelope keeps its preview in the detailed log", async () => {
+  const bridge = new SpawnedBridge({ CLAUDE_RS_BRIDGE_DIAGNOSTICS: "1" });
+  try {
+    bridge.writeRaw(`${PROMPT_ENVELOPE}\n`);
+    await bridge.nextEnvelope();
+  } finally {
+    await bridge.stop();
+  }
+
+  const decode = bridge.stderrLines
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .find((record) => record.event_name === "bridge_command_decode_failed");
+  assert.ok(decode, bridge.stderrLines.join("\n"));
+  assert.match(String((decode.fields as Record<string, unknown>).preview), /private plan/);
+});
+
 test("bridge process emits connection_failed for malformed JSON", async () => {
   const bridge = new SpawnedBridge();
   try {
@@ -638,6 +678,15 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
       record({ type: "getSubagentMessages", sessionId, agentId, dir: options?.dir });
       if (agentId === "agent-unreadable") throw new Error("transcript unreadable");
       const entry = (type, uuid, parentUuid, content) => ({ type, uuid, parentUuid, session_id: sessionId, parent_tool_use_id: null, message: { role: type, content } });
+      if (agentId === "agent-handback") return [
+        entry("user", "handback-prompt", null, "Survey the docs. Quote <system-reminder>tags</system-reminder> as written."),
+        { ...entry("user", "handback-reminder", "handback-prompt", "<system-reminder>\\nReport through SubagentHandback.\\n</system-reminder>\\n"), is_meta: true },
+        entry("user", "handback-follow-up", "handback-reminder", "<system-reminder>typed by the user</system-reminder>"),
+        entry("assistant", "handback-note", "handback-follow-up", [{ type: "text", text: "Keeping <system-reminder>as written</system-reminder>" }]),
+        entry("assistant", "handback-read", "handback-note", [{ type: "tool_use", id: "handback-glob", name: "Glob", input: { pattern: "docs/**" } }]),
+        entry("assistant", "handback-call", "handback-read", [{ type: "tool_use", id: "handback-1", name: "SubagentHandback", input: { message: "## Docs survey\\n\\n- 12 pages\\n- 2 stale links" } }]),
+        entry("user", "handback-ack", "handback-call", [{ type: "tool_result", tool_use_id: "handback-1", content: [{ type: "text", text: "Report delivered to your caller." }] }]),
+      ];
       return [
         entry("user", "agent-prompt", null, [{ type: "text", text: "Inspect the parser" }]),
         entry("assistant", "agent-tool", "agent-prompt", [{ type: "tool_use", id: "agent-bash", name: "Bash", input: { command: "ls parser" } }]),
@@ -647,16 +696,16 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
     export async function getSessionMessages(...args) { return process.env.RESUME_TRANSCRIPT_FIXTURE === "1" ? sdkGetSessionMessages(...args) : []; }
     export async function importSessionToStore(...args) { if (process.env.RESUME_TRANSCRIPT_FIXTURE === "1") await sdkImportSessionToStore(...args); }
     export async function renameSession(sessionId, title, options) {
-      record({ type: "rename", sessionId, title, options });
-      if (process.env.RENAME_FAILURE_FIXTURE === "1") throw new Error("fixture rename failed");
+      record({ type: "rename", sessionId, title, dir: options?.dir });
       const existing = saved.get(sessionId) ?? {};
       saved.set(sessionId, { ...existing, cwd: existing.cwd ?? options?.dir, title });
     }
     export function query({ prompt, options }) {
       record({ type: "query", cwd: options.cwd, resume: options.resume, model: options.model, effort: options.effort, permissionMode: options.permissionMode, agent: options.agent });
-      record({ type: "launch", resume: options.resume, sessionId: options.sessionId, forkSession: options.forkSession, title: options.title, additionalDirectories: options.additionalDirectories, settings: options.settings, mcpServers: options.mcpServers, strictMcpConfig: options.strictMcpConfig, systemPrompt: options.systemPrompt });
+      record({ type: "launch", forkSession: options.forkSession, title: options.title, additionalDirectories: options.additionalDirectories, mcpServers: options.mcpServers, strictMcpConfig: options.strictMcpConfig, settings: options.settings, systemPrompt: options.systemPrompt, enableFileCheckpointing: options.enableFileCheckpointing });
       const state = saved.get(options.resume) ?? { requested: false, effort: "high", cwd: options.cwd };
-      if (options.title !== undefined) state.title = options.title;
+      // A resumed session keeps its saved title; the title option only names its process.
+      if (options.title !== undefined && (!options.resume || options.forkSession)) state.title = options.title;
       saved.set(options.sessionId ?? options.resume, state);
       let model = options.model ?? "opus";
       let effective = {};
@@ -937,41 +986,118 @@ test("startup overrides and continue use the production session lifecycle", asyn
   }
 });
 
-function readJournal(journal: string): BridgeEnvelope[] {
+function launchJournal(journal: string): BridgeEnvelope[] {
   return readFileSync(journal, "utf8").trim().split("\n").map(line => JSON.parse(line) as BridgeEnvelope);
 }
 
-test("launch name titles a new session and renames a resumed one before it connects", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "claude-rs-launch-name-"));
+test("launch configuration reaches the SDK options of a new session", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-launch-config-"));
   const journal = join(directory, "query-options.jsonl");
-  const cwd = process.cwd();
-  const { bridge, cleanup } = ultracodeFixtureBridge({
-    STARTUP_JOURNAL: journal,
-    STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId: "saved-session", cwd, lastModified: 1 }]),
-  });
+  const { bridge, cleanup } = ultracodeFixtureBridge({ STARTUP_JOURNAL: journal });
   try {
-    bridge.writeCommand({ command: "create_session", cwd, launch_settings: { name: "Launch name" } });
+    bridge.writeCommand({
+      command: "create_session",
+      cwd: process.cwd(),
+      launch_settings: {
+        name: "Release prep",
+        additional_directories: ["/work/shared", "/work/docs"],
+        settings: { spinnerTipsEnabled: false, feedbackDrafts: "on", crossSessionInbound: "accept" },
+        mcp_configs: [
+          { docs: { command: "docs-mcp" }, search: { command: "search-v1" } },
+          { search: { command: "search-v2" } },
+        ],
+        strict_mcp_config: true,
+        system_prompt: "You are a release bot.",
+        append_system_prompt: "End every reply with DONE.",
+      },
+    });
     await nextMatching(bridge, event => event.event === "connected");
-    const created = readJournal(journal);
-    assert.equal(created.find(entry => entry.type === "launch")?.title, "Launch name");
-    assert.equal(created.some(entry => entry.type === "rename"), false);
-
-    rmSync(journal);
-    bridge.writeCommand({ command: "resume_session", session_id: "saved-session", launch_settings: { name: "Resumed name" } });
-    await nextMatching(bridge, event => event.event === "session_replaced");
-    const resumed = readJournal(journal).filter(entry => entry.type === "rename" || entry.type === "launch");
-    assert.deepEqual(resumed.map(entry => entry.type), ["rename", "launch"]);
-    assert.deepEqual(resumed[0], { type: "rename", sessionId: "saved-session", title: "Resumed name", options: { dir: cwd } });
-    assert.equal(resumed[1]?.resume, "saved-session");
-    // The resumed process names itself from `title` (measured on the pinned SDK: it sets the
-    // process name other clients read from the session registry and leaves the transcript alone).
-    assert.equal(resumed[1]?.title, "Resumed name");
+    const launch = launchJournal(journal).find(entry => entry.type === "launch");
+    assert.equal(launch?.title, "Release prep");
+    assert.equal(launch?.forkSession, undefined);
+    assert.deepEqual(launch?.additionalDirectories, ["/work/shared", "/work/docs"]);
+    // A later --mcp-config replaces an earlier server of the same name; the others stay.
+    assert.deepEqual(launch?.mcpServers, { docs: { command: "docs-mcp" }, search: { command: "search-v2" } });
+    assert.equal(launch?.strictMcpConfig, true);
+    // The user's layer, with the host restrictions laid over it: drafts stay off and an
+    // explicit crossSessionInbound survives.
+    assert.deepEqual(launch?.settings, { spinnerTipsEnabled: false, feedbackDrafts: "off", crossSessionInbound: "accept" });
+    const prompt = launch?.systemPrompt as { type: string; prompt: string[]; snapshot: boolean };
+    assert.equal(prompt.type, "custom");
+    assert.equal(prompt.prompt[0], "You are a release bot.");
+    assert.match(prompt.prompt[1] ?? "", /^Do not terminate the Claude Rust bridge runtime process .*\n\nEnd every reply with DONE\.$/s);
   } finally {
     await cleanup();
     rmSync(directory, { recursive: true, force: true });
   }
 });
 
+test("a launch name renames the resumed session, and a fork takes it as its own title", async () => {
+  const cwd = process.cwd();
+  const sessions = JSON.stringify([{ sessionId: "saved-session", cwd, lastModified: 1, customTitle: "Original" }]);
+  for (const fork of [false, true]) {
+    const directory = mkdtempSync(join(tmpdir(), "claude-rs-launch-name-"));
+    const journal = join(directory, "query-options.jsonl");
+    const { bridge, cleanup } = ultracodeFixtureBridge({ STARTUP_JOURNAL: journal, STARTUP_SESSIONS_FIXTURE: sessions });
+    try {
+      bridge.writeCommand({
+        command: "resume_session",
+        session_id: "saved-session",
+        launch_settings: { name: "Experiment", ...(fork ? { fork_session: true } : {}) },
+      });
+      const connected = await nextMatching(bridge, event => event.event === "connected");
+      // A resumed session is renamed after it connects, and its new title is reported after the
+      // rename, so that report is the point where the rename has happened.
+      const reported = fork
+        ? undefined
+        : await nextMatching(bridge, event => (event.update as SessionUpdate | undefined)?.type === "session_title_update"
+          && (event.update as SessionUpdate & { type: "session_title_update" }).title === "Experiment");
+      const entries = launchJournal(journal);
+      const launch = entries.find(entry => entry.type === "launch");
+      const renames = entries.filter(entry => entry.type === "rename");
+      if (fork) {
+        // A new conversation under a new id; the original keeps its title.
+        assert.notEqual(connected.session_id, "saved-session");
+        assert.equal(launch?.forkSession, true);
+        assert.equal(launch?.title, "Experiment");
+        assert.deepEqual(renames, []);
+      } else {
+        assert.equal(connected.session_id, "saved-session");
+        assert.equal(launch?.forkSession, undefined);
+        // Fork: the launch name also names the resumed session's process (buildLaunchQueryOptions).
+        assert.equal(launch?.title, "Experiment");
+        assert.deepEqual(renames, [{ type: "rename", sessionId: "saved-session", title: "Experiment", dir: cwd }]);
+        assert.equal(reported?.session_id, "saved-session");
+      }
+    } finally {
+      await cleanup();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test("a continue launch forks the most recent session", async () => {
+  const cwd = process.cwd();
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-launch-fork-"));
+  const journal = join(directory, "query-options.jsonl");
+  const { bridge, cleanup } = ultracodeFixtureBridge({
+    STARTUP_JOURNAL: journal,
+    STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId: "newest-here", cwd, lastModified: 10 }]),
+  });
+  try {
+    bridge.writeCommand({ command: "create_session", cwd, continue_session: true, launch_settings: { fork_session: true } });
+    const connected = await nextMatching(bridge, event => event.event === "connected");
+    assert.notEqual(connected.session_id, "newest-here");
+    const entries = launchJournal(journal);
+    assert.equal(entries.find(entry => entry.type === "query")?.resume, "newest-here");
+    assert.equal(entries.find(entry => entry.type === "launch")?.forkSession, true);
+  } finally {
+    await cleanup();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+// Fork: `resume <title>` resolves an exact saved title to its session before resuming.
 test("resume by custom title renames the resolved session ID", async () => {
   const directory = mkdtempSync(join(tmpdir(), "claude-rs-title-rename-"));
   const journal = join(directory, "journal.jsonl");
@@ -984,11 +1110,14 @@ test("resume by custom title renames the resolved session ID", async () => {
     bridge.writeCommand({ command: "resume_session", session_id: "Old title", launch_settings: { name: "New title" } });
     const connected = await nextMatching(bridge, event => event.event === "connected");
     assert.equal(connected.session_id, "saved-session");
-    const entries = readJournal(journal);
-    assert.deepEqual(entries.find(entry => entry.type === "rename"), {
-      type: "rename", sessionId: "saved-session", title: "New title", options: { dir: cwd },
-    });
-    assert.equal(entries.find(entry => entry.type === "launch")?.resume, "saved-session");
+    // The rename follows the connect event; its title report marks that it happened.
+    await nextMatching(bridge, event => (event.update as SessionUpdate | undefined)?.type === "session_title_update"
+      && (event.update as SessionUpdate & { type: "session_title_update" }).title === "New title");
+    const entries = launchJournal(journal);
+    assert.deepEqual(entries.filter(entry => entry.type === "rename"), [
+      { type: "rename", sessionId: "saved-session", title: "New title", dir: cwd },
+    ]);
+    assert.equal(entries.find(entry => entry.type === "query")?.resume, "saved-session");
     bridge.writeCommand({ command: "list_sessions", request_id: "after-rename" });
     const listed = await nextMatching(bridge, event => event.event === "sessions_listed" && event.request_id === "after-rename");
     const saved = (listed.sessions as BridgeEnvelope[]).find(entry => entry.session_id === "saved-session");
@@ -999,34 +1128,7 @@ test("resume by custom title renames the resolved session ID", async () => {
   }
 });
 
-test("invalid resume configuration leaves the persisted title unchanged and never queries", async () => {
-  for (const [flag, launchSettings] of [
-    ["--settings", { name: "Changed", settings: '{"model":' }],
-    ["--mcp-config", { name: "Changed", mcp_configs: ['{"mcpServers":'] }],
-  ] as const) {
-    const directory = mkdtempSync(join(tmpdir(), "claude-rs-invalid-resume-"));
-    const journal = join(directory, "journal.jsonl");
-    const cwd = process.cwd();
-    const { bridge, cleanup } = ultracodeFixtureBridge({
-      STARTUP_JOURNAL: journal,
-      STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId: "saved-session", cwd, lastModified: 1, customTitle: "Original" }]),
-    });
-    try {
-      bridge.writeCommand({ command: "resume_session", session_id: "saved-session", launch_settings: launchSettings });
-      const failed = await nextMatching(bridge, event => event.event === "session_resume_failed");
-      assert.match(String(failed.message), new RegExp(flag));
-      assert.equal(readJournal(journal).some(entry => entry.type === "rename" || entry.type === "query"), false);
-      bridge.writeCommand({ command: "list_sessions", request_id: "after-failure" });
-      const listed = await nextMatching(bridge, event => event.event === "sessions_listed" && event.request_id === "after-failure");
-      const saved = (listed.sessions as BridgeEnvelope[]).find(entry => entry.session_id === "saved-session");
-      assert.equal(saved?.custom_title, "Original");
-    } finally {
-      await cleanup();
-      rmSync(directory, { recursive: true, force: true });
-    }
-  }
-});
-
+// Fork: the SDK registers a resumed session's process under `title`, so a resume passes the saved one.
 test("resume without a launch name carries the saved custom title into the query options", async () => {
   const directory = mkdtempSync(join(tmpdir(), "claude-rs-resume-title-"));
   const journal = join(directory, "query-options.jsonl");
@@ -1041,16 +1143,16 @@ test("resume without a launch name carries the saved custom title into the query
   try {
     bridge.writeCommand({ command: "resume_session", session_id: "saved-session", launch_settings: {} });
     await nextMatching(bridge, event => event.event === "connected");
-    const titled = readJournal(journal).find(entry => entry.type === "launch");
-    assert.equal(titled?.resume, "saved-session");
-    assert.equal(titled?.title, "Saved title");
+    const titled = launchJournal(journal);
+    assert.equal(titled.find(entry => entry.type === "query")?.resume, "saved-session");
+    assert.equal(titled.find(entry => entry.type === "launch")?.title, "Saved title");
 
     rmSync(journal);
     bridge.writeCommand({ command: "resume_session", session_id: "untitled-session", launch_settings: {} });
     await nextMatching(bridge, event => event.event === "session_replaced");
-    const untitled = readJournal(journal).find(entry => entry.type === "launch");
-    assert.equal(untitled?.resume, "untitled-session");
-    assert.equal(untitled?.title, undefined);
+    const untitled = launchJournal(journal);
+    assert.equal(untitled.find(entry => entry.type === "query")?.resume, "untitled-session");
+    assert.equal(untitled.find(entry => entry.type === "launch")?.title, undefined);
   } finally {
     await cleanup();
     rmSync(directory, { recursive: true, force: true });
@@ -1079,35 +1181,6 @@ test("clearing a seeded session title remains cleared in the fixture listing", a
   } finally { await cleanup(); }
 });
 
-test("fork-session resumes under a new id that takes the launch name", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "claude-rs-fork-"));
-  const journal = join(directory, "query-options.jsonl");
-  const cwd = process.cwd();
-  const { bridge, cleanup } = ultracodeFixtureBridge({
-    STARTUP_JOURNAL: journal,
-    STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId: "saved-session", cwd, lastModified: 1 }]),
-  });
-  try {
-    bridge.writeCommand({
-      command: "create_session", cwd, continue_session: true,
-      launch_settings: { fork_session: true, name: "Forked name" },
-    });
-    const connected = await nextMatching(bridge, event => event.event === "connected");
-    const entries = readJournal(journal);
-    const launch = entries.find(entry => entry.type === "launch");
-    assert.equal(launch?.resume, "saved-session");
-    assert.equal(launch?.forkSession, true);
-    assert.equal(launch?.title, "Forked name");
-    assert.equal(typeof launch?.sessionId, "string");
-    assert.notEqual(launch?.sessionId, "saved-session");
-    assert.equal(connected.session_id, launch?.sessionId);
-    assert.equal(entries.some(entry => entry.type === "rename"), false, "the original keeps its title");
-  } finally {
-    await cleanup();
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
-
 test("create_session with an explicit resume and fork_session forks the saved session", async () => {
   const directory = mkdtempSync(join(tmpdir(), "claude-rs-explicit-fork-"));
   const journal = join(directory, "query-options.jsonl");
@@ -1119,14 +1192,12 @@ test("create_session with an explicit resume and fork_session forks the saved se
       launch_settings: { fork_session: true, name: "Forked name" },
     });
     const connected = await nextMatching(bridge, event => event.event === "connected");
-    const entries = readJournal(journal);
+    const entries = launchJournal(journal);
+    assert.equal(entries.find(entry => entry.type === "query")?.resume, "saved-session");
     const launch = entries.find(entry => entry.type === "launch");
-    assert.equal(launch?.resume, "saved-session");
     assert.equal(launch?.forkSession, true);
     assert.equal(launch?.title, "Forked name");
-    assert.equal(typeof launch?.sessionId, "string");
-    assert.notEqual(launch?.sessionId, "saved-session");
-    assert.equal(connected.session_id, launch?.sessionId);
+    assert.notEqual(connected.session_id, "saved-session");
     assert.equal(entries.some(entry => entry.type === "rename"), false);
   } finally {
     await cleanup();
@@ -1134,59 +1205,18 @@ test("create_session with an explicit resume and fork_session forks the saved se
   }
 });
 
-for (const [flag, launchSettings] of [
-  ["--settings", { name: "Must not rename", settings: '{"model":' }],
-  ["--mcp-config", { name: "Must not rename", mcp_configs: ["{bad"] }],
-] as const) {
-  test(`resume with malformed ${flag} leaves the saved title unchanged and does not query`, async () => {
-    const directory = mkdtempSync(join(tmpdir(), "claude-rs-invalid-resume-config-"));
-    const journal = join(directory, "query-options.jsonl");
-    const cwd = process.cwd();
-    const { bridge, cleanup } = ultracodeFixtureBridge({
-      STARTUP_JOURNAL: journal,
-      STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId: "saved-session", cwd, lastModified: 1 }]),
-    });
-    try {
-      bridge.writeCommand({ command: "resume_session", session_id: "saved-session", launch_settings: launchSettings });
-      const failed = await nextMatching(bridge, event => event.event === "session_resume_failed");
-      assert.match(String(failed.message), new RegExp(flag));
-      const entries = readJournal(journal);
-      assert.equal(entries.some(entry => entry.type === "rename"), false);
-      assert.equal(entries.some(entry => entry.type === "query"), false);
-    } finally {
-      await cleanup();
-      rmSync(directory, { recursive: true, force: true });
-    }
-  });
-}
-
-test("a failed launch rename is reported after the resumed session connects", async () => {
-  const cwd = process.cwd();
-  const { bridge, cleanup } = ultracodeFixtureBridge({
-    RENAME_FAILURE_FIXTURE: "1",
-    STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId: "saved-session", cwd, lastModified: 1 }]),
-  });
-  try {
-    bridge.writeCommand({ command: "resume_session", session_id: "saved-session", launch_settings: { name: "Renamed" } });
-    const outcome = await nextMatching(bridge, event => event.event === "connected" || event.event === "slash_error");
-    assert.equal(outcome.event, "connected");
-    const error = await nextMatching(bridge, event => event.event === "slash_error");
-    assert.equal(error.session_id, "saved-session");
-    assert.equal(error.message, "failed to rename session: fixture rename failed");
-  } finally { await cleanup(); }
-});
-
+// The launch configuration is process-wide: every session the process starts takes it.
 test("session configuration reaches the query options of created, replaced and resumed sessions", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "claude-rs-launch-config-"));
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-launch-config-all-"));
   const journal = join(directory, "query-options.jsonl");
   const cwd = process.cwd();
   const shared = join(directory, "shared");
   const launchSettings = {
     additional_directories: [shared, cwd],
-    settings: JSON.stringify({ spinnerTipsEnabled: false, feedbackDrafts: "notify" }),
+    settings: { spinnerTipsEnabled: false, feedbackDrafts: "notify" },
     mcp_configs: [
-      JSON.stringify({ mcpServers: { docs: { command: "docs-v1" } } }),
-      JSON.stringify({ mcpServers: { docs: { command: "docs-v2" }, search: { type: "http", url: "https://search.example" } } }),
+      { docs: { command: "docs-v1" } },
+      { docs: { command: "docs-v2" }, search: { type: "http", url: "https://search.example" } },
     ],
     strict_mcp_config: true,
     append_system_prompt: "End every reply with DONE.",
@@ -1202,7 +1232,7 @@ test("session configuration reaches the query options of created, replaced and r
     await nextMatching(bridge, event => event.event === "session_replaced");
     bridge.writeCommand({ command: "resume_session", session_id: "saved-session", launch_settings: launchSettings });
     await nextMatching(bridge, event => event.event === "session_replaced");
-    const launches = readJournal(journal).filter(entry => entry.type === "launch");
+    const launches = launchJournal(journal).filter(entry => entry.type === "launch");
     assert.equal(launches.length, 3);
     for (const launch of launches) {
       assert.deepEqual(launch.additionalDirectories, [shared, cwd]);
@@ -1218,15 +1248,6 @@ test("session configuration reaches the query options of created, replaced and r
     await cleanup();
     rmSync(directory, { recursive: true, force: true });
   }
-});
-
-test("malformed --settings fails session creation with the flag's name", async () => {
-  const { bridge, cleanup } = ultracodeFixtureBridge();
-  try {
-    bridge.writeCommand({ command: "create_session", cwd: process.cwd(), launch_settings: { settings: "{\"model\":" } });
-    const failed = await nextMatching(bridge, event => event.event === "connection_failed");
-    assert.match(String(failed.message), /--settings is not valid JSON: /);
-  } finally { await cleanup(); }
 });
 
 test("continue with no previous session starts a new session", async () => {
@@ -1764,6 +1785,7 @@ test("subagent commands read SDK transcripts and stop only a running subagent, l
   const journal = join(directory, "sdk.jsonl");
   const started = (taskId: string, taskType: string) => ({
     type: "system", subtype: "task_started", uuid: crypto.randomUUID(), task_id: taskId,
+    ...(taskId === "agent-running" ? { run_id: "B" } : {}),
     task_type: taskType, description: `Run ${taskId}`, ...(taskType === "local_agent" ? { subagent_type: "general-purpose" } : {}),
   });
   const { bridge, cleanup } = ultracodeFixtureBridge({
@@ -1800,6 +1822,19 @@ test("subagent commands read SDK transcripts and stop only a running subagent, l
       { role: "assistant", text: "Parser checked" },
     ]);
     assert.ok(messages.some(message => message.role === "tool" && message.text.includes("ls parser")), JSON.stringify(messages));
+    // An agent whose only answer is its hand-back report: the reader gets the full report as its final reply.
+    const handback = await result("subagent_messages", { command: "get_subagent_messages", agent_id: "agent-handback" });
+    const handbackMessages = handback.messages as Array<{ role: string; text: string }>;
+    assert.deepEqual(handbackMessages.at(-1), { role: "assistant", text: "## Docs survey\n\n- 12 pages\n- 2 stale links" });
+    // Only the SDK's own reminder loses its wrapper; tags a user or the agent wrote stay.
+    assert.deepEqual(handbackMessages.filter(message => message.role !== "tool"), [
+      { role: "user", text: "Survey the docs. Quote <system-reminder>tags</system-reminder> as written." },
+      { role: "system_reminder", text: "Report through SubagentHandback." },
+      { role: "user", text: "<system-reminder>typed by the user</system-reminder>" },
+      { role: "assistant", text: "Keeping <system-reminder>as written</system-reminder>" },
+      { role: "assistant", text: "## Docs survey\n\n- 12 pages\n- 2 stale links" },
+    ]);
+    assert.ok(!handbackMessages.some(message => message.role === "tool" && message.text.includes("SubagentHandback")), JSON.stringify(handbackMessages));
     const unreadable = await result("subagent_messages", { command: "get_subagent_messages", agent_id: "agent-unreadable" });
     assert.deepEqual([unreadable.agent_id, unreadable.messages, unreadable.error], ["agent-unreadable", [], "transcript unreadable"]);
 
@@ -1814,14 +1849,20 @@ test("subagent commands read SDK transcripts and stop only a running subagent, l
     assert.equal(shell.task_id, "shell-1");
     assert.match(String(shell.error), /not running/, "a background shell is not a subagent");
 
+    const stale = await result("subagent_stop_result", { command: "stop_subagent", task_id: "agent-running", expected_run_id: "A" });
+    assert.match(String(stale.error), /execution has changed/);
+    assert.equal(stale.run_id, "A");
+    assert.deepEqual(sdkCalls("stopTask"), [], "a stale command must not reach the SDK");
+
     const stopRequestId = crypto.randomUUID();
-    bridge.writeCommand({ command: "stop_subagent", session_id: sessionId, task_id: "agent-running", request_id: stopRequestId });
+    bridge.writeCommand({ command: "stop_subagent", session_id: sessionId, task_id: "agent-running", expected_run_id: "B", request_id: stopRequestId });
     const beforeAcknowledgement: BridgeEnvelope[] = [];
     const acknowledged = await nextMatching(bridge, event => {
       beforeAcknowledgement.push(event);
       return event.event === "subagent_stop_result";
     });
     assert.deepEqual([acknowledged.request_id, acknowledged.task_id, acknowledged.error], [stopRequestId, "agent-running", undefined]);
+    assert.equal(acknowledged.run_id, "B");
     assert.ok(
       !beforeAcknowledgement.some(event => (event.update as BridgeEnvelope)?.type === "task_state_update"),
       "acknowledging a stop request must not report the task as stopped",

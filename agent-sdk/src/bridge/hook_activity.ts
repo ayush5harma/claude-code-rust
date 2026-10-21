@@ -97,26 +97,24 @@ export function buildHookActivityUpdate(
 }
 
 /**
- * Forward one SDK hook message. Returns false for any other message so the
- * caller keeps looking for its owner.
+ * Forward one SDK hook message to the app as hook activity, held until the
+ * connect event if need be. message_handlers.ts:handleHookSystemMessage owns
+ * the message: it calls this and then logs it and decides on any notice.
  */
-export function handleHookSystemMessage(
+export function forwardHookActivity(
   session: SessionState,
-  subtype: string,
   msg: Record<string, unknown>,
   observedAtMs: number = Date.now(),
-): boolean {
-  if (!isHookSubtype(subtype)) return false;
+): void {
   const update = buildHookActivityUpdate(msg, observedAtMs);
-  if (!update) return true;
+  if (!update) return;
   if (session.connected) {
     emitSessionUpdate(session.sessionId, update);
-    return true;
+    return;
   }
   const pending = session.pendingHookActivity ?? [];
   if (pending.length < PENDING_HOOK_ACTIVITY_LIMIT) pending.push(update);
   session.pendingHookActivity = pending;
-  return true;
 }
 
 /** Send the hook updates held back until the connect event. */

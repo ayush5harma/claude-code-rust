@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use crate::agent::client::AgentConnection;
 use crate::agent::types::RewindRestoreMode;
@@ -267,21 +266,30 @@ mod tests {
 
     #[test]
     fn session_configuration_outlives_the_initial_session() {
+        use clap::Parser;
         let config = SessionConfig {
             additional_directories: vec!["/work/shared".to_owned()],
-            settings: Some(r#"{"model":"haiku"}"#.to_owned()),
+            system_prompt: Some("You are a release bot.".to_owned()),
             ..SessionConfig::default()
         };
-        let cli = crate::Cli::parse_from_args(["claude-rs", "--model", "opus", "-n", "First"])
-            .expect("CLI");
+        let cli = crate::Cli::try_parse_from([
+            "claude-rs",
+            "--resume",
+            "--fork-session",
+            "--model",
+            "opus",
+            "-n",
+            "First",
+        ])
+        .expect("CLI");
         let mut app = App::test_default();
         app.startup =
             crate::app::state::StartupState::from_cli(&cli).with_session_config(config.clone());
-        assert_eq!(
-            *session_launch_settings_for_reason(&app, SessionStartReason::Startup).config,
-            config
-        );
+        let initial = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
+        assert_eq!(*initial.config, config);
+        assert!(initial.fork_session);
         app.startup.complete_launch();
+        // Fork: a rewind keeps the active model, mode and effort, and the session configuration.
         assert_eq!(
             session_launch_settings_for_reason(&app, SessionStartReason::Rewind),
             SessionLaunchSettings {
@@ -299,10 +307,7 @@ mod tests {
             let launch = session_launch_settings_for_reason(&app, reason);
             assert_eq!(
                 launch,
-                SessionLaunchSettings {
-                    config: Box::new(config.clone()),
-                    ..SessionLaunchSettings::default()
-                },
+                SessionLaunchSettings { config: Box::new(config.clone()), ..Default::default() },
                 "{reason:?}"
             );
         }

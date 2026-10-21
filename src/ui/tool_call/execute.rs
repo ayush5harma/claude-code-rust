@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 //! Content rendering for Execute/shell tool calls.
 
 use crate::agent::model;
 use crate::app::ToolCallInfo;
-use crate::ui::highlight;
+use crate::ui::terminal_output;
 use crate::ui::theme;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -16,7 +15,10 @@ use super::{TOOL_BODY_MAX_LINES, errors::render_failed_tool_text_content};
 /// This is width-independent and safe to cache across resizes.
 /// Returns command and output lines only; permission/question controls are appended
 /// by the standard body renderer so they are never hidden by the content cap.
-pub(super) fn render_execute_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
+pub(super) fn render_execute_content(
+    tc: &ToolCallInfo,
+    control: &crate::ui::layout_control::LayoutControl<'_>,
+) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
     let mut body_lines: Vec<Line<'static>> = Vec::new();
@@ -25,9 +27,9 @@ pub(super) fn render_execute_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
         if let Some(failed_lines) = render_failed_tool_text_content(tc.status, output) {
             body_lines = failed_lines;
         } else {
-            body_lines = highlight::render_terminal_output(output)
+            body_lines = terminal_output::render_terminal_output(output, control)
                 .into_iter()
-                .map(dim_unstyled_line)
+                .map(dim_unstyled_output)
                 .collect();
         }
     } else if matches!(tc.status, model::ToolCallStatus::InProgress) {
@@ -59,14 +61,11 @@ fn cap_execute_output_lines(lines: Vec<Line<'static>>, max_lines: usize) -> Vec<
     out
 }
 
-/// Output with no colour of its own stays dim; whatever colour and style the program asked
-/// for (SGR) is kept on top of that.
-fn dim_unstyled_line(line: Line<'static>) -> Line<'static> {
+/// Output renders dim unless the program styled it; program styles win.
+fn dim_unstyled_output(mut line: Line<'static>) -> Line<'static> {
     let base = Style::default().fg(theme::tertiary());
-    Line::from(
-        line.spans
-            .into_iter()
-            .map(|span| Span::styled(span.content.into_owned(), base.patch(span.style)))
-            .collect::<Vec<_>>(),
-    )
+    for span in &mut line.spans {
+        span.style = base.patch(span.style);
+    }
+    line
 }

@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::{App, AppStatus, ChatMessage, MessageBlock, MessageRole, TextBlock};
 use crate::agent::model;
@@ -308,12 +307,81 @@ mod tests {
     use crate::agent::wire::BridgeCommand;
     use crate::app::{FullscreenView, SurfaceMode};
 
-    fn app_with_connection() -> (App, crate::agent::client::CommandReceiver) {
-        let mut app = App::test_default();
-        let (connection, rx) = crate::agent::client::AgentConnection::test_channel();
-        app.session_runtime.conn = Some(std::rc::Rc::new(connection));
-        app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
-        (app, rx)
+    use crate::app::test_support::app_with_connection;
+
+    #[test]
+    fn rate_limit_failure_preserves_the_draft_and_allows_editing_and_manual_retry() {
+        use crate::agent::error_handling::TurnErrorClass;
+        use crate::app::events::handle_client_event;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        const IMAGE: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1sAAAAASUVORK5CYII=";
+        let (mut app, mut rx) = app_with_connection();
+        app.status = AppStatus::Running;
+        app.input.set_text("next draft");
+        app.pending_images.push(crate::app::clipboard_image::ImageAttachment {
+            data: IMAGE.to_owned(),
+            mime_type: "image/png".to_owned(),
+        });
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate {
+                session_id: "session-1".into(),
+                update: model::SessionUpdate::RateLimitUpdate(
+                    serde_json::from_value(serde_json::json!({
+                        "status": "rejected", "rate_limit_type": "five_hour",
+                    }))
+                    .unwrap(),
+                ),
+            },
+        );
+        assert!(app.composer_access().can_edit());
+        assert!(app.composer_access().can_submit());
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnErrorClassified {
+                session_id: "session-1".into(),
+                message: "Session limit reached; resets in one minute".into(),
+                class: TurnErrorClass::PlanLimit,
+                queued_turn_count: Some(0),
+                api_error_status: Some(429),
+                terminal_reason: Some(crate::agent::types::TerminalReason::ApiError),
+            },
+        );
+        assert_eq!(app.input.text(), "next draft");
+        assert_eq!(app.pending_images[0].data, IMAGE);
+        while let Ok(envelope) = rx.try_recv() {
+            assert!(
+                !matches!(envelope.command, BridgeCommand::Prompt { .. }),
+                "no automatic retry"
+            );
+        }
+        crate::app::keys::dispatch_key_by_focus(
+            &mut app,
+            KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
+        );
+        crate::app::keys::dispatch_key_by_focus(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.input.text(), "next draft!");
+        submit_input(&mut app);
+        let mut prompts = Vec::new();
+        while let Ok(envelope) = rx.try_recv() {
+            if let BridgeCommand::Prompt { session_id, chunks, .. } = envelope.command {
+                prompts.push((session_id, chunks));
+            }
+        }
+        assert_eq!(prompts.len(), 1, "manual retry sends exactly once");
+        assert_eq!(prompts[0].0, "session-1");
+        let chunks = &prompts[0].1;
+        assert_eq!(
+            chunks.iter().find(|chunk| chunk.kind == "text").unwrap().value,
+            serde_json::json!("next draft!")
+        );
+        assert_eq!(chunks.iter().find(|chunk| chunk.kind == "image").unwrap().value["data"], IMAGE);
+        assert!(app.input.is_empty());
+        assert!(app.pending_images.is_empty());
     }
 
     #[test]
@@ -615,6 +683,7 @@ mod tests {
             app,
             width,
             &std::collections::BTreeSet::new(),
+            None,
         );
         let rows = serialized.rows();
         let start = rows
@@ -631,6 +700,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn btw_completion_enters_active_stream_and_history_before_subsequent_agent_output() {
         use crate::ui::inline_chat_rows::{
             LiveRowBoundaryKind, serialize_live_rows_with_boundaries_excluding,
@@ -662,7 +732,7 @@ mod tests {
         );
 
         let serialized =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new());
+            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new(), None);
         let card = serialized
             .segments()
             .iter()
@@ -694,7 +764,8 @@ mod tests {
         assert!(
             matches!(&blocks[2], MessageBlock::Text(text) if text.text == "After the side answer.")
         );
-        let all = serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new());
+        let all =
+            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new(), None);
         let text = all.rows().iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
         assert!(
             text.find("Before the side answer.").expect("before")
@@ -704,7 +775,8 @@ mod tests {
             text.find("Claude · BTW").expect("card")
                 < text.find("After the side answer.").expect("after")
         );
-        let mutable = serialize_live_rows_with_boundaries_excluding(&mut app, 80, &committed_ids);
+        let mutable =
+            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &committed_ids, None);
         assert!(
             mutable.rows().iter().any(|line| line.to_string().contains("After the side answer."))
         );
@@ -729,7 +801,8 @@ mod tests {
         finish_main_turn(&mut app);
         start_main_turn(&mut app, &mut rx);
         deliver_main_text(&mut app, "A new main turn.");
-        let rows = serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new());
+        let rows =
+            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new(), None);
         let text = rows.rows().iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
         assert_eq!(text.matches("Claude · BTW").count(), 1);
         assert!(

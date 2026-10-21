@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::prelude::*;
 
@@ -53,8 +52,18 @@ pub struct PendingSessionTitleChangeState {
     pub kind: PendingSessionTitleChangeKind,
 }
 
+/// Whether the active session's transcript exists yet. The SDK's
+/// `renameSession()` appends to it, so a Status rename waits for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionTranscriptState {
+    Saved,
+    NotSaved,
+    CheckFailed(String),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfigState {
+    pub(crate) footer: Box<crate::app::footer::FooterPreferences>,
     pub active_tab: ConfigTab,
     pub settings: Box<super::SettingsBrowse>,
     pub mcp_selected_server_index: usize,
@@ -69,11 +78,17 @@ pub struct ConfigState {
     pub last_error: Option<String>,
     pub overlay_message: Option<OverlayMessage>,
     pub pending_session_title_change: Option<PendingSessionTitleChangeState>,
+    /// `None` until checked for the active session.
+    pub session_transcript: Option<SessionTranscriptState>,
+    /// The Status tab's memory file, resolved when the tab refreshes rather
+    /// than on every draw. `None` when the configuration directory is unknown.
+    pub memory_file: Option<std::path::PathBuf>,
 }
 
 impl Default for ConfigState {
     fn default() -> Self {
         Self {
+            footer: Box::default(),
             active_tab: ConfigTab::Settings,
             settings: Box::default(),
             mcp_selected_server_index: 0,
@@ -88,11 +103,22 @@ impl Default for ConfigState {
             last_error: None,
             overlay_message: None,
             pending_session_title_change: None,
+            session_transcript: None,
+            memory_file: None,
         }
     }
 }
 
 impl ConfigState {
+    pub(crate) fn load_footer(&mut self, path: Option<&std::path::Path>) {
+        *self.footer = crate::app::footer::FooterPreferences::load(path);
+        self.project_footer(path);
+    }
+
+    pub(crate) fn project_footer(&mut self, path: Option<&std::path::Path>) {
+        self.footer.project(self.snapshot.get_or_insert_with(Default::default), path);
+    }
+
     pub fn saved_value(&self, id: &str) -> Option<&Value> {
         self.snapshot.as_ref()?.value(id)
     }
@@ -166,14 +192,12 @@ impl ConfigState {
     pub fn setting_overlay(&self) -> Option<&SettingOverlayState> {
         match &self.overlay {
             Some(ConfigOverlayState::Setting(overlay)) => Some(overlay),
-            Some(ConfigOverlayState::Footer(overlay)) => Some(&overlay.editor),
             _ => None,
         }
     }
     pub fn setting_overlay_mut(&mut self) -> Option<&mut SettingOverlayState> {
         match &mut self.overlay {
             Some(ConfigOverlayState::Setting(overlay)) => Some(overlay),
-            Some(ConfigOverlayState::Footer(overlay)) => Some(&mut overlay.editor),
             _ => None,
         }
     }
@@ -188,31 +212,19 @@ impl ConfigState {
         self.overlay_message = None;
     }
 
-    pub fn invalidate_session(&mut self) {
-        let footer_save_interrupted =
-            if let Some(ConfigOverlayState::Footer(overlay)) = &mut self.overlay {
-                if self
-                    .pending_settings_request
-                    .as_ref()
-                    .is_some_and(|pending| pending.owns_editor(&overlay.editor))
-                {
-                    overlay.queue_save();
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
+    pub fn invalidate_session(&mut self, path: Option<&std::path::Path>) {
         self.snapshot = None;
+        // The local preference and its in-flight save outlive agent sessions.
+        self.project_footer(path);
         self.pending_settings_request = None;
         self.pending_session_title_change = None;
+        self.session_transcript = None;
         self.status_message = None;
         self.last_error = None;
-        if self.setting_overlay().is_none() {
+        if self.setting_overlay().is_none()
+            && !matches!(self.overlay, Some(ConfigOverlayState::Footer(_)))
+        {
             self.clear_overlay();
-        } else if footer_save_interrupted {
-            self.set_overlay_error("The settings session changed. Unconfirmed footer changes were not saved. Close and reopen the footer editor.");
         }
     }
 
@@ -243,6 +255,36 @@ impl ConfigState {
         } else {
             None
         }
+    }
+
+    #[must_use]
+    pub fn session_rename_in_flight(&self) -> bool {
+        matches!(
+            self.pending_session_title_change,
+            Some(PendingSessionTitleChangeState {
+                kind: PendingSessionTitleChangeKind::Rename { .. },
+                ..
+            })
+        )
+    }
+
+    #[must_use]
+    pub fn title_generation_in_flight(&self) -> bool {
+        matches!(
+            self.pending_session_title_change,
+            Some(PendingSessionTitleChangeState {
+                kind: PendingSessionTitleChangeKind::Generate,
+                ..
+            })
+        )
+    }
+
+    /// The rename dialog confirms only for a saved session with no title
+    /// change in flight: a pending generation would claim the rename's result.
+    #[must_use]
+    pub fn session_rename_confirmable(&self) -> bool {
+        self.session_transcript == Some(SessionTranscriptState::Saved)
+            && self.pending_session_title_change.is_none()
     }
 
     #[must_use]
@@ -301,16 +343,26 @@ impl ConfigState {
     }
 
     #[must_use]
-    pub fn add_marketplace_overlay(&self) -> Option<&AddMarketplaceOverlayState> {
-        if let Some(ConfigOverlayState::AddMarketplace(overlay)) = &self.overlay {
+    pub fn plugin_source_input_overlay(&self) -> Option<&PluginSourceInputOverlayState> {
+        if let Some(
+            ConfigOverlayState::AddMarketplace(overlay)
+            | ConfigOverlayState::LocalPluginFolder(overlay),
+        ) = &self.overlay
+        {
             Some(overlay)
         } else {
             None
         }
     }
 
-    pub fn add_marketplace_overlay_mut(&mut self) -> Option<&mut AddMarketplaceOverlayState> {
-        if let Some(ConfigOverlayState::AddMarketplace(overlay)) = &mut self.overlay {
+    pub fn plugin_source_input_overlay_mut(
+        &mut self,
+    ) -> Option<&mut PluginSourceInputOverlayState> {
+        if let Some(
+            ConfigOverlayState::AddMarketplace(overlay)
+            | ConfigOverlayState::LocalPluginFolder(overlay),
+        ) = &mut self.overlay
+        {
             Some(overlay)
         } else {
             None

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::prelude::*;
 
 pub fn open(app: &mut App) -> Result<(), String> {
-    open_category(app, "general")
+    open_category(app, "general")?;
+    *app.config.settings = super::SettingsBrowse::default();
+    Ok(())
 }
 
 pub(crate) fn open_category(app: &mut App, category: &str) -> Result<(), String> {
@@ -31,7 +32,7 @@ pub(crate) fn refresh_runtime_tabs_for_session_change(app: &mut App) {
     if app.surface_mode != SurfaceMode::Fullscreen(FullscreenView::Config) {
         return;
     }
-    request_status_snapshot_if_needed(app);
+    refresh_status_tab(app);
     if app.config.active_tab == ConfigTab::Usage {
         crate::app::usage::request_refresh_if_needed(app);
     }
@@ -41,6 +42,7 @@ pub(crate) fn refresh_runtime_tabs_for_session_change(app: &mut App) {
 }
 
 pub fn close(app: &mut App) {
+    *app.config.settings = super::SettingsBrowse::default();
     view::set_chat_surface(app);
 }
 
@@ -194,7 +196,7 @@ fn handle_settings_key(app: &mut App, key: KeyEvent) -> bool {
             edit::step_setting(app, if key.code == KeyCode::Left { -1 } else { 1 });
         }
         KeyCode::Char('s') => app.config.selected_scope = app.config.selected_scope.next(),
-        KeyCode::Char('r') => super::service::request_settings(app),
+        KeyCode::Char('r') => super::service::refresh_settings(app),
         KeyCode::Delete => super::service::reset_selected(app),
         _ => return false,
     }
@@ -302,7 +304,7 @@ fn request_active_tab_side_effects(app: &mut App) {
     if app.config.active_tab == ConfigTab::Settings {
         super::service::request_settings(app);
     }
-    request_status_snapshot_if_needed(app);
+    refresh_status_tab(app);
     mcp::refresh_mcp_snapshot_if_needed(app);
     if app.config.active_tab == ConfigTab::Usage {
         crate::app::usage::request_refresh_if_needed(app);

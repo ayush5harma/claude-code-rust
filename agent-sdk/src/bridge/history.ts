@@ -16,12 +16,13 @@ import type {
 import { asRecordOrNull } from "./shared.js";
 import { messageCandidates, transcriptPresentation } from "./transcript_presentation.js";
 import { applyFieldsToBase, normalizeToolCallUpdateFields, toolAcceptsTaskLifecycle, toolNameFromMeta } from "./tool_calls.js";
-import { taskLifecyclePatch, upsertTask } from "./tasks.js";
+import { interruptedTaskPatch, taskLifecyclePatch, upsertTask } from "./tasks.js";
 import { linkTaskToolUse } from "./task_links.js";
 import type { SessionState } from "./session_lifecycle.js";
 import { taskSystemToolFields } from "./message_handlers.js";
 import {
   applyToolNonExecutionMetadata,
+  agentTaskLaunchFields,
   TOOL_RESULT_TYPES,
   buildToolResultFields,
   backgroundToolLaunchTaskIdFromResult,
@@ -77,27 +78,16 @@ function nonEmptyTrimmed(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-/**
- * What a subagent's task_started record would have said, read from the Agent
- * call that launched it. Claude Code 2.1.300 saves no task_started record for a
- * background Agent call (measured 2026-10-16), so on resume this call is the
- * only source of the row's type, subagent type and title.
- */
-function agentLaunchFields(tool: ToolCall | undefined): Record<string, unknown> {
-  const name = toolNameFromMeta(tool?.meta);
-  if (name !== "Agent" && name !== "Task") return {};
-  const input = asRecordOrNull(tool?.raw_input);
-  const subagentType = nonEmptyTrimmed(input?.subagent_type);
-  const description = nonEmptyTrimmed(input?.description);
-  return {
-    task_type: "local_agent",
-    ...(subagentType ? { subagent_type: subagentType } : {}),
-    ...(description ? { task_description: description } : {}),
-  };
+/** A saved SDK reminder. A subagent transcript shows it; the chat has no place for one. */
+interface SystemReminderEntry {
+  type: "system_reminder";
+  text: string;
 }
 
+type HistoryEntry = SessionUpdate | SystemReminderEntry;
+
 function pushResumeTaskSystemUpdate(
-  updates: SessionUpdate[],
+  updates: HistoryEntry[],
   tasksById: Map<string, TaskItem>,
   taskToolUseIds: Map<string, string>,
   toolCalls: Map<string, ToolCall>,
@@ -118,18 +108,16 @@ function pushResumeTaskSystemUpdate(
     return true;
   }
   const explicitToolUseId = nonEmptyTrimmed(msg.tool_use_id);
-  if (explicitToolUseId) {
-    taskToolUseIds.set(taskId, explicitToolUseId);
-  }
   const toolUseId = explicitToolUseId ?? taskToolUseIds.get(taskId);
   const tool = toolUseId ? toolCalls.get(toolUseId) : undefined;
   // The record's own fields win over what the launching call implies.
-  const patch = taskLifecyclePatch(tasksById.get(taskId), subtype, { ...agentLaunchFields(tool), ...msg }, toolUseId);
-  if (patch) {
-    const task = upsertTask({ tasksById, taskOrder: [] }, patch);
-    updates.push({ type: "task_state_update", source: "task_lifecycle", tasks: [task], removed_task_ids: [], is_complete_snapshot: false });
-  }
-  if (tool && toolUseId && toolAcceptsTaskLifecycle(tool)) {
+  const patch = taskLifecyclePatch(tasksById.get(taskId), subtype, { ...agentTaskLaunchFields(tool), ...msg }, toolUseId);
+  if (!patch) return true;
+  if (patch.resetExecution) taskToolUseIds.delete(taskId);
+  if (explicitToolUseId) taskToolUseIds.set(taskId, explicitToolUseId);
+  const task = upsertTask({ tasksById, taskOrder: [] }, patch);
+  updates.push({ type: "task_state_update", source: "task_lifecycle", tasks: [task], removed_task_ids: [], is_complete_snapshot: false });
+  if ((!patch.resetExecution || explicitToolUseId) && tool && toolUseId && toolAcceptsTaskLifecycle(tool)) {
     const fields = taskSystemToolFields(tool, subtype, msg);
     if (!normalizeToolCallUpdateFields(tool, fields ?? {}, subtype as "task_started" | "task_progress" | "task_updated" | "task_notification")) return true;
     if (fields) {
@@ -142,7 +130,7 @@ function pushResumeTaskSystemUpdate(
 }
 
 function pushResumeTextChunk(
-  updates: SessionUpdate[],
+  updates: HistoryEntry[],
   role: "user" | "assistant",
   text: string,
   sourceMessageUuid?: string,
@@ -166,7 +154,7 @@ function pushResumeTextChunk(
 }
 
 function pushResumeToolUse(
-  updates: SessionUpdate[],
+  updates: HistoryEntry[],
   toolCalls: Map<string, ToolCall>,
   hiddenToolUseIds: Set<string>,
   block: Record<string, unknown>,
@@ -195,7 +183,7 @@ function pushResumeToolUse(
 }
 
 function pushResumeToolResult(
-  updates: SessionUpdate[],
+  updates: HistoryEntry[],
   toolCalls: Map<string, ToolCall>,
   hiddenToolUseIds: Set<string>,
   block: Record<string, unknown>,
@@ -230,11 +218,12 @@ function pushResumeToolResult(
     toolNameFromMeta(base?.meta) ?? "", rawResult ?? block, block.content,
   ) : undefined;
   if (taskId) {
-    taskToolUseIds.set(taskId, toolUseId);
     const patch = taskLifecyclePatch(tasksById.get(taskId), "task_started", {
-      ...agentLaunchFields(base), task_id: taskId, description: base?.title, is_backgrounded: true,
+      ...agentTaskLaunchFields(base), task_id: taskId, tool_use_id: toolUseId, description: base?.title, is_backgrounded: true, synthesized_launch: true,
     }, toolUseId);
-    if (patch) updates.push({ type: "task_state_update", source: "task_lifecycle", tasks: [upsertTask({ tasksById, taskOrder: [] }, patch)], removed_task_ids: [], is_complete_snapshot: false });
+    if (!patch) return;
+    taskToolUseIds.set(taskId, toolUseId);
+    updates.push({ type: "task_state_update", source: "task_lifecycle", tasks: [upsertTask({ tasksById, taskOrder: [] }, patch)], removed_task_ids: [], is_complete_snapshot: false });
   }
   updates.push({
     type: "tool_call_update",
@@ -300,10 +289,19 @@ export function mapSdkSessions(
   return entries;
 }
 
+/** Saved history as the chat's session updates. */
 export function mapSessionMessagesToUpdates(
   messages: SessionMessage[],
 ): SessionUpdate[] {
-  const updates: SessionUpdate[] = [];
+  return mapSessionMessagesToEntries(messages).filter((entry): entry is SessionUpdate => entry.type !== "system_reminder");
+}
+
+/** Saved history as session updates and the SDK reminders between them, in order. */
+export function mapSessionMessagesToEntries(
+  messages: SessionMessage[],
+  subagentTranscript = false,
+): HistoryEntry[] {
+  const updates: HistoryEntry[] = [];
   const toolCalls = new Map<string, ToolCall>();
   const hiddenToolUseIds = new Set<string>();
   const tasksById = new Map<string, TaskItem>();
@@ -313,6 +311,10 @@ export function mapSessionMessagesToUpdates(
     const record = asRecordOrNull(entry);
     const presentation = transcriptPresentation(entry);
     if (presentation.kind === "hidden") continue;
+    if (presentation.kind === "system_reminder") {
+      updates.push({ type: "system_reminder", text: presentation.text });
+      continue;
+    }
     if (presentation.kind === "task_notification") {
       const notification = presentation.notification;
       if (notification) pushResumeTaskSystemUpdate(updates, tasksById, taskToolUseIds, toolCalls, notification);
@@ -341,7 +343,7 @@ export function mapSessionMessagesToUpdates(
             tasksById,
             taskToolUseIds,
             toolCalls,
-            message,
+            { ...record, ...message },
           )
         ) {
           break;
@@ -359,12 +361,14 @@ export function mapSessionMessagesToUpdates(
         roleCandidate === "assistant" || roleCandidate === "user"
           ? roleCandidate
           : fallbackRole;
+      const producer = nonEmptyTrimmed(record?.agent_id) ?? nonEmptyTrimmed(message.agent_id);
       const parentToolUseId =
         typeof entry.parent_tool_use_id === "string"
           ? entry.parent_tool_use_id
           : typeof message.parent_tool_use_id === "string"
             ? message.parent_tool_use_id
-            : null;
+            : producer ? tasksById.get(producer)?.source_tool_call_id ?? null : null;
+      const child = !subagentTranscript && Boolean(record?.agent_id || message.agent_id || parentToolUseId);
 
       const content = typeof message.content === "string"
         ? [{ type: "text", text: message.content }]
@@ -384,7 +388,7 @@ export function mapSessionMessagesToUpdates(
           continue;
         }
         if (blockType === "text" && typeof block.text === "string") {
-          pushResumeTextChunk(updates, role, block.text, sourceMessageUuid);
+          if (!child) pushResumeTextChunk(updates, role, block.text, sourceMessageUuid);
           continue;
         }
         if (isToolUseBlockType(blockType) && role === "assistant") {
@@ -412,14 +416,22 @@ export function mapSessionMessagesToUpdates(
           );
           continue;
         }
-        if (blockType === "image") {
+        if (blockType === "image" && !child) {
           pushResumeTextChunk(updates, role, "[image]", sourceMessageUuid);
         }
       }
     }
-    const metadata = messageMetadata({ ...entry, ...asRecordOrNull(entry.message) }, fallbackRole);
+    const metadata = record?.agent_id || record?.parent_tool_use_id ? undefined : messageMetadata({ ...entry, ...asRecordOrNull(entry.message) }, fallbackRole);
     if (metadata) updates.push(metadata);
   }
+
+  // History records starts and outcomes, never a live process. A task still
+  // running here lost its process when the CLI exited, so it is not rebuilt as
+  // running; no outcome is claimed for it.
+  const interrupted = [...tasksById.values()]
+    .filter((task) => task.status === "in_progress")
+    .map((task) => upsertTask({ tasksById, taskOrder: [] }, interruptedTaskPatch(task)));
+  if (interrupted.length > 0) updates.push({ type: "task_state_update", source: "task_lifecycle", tasks: interrupted, removed_task_ids: [], is_complete_snapshot: false });
 
   return updates;
 }
@@ -430,7 +442,7 @@ export function restoreResumedToolState(session: SessionState, updates: SessionU
     if (update.type === "tool_call") session.toolCalls.set(update.tool_call.tool_call_id, structuredClone(update.tool_call));
     if (update.type === "tool_call_update") {
       const base = session.toolCalls.get(update.tool_call_update.tool_call_id);
-      if (base) applyFieldsToBase(base, structuredClone(update.tool_call_update.fields));
+      if (base) applyFieldsToBase(base, structuredClone(update.tool_call_update.fields), true);
     }
     if (update.type === "task_state_update") {
       for (const task of update.tasks) upsertTask(session, structuredClone(task));
@@ -439,6 +451,6 @@ export function restoreResumedToolState(session: SessionState, updates: SessionU
   }
   for (const task of session.tasksById.values()) {
     const tool = task.source_tool_call_id ? session.toolCalls.get(task.source_tool_call_id) : undefined;
-    if (tool && !["completed", "failed", "killed"].includes(tool.status)) linkTaskToolUse(session, task.task_id, tool.tool_call_id);
+    if (tool && (!task.run_id || task.source_tool_call_run_id === task.run_id) && !["completed", "failed", "killed"].includes(tool.status)) linkTaskToolUse(session, task.task_id, tool.tool_call_id);
   }
 }

@@ -1,20 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 use crate::app::{
     App, AppStatus, BtwExchangeBlock, ChatMessage, ChatMessageId, HistoryOutputId, MessageBlock,
     MessageRole, NoticeBlock, SystemSeverity, TextBlock, TextBlockSpacing, ToolCallInfo,
-    WelcomeBlock, markdown_table_tail_is_open, starts_with_markdown_table_row,
+    WelcomeBlock,
 };
+use crate::ui::layout_control::LayoutControl;
 #[cfg(test)]
 pub(crate) use crate::ui::live_rows::segments::LiveRowSegment;
 use crate::ui::live_rows::segments::{
     LiveRowBoundary, ids_are_excluded, live_boundaries_to_segments,
 };
 pub(crate) use crate::ui::live_rows::segments::{LiveRowBoundaryKind, SerializedLiveRows};
-use crate::ui::message::{MessageRenderContext, SpinnerState, render_text_block_cached};
+use crate::ui::message::{MessageRenderContext, SpinnerState};
 use crate::ui::message_layout::{self, MessageLayout};
 use crate::ui::message_rows::{
-    MessageRowSegment, build_user_system_message_rows, render_btw_exchange_lines,
+    MessageRowSegment, build_user_system_message_rows, render_btw_exchange_with_control,
 };
 use crate::ui::theme;
 use crate::ui::tool_call;
@@ -43,8 +43,16 @@ pub(crate) fn serialize_live_rows_with_boundaries_excluding(
     app: &mut App,
     width: u16,
     excluded_ids: &BTreeSet<HistoryOutputId>,
+    control: Option<&LayoutControl<'_>>,
 ) -> SerializedLiveRows {
-    serialize_live_rows_at(app, width, excluded_ids, Instant::now())
+    let uninterrupted = LayoutControl::uninterrupted();
+    serialize_live_rows_at(
+        app,
+        width,
+        excluded_ids,
+        Instant::now(),
+        control.unwrap_or(&uninterrupted),
+    )
 }
 
 /// Serializes the live rows as of `now`: one clock reading per pass, so the
@@ -55,83 +63,116 @@ fn serialize_live_rows_at(
     width: u16,
     excluded_ids: &BTreeSet<HistoryOutputId>,
     now: Instant,
+    control: &LayoutControl<'_>,
 ) -> SerializedLiveRows {
-    let current_mode_id =
-        app.session_runtime.mode.as_ref().map(|mode| mode.current_mode_id.clone());
-    let mut rows = Vec::new();
-    let mut row_boundaries = Vec::new();
-    let mut previous_block_kind = None;
-
-    for msg_idx in 0..app.transcript.messages.len() {
-        let role = app.transcript.messages[msg_idx].role.clone();
-        let block_kind = message_block_kind(&role);
-        let rendered_message = render_live_message_rows(
-            app,
-            msg_idx,
-            &role,
-            LiveRowsRenderContext {
-                current_mode_id: current_mode_id.as_deref(),
-                width,
-                excluded_ids,
-                previous_block_kind,
-                now,
-            },
-        );
-
-        append_rendered_live_message(
-            &mut rows,
-            &mut row_boundaries,
-            &mut previous_block_kind,
-            block_kind,
-            rendered_message,
-        );
+    let mut cursor = LiveRowsCursor::new(now);
+    let mut serialized = SerializedLiveRows::new(Vec::new(), Vec::new());
+    while let Some(rows) = cursor.next(app, width, excluded_ids, control) {
+        serialized.append(rows);
     }
-
-    append_detached_tool_interactions(
-        app,
-        width,
-        current_mode_id.as_deref(),
-        &mut rows,
-        &mut row_boundaries,
-    );
-    let segments = live_boundaries_to_segments(row_boundaries, rows.len());
-    SerializedLiveRows::new(rows, segments)
+    serialized
 }
 
-#[derive(Clone, Copy)]
-struct LiveRowsRenderContext<'a> {
-    current_mode_id: Option<&'a str>,
-    width: u16,
-    excluded_ids: &'a BTreeSet<HistoryOutputId>,
+/// Resumable traversal. Completed messages can be inserted before later messages
+/// are laid out; no transcript-sized row vector is required by replay.
+pub(crate) struct LiveRowsCursor {
+    next_message: usize,
     previous_block_kind: Option<TopLevelInlineBlockKind>,
+    detached_done: bool,
+    assistant: Option<Box<AssistantRowsCursor>>,
     now: Instant,
 }
 
-fn render_live_message_rows(
-    app: &mut App,
-    msg_idx: usize,
-    role: &MessageRole,
-    context: LiveRowsRenderContext<'_>,
-) -> RenderedMessageRows {
-    match role {
-        MessageRole::Welcome => {
-            render_welcome_live_rows(app, msg_idx, context.width, context.excluded_ids, context.now)
+impl LiveRowsCursor {
+    pub(crate) const fn is_finished(&self) -> bool {
+        self.detached_done
+    }
+
+    pub(crate) fn new(now: Instant) -> Self {
+        Self {
+            next_message: 0,
+            previous_block_kind: None,
+            detached_done: false,
+            assistant: None,
+            now,
         }
-        MessageRole::User | MessageRole::System(_) => render_user_system_live_rows(
-            app,
-            msg_idx,
-            context.current_mode_id,
-            context.width,
-            context.excluded_ids,
-        ),
-        MessageRole::Assistant => render_assistant_live_rows(
-            app,
-            msg_idx,
-            context.current_mode_id,
-            context.width,
-            context.excluded_ids,
-            context.previous_block_kind,
-        ),
+    }
+
+    pub(crate) fn next(
+        &mut self,
+        app: &mut App,
+        width: u16,
+        excluded_ids: &BTreeSet<HistoryOutputId>,
+        control: &LayoutControl<'_>,
+    ) -> Option<SerializedLiveRows> {
+        if self.detached_done || control.cancelled() {
+            return None;
+        }
+        let current_mode_id =
+            app.session_runtime.mode.as_ref().map(|mode| mode.current_mode_id.clone());
+        let mut rows = Vec::new();
+        let mut row_boundaries = Vec::new();
+        if self.next_message < app.transcript.messages.len() {
+            let msg_idx = self.next_message;
+            let role = app.transcript.messages[msg_idx].role.clone();
+            let block_kind = message_block_kind(&role);
+            let rendered_message = match role {
+                MessageRole::Assistant => {
+                    let assistant = self.assistant.get_or_insert_with(|| {
+                        Box::new(AssistantRowsCursor::new(
+                            app,
+                            msg_idx,
+                            excluded_ids,
+                            self.previous_block_kind,
+                            control,
+                        ))
+                    });
+                    let rendered = assistant.next(app, width, current_mode_id.as_deref(), control);
+                    if assistant.finished {
+                        self.assistant = None;
+                        self.next_message += 1;
+                    }
+                    rendered
+                }
+                MessageRole::Welcome => {
+                    self.next_message += 1;
+                    render_welcome_live_rows(app, msg_idx, width, excluded_ids, self.now)
+                }
+                MessageRole::User | MessageRole::System(_) => {
+                    self.next_message += 1;
+                    render_user_system_live_rows(
+                        app,
+                        msg_idx,
+                        current_mode_id.as_deref(),
+                        width,
+                        excluded_ids,
+                        control,
+                    )
+                }
+            };
+
+            append_rendered_live_message(
+                &mut rows,
+                &mut row_boundaries,
+                &mut self.previous_block_kind,
+                block_kind,
+                rendered_message,
+            );
+        } else {
+            append_detached_tool_interactions(
+                app,
+                width,
+                current_mode_id.as_deref(),
+                &mut rows,
+                &mut row_boundaries,
+            );
+            self.detached_done = true;
+        }
+        if control.cancelled() {
+            return None;
+        }
+        let segments = live_boundaries_to_segments(row_boundaries, rows.len());
+        Some(SerializedLiveRows::new(rows, segments))
     }
 }
 
@@ -168,6 +209,7 @@ fn render_user_system_live_rows(
     current_mode_id: Option<&str>,
     width: u16,
     excluded_ids: &BTreeSet<HistoryOutputId>,
+    control: &LayoutControl<'_>,
 ) -> RenderedMessageRows {
     let ids = vec![HistoryOutputId::Message(app.transcript.messages[msg_idx].id)];
     if ids_are_excluded(&ids, excluded_ids) {
@@ -188,7 +230,7 @@ fn render_user_system_live_rows(
         crate::app::presentation::timestamp_label(app, &app.transcript.messages[msg_idx]);
     let mut rendered = build_user_system_message_rows(
         &mut app.transcript.messages[msg_idx],
-        message_render_context(current_mode_id, width),
+        MessageRenderContext::with_control(current_mode_id, width, control),
     );
     let is_user = matches!(app.transcript.messages[msg_idx].role, MessageRole::User);
     if is_user {
@@ -217,7 +259,7 @@ fn render_user_system_live_rows(
             })
             .collect()
     } else {
-        segments_to_physical_rows(&rendered.segments, width)
+        segments_to_physical_rows(&rendered.segments, width, control)
     };
     RenderedMessageRows::message(
         rows,
@@ -239,92 +281,169 @@ fn message_has_pending_user_dialog(message: &ChatMessage) -> bool {
         .any(|block| matches!(block, MessageBlock::UserDialog(dialog) if dialog.outcome.is_none()))
 }
 
-fn render_assistant_live_rows(
-    app: &mut App,
+/// Owns only an active traversal's layout state. Source messages remain canonical in App.
+#[allow(clippy::struct_excessive_bools)] // Independent presentation decisions for this traversal.
+struct AssistantRowsCursor {
     msg_idx: usize,
-    current_mode_id: Option<&str>,
-    width: u16,
-    excluded_ids: &BTreeSet<HistoryOutputId>,
-    previous_block_kind: Option<TopLevelInlineBlockKind>,
-) -> RenderedMessageRows {
-    let active_mutable = active_assistant_message_is_mutable(app, msg_idx);
-    let message_id = app.transcript.messages[msg_idx].id;
-    let presentation = app.activity_presentation(std::time::Instant::now());
-    // The traversal also remembers excluded static content and skips invisible messages.
-    // Message ownership and output IDs remain independent of visual speaker grouping.
-    let label_visibility = if previous_block_kind == Some(TopLevelInlineBlockKind::Assistant)
-        || excluded_ids.contains(&HistoryOutputId::AssistantLabel(message_id))
-    {
-        AssistantLabelVisibility::Hidden
-    } else {
-        AssistantLabelVisibility::WithContent
-    };
-    let show_thinking = presentation.as_ref().is_some_and(|presentation| {
-        presentation.thinking
-            && presentation.heading == crate::app::activity::ActivityHeading::Assistant(msg_idx)
-    });
-    let items = assistant_render_items_from_message(
-        &app.transcript.messages[msg_idx],
-        msg_idx,
-        active_mutable,
-    );
-    let selection = select_unexcluded_assistant_items(items, excluded_ids);
-    let skipped_static_body = selection.skipped_body_before_rendered_content;
-    let spinner = SpinnerState::for_app(app);
-    let content_width = MessageLayout::new(width).content_width;
-    let mut rendered = render_assistant_rows(AssistantRowsRequest {
-        app: Some(app),
-        message_id,
-        msg_idx,
-        items: selection.items,
-        current_mode_id,
-        width,
-        spinner,
-        show_thinking,
-        has_prior_assistant_content: skipped_static_body,
-    });
-    let has_visible_output = !rendered.rows.is_empty() || skipped_static_body;
-    if has_visible_output
-        && let Some(label) =
-            crate::app::presentation::duration_label(app, &app.transcript.messages[msg_idx])
-    {
-        let ids = vec![HistoryOutputId::AssistantDuration(message_id)];
-        if !ids_are_excluded(&ids, excluded_ids) {
-            rendered.had_transcript_content = true;
-            rendered.boundaries.push(LiveRowBoundary {
-                ids,
-                msg_idx,
-                block_idx: None,
-                kind: LiveRowBoundaryKind::AssistantDuration,
-                start_row: rendered.rows.len(),
-                commit_ready: !active_mutable,
-            });
-            rendered.rows.extend(wrap_lines_to_physical_rows(
-                &[Line::from(Span::styled(label, Style::default().fg(theme::tertiary())))],
-                content_width,
-            ));
+    items: std::vec::IntoIter<AssistantRenderItemSpec>,
+    active_item: Option<AssistantRenderItemSpec>,
+    tool_cursor: tool_call::ToolRowsCursor,
+    text_cursor: Option<super::markdown::DocumentCursor>,
+    state: AssistantInlineLayoutState,
+    label_visibility: AssistantLabelVisibility,
+    show_thinking: bool,
+    active_mutable: bool,
+    include_duration: bool,
+    include_padding: bool,
+    finished: bool,
+}
+
+impl AssistantRowsCursor {
+    fn new(
+        app: &App,
+        msg_idx: usize,
+        excluded_ids: &BTreeSet<HistoryOutputId>,
+        previous: Option<TopLevelInlineBlockKind>,
+        control: &LayoutControl<'_>,
+    ) -> Self {
+        let active_mutable = active_assistant_message_is_mutable(app, msg_idx);
+        let message = &app.transcript.messages[msg_idx];
+        let selection = select_unexcluded_assistant_items(
+            assistant_render_items_from_message(message, msg_idx, active_mutable, control),
+            excluded_ids,
+        );
+        let prior = selection.skipped_body_before_rendered_content;
+        Self {
+            msg_idx,
+            items: selection.items.into_iter(),
+            active_item: None,
+            tool_cursor: tool_call::ToolRowsCursor::default(),
+            text_cursor: None,
+            state: AssistantInlineLayoutState {
+                has_body_content: prior,
+                has_visible_content: prior,
+                ..Default::default()
+            },
+            label_visibility: if previous == Some(TopLevelInlineBlockKind::Assistant)
+                || excluded_ids.contains(&HistoryOutputId::AssistantLabel(message.id))
+            {
+                AssistantLabelVisibility::Hidden
+            } else {
+                AssistantLabelVisibility::WithContent
+            },
+            show_thinking: app.activity_presentation(Instant::now()).is_some_and(|p| {
+                p.thinking && p.heading == crate::app::activity::ActivityHeading::Assistant(msg_idx)
+            }),
+            active_mutable,
+            include_duration: !excluded_ids
+                .contains(&HistoryOutputId::AssistantDuration(message.id)),
+            include_padding: !excluded_ids.contains(&HistoryOutputId::AssistantPadding(message.id)),
+            finished: false,
         }
     }
-    frame_assistant_rows(app, msg_idx, width, label_visibility, &mut rendered);
-    rendered.had_transcript_content |= skipped_static_body;
-    if has_visible_output && !excluded_ids.contains(&HistoryOutputId::AssistantPadding(message_id))
-    {
-        append_assistant_bottom_padding(&mut rendered, message_id, msg_idx, width, !active_mutable);
+
+    fn next(
+        &mut self,
+        app: &mut App,
+        width: u16,
+        current_mode_id: Option<&str>,
+        control: &LayoutControl<'_>,
+    ) -> RenderedMessageRows {
+        let started = Instant::now();
+        let mut rows = Vec::new();
+        let mut boundaries = Vec::new();
+        let content_width = MessageLayout::new(width).content_width;
+        let spinner = SpinnerState::for_app(app);
+        if let Some(mut item) = self.active_item.take().or_else(|| self.items.next()) {
+            let kind = item.boundary_kind;
+            let block_index = item.block_idx;
+            let finished = render_assistant_item(
+                app,
+                &item,
+                width,
+                current_mode_id,
+                spinner,
+                control,
+                &mut self.state,
+                &mut rows,
+                &mut boundaries,
+                &mut self.tool_cursor,
+                &mut self.text_cursor,
+            );
+            if finished {
+                self.tool_cursor = tool_call::ToolRowsCursor::default();
+                self.text_cursor = None;
+            } else {
+                item.leading_blank_lines = 0;
+                self.active_item = Some(item);
+            }
+            tracing::trace!(
+                target: crate::logging::targets::APP_RENDER,
+                event_name = "inline_chat_layout_item",
+                message_index = self.msg_idx,
+                block_index,
+                kind = ?kind,
+                rows = rows.len(),
+                elapsed_us = started.elapsed().as_micros(),
+                cancelled = control.cancelled(),
+            );
+        } else {
+            self.finished = true;
+            let message_id = app.transcript.messages[self.msg_idx].id;
+            if self.show_thinking {
+                append_assistant_thinking(
+                    &mut rows,
+                    &mut boundaries,
+                    &mut self.state,
+                    AssistantThinkingMeta {
+                        message_id,
+                        msg_idx: self.msg_idx,
+                        width: content_width,
+                        spinner,
+                    },
+                );
+            }
+            if (self.state.has_visible_content || !rows.is_empty())
+                && self.include_duration
+                && let Some(label) = crate::app::presentation::duration_label(
+                    app,
+                    &app.transcript.messages[self.msg_idx],
+                )
+            {
+                boundaries.push(LiveRowBoundary {
+                    ids: vec![HistoryOutputId::AssistantDuration(message_id)],
+                    msg_idx: self.msg_idx,
+                    block_idx: None,
+                    kind: LiveRowBoundaryKind::AssistantDuration,
+                    start_row: rows.len(),
+                    commit_ready: !self.active_mutable,
+                });
+                rows.extend(wrap_lines_to_physical_rows(
+                    &[Line::from(Span::styled(label, Style::default().fg(theme::tertiary())))],
+                    content_width,
+                ));
+            }
+        }
+        if control.cancelled() {
+            return RenderedMessageRows::empty();
+        }
+        let mut rendered = RenderedMessageRows::rendered(rows, boundaries);
+        if !rendered.rows.is_empty() {
+            frame_assistant_rows(app, self.msg_idx, width, self.label_visibility, &mut rendered);
+            self.label_visibility = AssistantLabelVisibility::Hidden;
+        }
+        rendered.had_transcript_content |= self.state.has_visible_content;
+        if self.finished && rendered.had_transcript_content && self.include_padding {
+            append_assistant_bottom_padding(
+                &mut rendered,
+                app.transcript.messages[self.msg_idx].id,
+                self.msg_idx,
+                width,
+                !self.active_mutable,
+            );
+        }
+        rendered
     }
-    tracing::debug!(
-        target: crate::logging::targets::APP_RENDER,
-        event_name = "inline_chat_assistant_block_built",
-        message = "assistant message block rendered from canonical app.transcript.messages",
-        outcome = "success",
-        assistant_turn_id = tracing::field::Empty,
-        show_label = label_visibility != AssistantLabelVisibility::Hidden,
-        leading_blank_lines = 0,
-        skipped_static_body,
-        committed_rendered_rows = rendered.rows.len(),
-        live_rendered_rows = 0,
-        preview = %preview_rows(&rendered.rows, 4),
-    );
-    rendered
 }
 
 fn append_assistant_bottom_padding(
@@ -470,7 +589,7 @@ fn serialize_compact_welcome_entry(
 }
 
 fn status_label(app: &App) -> &'static str {
-    match app.status {
+    match app.displayed_status() {
         crate::app::AppStatus::Ready => "Ready",
         crate::app::AppStatus::Connecting => "Connecting",
         crate::app::AppStatus::CommandPending => "Working",
@@ -491,8 +610,8 @@ const fn top_level_leading_blank_lines(
 }
 
 enum AssistantRenderItem {
-    Text(TextBlock),
-    Notice(NoticeBlock),
+    Text { text: String, trailing_spacing: TextBlockSpacing },
+    Notice { text: String, trailing_spacing: TextBlockSpacing, severity: SystemSeverity },
     CanonicalBtw { msg_idx: usize, block_idx: usize },
     CanonicalTool { msg_idx: usize, block_idx: usize },
 }
@@ -571,10 +690,15 @@ impl PendingAssistantTextRun {
         }
     }
 
-    fn can_merge(&self, next: &TextBlock, commit_ready: bool) -> bool {
+    fn can_merge(&self, next: &TextBlock, commit_ready: bool, control: &LayoutControl<'_>) -> bool {
         (!self.commit_ready && !commit_ready)
             || self.trailing_spacing == TextBlockSpacing::Continuation
-            || assistant_list_crosses_handoff(&self.text, self.trailing_spacing, next)
+            || assistant_markdown_block_crosses_handoff(
+                &self.text,
+                self.trailing_spacing,
+                next,
+                control,
+            )
     }
 
     fn append(
@@ -598,9 +722,10 @@ impl PendingAssistantTextRun {
             block_idx: Some(self.block_idx),
             boundary_kind: LiveRowBoundaryKind::AssistantText,
             commit_ready: self.commit_ready,
-            item: AssistantRenderItem::Text(
-                TextBlock::from_complete(&self.text).with_trailing_spacing(self.trailing_spacing),
-            ),
+            item: AssistantRenderItem::Text {
+                text: self.text,
+                trailing_spacing: self.trailing_spacing,
+            },
         }
     }
 }
@@ -609,12 +734,34 @@ impl PendingAssistantTextRun {
 struct AssistantInlineLayoutState {
     has_body_content: bool,
     has_visible_content: bool,
+    pending_blank_lines: usize,
+    pending_trailing_rows: Vec<PendingAssistantBlankRows>,
 }
 
+struct PendingAssistantBlankRows {
+    boundary: AssistantBoundaryMeta,
+    count: usize,
+}
+
+impl AssistantInlineLayoutState {
+    fn flush_trailing_rows(
+        &mut self,
+        rows: &mut Vec<Line<'static>>,
+        boundaries: &mut Vec<LiveRowBoundary>,
+    ) {
+        for pending in self.pending_trailing_rows.drain(..) {
+            push_assistant_boundary(boundaries, pending.boundary, rows.len());
+            rows.extend(std::iter::repeat_with(Line::default).take(pending.count));
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
 fn assistant_render_items_from_message(
     message: &ChatMessage,
     msg_idx: usize,
     active_mutable: bool,
+    control: &LayoutControl<'_>,
 ) -> Vec<AssistantRenderItemSpec> {
     let mut items = Vec::with_capacity(message.blocks.len());
     let mut pending_text: Option<PendingAssistantTextRun> = None;
@@ -623,21 +770,29 @@ fn assistant_render_items_from_message(
         active_mutable.then(|| last_visible_assistant_block_idx(message)).flatten();
 
     for (block_idx, block) in message.blocks.iter().enumerate() {
+        if control.cancelled() {
+            return Vec::new();
+        }
         match block {
             MessageBlock::Text(text) => {
                 if text.text.is_empty() {
                     continue;
                 }
-                let commit_ready =
-                    assistant_text_block_commit_ready(message, block_idx, active_tail_block_idx);
+                let commit_ready = assistant_text_block_commit_ready(
+                    message,
+                    block_idx,
+                    active_tail_block_idx,
+                    control,
+                );
                 if let Some(pending) = pending_text.as_mut()
-                    && pending.can_merge(text, commit_ready)
+                    && pending.can_merge(text, commit_ready, control)
                 {
                     let merged_commit_ready = assistant_text_run_commit_ready(
                         message,
                         pending.block_idx,
                         block_idx,
                         active_tail_block_idx,
+                        control,
                     );
                     pending.append(
                         HistoryOutputId::Block(text.id),
@@ -712,7 +867,24 @@ fn assistant_render_items_from_message(
     }
 
     flush_pending_text_run(&mut pending_text, &mut items);
+    assign_source_separators(&mut items);
     items
+}
+
+fn assign_source_separators(items: &mut [AssistantRenderItemSpec]) {
+    // Source separators belong to the following item, including after the prior
+    // item has been committed and excluded from the live rows.
+    let mut trailing_gap = 0;
+    for item in items {
+        item.leading_blank_lines += trailing_gap;
+        trailing_gap = match &item.item {
+            AssistantRenderItem::Text { trailing_spacing, .. }
+            | AssistantRenderItem::Notice { trailing_spacing, .. } => {
+                trailing_spacing.blank_lines()
+            }
+            _ => 0,
+        };
+    }
 }
 
 fn notice_render_item(
@@ -729,13 +901,11 @@ fn notice_render_item(
         block_idx: Some(block_idx),
         boundary_kind: LiveRowBoundaryKind::AssistantNotice,
         commit_ready,
-        item: AssistantRenderItem::Notice(NoticeBlock {
-            id: notice.id,
+        item: AssistantRenderItem::Notice {
             severity: notice.severity,
-            text: TextBlock::from_complete(&notice.text.text)
-                .with_trailing_spacing(notice.text.trailing_spacing),
-            dedup_key: notice.dedup_key.clone(),
-        }),
+            text: notice.text.text.clone(),
+            trailing_spacing: notice.text.trailing_spacing,
+        },
     }
 }
 
@@ -796,6 +966,7 @@ fn append_detached_tool_interactions(
             message_render_context(current_mode_id, MessageLayout::new(width).content_width),
             spinner,
             true,
+            None,
         );
         rows.extend(message_layout::frame_rows(content, width, None, None, (false, false), &[]));
     }
@@ -823,8 +994,9 @@ fn assistant_text_block_commit_ready(
     message: &ChatMessage,
     block_idx: usize,
     active_tail_block_idx: Option<usize>,
+    control: &LayoutControl<'_>,
 ) -> bool {
-    assistant_text_run_commit_ready(message, block_idx, block_idx, active_tail_block_idx)
+    assistant_text_run_commit_ready(message, block_idx, block_idx, active_tail_block_idx, control)
 }
 
 fn assistant_text_run_commit_ready(
@@ -832,6 +1004,7 @@ fn assistant_text_run_commit_ready(
     start_block_idx: usize,
     end_block_idx: usize,
     active_tail_block_idx: Option<usize>,
+    control: &LayoutControl<'_>,
 ) -> bool {
     let Some(active_tail_block_idx) = active_tail_block_idx else {
         return true;
@@ -843,13 +1016,19 @@ fn assistant_text_run_commit_ready(
         return true;
     }
 
-    !assistant_text_run_handoff_requires_markdown_context(message, start_block_idx, end_block_idx)
+    !assistant_text_run_handoff_requires_markdown_context(
+        message,
+        start_block_idx,
+        end_block_idx,
+        control,
+    )
 }
 
 fn assistant_text_run_handoff_requires_markdown_context(
     message: &ChatMessage,
     start_block_idx: usize,
     end_block_idx: usize,
+    control: &LayoutControl<'_>,
 ) -> bool {
     let Some((text, trailing_spacing)) =
         assistant_text_run_source(message, start_block_idx, end_block_idx)
@@ -861,10 +1040,7 @@ fn assistant_text_run_handoff_requires_markdown_context(
     };
 
     trailing_spacing == TextBlockSpacing::Continuation
-        || assistant_text_handoff_continues_open_table(&text, next)
-        || assistant_list_crosses_handoff(&text, trailing_spacing, next)
-        || markdown_source_has_open_fence(&text)
-        || markdown_source_has_open_inline_delimiter(&text)
+        || assistant_markdown_block_crosses_handoff(&text, trailing_spacing, next, control)
 }
 
 fn assistant_text_run_source(
@@ -889,23 +1065,17 @@ fn assistant_text_run_source(
     (!text.is_empty()).then_some((text, trailing_spacing))
 }
 
-fn assistant_text_handoff_continues_open_table(current: &str, next: &TextBlock) -> bool {
-    if !markdown_table_tail_is_open(current) {
-        return false;
-    }
-
-    starts_with_markdown_table_row(&next.text)
-}
-
-fn assistant_list_crosses_handoff(
+fn assistant_markdown_block_crosses_handoff(
     current: &str,
     spacing: TextBlockSpacing,
     next: &TextBlock,
+    control: &LayoutControl<'_>,
 ) -> bool {
     let boundary = current.len();
     let mut source = current.to_owned();
     spacing.append_source(&mut source, &next.text);
-    super::markdown::list_crosses_boundary(&source, boundary)
+    let next_start = source.len() - next.text.len();
+    crate::markdown::context_crosses_boundary(&source, boundary, next_start, || control.cancelled())
 }
 
 fn next_visible_assistant_text(message: &ChatMessage, block_idx: usize) -> Option<&TextBlock> {
@@ -985,18 +1155,7 @@ enum AssistantLabelVisibility {
     WithContent,
 }
 
-struct AssistantRowsRequest<'a> {
-    app: Option<&'a mut App>,
-    message_id: ChatMessageId,
-    msg_idx: usize,
-    items: Vec<AssistantRenderItemSpec>,
-    current_mode_id: Option<&'a str>,
-    width: u16,
-    spinner: SpinnerState,
-    show_thinking: bool,
-    has_prior_assistant_content: bool,
-}
-
+#[derive(Clone, Copy)]
 struct AssistantThinkingMeta {
     message_id: ChatMessageId,
     msg_idx: usize,
@@ -1004,181 +1163,114 @@ struct AssistantThinkingMeta {
     spinner: SpinnerState,
 }
 
-fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessageRows {
-    let content_width = MessageLayout::new(request.width).content_width;
-    if request.items.is_empty() && !request.show_thinking {
-        return RenderedMessageRows::empty();
-    }
-
-    let mut rows = Vec::new();
-    let mut boundaries = Vec::new();
-
-    let mut state = AssistantInlineLayoutState {
-        has_body_content: request.has_prior_assistant_content,
-        has_visible_content: request.has_prior_assistant_content,
+#[allow(clippy::too_many_arguments)]
+fn render_assistant_item(
+    app: &mut App,
+    item: &AssistantRenderItemSpec,
+    width: u16,
+    current_mode_id: Option<&str>,
+    spinner: SpinnerState,
+    control: &LayoutControl<'_>,
+    state: &mut AssistantInlineLayoutState,
+    rows: &mut Vec<Line<'static>>,
+    boundaries: &mut Vec<LiveRowBoundary>,
+    tool_cursor: &mut tool_call::ToolRowsCursor,
+    text_cursor: &mut Option<super::markdown::DocumentCursor>,
+) -> bool {
+    let content_width = MessageLayout::new(width).content_width;
+    let boundary = AssistantBoundaryMeta {
+        ids: item.ids.clone(),
+        msg_idx: item.msg_idx,
+        block_idx: item.block_idx,
+        kind: item.boundary_kind,
+        commit_ready: item.commit_ready,
     };
-    let thinking = request.show_thinking.then_some(AssistantThinkingMeta {
-        message_id: request.message_id,
-        msg_idx: request.msg_idx,
-        width: content_width,
-        spinner: request.spinner,
+    let mut finished = true;
+    let rendered = match &item.item {
+        AssistantRenderItem::Text { text, .. } => {
+            let cursor = text_cursor
+                .get_or_insert_with(|| super::markdown::DocumentCursor::new(text, control));
+            let mut physical = Vec::new();
+            let row_budget = crate::ui::layout_control::replay_row_budget(
+                app.chat_render.terminal_size().height,
+            );
+            while let Some(mut lines) = cursor.next(text, content_width, None, true, control) {
+                if !state.has_visible_content && physical.is_empty() {
+                    let first =
+                        lines.iter().position(|line| !line_is_blank(line)).unwrap_or(lines.len());
+                    lines.drain(..first);
+                }
+                physical.extend(super::wrap::wrap_lines_with_control(
+                    &lines,
+                    content_width,
+                    control,
+                ));
+                if control.can_yield() && (control.yield_due() || physical.len() >= row_budget) {
+                    finished = false;
+                    break;
+                }
+            }
+            physical
+        }
+        AssistantRenderItem::Notice { text, severity, .. } => render_assistant_notice_block(
+            text,
+            *severity,
+            content_width,
+            !state.has_visible_content,
+            control,
+        ),
+        AssistantRenderItem::CanonicalBtw { msg_idx, block_idx } => {
+            render_canonical_btw_rows(app, *msg_idx, *block_idx, width, control)
+        }
+        AssistantRenderItem::CanonicalTool { msg_idx, block_idx } => render_canonical_tool_rows(
+            app,
+            *msg_idx,
+            *block_idx,
+            MessageRenderContext::with_control(current_mode_id, content_width, control),
+            spinner,
+            false,
+            Some(tool_cursor),
+        ),
+    };
+    append_rendered_assistant_item(
+        rows,
+        boundaries,
+        state,
+        boundary,
+        item.leading_blank_lines,
+        rendered,
+    );
+    finished
+        && (!matches!(item.item, AssistantRenderItem::CanonicalTool { .. })
+            || tool_cursor.is_finished())
+}
+
+fn append_assistant_thinking(
+    rows: &mut Vec<Line<'static>>,
+    boundaries: &mut Vec<LiveRowBoundary>,
+    state: &mut AssistantInlineLayoutState,
+    meta: AssistantThinkingMeta,
+) {
+    state.flush_trailing_rows(rows, boundaries);
+    let boundary_start = rows.len();
+    if state.has_body_content {
+        rows.push(Line::default());
+    }
+    boundaries.push(LiveRowBoundary {
+        ids: vec![HistoryOutputId::AssistantThinking(meta.message_id)],
+        msg_idx: meta.msg_idx,
+        block_idx: None,
+        kind: LiveRowBoundaryKind::AssistantThinking,
+        start_row: boundary_start,
+        commit_ready: false,
     });
-
-    for item in request.items {
-        let boundary = AssistantBoundaryMeta {
-            ids: item.ids,
-            msg_idx: item.msg_idx,
-            block_idx: item.block_idx,
-            kind: item.boundary_kind,
-            commit_ready: item.commit_ready,
-        };
-        let item_leading_blank_lines = item.leading_blank_lines;
-        match item.item {
-            AssistantRenderItem::Text(block) => {
-                let trailing_gap = block.trailing_blank_lines();
-                let rendered =
-                    render_assistant_text_block(block, content_width, !state.has_visible_content);
-                if !rendered.is_empty() {
-                    append_rendered_assistant_item(
-                        &mut rows,
-                        &mut boundaries,
-                        &mut state,
-                        boundary,
-                        item_leading_blank_lines,
-                        rendered,
-                    );
-                    rows.extend(std::iter::repeat_with(Line::default).take(trailing_gap));
-                }
-            }
-            AssistantRenderItem::Notice(block) => {
-                let trailing_gap = block.text.trailing_blank_lines();
-                let rendered =
-                    render_assistant_notice_block(block, content_width, !state.has_visible_content);
-                if !rendered.is_empty() {
-                    append_rendered_assistant_item(
-                        &mut rows,
-                        &mut boundaries,
-                        &mut state,
-                        boundary,
-                        item_leading_blank_lines,
-                        rendered,
-                    );
-                    rows.extend(std::iter::repeat_with(Line::default).take(trailing_gap));
-                }
-            }
-            AssistantRenderItem::CanonicalBtw { msg_idx, block_idx } => {
-                let Some(app) = request.app.as_deref_mut() else {
-                    continue;
-                };
-                append_rendered_assistant_item(
-                    &mut rows,
-                    &mut boundaries,
-                    &mut state,
-                    boundary,
-                    item_leading_blank_lines,
-                    render_canonical_btw_rows(app, msg_idx, block_idx, request.width),
-                );
-            }
-            AssistantRenderItem::CanonicalTool { msg_idx, block_idx } => {
-                let Some(app) = request.app.as_deref_mut() else {
-                    continue;
-                };
-                append_rendered_assistant_item(
-                    &mut rows,
-                    &mut boundaries,
-                    &mut state,
-                    boundary,
-                    item_leading_blank_lines,
-                    render_canonical_tool_rows(
-                        app,
-                        msg_idx,
-                        block_idx,
-                        message_render_context(request.current_mode_id, content_width),
-                        request.spinner,
-                        false,
-                    ),
-                );
-            }
-        }
-    }
-
-    finish_assistant_rows(rows, boundaries, &state, thinking)
-}
-
-fn finish_assistant_rows(
-    mut rows: Vec<Line<'static>>,
-    mut boundaries: Vec<LiveRowBoundary>,
-    state: &AssistantInlineLayoutState,
-    thinking: Option<AssistantThinkingMeta>,
-) -> RenderedMessageRows {
-    if !state.has_visible_content && thinking.is_none() {
-        return RenderedMessageRows::empty();
-    }
-    if let Some(meta) = thinking {
-        let boundary_start = rows.len();
-        if state.has_body_content {
-            rows.push(Line::default());
-        }
-        boundaries.push(LiveRowBoundary {
-            ids: vec![HistoryOutputId::AssistantThinking(meta.message_id)],
-            msg_idx: meta.msg_idx,
-            block_idx: None,
-            kind: LiveRowBoundaryKind::AssistantThinking,
-            start_row: boundary_start,
-            commit_ready: false,
-        });
-        rows.extend(wrap_lines_to_physical_rows(
-            &[Line::from(Span::styled(
-                format!("{} Thinking…", meta.spinner.icon()),
-                Style::default().fg(theme::tertiary()),
-            ))],
-            meta.width,
-        ));
-    }
-    RenderedMessageRows::rendered(trim_trailing_blank_rows(rows), boundaries)
-}
-
-fn markdown_source_has_open_fence(text: &str) -> bool {
-    let mut in_fenced_code = false;
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            in_fenced_code = !in_fenced_code;
-        }
-    }
-    in_fenced_code
-}
-
-fn markdown_source_has_open_inline_delimiter(text: &str) -> bool {
-    let mut in_code = false;
-    let mut strong_asterisk_open = false;
-    let mut strong_underscore_open = false;
-    let mut chars = text.char_indices().peekable();
-
-    while let Some((idx, ch)) = chars.next() {
-        if ch == '\\' {
-            let _ = chars.next();
-            continue;
-        }
-        if ch == '`' {
-            in_code = !in_code;
-            continue;
-        }
-        if in_code {
-            continue;
-        }
-
-        let rest = &text[idx..];
-        if rest.starts_with("**") {
-            strong_asterisk_open = !strong_asterisk_open;
-            let _ = chars.next();
-        } else if rest.starts_with("__") {
-            strong_underscore_open = !strong_underscore_open;
-            let _ = chars.next();
-        }
-    }
-
-    in_code || strong_asterisk_open || strong_underscore_open
+    rows.extend(wrap_lines_to_physical_rows(
+        &[Line::from(Span::styled(
+            format!("{} Thinking\u{2026}", meta.spinner.icon()),
+            Style::default().fg(theme::tertiary()),
+        ))],
+        meta.width,
+    ));
 }
 
 fn frame_assistant_rows(
@@ -1249,17 +1341,32 @@ fn append_rendered_assistant_item(
     state: &mut AssistantInlineLayoutState,
     boundary: AssistantBoundaryMeta,
     leading_blank_lines: usize,
-    rendered: Vec<Line<'static>>,
+    mut rendered: Vec<Line<'static>>,
 ) {
+    state.pending_blank_lines += leading_blank_lines;
+    let trailing = rendered.iter().rev().take_while(|row| line_is_blank(row)).count();
+    rendered.truncate(rendered.len() - trailing);
     if rendered.is_empty() {
+        if trailing > 0 {
+            let count = std::mem::take(&mut state.pending_blank_lines) + trailing;
+            state.pending_trailing_rows.push(PendingAssistantBlankRows { boundary, count });
+        }
         return;
     }
+    // Delay trailing blanks until another visible row proves they are internal,
+    // retaining their original owner so stable and mutable sections can commit separately.
+    state.flush_trailing_rows(rows, boundaries);
     let boundary_start = rows.len();
-    rows.extend(std::iter::repeat_with(Line::default).take(leading_blank_lines));
-    push_assistant_boundary(boundaries, boundary, boundary_start);
+    rows.extend(
+        std::iter::repeat_with(Line::default).take(std::mem::take(&mut state.pending_blank_lines)),
+    );
+    push_assistant_boundary(boundaries, boundary.clone(), boundary_start);
     state.has_body_content = true;
     state.has_visible_content = true;
     rows.extend(rendered);
+    if trailing > 0 {
+        state.pending_trailing_rows.push(PendingAssistantBlankRows { boundary, count: trailing });
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1291,12 +1398,12 @@ fn message_render_context(current_mode_id: Option<&str>, width: u16) -> MessageR
 }
 
 fn render_assistant_text_block(
-    mut block: TextBlock,
+    text: &str,
     width: u16,
     trim_leading_blank_lines: bool,
+    control: &LayoutControl<'_>,
 ) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    render_text_block_cached(&mut block, width, None, true, &mut lines);
+    let lines = super::markdown::render_markdown_with_control(text, width, None, true, control);
     let lines = if trim_leading_blank_lines {
         let first_non_blank =
             lines.iter().position(|line| !line_is_blank(line)).unwrap_or(lines.len());
@@ -1304,25 +1411,20 @@ fn render_assistant_text_block(
     } else {
         lines
     };
-    wrap_lines_to_physical_rows(&lines, width)
-}
-
-fn trim_trailing_blank_rows(mut rows: Vec<Line<'static>>) -> Vec<Line<'static>> {
-    while rows.last().is_some_and(line_is_blank) {
-        rows.pop();
-    }
-    rows
+    super::wrap::wrap_lines_with_control(&lines, width, control)
 }
 
 fn render_assistant_notice_block(
-    block: NoticeBlock,
+    text: &str,
+    severity: SystemSeverity,
     width: u16,
     trim_leading_blank_lines: bool,
+    control: &LayoutControl<'_>,
 ) -> Vec<Line<'static>> {
-    let mut lines = render_assistant_text_block(block.text, width, trim_leading_blank_lines);
+    let mut lines = render_assistant_text_block(text, width, trim_leading_blank_lines, control);
     for line in &mut lines {
         for span in &mut line.spans {
-            span.style = span.style.fg(system_severity_color(block.severity));
+            span.style = span.style.fg(system_severity_color(severity));
         }
     }
     lines
@@ -1333,6 +1435,7 @@ fn render_canonical_btw_rows(
     msg_idx: usize,
     block_idx: usize,
     width: u16,
+    control: &LayoutControl<'_>,
 ) -> Vec<Line<'static>> {
     let Some(MessageBlock::BtwExchange(exchange)) = app
         .transcript
@@ -1342,7 +1445,7 @@ fn render_canonical_btw_rows(
     else {
         return Vec::new();
     };
-    render_btw_exchange_lines(exchange, width)
+    render_btw_exchange_with_control(exchange, width, control)
 }
 
 fn render_canonical_tool_rows(
@@ -1352,7 +1455,27 @@ fn render_canonical_tool_rows(
     render_context: MessageRenderContext<'_>,
     spinner: SpinnerState,
     interaction: bool,
+    cursor: Option<&mut tool_call::ToolRowsCursor>,
 ) -> Vec<Line<'static>> {
+    let render_context = MessageRenderContext {
+        tool_render_context: tool_call::ToolCallRenderContext {
+            current_mode_id: render_context.tool_render_context.current_mode_id,
+            control: render_context.tool_render_context.control,
+            clock: crate::app::presentation::ClockFormat {
+                format: app.config.time_format(),
+                zone: app.config.time_zone(),
+            },
+        },
+        width: render_context.width,
+    };
+    let unavailable = || {
+        if cursor.is_some()
+            && let Some(control) = render_context.tool_render_context.control
+        {
+            control.cancel();
+        }
+        Vec::new()
+    };
     let show_duration = app.config.show_turn_duration_effective();
     let Some(block) = app
         .transcript
@@ -1360,27 +1483,35 @@ fn render_canonical_tool_rows(
         .get_mut(msg_idx)
         .and_then(|message| message.blocks.get_mut(block_idx))
     else {
-        return Vec::new();
+        return unavailable();
     };
     let tc = match block {
         MessageBlock::ToolCall(tc) if interaction => tc.as_mut(),
         MessageBlock::ToolCall(tc) => tc.display_mut(),
         MessageBlock::ToolResult { tool, .. } => tool.as_mut(),
-        _ => return Vec::new(),
+        _ => return unavailable(),
     };
     if tc.hidden_unless_focused_interaction() {
-        return Vec::new();
+        return unavailable();
     }
 
-    let mut rows = Vec::new();
-    tool_call::render_tool_call_cached(
-        tc,
-        render_context.tool_render_context,
-        render_context.width,
-        spinner,
-        &mut rows,
-    );
-    if show_duration
+    let (mut rows, finished) = if let Some(cursor) = cursor {
+        let rows =
+            cursor.next(tc, render_context.tool_render_context, render_context.width, spinner);
+        (rows, cursor.is_finished())
+    } else {
+        let mut rows = Vec::new();
+        tool_call::render_tool_call_cached(
+            tc,
+            render_context.tool_render_context,
+            render_context.width,
+            spinner,
+            &mut rows,
+        );
+        (rows, true)
+    };
+    if finished
+        && show_duration
         && let Some(timing) =
             tc.output_metadata.as_ref().and_then(|metadata| metadata.timing.as_ref())
     {
@@ -1399,10 +1530,15 @@ fn render_canonical_tool_rows(
             Style::default().fg(theme::tertiary()),
         )));
     }
-    if interaction {
+    if interaction && finished {
         tc.cache.evict_cached_render();
     }
-    let physical_rows = wrap_lines_to_physical_rows(&rows, render_context.width);
+    let uninterrupted = LayoutControl::uninterrupted();
+    let physical_rows = super::wrap::wrap_lines_with_control(
+        &rows,
+        render_context.width,
+        render_context.tool_render_context.control.unwrap_or(&uninterrupted),
+    );
     app.sync_render_cache_slot(msg_idx, block_idx);
     physical_rows
 }
@@ -1426,33 +1562,169 @@ fn line_is_blank(line: &Line<'_>) -> bool {
     line.spans.iter().all(|span| span.content.as_ref().chars().all(char::is_whitespace))
 }
 
-fn segments_to_physical_rows(segments: &[MessageRowSegment], width: u16) -> Vec<Line<'static>> {
+fn segments_to_physical_rows(
+    segments: &[MessageRowSegment],
+    width: u16,
+    control: &LayoutControl<'_>,
+) -> Vec<Line<'static>> {
     let mut rows = Vec::new();
     for segment in segments {
         match segment {
             MessageRowSegment::Blank => rows.push(Line::default()),
             MessageRowSegment::Lines { lines } => {
-                rows.extend(wrap_lines_to_physical_rows(lines, width));
+                rows.extend(super::wrap::wrap_lines_with_control(lines, width, control));
             }
         }
     }
     rows
 }
 
-fn preview_rows(rows: &[Line<'static>], limit: usize) -> String {
-    rows.iter()
-        .take(limit)
-        .enumerate()
-        .map(|(idx, line)| {
-            let text = line.spans.iter().map(|span| span.content.as_ref()).collect::<String>();
-            format!("[{idx}] {text}")
-        })
-        .collect::<Vec<_>>()
-        .join(" | ")
-}
-
 #[cfg(test)]
 mod tests {
+    /// A code row's source text without the assistant marker, the block's indent and its rail.
+    fn code_cell(row: &str) -> &str {
+        row.trim().trim_start_matches('\u{25cf}').trim_start().trim_start_matches('\u{258e}').trim()
+    }
+
+    #[test]
+    fn long_code_replay_yields_before_the_end_and_preserves_every_source_line() {
+        let source = format!(
+            "```text\n{}\n```",
+            (0..400).map(|n| format!("SOURCE_{n:04}")).collect::<Vec<_>>().join("\n")
+        );
+        for width in [24, 80, 120] {
+            let mut app = App::test_default();
+            app.transcript.messages.push(assistant_blocks_message(vec![MessageBlock::Text(
+                TextBlock::from_complete(&source),
+            )]));
+            let mut cursor = super::LiveRowsCursor::new(std::time::Instant::now());
+            let mut all = SerializedLiveRows::new(Vec::new(), Vec::new());
+            let mut saw_early_output = false;
+            while !cursor.is_finished() {
+                let control =
+                    super::LayoutControl::with_budget(&|| false, std::time::Duration::ZERO);
+                let Some(chunk) = cursor.next(&mut app, width, &BTreeSet::new(), &control) else {
+                    break;
+                };
+                saw_early_output |=
+                    chunk.rows().iter().any(|row| row.to_string().contains("SOURCE_0000"))
+                        && !cursor.is_finished();
+                all.append(chunk);
+            }
+            assert!(saw_early_output);
+            let text = line_texts(all.rows());
+            for n in 0..400 {
+                assert_eq!(
+                    text.iter().filter(|row| code_cell(row) == format!("SOURCE_{n:04}")).count(),
+                    1
+                );
+            }
+            assert!(all.rows().iter().all(|row| row.width() <= usize::from(width)));
+            assert_eq!(all.stable_row_count(), all.rows().len());
+            assert_assistant_marker(all.rows(), true);
+        }
+    }
+
+    #[test]
+    fn replay_yields_text_before_working_on_a_tool_in_the_same_turn() {
+        let mut app = App::test_default();
+        let mut tool = tool_call_block("expensive", false);
+        let MessageBlock::ToolCall(tc) = &mut tool else { unreachable!() };
+        tc.sdk_tool_name = "Read".into();
+        tc.kind = model::ToolKind::Read;
+        tc.locations = vec![model::ToolCallLocation::new("source.rs")];
+        tc.content = vec![model::ToolCallContent::from("fn main() {}\n".repeat(2000))];
+        app.transcript.messages.push(assistant_blocks_message(vec![
+            MessageBlock::Text(TextBlock::from_complete("FIRST")),
+            tool,
+            MessageBlock::Text(TextBlock::from_complete("LAST")),
+        ]));
+        let mut cursor = super::LiveRowsCursor::new(std::time::Instant::now());
+        let first = cursor
+            .next(&mut app, 80, &BTreeSet::new(), &super::LayoutControl::uninterrupted())
+            .unwrap();
+        assert!(first.rows().iter().any(|row| row.to_string().contains("FIRST")));
+        assert!(!first.rows().iter().any(|row| row.to_string().contains("LAST")));
+        let MessageBlock::ToolCall(tc) = &app.transcript.messages[0].blocks[1] else {
+            unreachable!()
+        };
+        assert!(
+            tc.cache.cached_bytes() == 0,
+            "the following tool must not be laid out before the ready text is returned"
+        );
+        let checks = std::cell::Cell::new(0);
+        let resize = || {
+            checks.set(checks.get() + 1);
+            checks.get() > 20
+        };
+        let control = super::LayoutControl::new(&resize);
+        while cursor.next(&mut app, 80, &BTreeSet::new(), &control).is_some() {}
+        assert!(control.cancelled(), "resize must interrupt the file preview");
+        let fresh = serialize_live_rows(&mut app, 31);
+        assert!(fresh.iter().all(|row| row.width() <= 31));
+        for marker in ["FIRST", "LAST"] {
+            assert_eq!(fresh.iter().filter(|row| row.to_string().contains(marker)).count(), 1);
+        }
+    }
+
+    #[test]
+    fn hiding_a_tool_after_its_title_cancels_replay_before_its_body() {
+        let mut app = App::test_default();
+        let mut tool = tool_call_block("hidden-mid-replay", false);
+        let MessageBlock::ToolCall(tc) = &mut tool else { unreachable!() };
+        tc.content = vec![model::ToolCallContent::from("STALE BODY")];
+        app.transcript.messages.push(assistant_blocks_message(vec![tool]));
+        let mut cursor = super::LiveRowsCursor::new(std::time::Instant::now());
+        let control = super::LayoutControl::new(&|| false);
+        let title = cursor.next(&mut app, 80, &BTreeSet::new(), &control).unwrap();
+        assert!(!title.rows().is_empty());
+        assert!(!title.rows().iter().any(|row| row.to_string().contains("STALE BODY")));
+        let MessageBlock::ToolCall(tc) = &mut app.transcript.messages[0].blocks[0] else {
+            unreachable!()
+        };
+        tc.parent_tool_use_id = Some("parent-agent".into());
+        tc.cache.invalidate();
+        assert!(cursor.next(&mut app, 80, &BTreeSet::new(), &control).is_none());
+        assert!(control.cancelled());
+        assert!(
+            !serialize_live_rows(&mut app, 80)
+                .iter()
+                .any(|row| row.to_string().contains("STALE BODY"))
+        );
+    }
+
+    #[test]
+    fn interrupted_large_message_discards_partial_layout_and_restarts_at_new_width() {
+        use std::cell::Cell;
+        let source =
+            format!("```text\nFIRST\n{}LAST\n```", "a line of source content\n".repeat(2000));
+        let mut app = App::test_default();
+        let block = TextBlock::from_complete(&source);
+        let id = block.id;
+        app.transcript.messages.push(assistant_blocks_message(vec![MessageBlock::Text(block)]));
+        let checks = Cell::new(0);
+        let resize = || {
+            checks.set(checks.get() + 1);
+            checks.get() > 200
+        };
+        let control = super::LayoutControl::new(&resize);
+        let mut cursor = super::LiveRowsCursor::new(std::time::Instant::now());
+        while cursor.next(&mut app, 80, &BTreeSet::new(), &control).is_some() {}
+        assert!(control.cancelled(), "resize must be observed inside the message");
+
+        let fresh =
+            serialize_live_rows_with_boundaries_excluding(&mut app, 31, &BTreeSet::new(), None);
+        let text = fresh.rows().iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(text.iter().filter(|row| code_cell(row) == "FIRST").count(), 1);
+        assert_eq!(text.iter().filter(|row| code_cell(row) == "LAST").count(), 1);
+        assert!(fresh.rows().iter().all(|row| row.width() <= 31));
+        let MessageBlock::Text(block) = &app.transcript.messages[0].blocks[0] else {
+            panic!("text source")
+        };
+        assert_eq!(block.id, id);
+        assert_eq!(block.text, source);
+    }
+
     use super::{
         LiveRowBoundaryKind, LiveRowSegment, SerializedLiveRows, serialize_live_rows_at,
         serialize_live_rows_with_boundaries_excluding,
@@ -1486,8 +1758,8 @@ mod tests {
     }
     use crate::agent::model;
     use crate::app::{
-        App, AppStatus, BlockCache, ChatMessage, ChatMessageId, HistoryOutputId, MessageBlock,
-        MessageRole, TextBlock, TextBlockSpacing, ToolCallInfo,
+        App, AppStatus, ChatMessage, ChatMessageId, HistoryOutputId, MessageBlock, MessageRole,
+        TextBlock, TextBlockSpacing, ToolCallInfo,
     };
     use ratatui::text::Line;
     use std::collections::BTreeSet;
@@ -1514,7 +1786,7 @@ mod tests {
     }
 
     fn serialize_all_rows_with_boundaries(app: &mut App, width: u16) -> SerializedLiveRows {
-        serialize_live_rows_with_boundaries_excluding(app, width, &BTreeSet::new())
+        serialize_live_rows_with_boundaries_excluding(app, width, &BTreeSet::new(), None)
     }
 
     fn live_segment(start_row: usize, end_row: usize, commit_ready: bool) -> LiveRowSegment {
@@ -1724,7 +1996,7 @@ mod tests {
         assert!(
             !excluded.contains(&HistoryOutputId::AssistantPadding(app.transcript.messages[0].id))
         );
-        let tail = serialize_live_rows_with_boundaries_excluding(&mut app, 40, &excluded);
+        let tail = serialize_live_rows_with_boundaries_excluding(&mut app, 40, &excluded, None);
         assert!(
             !line_texts(tail.rows())
                 .iter()
@@ -1732,7 +2004,7 @@ mod tests {
         );
         assert!(line_texts(tail.rows()).iter().any(|row| row == "   Streaming tail"));
         app.status = AppStatus::Ready;
-        let complete = serialize_live_rows_with_boundaries_excluding(&mut app, 40, &excluded);
+        let complete = serialize_live_rows_with_boundaries_excluding(&mut app, 40, &excluded, None);
         assert_eq!(complete.stable_row_count(), complete.rows().len());
         let padding = complete
             .segments()
@@ -1784,6 +2056,7 @@ mod tests {
         };
         tool.title = title.to_owned();
         tool.sdk_tool_name = sdk_tool_name.to_owned();
+        tool.kind = crate::app::test_support::test_tool_kind(sdk_tool_name);
         block
     }
 
@@ -1864,7 +2137,7 @@ mod tests {
 
         let confirmed: BTreeSet<_> =
             restored.segments().iter().flat_map(|segment| segment.ids.iter().cloned()).collect();
-        let live = serialize_live_rows_with_boundaries_excluding(&mut app, 100, &confirmed);
+        let live = serialize_live_rows_with_boundaries_excluding(&mut app, 100, &confirmed, None);
         assert!(live.rows().is_empty(), "confirmed tool titles must not reappear in live output");
     }
 
@@ -1891,26 +2164,9 @@ mod tests {
         focused_question: bool,
     ) -> MessageBlock {
         let mut tool = ToolCallInfo {
-            id: id.to_owned(),
-            source_message_uuids: Vec::new(),
             title: "Child Tool".to_owned(),
-            sdk_tool_name: "Bash".to_owned(),
-            raw_input: None,
-            raw_input_bytes: 0,
-            locations: Vec::new(),
-            output_metadata: None,
-            task_metadata: None,
-            status,
-            content: Vec::new(),
-            hidden,
-            terminal_id: None,
-            terminal_command: None,
-            terminal_output: None,
-            terminal_output_len: 0,
-            cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
-            history: crate::app::ToolCallHistory::Live,
+            parent_tool_use_id: (hidden).then(|| "parent-agent".to_owned()),
+            ..crate::app::test_support::named_tool_call_info(id, "Bash", status)
         };
 
         if focused_permission {
@@ -2029,6 +2285,94 @@ mod tests {
                 .join(" ");
             assert_eq!(reply, "live reply");
         }
+    }
+
+    fn assistant_content_rows(app: &mut App, width: u16) -> (Vec<Line<'static>>, Vec<String>) {
+        let rows = serialize_live_rows(app, width);
+        let text = line_texts(&rows)
+            .into_iter()
+            .map(|row| row.chars().skip(3).collect::<String>())
+            .collect::<Vec<_>>();
+        (rows, text)
+    }
+
+    #[test]
+    fn assistant_markdown_shows_parsed_headings_and_verbatim_code_blocks() {
+        let source = concat!(
+            "## Setup\n\n",
+            "Run this first:\nthen continue\n\n",
+            "```bash\n#!/usr/bin/env bash\n# install deps\n  npm ci\n```\n\n",
+            "1. Then check\n\n",
+            "   ```sh\n   # nested\n   ```\n\n",
+            "   | Name | Value |\n   | --- | --- |\n   | Alpha | Beta |",
+        );
+        let mut app = App::test_default();
+        app.transcript.messages.push(assistant_text_message(source));
+        let (rows, text) = assistant_content_rows(&mut app, 80);
+
+        let heading = text.iter().position(|row| row == "Setup").expect("heading row");
+        assert_eq!(
+            text[heading..heading + 10],
+            [
+                "Setup",
+                "",
+                "Run this first:",
+                "then continue",
+                "",
+                "  \u{258e} bash",
+                "  \u{258e} #!/usr/bin/env bash",
+                "  \u{258e} # install deps",
+                "  \u{258e}   npm ci",
+                "",
+            ]
+        );
+        assert!(
+            rows[heading]
+                .spans
+                .iter()
+                .filter(|span| span.content.contains("Setup"))
+                .all(|span| span.style.add_modifier.contains(ratatui::style::Modifier::BOLD)),
+            "heading lost its style"
+        );
+        assert!(!text.iter().any(|row| row.contains("##")), "{text:?}");
+
+        let body_column = text
+            .iter()
+            .find_map(|row| row.find("1. Then check"))
+            .map(|column| column + 3)
+            .expect("list item");
+        assert!(
+            text.iter().any(|row| row == "# nested"),
+            "nested code lost its own line: {text:?}"
+        );
+        let header = text.iter().find(|row| row.contains("Name")).expect("table header");
+        let table_row = text.iter().find(|row| row.contains("Alpha")).expect("table row");
+        assert!(table_row.contains("Beta"), "table cells split across rows: {text:?}");
+        assert_eq!(header.find('│'), Some(body_column), "table left its list: {text:?}");
+        assert_eq!(header.find('│'), table_row.find('│'), "table columns shifted: {text:?}");
+
+        let MessageBlock::Text(block) = &app.transcript.messages[0].blocks[0] else {
+            panic!("expected assistant text");
+        };
+        assert_eq!(block.text, source);
+    }
+
+    #[test]
+    fn assistant_code_blocks_wrap_inside_the_message_column() {
+        let code = "let value = compute_something_long(alpha, beta, gamma);";
+        let mut app = App::test_default();
+        app.transcript.messages.push(assistant_text_message(&format!("```rust\n{code}\n```")));
+        let (rows, text) = assistant_content_rows(&mut app, 30);
+
+        assert!(rows.iter().all(|row| crate::ui::wrap::line_display_width(row) <= 30));
+        let label = text.iter().position(|row| row == "  \u{258e} rust").expect("language label");
+        let body = text[label + 1..]
+            .iter()
+            .take_while(|row| !row.is_empty())
+            .map(|row| row.trim_start_matches("  \u{258e} ").to_owned())
+            .collect::<Vec<_>>();
+        assert!(body.len() > 1, "long code must wrap: {text:?}");
+        assert_eq!(body.concat().replace(' ', ""), code.replace(' ', ""));
     }
 
     #[test]
@@ -2150,9 +2494,10 @@ mod tests {
         };
         tool.title = "Deferred web fetch".to_owned();
         tool.sdk_tool_name = "WebFetch".to_owned();
+        tool.kind = model::ToolKind::Fetch;
         app.transcript.messages.push(assistant_blocks_message(vec![block]));
         app.index_tool_call("web-1".to_owned(), 0, 0);
-        app.sync_tool_call_history("web-1");
+        app.sync_tool_call_history(0, 0);
         app.status = AppStatus::Ready;
 
         let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
@@ -2167,7 +2512,7 @@ mod tests {
         tool.status = model::ToolCallStatus::Completed;
         tool.content = vec![model::ToolCallContent::from("Actual web output")];
         tool.invalidate_render_cache();
-        app.sync_tool_call_history("web-1");
+        app.sync_tool_call_history(0, 0);
         let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
         assert_eq!(serialized.stable_row_count(), serialized.rows().len());
         let rows = line_texts(serialized.rows());
@@ -2331,7 +2676,14 @@ mod tests {
 
         assert_eq!(
             line_texts(&rows),
-            vec!["", " ●   ▎ a  b  c  d  e  f", "     ▎   g  h", "     ▎ exactly-16-cells", ""]
+            vec![
+                "",
+                " ●   ▎ code",
+                "     ▎ a  b  c  d  e  f",
+                "     ▎   g  h",
+                "     ▎ exactly-16-cells",
+                ""
+            ]
         );
     }
 
@@ -2371,7 +2723,7 @@ mod tests {
         ]);
 
         let serialized =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 120, &excluded_ids);
+            serialize_live_rows_with_boundaries_excluding(&mut app, 120, &excluded_ids, None);
         let text = line_texts(serialized.rows());
 
         assert_eq!(
@@ -2418,7 +2770,7 @@ mod tests {
             .flat_map(|segment| segment.ids.iter().cloned())
             .collect::<BTreeSet<_>>();
         let remaining =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 180, &committed_ids);
+            serialize_live_rows_with_boundaries_excluding(&mut app, 180, &committed_ids, None);
         let remaining_text = line_texts(remaining.rows());
 
         assert_eq!(serialized.stable_row_count(), 0);
@@ -2433,7 +2785,135 @@ mod tests {
     }
 
     #[test]
-    fn live_assistant_ordered_list_wraps_continuation_with_hanging_indent() {
+    fn parsed_markdown_handoffs_keep_rows_together_through_completion_and_resize() {
+        for (first, second) in [
+            ("Name | Value\n- | -\nred | one\n", "blue | two\n"),
+            ("Name | Value\n--- | ---\nred\n", "blue\n"),
+            ("> Name | Value\n> --- | ---\n> red | one\n", "> blue | two\n"),
+            ("````md\n```\nName | Value\n", "- | -\nred | one\n````"),
+        ] {
+            let first = TextBlock::from_complete(first);
+            let second = TextBlock::from_complete(second);
+            let block_ids = [HistoryOutputId::Block(first.id), HistoryOutputId::Block(second.id)];
+            let source = format!("{}{}", first.text, second.text);
+            let mut streamed = App::test_default();
+            streamed.transcript.messages.push(assistant_blocks_message(vec![
+                MessageBlock::Text(first),
+                MessageBlock::Text(second),
+            ]));
+            streamed.bind_active_turn_assistant(0);
+            let mut whole = App::test_default();
+            whole.transcript.messages.push(assistant_text_message(&source));
+            whole.bind_active_turn_assistant(0);
+            for running in [true, false] {
+                streamed.status = if running { AppStatus::Running } else { AppStatus::Ready };
+                whole.status = if running { AppStatus::Running } else { AppStatus::Ready };
+                for width in [24, 80, 24] {
+                    let actual = serialize_all_rows_with_boundaries(&mut streamed, width);
+                    let expected = serialize_all_rows_with_boundaries(&mut whole, width);
+                    assert_eq!(
+                        line_texts(actual.rows()),
+                        line_texts(expected.rows()),
+                        "{source:?}"
+                    );
+                    let text_segments = actual
+                        .segments()
+                        .iter()
+                        .filter(|segment| segment.kind == LiveRowBoundaryKind::AssistantText)
+                        .collect::<Vec<_>>();
+                    assert_eq!(text_segments.len(), 1, "one block must have one render owner");
+                    assert!(block_ids.iter().all(|id| text_segments[0].ids.contains(id)));
+                    if running {
+                        assert_eq!(actual.stable_row_count(), 0, "context must stay mutable");
+                    } else {
+                        assert_eq!(actual.stable_row_count(), actual.rows().len());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn paragraph_gap_stays_with_the_table_after_an_empty_quote_prefix() {
+        let first = TextBlock::from_complete("Introduction.\n\n")
+            .with_trailing_spacing(TextBlockSpacing::ParagraphBreak);
+        let first_id = first.id;
+        let table = TextBlock::from_complete(">");
+        let table_id = table.id;
+        let mut app = App::test_default();
+        app.transcript.messages.push(assistant_blocks_message(vec![
+            MessageBlock::Text(first),
+            MessageBlock::Text(table),
+        ]));
+        app.bind_active_turn_assistant(0);
+        app.status = AppStatus::Running;
+        let initial = serialize_all_rows_with_boundaries(&mut app, 36);
+        let committed = initial
+            .segments()
+            .iter()
+            .filter(|segment| segment.commit_ready)
+            .flat_map(|segment| segment.ids.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        assert!(committed.contains(&HistoryOutputId::Block(first_id)));
+        assert!(!committed.contains(&HistoryOutputId::Block(table_id)));
+        let MessageBlock::Text(table) = &mut app.transcript.messages[0].blocks[1] else {
+            panic!("table block")
+        };
+        table.text = "> Name | Value\n> --- | ---\n> red | one\n".to_owned();
+        table.cache.invalidate();
+
+        let live = serialize_live_rows_with_boundaries_excluding(&mut app, 36, &committed, None);
+        let table = live
+            .segments()
+            .iter()
+            .find(|segment| segment.ids.contains(&HistoryOutputId::Block(table_id)))
+            .expect("live table segment");
+        let rows = live.segment_rows(table).unwrap();
+        assert!(super::line_is_blank(&rows[0]), "the table must own its leading paragraph gap");
+        assert!(
+            rows.iter().any(|row| line_text(row).contains("red") && line_text(row).contains("one"))
+        );
+    }
+
+    #[test]
+    fn a_closed_markdown_block_releases_scrollback_before_an_independent_pipe_paragraph() {
+        for (source, spacing) in [
+            ("Name | Value\n--- | ---\nred | one\n", TextBlockSpacing::ParagraphBreak),
+            ("Name | Value\n--- | ---\nred | literal **\n", TextBlockSpacing::ParagraphBreak),
+            ("Name | Value\n--- | ---\nred | literal **", TextBlockSpacing::ParagraphBreak),
+            ("One | Two\n--- | --- | ---\nred | one | two\n", TextBlockSpacing::None),
+            ("````md\n```\nliteral **\n````\n", TextBlockSpacing::None),
+            ("````md\n```\nliteral **\n````", TextBlockSpacing::None),
+        ] {
+            let mut app = App::test_default();
+            let first = TextBlock::from_complete(source).with_trailing_spacing(spacing);
+            let first_id = first.id;
+            app.transcript.messages.push(assistant_blocks_message(vec![
+                MessageBlock::Text(first),
+                MessageBlock::Text(TextBlock::from_complete("ordinary | paragraph")),
+            ]));
+            app.bind_active_turn_assistant(0);
+            app.status = AppStatus::Running;
+
+            let rows = serialize_all_rows_with_boundaries(&mut app, 80);
+            let table = rows
+                .segments()
+                .iter()
+                .find(|segment| segment.ids.contains(&HistoryOutputId::Block(first_id)))
+                .expect("table segment");
+            assert!(table.commit_ready, "independent pipe text must not hold the prefix");
+            assert!(table.end_row <= rows.stable_row_count());
+            assert!(
+                rows.segment_rows(table)
+                    .unwrap()
+                    .iter()
+                    .all(|row| !line_text(row).contains("ordinary"))
+            );
+        }
+    }
+
+    #[test]
+    fn live_assistant_ordered_list_wraps_without_losing_content() {
         let mut app = App::test_default();
         app.transcript.messages.push(assistant_text_message(
             "3. Keymap survey - mapping the keymap system, focus dispatch, and help generation.",
@@ -2443,12 +2923,13 @@ mod tests {
         let text = line_texts(&rows);
 
         assert!(
-            text.iter().any(|line| line.starts_with(" ●   3. Keymap survey")),
+            text.iter().any(|line| line.starts_with(" ● 3. Keymap survey")),
             "missing ordered list prefix: {text:?}"
         );
+        let content = text.iter().map(|line| line.trim()).collect::<Vec<_>>().join(" ");
         assert!(
-            text.iter().any(|line| line.starts_with("        ") && !line.trim().is_empty()),
-            "list continuation lost hanging indent: {text:?}"
+            content.contains("mapping the keymap system, focus dispatch, and help generation."),
+            "{text:?}"
         );
     }
 
@@ -2471,12 +2952,13 @@ mod tests {
             .filter(|segment| segment.commit_ready)
             .flat_map(|segment| segment.ids.iter().cloned())
             .collect::<BTreeSet<_>>();
-        let remaining = serialize_live_rows_with_boundaries_excluding(&mut app, 38, &committed_ids);
+        let remaining =
+            serialize_live_rows_with_boundaries_excluding(&mut app, 38, &committed_ids, None);
         let remaining_text = line_texts(remaining.rows());
 
         assert_eq!(serialized.stable_row_count(), 0);
         assert!(
-            remaining_text.iter().any(|line| line.starts_with(" ●   3. Keymap survey")),
+            remaining_text.iter().any(|line| line.starts_with(" ● 3. Keymap survey")),
             "missing ordered list prefix: {remaining_text:?}"
         );
     }
@@ -2543,7 +3025,8 @@ mod tests {
             .filter(|segment| segment.commit_ready)
             .flat_map(|segment| segment.ids.iter().cloned())
             .collect::<BTreeSet<_>>();
-        let remaining = serialize_live_rows_with_boundaries_excluding(&mut app, 80, &committed_ids);
+        let remaining =
+            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &committed_ids, None);
         let remaining_text = line_texts(remaining.rows());
 
         assert_eq!(serialized.stable_row_count(), 0);
@@ -2605,6 +3088,7 @@ mod tests {
         };
         tool.title = "Running Tool".to_owned();
         tool.sdk_tool_name = "CustomTool".to_owned();
+        tool.kind = model::ToolKind::Other;
         let MessageBlock::ToolCall(tool) = &mut done else {
             unreachable!("named_tool_call_block returns a tool call");
         };
@@ -2622,7 +3106,7 @@ mod tests {
         ]);
 
         let serialized =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 120, &excluded_ids);
+            serialize_live_rows_with_boundaries_excluding(&mut app, 120, &excluded_ids, None);
         let text = line_texts(serialized.rows());
 
         assert!(!text.iter().any(|line| line.starts_with(" ●")));
@@ -2841,7 +3325,8 @@ mod tests {
         let excluded =
             BTreeSet::from([HistoryOutputId::AssistantLabel(app.transcript.messages[0].id)]);
         app.config.snapshot = None;
-        let after_enable = serialize_live_rows_with_boundaries_excluding(&mut app, 80, &excluded);
+        let after_enable =
+            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &excluded, None);
         assert!(!line_texts(after_enable.rows()).iter().any(|row| row.starts_with(" ●")));
         assert!(line_texts(after_enable.rows()).iter().any(|row| row == "   Actual response"));
         app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
@@ -2892,13 +3377,14 @@ mod tests {
             .filter(|segment| segment.commit_ready)
             .flat_map(|segment| segment.ids.iter().cloned())
             .collect();
-        let remaining = serialize_live_rows_with_boundaries_excluding(&mut app, 120, &excluded);
+        let remaining =
+            serialize_live_rows_with_boundaries_excluding(&mut app, 120, &excluded, None);
         assert_eq!(remaining.stable_row_count(), 0);
         assert!(line_texts(remaining.rows()).iter().any(|row| row.contains("Thinking…")));
         assert!(!line_texts(remaining.rows()).iter().any(|row| row.contains("Child Tool")));
         app.status = AppStatus::Running;
         assert!(
-            serialize_live_rows_with_boundaries_excluding(&mut app, 120, &excluded)
+            serialize_live_rows_with_boundaries_excluding(&mut app, 120, &excluded, None)
                 .rows()
                 .iter()
                 .all(|row| line_text(row).trim().is_empty())
@@ -3090,7 +3576,13 @@ mod tests {
     }
 
     fn rows_at(app: &mut App, now: std::time::Instant) -> SerializedLiveRows {
-        serialize_live_rows_at(app, 120, &BTreeSet::new(), now)
+        serialize_live_rows_at(
+            app,
+            120,
+            &BTreeSet::new(),
+            now,
+            &super::LayoutControl::uninterrupted(),
+        )
     }
 
     fn connecting_app(clock: &CrabClock) -> App {
@@ -3190,7 +3682,13 @@ mod tests {
         let clock = CrabClock::new();
         let mut app = connected_app(&clock);
 
-        let narrow = serialize_live_rows_at(&mut app, 36, &BTreeSet::new(), clock.at(0));
+        let narrow = serialize_live_rows_at(
+            &mut app,
+            36,
+            &BTreeSet::new(),
+            clock.at(0),
+            &super::LayoutControl::uninterrupted(),
+        );
 
         assert!(crab_rows(narrow.rows()).is_empty(), "no crab column at 36 columns");
         assert_eq!(narrow.stable_row_count(), narrow.rows().len(), "nothing to wait for");

@@ -193,7 +193,7 @@ fn turn_text(
     let heading_style = Style::default()
         .fg(if selected { theme::accent() } else { theme::tertiary() })
         .add_modifier(Modifier::BOLD);
-    let plain = super::highlight::strip_ansi(&target.input_text);
+    let plain = super::terminal_output::strip_ansi(&target.input_text);
     let plain = plain
         .chars()
         .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
@@ -406,7 +406,7 @@ fn display_primary(session: &RecentSessionInfo) -> String {
     format!("{} - {}{size}", format_relative_age(session.last_modified_ms), session_title(session))
 }
 
-fn fit_with_ellipsis(value: &str, max_width: usize) -> String {
+pub(super) fn fit_with_ellipsis(value: &str, max_width: usize) -> String {
     if UnicodeWidthStr::width(value) <= max_width {
         return value.to_owned();
     }

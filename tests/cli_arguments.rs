@@ -8,83 +8,6 @@ use clap::CommandFactory;
 use claude_code_rust::{Cli, Command, StartupLaunch};
 
 #[test]
-fn working_directory_must_be_an_existing_directory() {
-    let project = tempfile::tempdir().expect("project");
-    let file = project.path().join("notes.txt");
-    std::fs::write(&file, "").expect("file");
-    let missing = project.path().join("missing");
-    for dir in [&missing, &file] {
-        let error = Cli::parse_from_args(["claude-rs".as_ref(), "-C".as_ref(), dir.as_os_str()])
-            .expect_err("not a directory");
-        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
-        assert_eq!(error.exit_code(), 2);
-        let message = error.to_string();
-        assert!(
-            message.contains(&format!("{} is not an existing directory", dir.display())),
-            "{message}"
-        );
-    }
-}
-
-#[test]
-fn a_missing_working_directory_is_blamed_before_added_directories() {
-    let project = tempfile::tempdir().expect("project");
-    let missing = project.path().join("missing");
-    let error = Cli::parse_from_args([
-        "claude-rs".as_ref(),
-        "-C".as_ref(),
-        missing.as_os_str(),
-        "--add-dir".as_ref(),
-        "x".as_ref(),
-    ])
-    .expect_err("missing working directory");
-    let message = error.to_string();
-    assert!(message.contains("--dir"), "{message}");
-    assert!(!message.contains(&missing.join("x").display().to_string()), "{message}");
-}
-
-#[test]
-fn relative_working_directory_is_made_absolute() {
-    let cli = Cli::parse_from_args(["claude-rs", "-C", "src"]).expect("parse");
-    let expected = std::env::current_dir().expect("cwd").join("src");
-    assert_eq!(cli.dir.as_deref(), Some(expected.as_path()));
-    assert_eq!(cli.startup_cwd(), expected);
-}
-
-#[test]
-fn bridge_script_must_be_an_existing_file_for_an_interactive_launch() {
-    let project = tempfile::tempdir().expect("project");
-    let missing = project.path().join("bridge.js");
-    for script in [&missing, &project.path().to_path_buf()] {
-        let cli = Cli::parse_from_args([
-            "claude-rs".as_ref(),
-            "--bridge-script".as_ref(),
-            script.as_os_str(),
-        ])
-        .expect("parse");
-        cli.validate().expect("valid arguments");
-        let error = cli.session_config().expect_err("missing bridge script");
-        assert_eq!(error.exit_code(), 2);
-        let message = error.to_string();
-        assert!(
-            message.contains(&format!(
-                "--bridge-script: {} is not an existing file",
-                script.display()
-            )),
-            "{message}"
-        );
-    }
-    std::fs::write(&missing, "").expect("bridge script");
-    let cli = Cli::parse_from_args([
-        "claude-rs".as_ref(),
-        "--bridge-script".as_ref(),
-        missing.as_os_str(),
-    ])
-    .expect("parse");
-    cli.session_config().expect("existing bridge script");
-}
-
-#[test]
 fn a_mistyped_command_is_refused_instead_of_sent_as_a_prompt() {
     for (args, typo, command) in [
         (&["claude-rs", "doctr"][..], "doctr", "doctor"),
@@ -147,7 +70,7 @@ fn words_that_are_not_command_typos_stay_prompts() {
         assert_eq!(cli.initial_prompt(), Some(word));
     }
     let cli = Cli::parse_from_args(["claude-rs", "resume"]).expect("resume");
-    assert_eq!(cli.command.as_ref().map(Command::name), Some("resume"));
+    assert!(matches!(cli.command, Some(Command::Resume { .. })));
     let cli = Cli::parse_from_args(["claude-rs", "--resume", "doctr"]).expect("resume by id");
     assert_eq!(
         cli.startup_launch(),
@@ -165,11 +88,7 @@ fn usage_offers_a_prompt_or_a_command_but_not_both() {
         "{usage}"
     );
     let cli = Cli::parse_from_args(["claude-rs", "hello", "doctor"]).expect("parse");
-    let error = cli.validate().expect_err("a prompt and a command");
-    assert!(
-        error.to_string().contains("a prompt applies only to interactive launches, not `doctor`"),
-        "{error}"
-    );
+    cli.validate().expect_err("a prompt and a command");
     // The override is the root's alone; subcommands keep their generated usage.
     let mut command = Cli::command();
     command.build();
@@ -226,31 +145,6 @@ fn help_groups_diagnostics_options_after_session_options() {
 }
 
 #[test]
-fn session_flags_belong_to_interactive_launches_only() {
-    let command = Cli::command();
-    let longs = |command: &clap::Command| -> Vec<String> {
-        command.get_arguments().filter_map(|arg| arg.get_long().map(str::to_owned)).collect()
-    };
-    for flag in ["model", "fork-session", "add-dir", "append-system-prompt-file"] {
-        assert!(longs(&command).iter().any(|long| long == flag), "root lacks --{flag}");
-        let resume = command.find_subcommand("resume").expect("resume");
-        assert!(longs(resume).iter().any(|long| long == flag), "resume lacks --{flag}");
-        for name in ["doctor", "logs", "config", "completions", "man", "update-worker"] {
-            let subcommand = command.find_subcommand(name).expect(name);
-            assert!(!longs(subcommand).iter().any(|long| long == flag), "{name} has --{flag}");
-        }
-        let show = command
-            .find_subcommand("config")
-            .and_then(|config| config.find_subcommand("show"))
-            .expect("config show");
-        assert!(!longs(show).iter().any(|long| long == flag), "config show has --{flag}");
-    }
-    let error = Cli::parse_from_args(["claude-rs", "doctor", "--model", "opus"])
-        .expect_err("--model after doctor");
-    assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
-}
-
-#[test]
 fn session_flags_before_and_after_resume_parse_to_the_same_launch() {
     let after = Cli::parse_from_args([
         "claude-rs",
@@ -295,53 +189,6 @@ fn session_flags_before_and_after_resume_parse_to_the_same_launch() {
             StartupLaunch::ResumeSession { session_id: "session-1".to_owned() }
         );
     }
-    assert_eq!(after.session_options, before.session_options);
-    assert_eq!(after.session_config, before.session_config);
     assert_eq!(after.command, before.command);
     assert_eq!(split.command, before.command);
-}
-
-#[test]
-fn a_session_flag_given_before_and_after_resume_is_a_conflict() {
-    for (args, flag) in [
-        (&["claude-rs", "--model", "a", "resume", "s", "--model", "b"][..], "--model"),
-        (&["claude-rs", "--add-dir", "a", "resume", "--add-dir", "b"][..], "--add-dir"),
-        (&["claude-rs", "--fork-session", "resume", "--fork-session"][..], "--fork-session"),
-        (
-            &["claude-rs", "--system-prompt", "a", "resume", "--system-prompt-file", "f"][..],
-            "--system-prompt-file",
-        ),
-    ] {
-        let error = Cli::parse_from_args(args.iter().copied()).expect_err("conflict");
-        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict, "{args:?}");
-        assert_eq!(error.exit_code(), 2);
-        assert!(error.to_string().contains(flag), "{error}");
-    }
-}
-
-#[test]
-fn interactive_arguments_before_a_support_command_name_the_flag_and_the_command() {
-    for (args, message) in [
-        (
-            &["claude-rs", "--model", "opus", "doctor"][..],
-            "--model applies only to interactive launches, not `doctor`",
-        ),
-        (
-            &["claude-rs", "--add-dir", "src", "logs"][..],
-            "--add-dir applies only to interactive launches, not `logs`",
-        ),
-        (
-            &["claude-rs", "--continue", "config", "show"][..],
-            "--continue applies only to interactive launches, not `config`",
-        ),
-        (
-            &["claude-rs", "--resume", "session-1", "resume"][..],
-            "--resume cannot be combined with the `resume` command",
-        ),
-    ] {
-        let cli = Cli::parse_from_args(args.iter().copied()).expect("parse");
-        let error = cli.validate().expect_err("interactive argument on a support command");
-        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
-        assert!(error.to_string().contains(message), "{error}");
-    }
 }

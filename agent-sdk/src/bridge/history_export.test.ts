@@ -115,7 +115,7 @@ test("export keeps the beginning and counts what a very large session leaves out
   assert.equal(last.omitted_updates, total - 2);
 });
 
-test("export_session_history is parsed and refused for an unknown session", async () => {
+test("export_session_history is parsed and an unknown session fails the export request", async () => {
   const parsed = parseCommandEnvelope(
     JSON.stringify({ request_id: "req-1", command: "export_session_history", session_id: "s1" }),
   );
@@ -140,7 +140,16 @@ test("export_session_history is parsed and refused for an unknown session", asyn
   } finally {
     restore();
   }
+  // The failure travels on the request-scoped export event, never as a generic slash error.
   assert.deepEqual(writes.map(line => JSON.parse(line)), [
-    { request_id: "req-missing", event: "slash_error", session_id: "missing", message: "unknown session: missing" },
+    {
+      request_id: "req-missing",
+      event: "session_history_export",
+      session_id: "missing",
+      updates: [],
+      last: true,
+      omitted_updates: 0,
+      error: "unknown session: missing",
+    },
   ]);
 });

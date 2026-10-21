@@ -13,8 +13,7 @@ test("every control has exactly one pane and structured metadata survives the cr
   assert.deepEqual(fixture.categories, SETTINGS_CATEGORIES);
   for (const setting of catalog) {
     assert.equal(SETTINGS_CATEGORIES.filter(category => category.id === setting.category).length, 1, setting.id);
-    // The footer uses the host's field picker rather than the SDK settings form.
-    if ((setting.kind === "json" || setting.kind === "string_list") && setting.id !== "presentation.footer") assert.ok(setting.editor, setting.id);
+    if (setting.kind === "json" || setting.kind === "string_list") assert.ok(setting.editor, setting.id);
   }
   for (const setting of fixture.catalog) assert.deepEqual(setting, catalog.find(candidate => candidate.id === setting.id));
   const hooks = catalog.find(setting => setting.id === "hooks")?.editor;
@@ -32,6 +31,39 @@ test("all offered hook action forms validate through the pinned SDK without exec
     { type: "mcp_tool", server: "configured-server", tool: "inspect", input: { file: `\${tool_input.file_path}` }, timeout: 10 },
   ];
   for (const handler of handlers) await validateSettingValue(setting, { PreToolUse: [{ matcher: "", hooks: [handler] }], Stop: [] });
+});
+
+test("failure policy is editable only on command and HTTP hooks and validated by the SDK", async () => {
+  const setting = settingsCatalog().find(setting => setting.id === "hooks");
+  const variants = setting?.editor?.item?.item?.fields?.find(field => field.key === "hooks")?.schema.item?.variants;
+  assert.ok(setting && variants);
+  for (const [type, schema] of Object.entries(variants)) {
+    const policy = schema.fields?.find(field => field.key === "onFailure");
+    if (type !== "command" && type !== "http") {
+      assert.equal(policy, undefined, type);
+      continue;
+    }
+    assert.deepEqual(policy?.schema.options, ["continue", "block"]);
+    assert.equal(policy?.required, undefined);
+    const action: Record<string, Json> = type === "command"
+      ? { type, command: "never-execute" } : { type, url: "https://example.com/hook" };
+    for (const onFailure of [undefined, "continue", "block"]) {
+      await validateSettingValue(setting, { PreToolUse: [{ hooks: [{ ...action, ...(onFailure ? { onFailure } : {}) }] }] });
+    }
+    for (const onFailure of ["ignore", true, 2, null]) {
+      await assert.rejects(validateSettingValue(setting, { PreToolUse: [{ hooks: [{ ...action, onFailure }] }] }), /cannot load/, type);
+    }
+  }
+});
+
+test("idle compaction is an optional scoped preference in Memory with next-session application", () => {
+  const setting = settingsCatalog().find(setting => setting.id === "idleCompaction");
+  assert.ok(setting);
+  assert.equal(setting.category, "memory");
+  assert.equal(setting.kind, "boolean");
+  assert.deepEqual(setting.options, [true, false]);
+  assert.deepEqual(setting.writable_scopes, ["user", "project", "local"]);
+  assert.equal(setting.application, "next_session");
 });
 
 test("sandbox forms expose the supported native fields and their candidate values validate", async () => {
