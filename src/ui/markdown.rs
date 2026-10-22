@@ -93,10 +93,11 @@ fn render_with_tui_markdown(text: &str, width: u16, bg: Option<Color>) -> Vec<Li
             text,
             &tui_markdown::Options::new(MarkdownStyle).table_width(width),
         );
-        let lines = rendered
+        rendered
             .lines
             .into_iter()
             .map(|line| {
+                let table_row = is_table_row(&line);
                 let owned_spans: Vec<Span<'static>> = line
                     .spans
                     .into_iter()
@@ -111,25 +112,33 @@ fn render_with_tui_markdown(text: &str, width: u16, bg: Option<Color>) -> Vec<Li
                     .collect();
                 let line_style =
                     if let Some(bg_color) = bg { line.style.bg(bg_color) } else { line.style };
-                Line::from(owned_spans).style(line_style)
+                let mut line = Line::from(owned_spans).style(line_style);
+                if !table_row {
+                    shorten_link_destinations(&mut line);
+                }
+                line
             })
-            .collect();
-        shorten_link_destinations(lines)
+            .collect()
     })
 }
 
+/// A row of a `tui-markdown` table: its cells sit between `│` border spans. The column
+/// widths were measured with the full link destinations, so a shortened one would shrink the
+/// row and pull its right-hand borders out of line.
+fn is_table_row(line: &Line<'_>) -> bool {
+    let border = tui_markdown::StyleSheet::table_border(&MarkdownStyle);
+    line.spans.iter().any(|span| span.content == "\u{2502}" && span.style == border)
+}
+
 /// `tui-markdown` writes a link as its label, ` (`, the destination and `)`.
-fn shorten_link_destinations(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
-    for line in &mut lines {
-        for span_idx in 1..line.spans.len() {
-            if line.spans[span_idx - 1].content.as_ref() != " (" {
-                continue;
-            }
-            let span = &line.spans[span_idx];
-            line.spans[span_idx] = link_destination_span(span.content.as_ref(), span.style);
+fn shorten_link_destinations(line: &mut Line<'static>) {
+    for span_idx in 1..line.spans.len() {
+        if line.spans[span_idx - 1].content.as_ref() != " (" {
+            continue;
         }
+        let span = &line.spans[span_idx];
+        line.spans[span_idx] = link_destination_span(span.content.as_ref(), span.style);
     }
-    lines
 }
 
 /// A web link's destination after its label: dimmed, not underlined, and shortened to
@@ -492,6 +501,47 @@ mod tests {
         let lines = render_markdown_safe(&format!("See ({url}) for details."), None);
 
         assert!(rendered_text(&lines).join("\n").contains(url));
+    }
+
+    #[test]
+    fn a_long_link_in_a_table_cell_keeps_the_table_borders_aligned() {
+        let url = "https://example.com/a/very/long/path/that/should/not/take/the/whole/terminal";
+        let rows = document_rows(
+            &format!(
+                "See [guide]({url}).\n\n| Name | Link |\n| --- | --- |\n| Docs | [guide]({url}) |\n| Tests | short |"
+            ),
+            120,
+        );
+        let paragraph = rows.iter().find(|row| row.starts_with("See")).expect("paragraph");
+        assert!(
+            paragraph.contains('\u{2026}') && !paragraph.contains(url),
+            "a paragraph link outside the table is still shortened: {paragraph}"
+        );
+        let table: Vec<&String> = rows
+            .iter()
+            .filter(|row| row.starts_with(['\u{250c}', '\u{2502}', '\u{251c}', '\u{2514}']))
+            .collect();
+        assert_eq!(table.len(), 6, "{rows:?}");
+        let data = table.iter().find(|row| row.contains("Docs")).expect("link row");
+        assert!(data.contains(url), "the cell keeps its full destination: {data}");
+        let borders = |row: &str| -> Vec<usize> {
+            row.chars()
+                .enumerate()
+                .filter(|(_, ch)| matches!(ch, '\u{2502}' | '\u{252c}' | '\u{253c}' | '\u{2534}'))
+                .map(|(column, _)| column)
+                .collect()
+        };
+        let header = borders(table[1]);
+        assert_eq!(header.len(), 3, "{rows:?}");
+        for row in &table {
+            assert_eq!(
+                unicode_width::UnicodeWidthStr::width(row.as_str()),
+                table[0].chars().count()
+            );
+            if row.contains('\u{2502}') {
+                assert_eq!(borders(row), header, "column borders moved: {rows:?}");
+            }
+        }
     }
 
     #[test]
