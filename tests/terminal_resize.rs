@@ -3083,9 +3083,10 @@ fn bash_output_shows_sgr_colours_and_ignores_other_control_sequences() {
         }
         assert!(
             started.elapsed() < Duration::from_secs(10),
-            "Bash output never got its colours: red {:?}, orange {:?}\nraw output around it:\n{}",
+            "Bash output lost its colours: red {:?}, orange {:?}\ncells: {}\nraw from there:\n{}",
             style_at(&test, "FIXTURE_RED"),
             style_at(&test, "FIXTURE_ORANGE"),
+            row_cells(&test, "FIXTURE_RED"),
             raw_around(&test, "FIXTURE_RED"),
         );
         std::thread::sleep(Duration::from_millis(50));
@@ -3108,8 +3109,26 @@ fn raw_around(test: &TerminalTest, needle: &str) -> String {
     let raw = String::from_utf8_lossy(&captured.raw);
     let Some(at) = raw.rfind(needle) else { return format!("{needle} not in the raw output") };
     let start = raw[..at].char_indices().rev().nth(200).map_or(0, |(index, _)| index);
-    let end = raw[at..].char_indices().nth(300).map_or(raw.len(), |(index, _)| at + index);
+    let end = raw[at..].char_indices().nth(3000).map_or(raw.len(), |(index, _)| at + index);
     raw[start..end].replace('\u{1b}', "<ESC>")
+}
+
+/// Each cell of the first screen row holding `needle`, with its foreground colour.
+fn row_cells(test: &TerminalTest, needle: &str) -> String {
+    let Ok(captured) = test.output.lock() else { return String::new() };
+    let screen = captured.parser.screen();
+    let (rows, cols) = screen.size();
+    let cells = |row| (0..cols).filter_map(move |col| screen.cell(row, col));
+    let Some(row) = (0..rows).find(|&row| {
+        cells(row).map(|cell| cell.contents()).collect::<String>().contains(needle)
+    }) else {
+        return format!("{needle} not on screen");
+    };
+    cells(row)
+        .filter(|cell| cell.has_contents())
+        .map(|cell| format!("{}={:?}", cell.contents(), cell.fgcolor()))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The rows of `screen` that mention `needle`.
