@@ -3070,10 +3070,17 @@ fn style_at(test: &TerminalTest, needle: &str) -> Option<(vt100::Color, bool)> {
 #[test]
 fn bash_output_shows_sgr_colours_and_ignores_other_control_sequences() {
     let mut test = TerminalTest::start("bash-colour", 3);
-    test.wait_for("coloured Bash output", |test| style_at(test, "FIXTURE_ORANGE"));
+    // Wait for the styled cells, not only the text: a slower terminal (Windows ConPTY)
+    // can show a frame with the text before the frame that colours it.
+    let styled = |test: &TerminalTest, needle: &str| {
+        style_at(test, needle).filter(|(colour, _)| *colour != vt100::Color::Default)
+    };
+    let (red, orange) = test.wait_for("coloured Bash output", |test| {
+        Some((styled(test, "FIXTURE_RED")?, styled(test, "FIXTURE_ORANGE")?))
+    });
 
-    assert_eq!(style_at(&test, "FIXTURE_RED"), Some((vt100::Color::Idx(1), false)));
-    assert_eq!(style_at(&test, "FIXTURE_ORANGE"), Some((vt100::Color::Idx(208), true)));
+    assert_eq!(red, (vt100::Color::Idx(1), false));
+    assert_eq!(orange, (vt100::Color::Idx(208), true));
     // The hyperlink keeps its label, the cursor-up is not obeyed (" end" follows on the
     // same row) and the title text is not printed.
     let screen = test.screen();

@@ -469,7 +469,7 @@ async fn native_saves_survive_authentication_and_sdk_inspection_without_bridge_m
     use crate::agent::client::AgentConnection;
     use std::rc::Rc;
     tokio::task::LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             let (mut app, _directory) = fixture(None);
             let (connection, mut commands) = AgentConnection::test_channel();
             app.session_runtime.conn = Some(Rc::new(connection));
@@ -528,7 +528,7 @@ async fn native_saves_survive_authentication_and_sdk_inspection_without_bridge_m
                 commands.try_recv().is_err(),
                 "local preferences must not produce bridge commands"
             );
-        })
+        }))
         .await;
 }
 
