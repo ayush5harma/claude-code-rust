@@ -146,7 +146,7 @@ def main(out):
             b = vals(runs.get(("main", "claude"), []), ["startup_cpu_by_role", role])
             rows.append(f"| {role} | {cell(a, 2)} | {cell(b, 2)} |")
         L += rows + [""]
-        L += ["Ready marker: claude-rs = placeholder `Type a message` AND the `ctx` footer (engine connected); Claude Code = the `❯` input box "
+        L += ["Ready marker: claude-rs = placeholder `Type a message` AND the engine connected (a real `Session ID` on the welcome, or the context field in the footer); Claude Code = the `❯` input box "
               "(drawn only after init). `first paint` for claude-rs is the placeholder alone, which appears before the engine is connected.", ""]
         L += [f"## 2. Idle ({rc['idle_secs']:.0f} s, sampled every 1 s, starting {rc['grace_s']:.0f} s after ready)", ""]
         L += table("Idle (whole tree)", [

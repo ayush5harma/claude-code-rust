@@ -66,7 +66,10 @@ def is_ready(tool, pane):
     if "Quick safety check" in pane or "Enter to confirm" in pane:
         return False
     if tool == "claude-rs":
-        return "Type a message" in pane and re.search(r"ctx [▓░]+", pane) is not None
+        # Engine connected: the welcome shows a real session id, or the footer shows context
+        # (`Context: N%` since the 0.16 footer; the `ctx` bar on older builds).
+        connected = re.search(r"Session ID: (?!Loading)\S|Context: \d+%|ctx [▓░]+", pane)
+        return "Type a message" in pane and connected is not None
     return re.search(r"(?m)^\s*❯\s", pane) is not None
 
 
@@ -529,7 +532,7 @@ def scenario_resume(tool, a, run_idx, first_run):
                                            for k in agg(snap0)},
                          "wall_to_settle_s": (tq - t0) if tq else None}
         res["timeline"] = timeline(sess.sampler.samples, sess.t_spawn)
-        m = re.search(r"(\d+)% of (\d+)k", tx.capture(sess.name))
+        m = re.search(r"(\d+)% of (\d+)k|Context: \d+%", tx.capture(sess.name))
         res["ctx_meter_hint"] = m.group(0) if m else None     # proves a transcript was loaded, shows no content
     finally:
         res["survivors"] = sess.finish()
