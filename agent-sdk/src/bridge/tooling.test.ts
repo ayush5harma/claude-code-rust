@@ -1792,42 +1792,6 @@ test("buildToolResultFields preserves failed Read image output", () => {
   ]);
 });
 
-test("buildToolResultFields maps a text Read to the file's own lines and first line number", () => {
-  const base = createToolCall("tc-read-text", "Read", {
-    file_path: "/work/notes.md",
-    offset: 7,
-  });
-  const result = {
-    type: "text",
-    file: {
-      filePath: "/work/notes.md",
-      content: "# Title\n\n- item",
-      numLines: 3,
-      startLine: 7,
-      totalLines: 20,
-    },
-  };
-  // What the model sees: tab-separated line numbers. It must not reach the renderer.
-  const numbered = "     7\t# Title\n     8\t\n     9\t- item";
-  const fields = buildToolResultFields(
-    false,
-    [{ type: "text", text: numbered }],
-    base,
-    result,
-  );
-
-  assert.equal(fields.status, "completed");
-  assert.deepEqual(fields.content, [
-    {
-      type: "file_text",
-      path: "/work/notes.md",
-      start_line: 7,
-      text: "# Title\n\n- item",
-    },
-  ]);
-  assert.equal(fields.raw_output, undefined);
-});
-
 test("buildToolResultFields keeps numbered text when a Read result has no usable file record", () => {
   const base = createToolCall("tc-read-flat", "Read", { file_path: "a.txt" });
   const numbered = "     1\tone\n     2\ttwo";
@@ -1847,22 +1811,6 @@ test("buildToolResultFields keeps numbered text when a Read result has no usable
       { type: "content", content: { type: "text", text: numbered } },
     ]);
   }
-});
-
-test("buildToolResultFields does not map a failed Read to file_text", () => {
-  const base = createToolCall("tc-read-err", "Read", { file_path: "a.txt" });
-  const fields = buildToolResultFields(
-    true,
-    [{ type: "text", text: "File does not exist." }],
-    base,
-    {
-      type: "text",
-      file: { filePath: "a.txt", content: "one", startLine: 1 },
-    },
-  );
-
-  assert.equal(fields.status, "failed");
-  assert.equal(fields.content?.[0]?.type, "content");
 });
 
 test("buildToolResultFields renders file_unchanged Read results compactly", () => {
@@ -1903,6 +1851,55 @@ test("buildToolResultFields renders array-wrapped file_unchanged Read results co
   });
 
   assert.equal(fields.raw_output, "File unchanged: src/lib.rs");
+});
+
+test("buildToolResultFields carries Read file source and start line instead of numbered model text", () => {
+  const base = createToolCall("tc-read-source", "Read", {
+    file_path: "src/main.rs",
+    offset: 60,
+  });
+  const source = "fn main() {\n\tprintln!(\"hi\");\n}";
+  const fields = buildToolResultFields(
+    false,
+    [
+      {
+        type: "text",
+        text: "60\tfn main() {\n61\t\tprintln!(\"hi\");\n62\t}\n\n<system-reminder>internal</system-reminder>",
+      },
+    ],
+    base,
+    {
+      type: "text",
+      file: {
+        filePath: "C:\\work\\src\\main.rs",
+        content: source,
+        numLines: 3,
+        startLine: 60,
+        totalLines: 62,
+      },
+    },
+  );
+
+  assert.deepEqual(fields, {
+    status: "completed",
+    output_metadata: {
+      read: { file_path: "C:\\work\\src\\main.rs", start_line: 60 },
+    },
+    raw_output: source,
+    content: [{ type: "content", content: { type: "text", text: source } }],
+  });
+});
+
+test("buildToolResultFields keeps the SDK explanation for empty Read results", () => {
+  const base = createToolCall("tc-read-empty", "Read", { file_path: "empty.txt" });
+  const notice = "Warning: the file exists but the contents are empty.";
+  const fields = buildToolResultFields(false, notice, base, {
+    type: "text",
+    file: { filePath: "empty.txt", content: "", numLines: 0, startLine: 1, totalLines: 0 },
+  });
+
+  assert.equal(fields.raw_output, notice);
+  assert.equal(fields.output_metadata, undefined);
 });
 
 test("buildToolResultFields uses Agent output agentType as task title", () => {
@@ -2035,14 +2032,14 @@ test("buildToolResultFields renders cron outputs as structured text without raw 
   );
   assert.equal(
     createFields.raw_output,
-    "Schedule ID: schedule-1\nSchedule: Every Monday at 09:30\nRecurring: yes\nDurable: no",
+    "Schedule ID: schedule-1\nSchedule: Every Monday at 09:30\nPrompt: Send weekly status\nRecurring: yes\nDurable: no",
   );
   assert.deepEqual(createFields.content, [
     {
       type: "content",
       content: {
         type: "text",
-        text: "Schedule ID: schedule-1\nSchedule: Every Monday at 09:30\nRecurring: yes\nDurable: no",
+        text: "Schedule ID: schedule-1\nSchedule: Every Monday at 09:30\nPrompt: Send weekly status\nRecurring: yes\nDurable: no",
       },
     },
   ]);

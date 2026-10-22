@@ -43,7 +43,8 @@ fn text(value: &str) -> model::SessionUpdate {
 
 pub(super) fn assert_owner_has_no_rows(app: &mut App, owner: usize) {
     for width in [80, 12, 80] {
-        let rendered = serialize_live_rows_with_boundaries_excluding(app, width, &BTreeSet::new());
+        let rendered =
+            serialize_live_rows_with_boundaries_excluding(app, width, &BTreeSet::new(), None);
         assert!(rendered.segments().iter().all(|segment| segment.msg_idx != owner));
         assert_eq!(
             rendered.rows().len(),
@@ -90,7 +91,7 @@ fn accepted_prompt_reserves_one_invisible_owner_until_the_first_visible_event() 
 
         update(&mut app, first);
         let rendered =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new());
+            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new(), None);
         let content = rendered
             .segments()
             .iter()
@@ -120,13 +121,15 @@ fn a_complete_live_reply_without_a_stream_start_cannot_extend_committed_history(
         let previous = app.active_turn_assistant_idx().unwrap();
         let previous_id = app.transcript.messages[previous].id;
         handle_client_event(&mut app, turn_complete(None));
-        let history = serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new());
+        let history =
+            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new(), None);
         let committed =
             history.segments().iter().flat_map(|segment| segment.ids.iter().cloned()).collect();
         update(&mut app, result);
         let owner = app.active_turn_assistant_idx().unwrap();
         assert_ne!(app.transcript.messages[owner].id, previous_id);
-        let remaining = serialize_live_rows_with_boundaries_excluding(&mut app, 80, &committed);
+        let remaining =
+            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &committed, None);
         assert!(remaining.segments().iter().any(|segment| segment.msg_idx == owner));
         let MessageBlock::Text(old) = &app.transcript.messages[previous].blocks[0] else {
             panic!("previous answer");
@@ -208,7 +211,8 @@ fn metadata_whitespace_and_hidden_tools_do_not_create_an_empty_message_frame() {
         SystemSeverity::Warning,
         "Visible notice",
     );
-    let rendered = serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new());
+    let rendered =
+        serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new(), None);
     let notice = rendered
         .segments()
         .iter()
@@ -277,7 +281,7 @@ fn queued_start_changes_owner_only_once_and_preserves_the_previous_response() {
 
 #[test]
 fn empty_response_exit_removes_its_owner_without_consuming_the_next_draft() {
-    for outcome in ["complete", "error", "cancel"] {
+    for outcome in ["complete", "cancel"] {
         let (mut app, mut receiver) = connected_app();
         submit(&mut app, &mut receiver, "Question");
         let owner = app.active_turn_assistant_idx().unwrap();
@@ -288,58 +292,301 @@ fn empty_response_exit_removes_its_owner_without_consuming_the_next_draft() {
             crate::app::input_submit::request_cancel(&mut app).unwrap();
         }
         assert_owner_has_no_rows(&mut app, owner);
-        let event = if outcome == "error" {
-            ClientEvent::TurnError {
-                session_id: "test-session".into(),
-                message: "Fixture failure".into(),
-                queued_turn_count: Some(0),
-                api_error_status: None,
-                terminal_reason: None,
-            }
-        } else {
-            turn_complete(None)
-        };
-        handle_client_event(&mut app, event);
+        handle_client_event(&mut app, turn_complete(None));
         assert!(app.transcript.messages.iter().all(|message| message.id != owner_id));
         assert_eq!(app.active_turn_assistant_idx(), None);
         assert!(app.turn.activity.is_none());
         assert_eq!(app.input.snapshot(), draft);
-        if outcome == "error" {
-            assert!(app.transcript.messages.iter().any(|message| {
-                matches!(message.role, MessageRole::System(_))
-                    && matches!(&message.blocks[0], MessageBlock::Text(block) if block.text.contains("Fixture failure"))
-            }));
+    }
+}
+
+fn fail_turn(app: &mut App, class: TurnErrorClass, message: &str) {
+    handle_client_event(
+        app,
+        ClientEvent::TurnErrorClassified {
+            session_id: "test-session".into(),
+            message: message.into(),
+            class,
+            queued_turn_count: Some(0),
+            api_error_status: None,
+            terminal_reason: Some(crate::agent::types::TerminalReason::ApiError),
+        },
+    );
+}
+
+fn assert_failure_layout(app: &mut App, owner: usize, width: u16) -> String {
+    use ratatui::{
+        buffer::Buffer,
+        layout::Rect,
+        widgets::{Paragraph, Widget},
+    };
+
+    let rendered =
+        serialize_live_rows_with_boundaries_excluding(app, width, &BTreeSet::new(), None);
+    let segments =
+        rendered.segments().iter().filter(|segment| segment.msg_idx == owner).collect::<Vec<_>>();
+    let rows = segments
+        .iter()
+        .flat_map(|segment| rendered.segment_rows(segment).unwrap())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    assert!(rows.first().unwrap().trim().is_empty(), "reply has top spacing");
+    assert!(rows.last().unwrap().trim().is_empty(), "reply has bottom spacing");
+    let content = rows.iter().filter(|row| !row.trim().is_empty()).collect::<Vec<_>>();
+    assert!(content[0].starts_with(" \u{25cf} "), "reply owns its assistant marker");
+    assert_eq!(content.iter().filter(|row| row.contains('\u{25cf}')).count(), 1);
+    for row in &content[1..] {
+        assert!(row.starts_with("   "), "continuation aligns with reply text: {row:?}");
+    }
+
+    let notices = segments
+        .iter()
+        .filter(|segment| segment.kind == LiveRowBoundaryKind::AssistantNotice)
+        .collect::<Vec<_>>();
+    assert_eq!(notices.len(), 1, "one rendered failure in this reply");
+    let area = Rect::new(0, 0, width, rendered.rows().len().try_into().unwrap());
+    let mut buffer = Buffer::empty(area);
+    Paragraph::new(rendered.rows().to_vec()).render(area, &mut buffer);
+    let notice = notices[0];
+    let mut colored_cells = 0;
+    for y in notice.start_row..notice.end_row {
+        for x in 3..width {
+            let cell = &buffer[(x, u16::try_from(y).unwrap())];
+            if !cell.symbol().trim().is_empty() {
+                assert_eq!(cell.fg, crate::ui::theme::danger());
+                colored_cells += 1;
+            }
+        }
+    }
+    assert!(colored_cells > 0, "failure text must be visible");
+    let marker_y = segments[0].start_row + 1;
+    assert_eq!(buffer[(1, u16::try_from(marker_y).unwrap())].symbol(), "\u{25cf}");
+    assert_eq!(
+        buffer[(1, u16::try_from(marker_y).unwrap())].fg,
+        crate::ui::theme::role_assistant()
+    );
+    rendered
+        .segment_rows(notice)
+        .unwrap()
+        .iter()
+        .map(ToString::to_string)
+        .collect::<String>()
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect()
+}
+
+#[test]
+fn repeated_rate_limit_failures_render_in_their_submitted_replies() {
+    const ERROR: &str = "You've hit your session limit · resets 1:30pm (Europe/Berlin)";
+    for send_first_update in [true, false] {
+        let (mut app, mut receiver) = connected_app();
+        let mut replies = Vec::new();
+        for (turn, prompt) in ["hello", "hi", "hi"].into_iter().enumerate() {
+            submit(&mut app, &mut receiver, prompt);
+            let owner = app.active_turn_assistant_idx().unwrap();
+            let owner_id = app.transcript.messages[owner].id;
+            if turn == 0 && send_first_update {
+                update(
+                    &mut app,
+                    model::SessionUpdate::RateLimitUpdate(
+                        serde_json::from_value(serde_json::json!({
+                            "status": "rejected", "rate_limit_type": "five_hour",
+                            "resets_at": 1_792_409_400.0,
+                        }))
+                        .unwrap(),
+                    ),
+                );
+                assert_owner_has_no_rows(&mut app, owner);
+            }
+            fail_turn(&mut app, TurnErrorClass::PlanLimit, ERROR);
+            assert_eq!(app.status, AppStatus::Ready);
+            let reply = &app.transcript.messages[owner];
+            assert_eq!(reply.id, owner_id, "retain the reserved reply");
+            assert!(matches!(reply.role, MessageRole::Assistant));
+            let [MessageBlock::Notice(notice)] = reply.blocks.as_slice() else {
+                panic!("exactly one notice belongs to this reply");
+            };
+            assert_eq!(notice.severity, SystemSeverity::Error);
+            assert!(notice.text.text.contains(ERROR), "preserve SDK explanation and reset time");
+            assert!(
+                !notice.text.text.contains("5-hour"),
+                "use this result, not earlier allowance data"
+            );
+            replies.push((owner, owner_id));
+            for &(index, id) in &replies {
+                assert_eq!(app.transcript.messages[index].id, id);
+                for width in [40, 100] {
+                    let visible = assert_failure_layout(&mut app, index, width);
+                    assert!(
+                        visible.contains(
+                            &ERROR.chars().filter(|ch| !ch.is_whitespace()).collect::<String>()
+                        ),
+                        "this reply must render the SDK explanation and reset time"
+                    );
+                }
+            }
+        }
+        assert_eq!(app.transcript.messages.len(), 6, "three submissions and their three replies");
+        for ((owner, _), prompt) in replies.into_iter().zip(["hello", "hi", "hi"]) {
+            let user = &app.transcript.messages[owner - 1];
+            assert!(matches!(user.role, MessageRole::User));
+            assert_eq!(first_block_text(user), prompt);
+        }
+    }
+}
+
+#[test]
+fn turn_failures_keep_partial_output_and_use_the_same_notice_renderer() {
+    for class in [
+        TurnErrorClass::PlanLimit,
+        TurnErrorClass::AuthRequired,
+        TurnErrorClass::AccountAccess,
+        TurnErrorClass::ModelUnavailable,
+        TurnErrorClass::TransientService,
+        TurnErrorClass::Internal,
+        TurnErrorClass::Other,
+    ] {
+        for partial in [false, true] {
+            let (mut app, mut receiver) = connected_app();
+            submit(&mut app, &mut receiver, "Question");
+            let owner = app.active_turn_assistant_idx().unwrap();
+            let owner_id = app.transcript.messages[owner].id;
+            if partial {
+                update(&mut app, text("Partial answer"));
+            }
+            app.input.set_text("Next unsent draft");
+            let draft = app.input.snapshot();
+            fail_turn(&mut app, class, "Fixture failure");
+            assert_eq!(app.input.snapshot(), draft);
+            assert_eq!(app.active_turn_assistant_idx(), None);
+            assert!(app.turn.activity.is_none());
+            assert_eq!(app.transcript.messages.len(), 2);
+            let reply = &app.transcript.messages[owner];
+            assert_eq!(reply.id, owner_id);
+            assert!(matches!(reply.role, MessageRole::Assistant));
+            if partial {
+                assert_eq!(first_block_text(reply), "Partial answer");
+            }
+            for width in [40, 100] {
+                assert_failure_layout(&mut app, owner, width);
+                if partial {
+                    let rendered = serialize_live_rows_with_boundaries_excluding(
+                        &mut app,
+                        width,
+                        &BTreeSet::new(),
+                        None,
+                    );
+                    let answer = rendered
+                        .segments()
+                        .iter()
+                        .find(|segment| {
+                            segment.msg_idx == owner
+                                && segment.kind == LiveRowBoundaryKind::AssistantText
+                        })
+                        .unwrap();
+                    let notice = rendered
+                        .segments()
+                        .iter()
+                        .find(|segment| {
+                            segment.msg_idx == owner
+                                && segment.kind == LiveRowBoundaryKind::AssistantNotice
+                        })
+                        .unwrap();
+                    assert!(answer.end_row <= notice.start_row, "failure follows partial output");
+                    assert!(
+                        rendered
+                            .segment_rows(answer)
+                            .unwrap()
+                            .iter()
+                            .any(|row| row.to_string().contains("Partial answer"))
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn take_assistant_text_rows(
+    app: &mut App,
+    excluded: &mut BTreeSet<HistoryOutputId>,
+    width: u16,
+    stable_only: bool,
+) -> Vec<String> {
+    let rendered = serialize_live_rows_with_boundaries_excluding(app, width, excluded, None);
+    let mut rows = Vec::new();
+    for segment in rendered.segments() {
+        if segment.kind != LiveRowBoundaryKind::AssistantText
+            || (stable_only && segment.end_row > rendered.stable_row_count())
+        {
+            continue;
+        }
+        rows.extend(
+            rendered
+                .segment_rows(segment)
+                .unwrap()
+                .iter()
+                .map(|row| row.to_string().trim_end().to_owned()),
+        );
+        excluded.extend(segment.ids.iter().cloned());
+    }
+    rows
+}
+
+#[test]
+fn tables_survive_sdk_chunks_cache_splits_and_scrollback_commits() {
+    use std::fmt::Write as _;
+
+    let long_rows = (0..95).fold(String::new(), |mut rows, n| {
+        writeln!(
+            rows,
+            "entry_{n} | value_{n} with enough detail to exceed the streaming cache budget"
+        )
+        .unwrap();
+        rows
+    });
+    let fixtures = [
+        ("Introduction.\n\n\u{540d}\u{524d} | Value\n- | -\nred | one\nblue | two\n\nFinal paragraph.".to_owned(), "red", "one"),
+        ("Introduction.\n\n> Name | Value\n> --- | ---\n> red | `one\\|two`\n> blue | **three**\n\nFinal paragraph.".to_owned(), "red", "one|two"),
+        (format!("Introduction.\n\nName | Value\n--- | ---\n{long_rows}\nFinal paragraph."), "entry_94", "value_94"),
+    ];
+    for (source, name, value) in fixtures {
+        let mut whole = connected_app().0;
+        update(&mut whole, model::SessionUpdate::AgentResponseStarted);
+        update(&mut whole, text(&source));
+        handle_client_event(&mut whole, turn_complete(None));
+        let expected = take_assistant_text_rows(&mut whole, &mut BTreeSet::new(), 36, false);
+        let row = expected.iter().find(|row| row.contains(name)).expect("table data row");
+        assert!(row.contains(value), "cells must remain associated on their table row: {row}");
+        assert!(!row.contains(&format!("{name} |")), "table delimiters must not render as source");
+        assert!(expected.iter().any(|row| row.contains('─')), "table header separator");
+
+        let chars = source.chars().collect::<Vec<_>>();
+        let chunk_sizes =
+            if chars.len() < 512 { [1, 17, chars.len()] } else { [113, 509, chars.len()] };
+        for chunk_size in chunk_sizes {
+            let mut app = connected_app().0;
+            update(&mut app, model::SessionUpdate::AgentResponseStarted);
+            let mut committed = Vec::new();
+            let mut excluded = BTreeSet::new();
+            for chunk in chars.chunks(chunk_size) {
+                update(&mut app, text(&chunk.iter().collect::<String>()));
+                committed.extend(take_assistant_text_rows(&mut app, &mut excluded, 36, true));
+            }
+            assert!(
+                committed.iter().any(|row| row.contains("Introduction.")),
+                "completed prose should advance into scrollback while the table streams"
+            );
+            handle_client_event(&mut app, turn_complete(None));
+            committed.extend(take_assistant_text_rows(&mut app, &mut excluded, 36, false));
+            assert_eq!(committed, expected, "chunk size {chunk_size}");
+            assert_eq!(crate::app::copy::choices(&app)[0].text, source);
         }
     }
 }
 
 #[test]
 fn list_rendering_survives_sdk_chunks_cache_splits_and_scrollback_commits() {
-    fn take_text(
-        app: &mut App,
-        excluded: &mut BTreeSet<HistoryOutputId>,
-        stable_only: bool,
-    ) -> Vec<String> {
-        let rendered = serialize_live_rows_with_boundaries_excluding(app, 36, excluded);
-        let mut rows = Vec::new();
-        for segment in rendered.segments() {
-            if segment.kind != LiveRowBoundaryKind::AssistantText
-                || (stable_only && segment.end_row > rendered.stable_row_count())
-            {
-                continue;
-            }
-            rows.extend(
-                rendered
-                    .segment_rows(segment)
-                    .unwrap()
-                    .iter()
-                    .map(|row| row.to_string().trim_end().to_owned()),
-            );
-            excluded.extend(segment.ids.iter().cloned());
-        }
-        rows
-    }
-
     let long_source = format!(
         "Introduction.\n\n9. Parent item.\n\n   {}\n\n   - Child with 日本語😀.\n10. Next item.\n\nFinal paragraph.",
         "Long continuation with useful detail. ".repeat(130)
@@ -356,7 +603,7 @@ fn list_rendering_survives_sdk_chunks_cache_splits_and_scrollback_commits() {
         source,
         "cache splits must preserve the original Markdown source for copying"
     );
-    let expected = take_text(&mut whole, &mut BTreeSet::new(), false);
+    let expected = take_assistant_text_rows(&mut whole, &mut BTreeSet::new(), 36, false);
     assert!(
         expected.iter().any(|row| row.contains("Introduction.")),
         "fixture must deliver output through the session boundary"
@@ -372,7 +619,7 @@ fn list_rendering_survives_sdk_chunks_cache_splits_and_scrollback_commits() {
         let mut committed_intro_while_running = false;
         for chunk in chars.chunks(chunk_size) {
             update(&mut app, text(&chunk.iter().collect::<String>()));
-            committed.extend(take_text(&mut app, &mut excluded, true));
+            committed.extend(take_assistant_text_rows(&mut app, &mut excluded, 36, true));
             committed_intro_while_running |=
                 committed.iter().any(|row| row.contains("Introduction."));
         }
@@ -381,7 +628,7 @@ fn list_rendering_survives_sdk_chunks_cache_splits_and_scrollback_commits() {
             "ordinary completed paragraphs should still reach scrollback during a long list"
         );
         handle_client_event(&mut app, turn_complete(None));
-        committed.extend(take_text(&mut app, &mut excluded, false));
+        committed.extend(take_assistant_text_rows(&mut app, &mut excluded, 36, false));
         assert_eq!(
             crate::app::copy::choices(&app)[0].text,
             source,

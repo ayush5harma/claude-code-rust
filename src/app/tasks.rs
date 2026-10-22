@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 use super::{App, InvalidationLevel, MessageBlock, ToolCallInfo};
 use crate::agent::model;
 use std::collections::{BTreeSet, HashSet};
@@ -24,14 +23,24 @@ pub(super) fn apply_task_state_update(app: &mut App, update: model::TaskStateUpd
 
     if update.is_complete_snapshot {
         if update.source == model::TaskUpdateSource::BackgroundTasks {
+            let incoming: HashSet<&str> =
+                update.tasks.iter().map(|task| task.task_id.as_str()).collect();
             app.sdk_inventory.tasks.retain(|task| {
-                !is_sdk_background_task(task)
+                (!is_sdk_background_task(task) || incoming.contains(task.task_id.as_str()))
                     && !removed.contains(task.task_id.as_str())
-                    && !update.tasks.iter().any(|incoming| incoming.task_id == task.task_id)
             });
             for task in update.tasks {
                 if !removed.contains(task.task_id.as_str()) {
-                    app.sdk_inventory.tasks.push(task);
+                    if let Some(existing) = app
+                        .sdk_inventory
+                        .tasks
+                        .iter_mut()
+                        .find(|existing| existing.task_id == task.task_id)
+                    {
+                        *existing = task;
+                    } else {
+                        app.sdk_inventory.tasks.push(task);
+                    }
                 }
             }
             refresh_task_tool_displays_with_previous(app, &previous_tasks);
@@ -89,6 +98,21 @@ fn observe_task_update(app: &mut App, update: &model::TaskStateUpdate) {
                     duration_ms,
                 },
             );
+        // A newer SDK run of the same task starts its clock again.
+        let new_run = app
+            .sdk_inventory
+            .tasks
+            .iter()
+            .find(|existing| existing.task_id == task.task_id)
+            .is_some_and(|existing| existing.run_id.is_some() && existing.run_id != task.run_id);
+        if new_run {
+            *observation = super::state::sdk_inventory::TaskObservation {
+                started_at: now,
+                finished_at: None,
+                usage_reported_at: now,
+                duration_ms,
+            };
+        }
         let usage_changed = app
             .sdk_inventory
             .tasks
@@ -150,17 +174,29 @@ pub(crate) fn is_user_plan_task(task: &model::TaskItem) -> bool {
         })
 }
 
-pub(super) fn refresh_task_tool_displays(app: &mut App) -> bool {
-    let previous_tasks = app.sdk_inventory.tasks.clone();
-    refresh_task_tool_displays_with_previous(app, &previous_tasks)
+/// Re-derive one task tool row after its own tool event. Returns whether the
+/// block changed; the caller owns the cache-slot and layout sync.
+pub(super) fn refresh_task_tool_display_at(app: &mut App, mi: usize, bi: usize) -> bool {
+    let current_tasks = &app.sdk_inventory.tasks;
+    let Some(MessageBlock::ToolCall(tool_call)) =
+        app.transcript.messages.get_mut(mi).and_then(|message| message.blocks.get_mut(bi))
+    else {
+        return false;
+    };
+    if !refresh_task_tool_display(tool_call.as_mut(), current_tasks, &[]) {
+        return false;
+    }
+    tool_call.invalidate_render_cache();
+    true
 }
 
 fn refresh_task_tool_displays_with_previous(
     app: &mut App,
     previous_tasks: &[model::TaskItem],
 ) -> bool {
+    // The footer shelf shows one wave of subagents: those started since none was running.
     let is_running = |task: &&model::TaskItem| {
-        task.status == model::TaskStatus::InProgress && crate::app::agents::is_subagent_task(task)
+        task.status == model::TaskStatus::InProgress && crate::app::agents::is_subagent(task)
     };
     let running = app.sdk_inventory.tasks.iter().any(|t| is_running(&t));
     if running && !previous_tasks.iter().any(|t| is_running(&t)) {
@@ -176,8 +212,7 @@ fn refresh_task_tool_displays_with_previous(
     } else if !running {
         app.sdk_inventory.agent_shelf_wave_started_at = None;
     }
-    crate::app::agents::forget_unlisted_selection(app);
-    let current_tasks = app.sdk_inventory.tasks.clone();
+    let current_tasks = &app.sdk_inventory.tasks;
     let mut dirty_blocks = Vec::new();
 
     for (message_idx, message) in app.transcript.messages.iter_mut().enumerate() {
@@ -185,7 +220,7 @@ fn refresh_task_tool_displays_with_previous(
             let MessageBlock::ToolCall(tool_call) = block else {
                 continue;
             };
-            if refresh_task_tool_display(tool_call.as_mut(), &current_tasks, previous_tasks) {
+            if refresh_task_tool_display(tool_call.as_mut(), current_tasks, previous_tasks) {
                 tool_call.invalidate_render_cache();
                 dirty_blocks.push((message_idx, block_idx));
             }
@@ -338,7 +373,7 @@ fn sync_string(current: &mut String, next: String) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{BlockCache, ChatMessage, MessageBlock, MessageRole, ToolCallInfo};
+    use crate::app::{ChatMessage, MessageBlock, MessageRole, ToolCallInfo};
     use serde_json::json;
 
     fn task(id: &str, subject: &str, status: model::TaskStatus) -> model::TaskItem {
@@ -359,26 +394,9 @@ mod tests {
         status: model::ToolCallStatus,
     ) -> ToolCallInfo {
         ToolCallInfo {
-            id: id.to_owned(),
-            source_message_uuids: Vec::new(),
             title: title.to_owned(),
-            sdk_tool_name: sdk_tool_name.to_owned(),
             raw_input: Some(raw_input),
-            raw_input_bytes: 0,
-            locations: Vec::new(),
-            output_metadata: None,
-            task_metadata: None,
-            status,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: None,
-            terminal_command: None,
-            terminal_output: None,
-            terminal_output_len: 0,
-            cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
-            history: crate::app::ToolCallHistory::Live,
+            ..crate::app::test_support::named_tool_call_info(id, sdk_tool_name, status)
         }
     }
 
@@ -586,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn ambient_inventory_task_does_not_enter_active_subagent_tracking() {
+    fn ambient_inventory_task_does_not_create_a_tool_scope() {
         let mut app = App::test_default();
         let mut ambient = background_task("ambient-watch", "watch artifact updates");
         ambient.metadata = Some(serde_json::json!({
@@ -602,7 +620,8 @@ mod tests {
         );
 
         assert_eq!(app.sdk_inventory.tasks.len(), 1);
-        assert!(app.turn.active_task_ids.is_empty());
+        assert!(app.tool_call_scope("ambient-watch").is_none());
+        assert!(!app.has_tool_call("ambient-watch"));
     }
 
     #[test]
@@ -654,7 +673,7 @@ mod tests {
             ),
         );
 
-        refresh_task_tool_displays(&mut app);
+        refresh_task_tool_display_at(&mut app, 0, 0);
 
         let tool_call = only_tool_call(&app);
         assert_eq!(tool_call.title, "Start task #1: Scaffold Next.js 15 app via create-next-app");
@@ -679,7 +698,7 @@ mod tests {
         update.content = vec![model::ToolCallContent::from("Activity: Scaffolding Next.js app")];
         insert_tool_call(&mut app, update);
 
-        refresh_task_tool_displays(&mut app);
+        refresh_task_tool_display_at(&mut app, 0, 0);
 
         let tool_call = only_tool_call(&app);
         assert_eq!(
@@ -739,7 +758,11 @@ mod tests {
         );
         assert_eq!(app.sdk_inventory.tasks.len(), 1);
         assert_eq!(app.sdk_inventory.tasks[0].subject, "After snapshot");
-        let row = crate::ui::agent_rows::agent_row(&app, &app.sdk_inventory.tasks[0]);
+        let row = crate::ui::agent_rows::agent_row(
+            &app,
+            &app.sdk_inventory.tasks[0],
+            crate::app::agents::SubagentStatus::Running,
+        );
         assert_eq!(row.model, "Sonnet 5.5");
         assert_eq!(row.tools, Some(12));
         assert_eq!(row.tokens, Some(34000));
@@ -767,7 +790,11 @@ mod tests {
             std::time::Instant::now()
                 .checked_sub(std::time::Duration::from_secs(3))
                 .expect("test clock permits subtraction");
-        let row = crate::ui::agent_rows::agent_row(&app, &app.sdk_inventory.tasks[0]);
+        let row = crate::ui::agent_rows::agent_row(
+            &app,
+            &app.sdk_inventory.tasks[0],
+            crate::app::agents::SubagentStatus::Running,
+        );
         assert!(row.elapsed_ms.is_some_and(|ms| (43000..44000).contains(&ms)));
         live.status = model::TaskStatus::Completed;
         apply_task_state_update(
@@ -776,7 +803,12 @@ mod tests {
         );
         assert!(app.sdk_inventory.task_observations["agent"].finished_at.is_some());
         assert_eq!(
-            crate::ui::agent_rows::agent_row(&app, &app.sdk_inventory.tasks[0]).elapsed_ms,
+            crate::ui::agent_rows::agent_row(
+                &app,
+                &app.sdk_inventory.tasks[0],
+                crate::app::agents::SubagentStatus::Running
+            )
+            .elapsed_ms,
             Some(40000)
         );
     }
@@ -836,22 +868,36 @@ mod tests {
                 .checked_sub(std::time::Duration::from_secs(3))
                 .expect("test clock permits subtraction");
         assert!(
-            crate::ui::agent_rows::agent_row(&app, &app.sdk_inventory.tasks[0])
-                .elapsed_ms
-                .is_some_and(|ms| (3000..4000).contains(&ms))
+            crate::ui::agent_rows::agent_row(
+                &app,
+                &app.sdk_inventory.tasks[0],
+                crate::app::agents::SubagentStatus::Running
+            )
+            .elapsed_ms
+            .is_some_and(|ms| (3000..4000).contains(&ms))
         );
         task.status = model::TaskStatus::Completed;
         apply_task_state_update(
             &mut app,
             model::TaskStateUpdate::new(model::TaskUpdateSource::Lifecycle).tasks(vec![task]),
         );
-        let before = crate::ui::agent_rows::agent_row(&app, &app.sdk_inventory.tasks[0]).elapsed_ms;
+        let before = crate::ui::agent_rows::agent_row(
+            &app,
+            &app.sdk_inventory.tasks[0],
+            crate::app::agents::SubagentStatus::Running,
+        )
+        .elapsed_ms;
         app.sdk_inventory.task_observations.get_mut("clock").expect("clock").usage_reported_at =
             std::time::Instant::now()
                 .checked_sub(std::time::Duration::from_secs(20))
                 .expect("test clock permits subtraction");
         assert_eq!(
-            crate::ui::agent_rows::agent_row(&app, &app.sdk_inventory.tasks[0]).elapsed_ms,
+            crate::ui::agent_rows::agent_row(
+                &app,
+                &app.sdk_inventory.tasks[0],
+                crate::app::agents::SubagentStatus::Running
+            )
+            .elapsed_ms,
             before
         );
     }

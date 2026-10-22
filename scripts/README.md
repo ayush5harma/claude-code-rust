@@ -7,6 +7,10 @@ active release tooling and are validated by PR, release, or nightly workflows.
 Claude Code, macOS or Linux) that no workflow runs, so it is not CI-validated.
 See `e2e-parity/README.md`.
 
+`bench/` is local and opt-in in the same way: it measures CPU and memory of
+claude-rs against the stock Claude Code CLI (macOS, tmux, a logged-in Claude
+Code). See `bench/README.md`.
+
 ## Runtime
 
 - `runtime/stage-bun-runtime.mjs` is a maintainer entry point. It validates the

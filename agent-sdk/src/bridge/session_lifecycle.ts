@@ -1,5 +1,6 @@
 import { restoreResumedToolState } from "./history.js";
 import { stopStatusLine } from "./status_line.js";
+import { sessionPluginFolders } from "./plugin_inventory.js";
 import { randomUUID } from "node:crypto";
 import { resetMainAgentActivity, type MainAgentResponse } from "./activity.js";
 import { spawn as spawnChild } from "node:child_process";
@@ -37,10 +38,17 @@ import type {
   SessionLaunchSettings,
   SessionUpdate,
   StartupFailure,
+  SystemNoticeSeverity,
   TaskItem,
   ToolCall,
   UserDialogOption,
 } from "../types.js";
+import {
+  buildFlagSettings,
+  buildLaunchQueryOptions,
+  buildSystemPrompt,
+  fileCheckpointingEnabled,
+} from "./launch_config.js";
 import { bridgeLogger, LOG_TARGETS, logSdkStderrLine } from "./logger.js";
 import { AsyncQueue, asRecordOrNull } from "./shared.js";
 import { beginSessionModeRead, observeSessionMode } from "./commands.js";
@@ -57,6 +65,7 @@ import {
   emitElicitationRequestEvent,
   emitUserDialogRequestEvent,
   emitInteractionCancelled,
+  writeEvent,
 } from "./events.js";
 import { ensureToolCallVisible, setToolCallStatus } from "./tool_calls.js";
 import { isToolSearchToolName } from "./tooling.js";
@@ -89,7 +98,6 @@ import {
 import { shouldEmitStartupAuthRequiredForAccount } from "./account_metadata.js";
 import type { McpAuthMonitorHandle } from "./mcp_monitor.js";
 import { closeSideQuestions } from "./side_questions.js";
-import { type LaunchConfig, parseLaunchConfig } from "./launch_config.js";
 
 export { mapAvailableModels, resolveCurrentModel } from "./model_metadata.js";
 export { shouldEmitStartupAuthRequiredForAccount } from "./account_metadata.js";
@@ -171,6 +179,9 @@ export type PendingWorkerShutdown = {
 };
 
 export type SessionState = {
+  pluginInventory?: import("../types.js").SessionPlugin[];
+  /** Folders requested at process launch, not evidence of successful loading. */
+  pluginLaunchPaths?: string[];
   mainAgentResponse?: MainAgentResponse;
   /** The API response ID of the last top-level response whose stream began. */
   lastStreamedResponseId?: string;
@@ -198,6 +209,8 @@ export type SessionState = {
   resumeDropsTurn?: string;
   resumeGuardFenceComplete?: boolean;
   deferredBridgeEvents?: Array<{ event: BridgeEvent; requestId?: string }>;
+  /** Hook notices waiting for the connect event, oldest first. */
+  pendingHookNotices?: Array<{ severity: SystemNoticeSeverity; message: string }>;
   deferredAuthRequired?: { detail?: string };
   input: AsyncQueue<SDKUserMessage>;
   connected: boolean;
@@ -206,6 +219,8 @@ export type SessionState = {
   connectRequestId?: string;
   toolCalls: Map<string, ToolCall>;
   tasksById: Map<string, TaskItem>;
+  /** Last runs of removed inventory-only rows; consulted only while absent. */
+  removedTaskRuns?: Map<string, string>;
   taskOrder: string[];
   taskToolUseIds: Map<string, string>;
   taskIdsByToolUseId: Map<string, string>;
@@ -239,32 +254,6 @@ export const sessions = new Map<string, SessionState>();
 const pendingSessionCloseTasks = new Set<Promise<void>>();
 
 const DEFAULT_SETTING_SOURCES: SettingSource[] = ["user", "project", "local"];
-
-function isSdkElicitationContentValue(
-  value: Json,
-): value is string | number | boolean | string[] {
-  return (
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean" ||
-    (Array.isArray(value) && value.every((entry) => typeof entry === "string"))
-  );
-}
-
-function normalizeSdkElicitationContent(
-  content: Record<string, Json> | undefined,
-): Record<string, string | number | boolean | string[]> | undefined {
-  if (!content) {
-    return undefined;
-  }
-  const normalized: Record<string, string | number | boolean | string[]> = {};
-  for (const [key, value] of Object.entries(content)) {
-    if (isSdkElicitationContentValue(value)) {
-      normalized[key] = value;
-    }
-  }
-  return Object.keys(normalized).length > 0 ? normalized : undefined;
-}
 
 const REFUSAL_FALLBACK_DIALOG_KIND = "refusal_fallback_prompt";
 
@@ -502,6 +491,7 @@ export async function closeAllSessions(
 
 export async function createSession(params: {
   cwd: string;
+  pluginPaths?: string[];
   resume?: string;
   resumeSessionAt?: string;
   resumeDropsTurn?: string;
@@ -509,7 +499,6 @@ export async function createSession(params: {
   sessionId?: string;
   deferConnect?: boolean;
   launchSettings: SessionLaunchSettings;
-  launchConfig?: LaunchConfig;
   /** Title the SDK already holds for the session being resumed (not a fork). */
   resumedTitle?: string;
   connectEvent: ConnectEventKind;
@@ -520,6 +509,8 @@ export async function createSession(params: {
   restoredInput?: string;
   pendingRewindResult?: PendingRewindResult;
 }): Promise<SessionState> {
+  const previous = params.resume ? sessions.get(params.resume) : undefined;
+  const pluginPaths = params.pluginPaths ?? (previous ? sessionPluginFolders(previous) : []);
   const input = new AsyncQueue<SDKUserMessage>();
   const provisionalSessionId =
     params.sessionId ??
@@ -661,8 +652,6 @@ export async function createSession(params: {
       sdk_spawn_debug_enabled: enableSpawnDebug,
     },
   });
-  // Outside the try below: a malformed flag is the user's error, not a query() failure.
-  const launchConfig = params.launchConfig ?? parseLaunchConfig(params.launchSettings);
   try {
     const { effective: resolvedSettings } = await resolveSettings({
       cwd: params.cwd,
@@ -672,12 +661,12 @@ export async function createSession(params: {
       prompt: input,
       options: buildQueryOptions({
         cwd: params.cwd,
+        pluginPaths,
         resume: params.resume,
         resumeSessionAt: params.resumeSessionAt,
         resumeDropsTurn: params.resumeDropsTurn,
         forkSession: params.forkSession,
         launchSettings: params.launchSettings,
-        launchConfig,
         resumedTitle: params.resumedTitle,
         resolvedSettings,
         provisionalSessionId,
@@ -716,6 +705,7 @@ export async function createSession(params: {
   session = {
     sessionId: provisionalSessionId,
     cwd: params.cwd,
+    pluginLaunchPaths: pluginPaths,
     ...(params.launchSettings.model ? { requestedModelId: params.launchSettings.model } : {}),
     availableModels: [],
     mode: initialMode,
@@ -869,7 +859,7 @@ export function startSessionTasks(session: SessionState, requestId?: string): vo
       ) {
         session.initializationReady = true;
       } else if (!session.connected) {
-        emitConnectEvent(session);
+        void emitConnectEvent(session);
       } else {
         emitSessionUpdate(session.sessionId, {
           type: "mode_state_update",
@@ -1034,7 +1024,7 @@ export function commitDeferredSession(session: SessionState): void {
   const deferredAuthRequired = session.deferredAuthRequired;
   session.deferredAuthRequired = undefined;
   session.deferConnect = false;
-  emitConnectEvent(session);
+  void emitConnectEvent(session);
   if (deferredAuthRequired) {
     emitAuthRequired(session, deferredAuthRequired.detail);
   }
@@ -1042,14 +1032,14 @@ export function commitDeferredSession(session: SessionState): void {
 
 type QueryOptionsBuilderParams = {
   cwd: string;
+  pluginPaths?: string[];
   resolvedSettings: Settings;
   resume?: string;
   resumeSessionAt?: string;
   resumeDropsTurn?: string;
   forkSession?: boolean;
   launchSettings: SessionLaunchSettings;
-  /** Parsed from `launchSettings`; absent means no session configuration flags. */
-  launchConfig?: LaunchConfig;
+  /** Title the SDK already holds for the session being resumed (not a fork). */
   resumedTitle?: string;
   provisionalSessionId: string;
   input: AsyncQueue<SDKUserMessage>;
@@ -1136,53 +1126,25 @@ function startupPermissionModeOptions(launchSettings: SessionLaunchSettings): {
     : { permissionMode };
 }
 
-/**
- * The runtime guard is a bridge invariant, so it stays in every system prompt: appended to
- * the claude_code preset, or after a --system-prompt that replaces the preset. Text from
- * --append-system-prompt follows the guard.
- */
-function buildSystemPrompt(launchSettings: SessionLaunchSettings) {
-  const append = [BRIDGE_RUNTIME_GUARD_PROMPT, launchSettings.append_system_prompt]
-    .filter((text): text is string => text !== undefined)
-    .join("\n\n");
-  return launchSettings.system_prompt !== undefined
-    ? { type: "custom" as const, prompt: [launchSettings.system_prompt, append], snapshot: true }
-    : { type: "preset" as const, preset: "claude_code" as const, append, snapshot: true };
-}
-
 export function buildQueryOptions(params: QueryOptionsBuilderParams) {
-  const systemPrompt = buildSystemPrompt(params.launchSettings);
-  const sessionTitle =
-    params.launchSettings.name ?? (params.resume && !params.forkSession ? params.resumedTitle : undefined);
+  const systemPrompt = buildSystemPrompt(params.launchSettings, BRIDGE_RUNTIME_GUARD_PROMPT);
   const permissionModeOptions = startupPermissionModeOptions(
     params.launchSettings,
   );
-  // The SDK takes one flag-settings layer, so the user's --settings is that layer and the
-  // host capability restrictions are laid over it: draft review and held peer-message review
-  // require native UI surfaces. A --settings value counts before the saved cascade, as the
-  // flag layer outranks the user, project and local files.
-  const flagSettings = params.launchConfig?.settings ?? {};
-  const crossSessionInbound =
-    flagSettings.crossSessionInbound ?? params.resolvedSettings.crossSessionInbound;
-  const settings = {
-    ...flagSettings,
-    feedbackDrafts: "off" as const,
-    ...(!["accept", "refuse"].includes(crossSessionInbound ?? "")
-      ? { crossSessionInbound: "refuse" as const }
-      : {}),
-  };
+  // Host capability restrictions, laid over any --settings layer rather than copied
+  // from user preferences.
+  const settings = buildFlagSettings(params.launchSettings, params.resolvedSettings);
   return {
     cwd: params.cwd,
+    ...(params.pluginPaths?.length ? { plugins: params.pluginPaths.map(path => ({ type: "local" as const, path })) } : {}),
     includePartialMessages: true,
     promptSuggestions: true,
     // SDK sessions need an explicit recording opt-in; their recording gate
     // otherwise ignores the JSON preference. Claude still applies environment restrictions.
-    enableFileCheckpointing:
-      flagSettings.fileCheckpointingEnabled ??
-      params.resolvedSettings.fileCheckpointingEnabled ??
-      true,
+    enableFileCheckpointing: fileCheckpointingEnabled(params.launchSettings, params.resolvedSettings),
     agentProgressSummaries: true,
-    // Without this the SDK reports only SessionStart and Setup hooks.
+    // Without it the SDK reports only SessionStart and Setup hooks, so a failed
+    // PreToolUse, PostToolUse or Stop hook would leave no trace.
     includeHookEvents: true,
     // Proposal tools require native review and lifecycle surfaces that the
     // public headless SDK does not currently expose to this host.
@@ -1194,19 +1156,7 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     ...permissionModeOptions,
     ...(params.launchSettings.effort !== undefined ? { effort: params.launchSettings.effort } : {}),
     ...(params.launchSettings.agent !== undefined ? { agent: params.launchSettings.agent } : {}),
-    // For a new or forked session `title` is the session's title. For a resumed one the
-    // persisted title wins and `title` only names the process, which is what other clients read
-    // from the session registry (measured on the pinned SDK: a resume without it registers the
-    // folder-derived default name). So a resume passes the title the SDK already holds, or the
-    // launch name that resume() has just written with renameSession; renameSession cannot name a
-    // new session: its transcript file does not exist before the first turn (measured on the
-    // pinned SDK: "Session ... not found in project directory").
-    ...(sessionTitle !== undefined ? { title: sessionTitle } : {}),
-    ...(params.launchSettings.additional_directories
-      ? { additionalDirectories: params.launchSettings.additional_directories }
-      : {}),
-    ...(params.launchConfig?.mcpServers ? { mcpServers: params.launchConfig.mcpServers } : {}),
-    ...(params.launchSettings.strict_mcp_config ? { strictMcpConfig: true } : {}),
+    ...buildLaunchQueryOptions(params.launchSettings, params),
     toolConfig: { askUserQuestion: { previewFormat: "markdown" as const } },
     systemPrompt,
     ...(params.claudeCodeExecutable
@@ -1293,6 +1243,8 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
             : "form";
       const normalized: ElicitationRequest = {
         request_id: requestId,
+        field_order: request.requestedSchema?.properties && typeof request.requestedSchema.properties === "object" && !Array.isArray(request.requestedSchema.properties)
+          ? Object.keys(request.requestedSchema.properties) : [],
         server_name:
           typeof request.serverName === "string" &&
           request.serverName.trim().length > 0
@@ -1332,11 +1284,17 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
       });
       const currentSession = sessions.get(params.sessionIdForLogs());
       if (!currentSession || currentSession.closing || currentSession.pendingElicitations.has(requestId)) return { action: "cancel" as const };
+      const sessionId = currentSession.sessionId;
+      let published = false;
       return await waitForAnswer<{ action: ElicitationAction; content?: Record<string, string | number | boolean | string[]> }, PendingElicitation>(
         currentSession.pendingElicitations, requestId,
         resolve => ({ resolve, serverName: normalized.server_name, elicitationId: normalized.elicitation_id }),
-        () => emitElicitationRequestEvent(params.sessionIdForLogs(), normalized), options.signal,
-        () => ({ action: "cancel" }));
+        () => { published = true; emitElicitationRequestEvent(sessionId, normalized); }, options.signal,
+        () => ({ action: "cancel" }),
+        () => {
+          if (published) writeEvent({ event: "elicitation_settled", session_id: sessionId,
+            settlement: { request_id: requestId, session_closing: currentSession.closing } });
+        });
     },
     // The SDK "fails closed" and never emits a dialog kind unless it is declared
     // here. We declare the one refusal-related kind we render: when the API
@@ -1711,14 +1669,18 @@ export function handleElicitationResponse(
       has_content: command.content !== undefined,
     },
   });
-  pending.resolve({
-    action: command.action,
-    ...(normalizeSdkElicitationContent(command.content)
-      ? {
-          content: normalizeSdkElicitationContent(command.content),
-        }
-      : {}),
-  });
+  const content = command.action === "accept" ? command.content : undefined;
+  if (content !== undefined && Object.values(content).some(value =>
+    !(typeof value === "string" || typeof value === "boolean" ||
+      (typeof value === "number" && Number.isFinite(value)) ||
+      (Array.isArray(value) && value.every(item => typeof item === "string"))))) {
+    // Fail closed; never silently discard answers or log their values.
+    pending.resolve({ action: "cancel" });
+    return;
+  }
+  pending.resolve({ action: command.action, ...(content !== undefined ? {
+    content: content as Record<string, string | number | boolean | string[]>,
+  } : {}) });
 }
 export function emitCurrentModelUpdate(session: SessionState): boolean {
   if (!session.connected || !session.currentModel) {

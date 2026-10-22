@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 //! Static metadata for app-owned slash commands.
 
@@ -265,7 +264,7 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         name: "/plugins",
         usage: "Usage: /plugins",
         short_description: "Open plugins",
-        long_description: "Open the fullscreen plugins tab.",
+        long_description: "Manage installed plugins, marketplaces and session-only local folders.",
         args: NO_ARGS,
     },
     AppSlashCommandSpec {
@@ -361,7 +360,7 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         name: "/export",
         usage: "Usage: /export [path]",
         short_description: "Save the conversation as Markdown",
-        long_description: "Write the session's complete saved history to a Markdown file. Without a path it is created in the session directory under a new default name; an existing file is never overwritten.",
+        long_description: "Write the session's complete saved history to a Markdown file. Without a path it is created in the session directory; an existing file is never overwritten.",
         args: NO_ARGS,
     },
 ];
@@ -462,8 +461,8 @@ impl AppSlashCommand {
             | Self::Login
             | Self::Logout
             | Self::NewSession
-            | Self::Reload
-            | Self::Resume => {
+            | Self::Resume
+            | Self::Reload => {
                 if args.is_empty() {
                     SubmissionClass::TurnExclusive
                 } else {
@@ -503,6 +502,7 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
+            // The optional path is read from the raw text, so any number of words is valid.
             Self::Export => SubmissionClass::TurnExclusive,
             Self::Rewind => {
                 if matches!(args, [_, "both" | "conversation" | "code"]) {

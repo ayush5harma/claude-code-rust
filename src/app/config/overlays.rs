@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::mcp::{
     McpAuthRedirectOverlayState, McpCallbackUrlOverlayState, McpDetailsOverlayState,
@@ -141,7 +140,7 @@ pub struct MarketplaceActionsOverlayState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AddMarketplaceOverlayState {
+pub struct PluginSourceInputOverlayState {
     pub draft: String,
     pub cursor: usize,
 }
@@ -174,7 +173,8 @@ pub enum ConfigOverlayState {
     InstalledPluginActions(InstalledPluginActionOverlayState),
     PluginInstallActions(PluginInstallOverlayState),
     MarketplaceActions(MarketplaceActionsOverlayState),
-    AddMarketplace(AddMarketplaceOverlayState),
+    AddMarketplace(PluginSourceInputOverlayState),
+    LocalPluginFolder(PluginSourceInputOverlayState),
     McpDetails(McpDetailsOverlayState),
     McpCallbackUrl(McpCallbackUrlOverlayState),
     McpElicitation(McpElicitationOverlayState),

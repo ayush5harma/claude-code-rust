@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use crate::agent::bridge::BridgeLauncher;
 use crate::agent::wire::{BridgeCommand, CommandEnvelope, EventEnvelope, SessionLaunchSettings};
@@ -72,10 +71,8 @@ impl BridgeClient {
 
         let stdin = child.stdin.take().context("bridge stdin not available")?;
         let stdout = child.stdout.take().context("bridge stdout not available")?;
-        if bridge_diagnostics_enabled {
-            let stderr = child.stderr.take().context("bridge stderr not available")?;
-            Self::spawn_stderr_logger(stderr);
-        }
+        let stderr = child.stderr.take().context("bridge stderr not available")?;
+        Self::spawn_stderr_logger(stderr);
 
         let (connection, command_rx) = command_channel();
         let command_tx = connection.command_tx;
@@ -485,7 +482,7 @@ fn log_bridge_event_received(envelope: &EventEnvelope, size_bytes: usize) {
         | "permission_request"
         | "question_request"
         | "elicitation_request"
-        | "elicitation_complete"
+        | "elicitation_settled"
         | "mcp_auth_redirect"
         | "turn_complete" => tracing::trace!(
             target: crate::logging::targets::BRIDGE_PROTOCOL,
@@ -809,13 +806,15 @@ impl AgentConnection {
         })
     }
 
+    /// Request one subagent's saved transcript; the answer comes back under `request_id`.
     pub fn get_subagent_messages(
         &self,
         session_id: String,
         agent_id: String,
+        request_id: String,
     ) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
-            request_id: None,
+            request_id: Some(request_id),
             command: BridgeCommand::GetSubagentMessages { session_id, agent_id },
         })
     }
@@ -828,6 +827,26 @@ impl AgentConnection {
         })
     }
 
+    pub fn stop_subagent(
+        &self,
+        session_id: String,
+        task_id: String,
+        expected_run_id: Option<String>,
+        request_id: String,
+    ) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: Some(request_id),
+            command: BridgeCommand::StopSubagent { session_id, task_id, expected_run_id },
+        })
+    }
+
+    pub fn get_rewind_targets(&self, session_id: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::GetRewindTargets { session_id },
+        })
+    }
+
     /// Request the complete saved history for /export; chunks come back under `request_id`.
     pub fn export_session_history(
         &self,
@@ -837,20 +856,6 @@ impl AgentConnection {
         self.send(CommandEnvelope {
             request_id: Some(request_id),
             command: BridgeCommand::ExportSessionHistory { session_id },
-        })
-    }
-
-    pub fn stop_subagent(&self, session_id: String, task_id: String) -> anyhow::Result<()> {
-        self.send(CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::StopSubagent { session_id, task_id },
-        })
-    }
-
-    pub fn get_rewind_targets(&self, session_id: String) -> anyhow::Result<()> {
-        self.send(CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::GetRewindTargets { session_id },
         })
     }
 
@@ -872,10 +877,16 @@ impl AgentConnection {
         })
     }
 
-    pub fn reload_plugins(&self, session_id: String, force: bool) -> anyhow::Result<()> {
+    pub fn reload_plugins(
+        &self,
+        session_id: String,
+        force: bool,
+        add_plugins: Vec<String>,
+        request_id: Option<String>,
+    ) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::ReloadPlugins { session_id, force },
+            request_id,
+            command: BridgeCommand::ReloadPlugins { session_id, force, add_plugins },
         })
     }
 
@@ -1419,12 +1430,17 @@ mod tests {
     fn reload_plugins_sends_bridge_command() {
         let (conn, mut rx) = AgentConnection::test_channel();
 
-        conn.reload_plugins("session-1".to_owned(), false).expect("reload plugins");
+        conn.reload_plugins("session-1".to_owned(), false, Vec::new(), None)
+            .expect("reload plugins");
 
         let envelope = rx.try_recv().expect("command");
         assert_eq!(
             envelope.command,
-            BridgeCommand::ReloadPlugins { session_id: "session-1".to_owned(), force: false }
+            BridgeCommand::ReloadPlugins {
+                session_id: "session-1".to_owned(),
+                force: false,
+                add_plugins: Vec::new()
+            }
         );
     }
 
@@ -1585,5 +1601,32 @@ mod tests {
                 content: None,
             }
         );
+    }
+
+    // The bridge's stderr is always piped, so it must always be drained: an unread pipe
+    // fills at about 64 KiB and stalls the bridge on its next warning. With detailed
+    // diagnostics off (the state in a unit test) a reader gated on them would never run.
+    #[tokio::test]
+    async fn bridge_stderr_is_drained_even_when_detailed_diagnostics_are_off() {
+        assert!(!crate::logging::bridge_diagnostics_enabled());
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = dir.path().join("noisy-bridge.js");
+        std::fs::write(
+            &script,
+            "process.stderr.write('x'.repeat(1 << 20), () => process.exit(0));\n",
+        )
+        .expect("write script");
+        let launcher = crate::agent::bridge::BridgeLauncher {
+            runtime_path: "node".into(),
+            script_path: script,
+        };
+
+        let client = super::BridgeClient::spawn(&launcher).expect("spawn noisy bridge");
+        let status = tokio::time::timeout(Duration::from_secs(20), client.wait())
+            .await
+            .expect("a bridge writing 1 MiB to stderr must not block on an undrained pipe")
+            .expect("wait for bridge");
+
+        assert!(status.success(), "{status:?}");
     }
 }

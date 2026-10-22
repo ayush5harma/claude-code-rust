@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,6 +20,16 @@ pub enum RewindRestoreMode {
 }
 
 impl RewindRestoreMode {
+    #[must_use]
+    pub fn from_stored(value: &str) -> Option<Self> {
+        match value {
+            "both" => Some(Self::Both),
+            "conversation" => Some(Self::Conversation),
+            "code" => Some(Self::Code),
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub const fn as_stored(self) -> &'static str {
         match self {
@@ -52,6 +61,7 @@ pub enum RewindResultStatus {
 pub struct RewindFilesResult {
     pub can_rewind: bool,
     pub error: Option<String>,
+    #[serde(default)]
     pub files_changed: Vec<String>,
     pub insertions: Option<u64>,
     pub deletions: Option<u64>,

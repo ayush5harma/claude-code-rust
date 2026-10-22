@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::prelude::*;
 
@@ -75,7 +74,8 @@ impl ActiveCompaction {
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Default)]
 pub struct TurnState {
-    /// Spinner label shown while a slash command is in flight (`CommandPending`).
+    /// Composer status label while a slash command is in flight (`CommandPending`).
+    /// `None` marks a silent command whose pending state is not displayed.
     pub pending_command_label: Option<String>,
     /// Stable per-turn activity choices and tip repaint timing.
     pub(crate) activity: Option<crate::app::activity::TurnActivity>,
@@ -87,10 +87,7 @@ pub struct TurnState {
     pub cancel_requested: bool,
     /// Message index that owns the current main-assistant turn output.
     pub assistant_message_idx: Option<usize>,
-    /// IDs of root Task/Agent tool calls currently `InProgress`.
-    /// Use `App::insert_active_task()`, `App::remove_active_task()`.
-    pub active_task_ids: HashSet<String>,
-    /// Turn-local inline/system notices that may upgrade in place during the active turn.
+    /// Turn-local inline/system notices that may update in place during the active turn.
     pub notice_refs: Vec<TurnNoticeRef>,
 }
 
@@ -110,7 +107,6 @@ impl TurnState {
         self.compaction.reset();
         self.cancel_requested = false;
         self.assistant_message_idx = None;
-        self.active_task_ids.clear();
         self.notice_refs.clear();
     }
 

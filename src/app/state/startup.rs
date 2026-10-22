@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use crate::StartupLaunch;
 use std::path::PathBuf;
@@ -67,6 +66,7 @@ impl StartupState {
         }
     }
 
+    /// Keeps the resolved session configuration flags for every session of the process.
     #[must_use]
     pub fn with_session_config(self, session_config: crate::agent::wire::SessionConfig) -> Self {
         Self { session_config: Box::new(session_config), ..self }

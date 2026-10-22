@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use crate::agent::model;
 use serde::{Deserialize, Serialize};
@@ -241,7 +240,7 @@ pub struct McpState {
     pub removed_config_servers:
         std::collections::BTreeMap<RemovedMcpServerKey, RemovedMcpServerGuard>,
     pub pending_dynamic_config_removal: Option<String>,
-    pub pending_elicitation: Option<crate::agent::types::ElicitationRequest>,
+    pub elicitations: crate::app::config::ElicitationQueue,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -314,12 +313,12 @@ pub struct CacheBudgetEnforceStats {
     pub protected_bytes: usize,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AppStatus {
     /// Waiting for bridge adapter connection. Draft editing remains available,
     /// but submission is disabled until a session is established.
     Connecting,
-    /// A slash command is in flight (input disabled, spinner shown).
+    /// A slash command is in flight (input disabled; its status shows only when labeled).
     CommandPending,
     Ready,
     Thinking,
@@ -386,6 +385,18 @@ pub enum ToolCallScope {
     MainAgent,
     SubagentRoot,
     SubagentChild { parent_tool_use_id: String },
+}
+
+impl ToolCallScope {
+    pub(crate) fn for_tool(tool_name: &str, parent: Option<&str>) -> Self {
+        if let Some(parent) = parent {
+            Self::SubagentChild { parent_tool_use_id: parent.to_owned() }
+        } else if crate::agent::model::is_agent_tool_name(tool_name) {
+            Self::SubagentRoot
+        } else {
+            Self::MainAgent
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -390,6 +390,7 @@ async fn config_edits_and_resets_use_correlated_snapshot_mutations() {
             session_id: "session-1".to_owned(), request_id: inspect.request_id,
             result: SettingsResult { persistence: SettingsPersistence::NotRequested, application: SettingsApplication::Blocked, snapshot: Some(initial), error: None },
         });
+        app.config.settings.select("language".into());
         crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         assert_eq!(app.config.setting_overlay().expect("editor").draft, "German");
         for _ in 0..6 { crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)); }
@@ -433,7 +434,16 @@ fn request_correlation_and_session_epoch_protect_editor_state() {
     assert_eq!(app.config.snapshot, Some(saved));
     crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
     app.bump_session_scope_epoch();
-    assert!(app.config.snapshot.is_none());
+    assert!(app.config.saved_value("language").is_none(), "session settings are invalidated");
+    assert!(
+        app.config
+            .snapshot
+            .as_ref()
+            .expect("local settings remain")
+            .catalog
+            .iter()
+            .all(|setting| setting.id == crate::app::footer::SETTING_ID)
+    );
     assert!(app.config.pending_settings_request.is_none());
     assert!(app.config.setting_overlay().is_none());
 }
@@ -453,6 +463,7 @@ async fn inline_arrows_and_space_cycle_choices_and_render_acknowledged_values() 
             resolved.catalog[0].options = vec![json!("small"), json!("medium"), json!("large")];
             resolved.catalog[0].allows_custom = false;
             app.config.snapshot = Some(resolved);
+            app.config.settings.select("language".into());
             let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
             for (key, expected) in [
                 (KeyCode::Left, "large"),
@@ -460,11 +471,18 @@ async fn inline_arrows_and_space_cycle_choices_and_render_acknowledged_values() 
                 (KeyCode::Char(' '), "medium"),
             ] {
                 crate::app::config::handle_key(&mut app, KeyEvent::new(key, KeyModifiers::NONE));
-                let save = commands.recv_envelope().await.expect("choice save");
+                let save = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    commands.recv_envelope(),
+                )
+                .await
+                .expect("choice save deadline")
+                .expect("choice save");
                 let BridgeCommand::MutateSetting { mutation, .. } = save.command else {
                     panic!("mutation")
                 };
                 assert_eq!(mutation.operation, SettingsOperation::Set);
+                assert_eq!(mutation.id, "language");
                 assert_eq!(mutation.value, Some(json!(expected)));
                 let mut updated = app.config.snapshot.clone().expect("previous snapshot");
                 updated.sources[0].values[0].value = Some(json!(expected));
@@ -506,7 +524,16 @@ async fn inline_arrows_and_space_cycle_choices_and_render_acknowledged_values() 
                     "acknowledged value must appear beside its setting: {text}"
                 );
             }
-            app.config.snapshot.as_mut().expect("snapshot").catalog[0].writable_scopes.clear();
+            app.config
+                .snapshot
+                .as_mut()
+                .expect("snapshot")
+                .catalog
+                .iter_mut()
+                .find(|setting| setting.id == "language")
+                .expect("language control")
+                .writable_scopes
+                .clear();
             crate::app::config::handle_key(
                 &mut app,
                 KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
@@ -525,82 +552,102 @@ async fn inline_arrows_and_space_cycle_choices_and_render_acknowledged_values() 
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn settings_load_automatically_after_startup_without_a_manual_refresh() {
+async fn settings_load_automatically_when_authentication_finishes_with_config_open() {
     use crate::agent::model;
     use ratatui::{Terminal, backend::TestBackend};
-    Box::pin(tokio::task::LocalSet::new().run_until(async {
-        let mut app = App::test_default();
-        app.status = crate::app::AppStatus::Connecting;
-        let (connection, mut commands) = AgentConnection::test_channel();
-        app.session_runtime.conn = Some(Rc::new(connection));
-        crate::app::config::open(&mut app).expect("open during startup");
-        assert!(app.config.last_error.is_none(), "startup is not a settings error");
-        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-        terminal
-            .draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app))
-            .expect("startup render");
-        let text: String =
-            terminal.backend().buffer().content.iter().map(ratatui::buffer::Cell::symbol).collect();
-        assert!(text.contains("Loading settings"));
-        let cwd = app.cwd_raw.clone();
-        crate::app::events::handle_client_event(
-            &mut app,
-            ClientEvent::Connected {
-                session_id: model::SessionId::new("session-1"),
-                cwd,
-                current_model: model::CurrentModel::new("opus", "Opus", "Opus"),
-                available_models: Vec::new(),
-                mode: None,
-                fast_mode_state: model::FastModeState::Off,
-                fast_mode_disabled_reason: None,
-                ultracode: None,
-                history_updates: Vec::new(),
-            },
-        );
-        assert!(
-            app.config.pending_settings_request.is_some(),
-            "startup must request settings automatically"
-        );
-        let inspect = loop {
-            let command = commands.recv_envelope().await.expect("startup command");
-            if matches!(command.command, BridgeCommand::InspectSettings { .. }) {
-                break command;
-            }
-        };
-        let resolved = snapshot(&app.cwd_raw, "German");
-        crate::app::events::handle_client_event(
-            &mut app,
-            ClientEvent::SettingsResultReceived {
-                session_id: "session-1".to_owned(),
-                request_id: inspect.request_id,
-                result: SettingsResult {
-                    persistence: SettingsPersistence::NotRequested,
-                    application: SettingsApplication::Blocked,
-                    snapshot: Some(resolved),
-                    error: None,
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut app = App::test_default();
+            app.status = crate::app::AppStatus::Connecting;
+            let (connection, mut commands) = AgentConnection::test_channel();
+            app.session_runtime.conn = Some(Rc::new(connection));
+            crate::app::events::handle_client_event(
+                &mut app,
+                ClientEvent::AuthRequired {
+                    method_name: "login".into(),
+                    method_description: "Authenticate".into(),
                 },
-            },
-        );
-        terminal
-            .draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app))
-            .expect("loaded settings");
-        let text: String =
-            terminal.backend().buffer().content.iter().map(ratatui::buffer::Cell::symbol).collect();
-        assert_eq!(app.config.saved_value("language"), Some(&json!("German")));
-        let rows: Vec<String> = terminal
-            .backend()
-            .buffer()
-            .content
-            .chunks(100)
-            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
-            .collect();
-        assert!(
-            rows.iter().any(|row| row.contains("Language") && row.trim_end().ends_with("German")),
-            "loaded value must appear beside its setting: {text}"
-        );
-        assert!(app.config.last_error.is_none());
-    }))
-    .await;
+            );
+            app.input.set_text("/config");
+            crate::app::input_submit::submit_input(&mut app);
+            assert_eq!(
+                app.surface_mode,
+                crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config)
+            );
+            assert!(app.config.last_error.is_none(), "authentication is not a settings error");
+            let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
+            terminal
+                .draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app))
+                .expect("startup render");
+            let rows: Vec<String> = terminal
+                .backend()
+                .buffer()
+                .content
+                .chunks(100)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
+                .collect();
+            assert!(
+                rows.iter().any(|row| row.contains("Footer") && row.contains("Default layout")),
+                "local preferences are available before agent settings"
+            );
+            let cwd = app.cwd_raw.clone();
+            crate::app::events::handle_client_event(
+                &mut app,
+                ClientEvent::Connected {
+                    session_id: model::SessionId::new("session-1"),
+                    cwd,
+                    current_model: model::CurrentModel::new("opus", "Opus", "Opus"),
+                    available_models: Vec::new(),
+                    mode: None,
+                    fast_mode_state: model::FastModeState::Off,
+                    fast_mode_disabled_reason: None,
+                    ultracode: None,
+                    history_updates: Vec::new(),
+                },
+            );
+            assert!(
+                app.config.pending_settings_request.is_some(),
+                "startup must request settings automatically"
+            );
+            let inspect = loop {
+                let command = commands.recv_envelope().await.expect("startup command");
+                if matches!(command.command, BridgeCommand::InspectSettings { .. }) {
+                    break command;
+                }
+            };
+            let resolved = snapshot(&app.cwd_raw, "German");
+            crate::app::events::handle_client_event(
+                &mut app,
+                ClientEvent::SettingsResultReceived {
+                    session_id: "session-1".to_owned(),
+                    request_id: inspect.request_id,
+                    result: SettingsResult {
+                        persistence: SettingsPersistence::NotRequested,
+                        application: SettingsApplication::Blocked,
+                        snapshot: Some(resolved),
+                        error: None,
+                    },
+                },
+            );
+            terminal
+                .draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app))
+                .expect("loaded settings");
+            assert_eq!(app.config.saved_value("language"), Some(&json!("German")));
+            let rows: Vec<String> = terminal
+                .backend()
+                .buffer()
+                .content
+                .chunks(100)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
+                .collect();
+            assert!(
+                rows.iter()
+                    .any(|row| row.contains("Language") && row.trim_end().ends_with("German")),
+                "loaded value must appear beside its setting: {rows:?}"
+            );
+            assert!(app.config.last_error.is_none());
+        })
+        .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -622,6 +669,7 @@ async fn language_save_and_editor_reset_show_the_remaining_value_or_default() {
             });
             initial.values[0].contributors = vec!["local".to_owned()];
             app.config.snapshot = Some(initial);
+            app.config.settings.select("language".into());
             app.config.selected_scope = SettingsScope::Local;
             crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
             for _ in 0..6 { crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)); }

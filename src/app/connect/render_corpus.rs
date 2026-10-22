@@ -111,6 +111,7 @@ mod tests {
             app,
             width,
             &std::collections::BTreeSet::new(),
+            None,
         )
         .rows()
         .iter()

@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use crate::agent::error_handling::TurnErrorClass;
 use crate::agent::model;
@@ -35,11 +34,15 @@ pub struct HistoryChunk {
     pub last: bool,
     /// History entries left out of the whole export because the session is very large.
     pub omitted_updates: u64,
+    /// Updates of this chunk the app could not map to something it can show.
+    pub unmapped_updates: u64,
     pub error: Option<String>,
 }
 
 /// Messages sent from the backend bridge path to the App/UI layer.
 pub enum ClientEvent {
+    /// A local preference write completed independently of the agent session.
+    FooterSaved { request_id: String, revision: Option<String>, error: Option<String> },
     SettingsResultReceived {
         session_id: String,
         request_id: Option<String>,
@@ -81,11 +84,9 @@ pub enum ClientEvent {
     /// MCP elicitation request that needs auth or other MCP input.
     McpElicitationRequest { session_id: String, request: crate::agent::types::ElicitationRequest },
     /// MCP elicitation completed in the SDK.
-    McpElicitationCompleted {
-        session_id: String,
-        elicitation_id: String,
-        server_name: Option<String>,
-    },
+    McpElicitationSettled { session_id: String, request_id: String, session_closing: bool },
+    /// Transport failed before the SDK could receive this request's response.
+    McpElicitationResponseFailed { session_id: String, request_id: String },
     /// The app's elicitation response entered the outbound bridge FIFO.
     McpElicitationResponseQueued { session_id: String, request_id: String },
     /// MCP auth redirect returned directly by the SDK auth call.
@@ -166,21 +167,32 @@ pub enum ClientEvent {
     },
     /// Terminal ownership returned from a child process.
     TerminalReturnedFromChild { reason: ReleaseReason },
-    /// Session runtime plugin reload completed successfully.
-    RuntimeReloadCompleted { session_id: String },
+    /// Confirmed local-folder attachments from the SDK's current inventory.
+    PluginInventory { session_id: String, plugins: Vec<crate::agent::types::SessionPlugin> },
+    /// Native application completed; component errors and host reconciliation are separate.
+    RuntimeReloadCompleted {
+        session_id: String,
+        request_id: Option<String>,
+        error_count: u32,
+        reconciliation_error: Option<String>,
+    },
     /// A safe plugin reload was held because it would invalidate the prompt cache.
     RuntimeReloadHeld {
         session_id: String,
         cache_impact: crate::agent::types::RuntimeReloadCacheImpact,
+        request_id: Option<String>,
+        error_count: u32,
     },
     /// Session runtime plugin reload failed after dispatch.
-    RuntimeReloadFailed { session_id: String, message: String },
-    /// Skills and output styles were re-read from disk (names the SDK reported).
+    RuntimeReloadFailed { session_id: String, request_id: Option<String>, message: String },
+    /// How the skills and the output styles halves of a `/reload` each ended.
     SkillsAndStylesReloaded {
         session_id: String,
-        skill_names: Vec<String>,
-        output_style_names: Vec<String>,
+        skills: crate::agent::types::ReloadOutcome,
+        output_styles: crate::agent::types::ReloadOutcome,
     },
+    /// A `/reload` waited too long behind earlier requests for its session and was skipped.
+    SkillsAndStylesReloadExpired { session_id: String, after_ms: u64 },
     /// Custom slash command replaced the active session.
     SessionReplaced {
         session_id: model::SessionId,
@@ -233,11 +245,19 @@ pub enum ClientEvent {
     SubagentMessagesReceived {
         session_id: String,
         agent_id: String,
+        /// The read request this answers.
+        request_id: Option<String>,
         messages: Vec<crate::agent::types::SubagentMessage>,
         error: Option<String>,
     },
     /// Acknowledgement or rejection of a subagent stop request; not its outcome.
-    SubagentStopResult { session_id: String, task_id: String, error: Option<String> },
+    SubagentStopResult {
+        session_id: String,
+        task_id: String,
+        run_id: Option<String>,
+        request_id: Option<String>,
+        error: Option<String>,
+    },
     /// Rewind target candidates loaded from persisted SDK session history.
     RewindTargetsReceived {
         session_id: String,
@@ -294,7 +314,8 @@ impl ClientEvent {
             | Self::UserDialogRequest { session_id, .. }
             | Self::InteractionCancelled { session_id, .. }
             | Self::McpElicitationRequest { session_id, .. }
-            | Self::McpElicitationCompleted { session_id, .. }
+            | Self::McpElicitationSettled { session_id, .. }
+            | Self::McpElicitationResponseFailed { session_id, .. }
             | Self::McpElicitationResponseQueued { session_id, .. }
             | Self::McpAuthRedirect { session_id, .. }
             | Self::McpOperationError { session_id, .. }
@@ -306,11 +327,12 @@ impl ClientEvent {
             | Self::TurnComplete { session_id, .. }
             | Self::TurnError { session_id, .. }
             | Self::TurnErrorClassified { session_id, .. }
-            | Self::RuntimeReloadCompleted { session_id }
+            | Self::PluginInventory { session_id, .. }
+            | Self::RuntimeReloadCompleted { session_id, .. }
             | Self::RuntimeReloadHeld { session_id, .. }
             | Self::RuntimeReloadFailed { session_id, .. }
             | Self::SkillsAndStylesReloaded { session_id, .. }
-            | Self::SessionHistoryChunk { session_id, .. }
+            | Self::SkillsAndStylesReloadExpired { session_id, .. }
             | Self::SettingsResultReceived { session_id, .. }
             | Self::StatusSnapshotReceived { session_id, .. }
             | Self::ContextUsageReceived { session_id, .. }
@@ -318,10 +340,12 @@ impl ClientEvent {
             | Self::SubagentsListed { session_id, .. }
             | Self::SubagentMessagesReceived { session_id, .. }
             | Self::SubagentStopResult { session_id, .. }
+            | Self::SessionHistoryChunk { session_id, .. }
             | Self::McpSnapshotReceived { session_id, .. } => Some(session_id),
             Self::SlashCommandError { session_id, .. } => session_id.as_deref(),
             Self::RewindResultReceived { result } => Some(result.session_id.as_str()),
-            Self::Connected { .. }
+            Self::FooterSaved { .. }
+            | Self::Connected { .. }
             | Self::ConnectionFailed(_)
             | Self::AuthRequired { .. }
             | Self::SessionResumeFailed { .. }

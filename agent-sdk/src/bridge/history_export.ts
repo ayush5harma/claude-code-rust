@@ -6,7 +6,11 @@ import { getSessionTranscriptMessages, mapSessionMessagesToUpdates } from "./his
 export type HistoryExportLimits = {
   /** A chunk is flushed once adding the next update would pass this many bytes. */
   chunkBytes: number;
-  /** Updates past this many bytes are left out and counted, so a huge session cannot exhaust memory. */
+  /**
+   * Updates past this many bytes are left out and counted. The transcript is already
+   * loaded and translated by then, so this bounds what the app receives, holds and
+   * renders, not the bridge's own memory.
+   */
   maxBytes: number;
 };
 
@@ -88,16 +92,32 @@ export async function exportSessionHistory(
       sessionId,
       fields: { error_message: message },
     });
-    writeEvent(
-      {
-        event: "session_history_export",
-        session_id: sessionId,
-        updates: [],
-        last: true,
-        omitted_updates: 0,
-        error: `failed to load session history: ${message}`,
-      },
+    emitHistoryExportFailure(
+      sessionId,
+      `failed to load session history: ${message}`,
       requestId,
     );
   }
+}
+
+/**
+ * Report a failed export on the request-scoped event the app is waiting for, so every
+ * failure reaches the one pending export and none reaches unrelated slash handling.
+ */
+export function emitHistoryExportFailure(
+  sessionId: string,
+  error: string,
+  requestId: string | undefined,
+): void {
+  writeEvent(
+    {
+      event: "session_history_export",
+      session_id: sessionId,
+      updates: [],
+      last: true,
+      omitted_updates: 0,
+      error,
+    },
+    requestId,
+  );
 }

@@ -1,52 +1,35 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
-//! Rendering for tool-call titles, standard bodies, and compact content summaries.
+//! Rendering for tool-call titles and standard bodies.
 
 use crate::agent::model;
 use crate::app::ToolCallInfo;
 use crate::ui::diff::{is_markdown_file, lang_from_title, render_diff, strip_outer_code_fence};
 use crate::ui::highlight;
+use crate::ui::layout_control::LayoutControl;
 use crate::ui::markdown;
 use crate::ui::theme;
 use crate::ui::tool_display;
-use crate::ui::wrap::wrap_lines_to_physical_rows;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 use std::path::Path;
-use two_face::theme::EmbeddedThemeName;
+use std::task::Poll;
 
-use super::errors::{
-    debug_failed_tool_render, failed_execute_first_line, failed_tool_text_summary,
-    render_failed_tool_text_content,
-};
+use super::errors::{debug_failed_tool_render, render_failed_tool_text_content};
 use super::interactions::{render_permission_lines, render_question_lines};
 use super::{
-    TOOL_BODY_MAX_LINES, ToolCallRenderContext, execute, markdown_inline_spans, read_file,
-    status_icon, tasks, tool_display_title, tool_output_badge_spans, truncate_spans_to_width,
-    typed,
+    TOOL_BODY_MAX_LINES, ToolCallRenderContext, execute, markdown_inline_spans, read, status_icon,
+    tasks, tool_display_title, tool_output_badge_spans, truncate_spans_to_width, typed,
 };
 
 pub(super) const WRITE_DIFF_MAX_LINES: usize = TOOL_BODY_MAX_LINES;
-const DEFAULT_TEXT_SUMMARY_LIMIT: usize = 60;
-const IN_PROGRESS_SUBAGENT_TEXT_SUMMARY_LIMIT: usize = 180;
-const READ_BODY_HEAD_LINES: usize = 3;
-const READ_BODY_TAIL_LINES: usize = 4;
 const DIFF_BODY_INDENT: &str = "  ";
 const DIFF_BODY_INDENT_WIDTH: u16 = 2;
 const STANDARD_BODY_PREFIX_WIDTH: u16 = 5;
 const EXECUTE_BODY_INDENT: &str = "      ";
 const EXECUTE_BODY_INDENT_WIDTH: u16 = 6;
 const ASK_USER_QUESTION_RESULT_TEXT_INDENT: &str = "      ";
-/// File contents are drawn on the terminal's own background, so the syntax
-/// colors follow its appearance: Monokai's bright set is unreadable on white.
-pub(super) fn read_syntax_theme() -> EmbeddedThemeName {
-    match theme::appearance() {
-        theme::Appearance::Dark => EmbeddedThemeName::MonokaiExtendedBright,
-        theme::Appearance::Light => EmbeddedThemeName::MonokaiExtendedLight,
-    }
-}
 const VIEWED_IMAGE_RESULT_PREFIX: &str = "Viewed Image ";
 
 /// Render just the title line for a tool call (the line containing the spinner icon).
@@ -99,7 +82,7 @@ fn hidden_subagent_permission_title_prefix(tc: &ToolCallInfo) -> Option<Span<'st
         .pending_permission
         .as_ref()
         .is_some_and(|permission| permission.subagent_context.is_some());
-    (tc.hidden && has_subagent_permission).then(|| {
+    (tc.is_subagent_child() && has_subagent_permission).then(|| {
         Span::styled(
             "Subagent · ",
             Style::default().fg(theme::tertiary()).add_modifier(Modifier::BOLD),
@@ -109,19 +92,67 @@ fn hidden_subagent_permission_title_prefix(tc: &ToolCallInfo) -> Option<Span<'st
 
 /// Render the body lines (everything after the title) for a tool call.
 /// Used for in-progress tool calls where the body is cached separately from the title.
-pub(super) fn render_tool_call_body(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
+#[derive(Default)]
+pub(super) struct ToolBodyCursor {
+    content: ToolContentCursor,
+}
+
+impl ToolBodyCursor {
+    pub(super) fn render(
+        &mut self,
+        tc: &ToolCallInfo,
+        width: u16,
+        control: &LayoutControl<'_>,
+    ) -> Vec<Line<'static>> {
+        loop {
+            if let Poll::Ready(lines) = self.poll(tc, width, control) {
+                return lines;
+            }
+        }
+    }
+
+    pub(super) fn poll(
+        &mut self,
+        tc: &ToolCallInfo,
+        width: u16,
+        control: &LayoutControl<'_>,
+    ) -> Poll<Vec<Line<'static>>> {
+        if control.cancelled() {
+            return Poll::Ready(Vec::new());
+        }
+        let prefix = if tc.is_execute_tool() {
+            EXECUTE_BODY_INDENT_WIDTH
+        } else {
+            STANDARD_BODY_PREFIX_WIDTH
+        };
+        let Poll::Ready(content) = self.content.poll(tc, width.saturating_sub(prefix), control)
+        else {
+            return Poll::Pending;
+        };
+        let mut lines = Vec::new();
+        finish_standard_body(tc, width, content, &mut lines, control);
+        Poll::Ready(lines)
+    }
+}
+
+pub(super) fn render_result_presentation(
+    tc: &ToolCallInfo,
+    result: &model::ToolResultPresentation,
+    clock: crate::app::presentation::ClockFormat<'_>,
+    width: u16,
+    control: &LayoutControl<'_>,
+) -> Vec<Line<'static>> {
+    let content = super::result_presentation::render(result, clock);
     let mut lines = Vec::new();
-    render_standard_body(tc, width, &mut lines);
+    finish_standard_body(tc, width, content, &mut lines, control);
     lines
 }
 
 #[must_use]
-pub(super) fn tool_call_body_depends_on_width(tc: &ToolCallInfo) -> bool {
-    tool_call_has_body(tc)
-}
-
-#[must_use]
 pub(super) fn tool_call_has_body(tc: &ToolCallInfo) -> bool {
+    if tc.output_metadata.as_ref().is_some_and(|metadata| metadata.presentation.is_some()) {
+        return true;
+    }
     if let Some(renderer) = typed::renderer_for(tc) {
         return (renderer.has_structured_body)(tc)
             || tc.pending_permission.is_some()
@@ -142,18 +173,19 @@ pub(super) fn tool_call_has_body(tc: &ToolCallInfo) -> bool {
 }
 
 /// Render the body (everything after the title line) of a tool call.
-fn render_standard_body(tc: &ToolCallInfo, width: u16, lines: &mut Vec<Line<'static>>) {
+fn finish_standard_body(
+    tc: &ToolCallInfo,
+    width: u16,
+    mut content_lines: Vec<Line<'static>>,
+    lines: &mut Vec<Line<'static>>,
+    control: &LayoutControl<'_>,
+) {
     let pipe_style = Style::default().fg(theme::tertiary());
-
-    if !tool_call_has_body(tc) {
-        return;
-    }
 
     let is_execute = tc.is_execute_tool();
     let prefix_width =
         if is_execute { EXECUTE_BODY_INDENT_WIDTH } else { STANDARD_BODY_PREFIX_WIDTH };
     let content_width = width.saturating_sub(prefix_width);
-    let mut content_lines = render_tool_content(tc, content_width);
     if tc.output_was_staged() {
         content_lines.push(Line::from(vec![
             Span::styled("Staged for review: ", Style::default().add_modifier(Modifier::BOLD)),
@@ -162,6 +194,7 @@ fn render_standard_body(tc: &ToolCallInfo, width: u16, lines: &mut Vec<Line<'sta
     }
     content_lines.extend(render_non_execution_metadata(tc));
     content_lines = match tool_content_height_policy(tc) {
+        ToolContentHeightPolicy::Preformatted => content_lines,
         ToolContentHeightPolicy::Bounded => {
             let protected_source_lines = protected_content_source_lines(tc, &content_lines);
             cap_tool_content_lines(
@@ -169,13 +202,11 @@ fn render_standard_body(tc: &ToolCallInfo, width: u16, lines: &mut Vec<Line<'sta
                 content_width,
                 "source lines hidden",
                 protected_source_lines,
+                control,
             )
         }
         ToolContentHeightPolicy::Unbounded => {
-            wrap_content_lines_with_source(content_lines, content_width)
-                .into_iter()
-                .map(|wrapped| wrapped.row)
-                .collect()
+            crate::ui::wrap::wrap_lines_with_control(&content_lines, content_width, control)
         }
     };
 
@@ -228,177 +259,91 @@ fn render_non_execution_metadata(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     lines
 }
 
-/// One-line summary for tools that should not render expanded content.
-pub(super) fn content_summary(tc: &ToolCallInfo) -> String {
-    // For Execute tool calls, show last non-empty line of terminal output
-    if tc.terminal_id.is_some() {
-        if let Some(ref output) = tc.terminal_output {
-            let stripped_output = highlight::strip_ansi(output);
-            if matches!(tc.status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed)
-                && let Some(first_line) = failed_execute_first_line(&stripped_output)
-            {
-                return if first_line.chars().count() > 80 {
-                    let truncated: String = first_line.chars().take(77).collect();
-                    format!("{truncated}...")
-                } else {
-                    first_line
-                };
-            }
-            let last = stripped_output.lines().rev().find(|l| !l.trim().is_empty());
-            if let Some(line) = last {
-                return if line.chars().count() > 80 {
-                    let truncated: String = line.chars().take(77).collect();
-                    format!("{truncated}...")
-                } else {
-                    line.to_owned()
-                };
-            }
-        }
-        return if matches!(tc.status, model::ToolCallStatus::InProgress) {
-            "running...".to_owned()
-        } else {
-            String::new()
-        };
-    }
+#[derive(Default)]
+struct ToolContentCursor {
+    next_content: usize,
+    lines: Vec<Line<'static>>,
+    read: Option<read::ReadCursor>,
+}
 
-    for content in &tc.content {
-        match content {
-            model::ToolCallContent::Diff(diff) => {
-                let name = diff.path.file_name().map_or_else(
-                    || diff.path.to_string_lossy().into_owned(),
-                    |f| f.to_string_lossy().into_owned(),
-                );
-                return name;
+impl ToolContentCursor {
+    fn poll(
+        &mut self,
+        tc: &ToolCallInfo,
+        width: u16,
+        control: &LayoutControl<'_>,
+    ) -> Poll<Vec<Line<'static>>> {
+        if hides_pending_ask_user_question_transcript(tc) || control.cancelled() {
+            return Poll::Ready(Vec::new());
+        }
+        if let Some(renderer) = typed::renderer_for(tc) {
+            return Poll::Ready((renderer.render)(tc));
+        }
+        if tc.is_execute_tool() {
+            return Poll::Ready(render_execute_tool_content(tc, control));
+        }
+        if let Some(lines) = render_completed_ask_user_question_content(tc) {
+            return Poll::Ready(lines);
+        }
+        while let Some(content) = tc.content.get(self.next_content) {
+            if control.cancelled() {
+                return Poll::Ready(Vec::new());
             }
-            model::ToolCallContent::FileText(file) => {
-                let first = file.text.lines().find(|line| !line.trim().is_empty()).unwrap_or("");
-                return truncate_summary_line(
-                    &highlight::strip_ansi(first),
-                    text_summary_limit(tc),
-                );
-            }
-            model::ToolCallContent::McpResource(resource) => {
-                if let Some(path) = &resource.blob_saved_to {
-                    return path.file_name().map_or_else(
-                        || path.to_string_lossy().into_owned(),
-                        |f| f.to_string_lossy().into_owned(),
-                    );
-                }
-                if let Some(text) = resource.text.as_deref() {
-                    if let Some(summary) = failed_tool_text_summary(tc.status, text) {
-                        return truncate_summary_line(&summary, DEFAULT_TEXT_SUMMARY_LIMIT);
+            match content {
+                model::ToolCallContent::Diff(diff) => {
+                    if is_plan_file_path(&diff.path) {
+                        self.lines.extend(render_plan_content(&diff.new_text, width, control));
+                    } else {
+                        let raw = render_diff(
+                            diff,
+                            width.saturating_sub(DIFF_BODY_INDENT_WIDTH),
+                            control,
+                        );
+                        self.lines.extend(indent_rendered_lines(
+                            cap_write_diff_lines(raw),
+                            DIFF_BODY_INDENT,
+                        ));
                     }
-                    let first = text.lines().find(|line| !line.trim().is_empty()).unwrap_or("");
-                    return truncate_summary_line(first, DEFAULT_TEXT_SUMMARY_LIMIT);
                 }
-                return resource.uri.clone();
-            }
-            model::ToolCallContent::ResourceLink(link) => {
-                return link.title.as_deref().unwrap_or(&link.name).to_owned();
-            }
-            model::ToolCallContent::Content(c) => {
-                if let model::ContentBlock::Text(text) = &c.content {
-                    let stripped = strip_outer_code_fence(&text.text);
-                    if let Some(summary) = failed_tool_text_summary(tc.status, &stripped) {
-                        return truncate_summary_line(&summary, text_summary_limit(tc));
+                model::ToolCallContent::McpResource(resource) => {
+                    self.lines.extend(render_mcp_resource_content(tc, resource, width, control));
+                }
+                model::ToolCallContent::ResourceLink(link) => {
+                    self.lines.extend(render_mcp_resource_link_content(link));
+                }
+                model::ToolCallContent::Content(c) => {
+                    if let model::ContentBlock::Text(text) = &c.content
+                        && render_text_content(
+                            tc,
+                            &text.text,
+                            width,
+                            &mut self.lines,
+                            &mut self.read,
+                            control,
+                        )
+                        .is_pending()
+                    {
+                        return Poll::Pending;
                     }
-                    let first = stripped.lines().next().unwrap_or("");
-                    return truncate_summary_line(first, text_summary_limit(tc));
                 }
+                model::ToolCallContent::Terminal(_) => {}
             }
-            model::ToolCallContent::Terminal(_) => {}
+            self.read = None;
+            self.next_content += 1;
+            if self.next_content < tc.content.len() && control.yield_due() {
+                return Poll::Pending;
+            }
         }
-    }
-    String::new()
-}
-
-fn text_summary_limit(tc: &ToolCallInfo) -> usize {
-    if matches!(tc.status, model::ToolCallStatus::InProgress)
-        && matches!(tc.sdk_tool_name.as_str(), "Agent" | "Task")
-    {
-        IN_PROGRESS_SUBAGENT_TEXT_SUMMARY_LIMIT
-    } else {
-        DEFAULT_TEXT_SUMMARY_LIMIT
+        debug_failed_tool_render(tc);
+        Poll::Ready(std::mem::take(&mut self.lines))
     }
 }
 
-fn truncate_summary_line(line: &str, max_chars: usize) -> String {
-    if line.chars().count() > max_chars {
-        let truncated: String = line.chars().take(max_chars.saturating_sub(3)).collect();
-        format!("{truncated}...")
-    } else {
-        line.to_owned()
-    }
-}
-
-/// Render the full content of a tool call as lines.
-fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
-    if hides_pending_ask_user_question_transcript(tc) {
-        return Vec::new();
-    }
-
-    if let Some(renderer) = typed::renderer_for(tc) {
-        return (renderer.render)(tc);
-    }
-
-    if tc.is_execute_tool() {
-        return render_execute_tool_content(tc);
-    }
-
-    if let Some(question_lines) = render_completed_ask_user_question_content(tc) {
-        return question_lines;
-    }
-
-    if tool_body_uses_summary_only(tc) {
-        let summary = content_summary(tc);
-        return if summary.is_empty() {
-            Vec::new()
-        } else {
-            vec![Line::from(Span::styled(summary, Style::default().fg(theme::tertiary())))]
-        };
-    }
-
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    for content in &tc.content {
-        match content {
-            model::ToolCallContent::Diff(diff) => {
-                if is_plan_file_path(&diff.path) {
-                    lines.extend(render_plan_content(&diff.new_text, width));
-                } else {
-                    let raw = render_diff(diff, width.saturating_sub(DIFF_BODY_INDENT_WIDTH));
-                    let raw = cap_write_diff_lines(raw);
-                    lines.extend(indent_rendered_lines(raw, DIFF_BODY_INDENT));
-                }
-            }
-            model::ToolCallContent::FileText(file) => {
-                // Already capped and wrapped by source line: a second row-level cap would
-                // count wrapped rows as source lines.
-                return read_file::render_file_text(tc, file, width);
-            }
-            model::ToolCallContent::McpResource(resource) => {
-                lines.extend(render_mcp_resource_content(tc, resource, width));
-            }
-            model::ToolCallContent::ResourceLink(link) => {
-                lines.extend(render_mcp_resource_link_content(link));
-            }
-            model::ToolCallContent::Content(c) => {
-                if let model::ContentBlock::Text(text) = &c.content {
-                    render_text_content(tc, &text.text, width, &mut lines);
-                }
-            }
-            model::ToolCallContent::Terminal(_) => {}
-        }
-    }
-
-    debug_failed_tool_render(tc);
-    if is_read_tool(tc) {
-        return cap_read_content_lines(lines);
-    }
-    lines
-}
-
-fn render_execute_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
-    let lines = execute::render_execute_content(tc);
+fn render_execute_tool_content(
+    tc: &ToolCallInfo,
+    control: &LayoutControl<'_>,
+) -> Vec<Line<'static>> {
+    let lines = execute::render_execute_content(tc, control);
     debug_failed_tool_render(tc);
     lines
 }
@@ -544,13 +489,10 @@ fn json_usize(value: &Value, key: &str) -> Option<usize> {
     value.get(key)?.as_u64().and_then(|number| usize::try_from(number).ok())
 }
 
-fn tool_body_uses_summary_only(tc: &ToolCallInfo) -> bool {
-    tc.is_exit_plan_mode_tool()
-        || matches!(tc.sdk_tool_name.as_str(), "Agent" | "Task" | "WebSearch" | "WebFetch")
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ToolContentHeightPolicy {
+    /// Read source owns its gutter, wrapping, omission count, and row budget.
+    Preformatted,
     Bounded,
     Unbounded,
 }
@@ -558,6 +500,10 @@ enum ToolContentHeightPolicy {
 fn tool_content_height_policy(tc: &ToolCallInfo) -> ToolContentHeightPolicy {
     if renders_only_plan_file_content(tc) || renders_structured_ask_user_question_result(tc) {
         ToolContentHeightPolicy::Unbounded
+    } else if is_read_tool(tc)
+        && !matches!(tc.status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed)
+    {
+        ToolContentHeightPolicy::Preformatted
     } else {
         ToolContentHeightPolicy::Bounded
     }
@@ -585,7 +531,6 @@ fn renders_only_plan_file_content(tc: &ToolCallInfo) -> bool {
             }
             model::ToolCallContent::Terminal(_) => {}
             model::ToolCallContent::Diff(_)
-            | model::ToolCallContent::FileText(_)
             | model::ToolCallContent::McpResource(_)
             | model::ToolCallContent::ResourceLink(_)
             | model::ToolCallContent::Content(_) => return false,
@@ -600,14 +545,18 @@ fn is_read_tool(tc: &ToolCallInfo) -> bool {
 }
 
 fn protected_content_source_lines(tc: &ToolCallInfo, lines: &[Line<'static>]) -> usize {
-    let mut count = if is_read_tool(tc) {
-        READ_BODY_HEAD_LINES
-    } else if matches!(tc.content.first(), Some(model::ToolCallContent::ResourceLink(_))) {
-        2
-    } else {
-        leading_diff_metadata_line_count(lines)
+    if tc.output_metadata.as_ref().is_some_and(|metadata| metadata.presentation.is_some()) {
+        // Structured records begin with identity and timestamps. Keep that prefix
+        // within the existing preview budget rather than showing an unlabelled tail.
+        return lines.len().min(TOOL_BODY_MAX_LINES.saturating_sub(1));
     }
-    .min(lines.len());
+    let mut count =
+        if matches!(tc.content.first(), Some(model::ToolCallContent::ResourceLink(_))) {
+            2
+        } else {
+            leading_diff_metadata_line_count(lines)
+        }
+        .min(lines.len());
 
     while lines.get(count).is_some_and(line_text_is_existing_omission_marker) {
         count += 1;
@@ -615,38 +564,9 @@ fn protected_content_source_lines(tc: &ToolCallInfo, lines: &[Line<'static>]) ->
     count
 }
 
-fn cap_read_content_lines(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
-    cap_read_items(lines, read_hidden_marker)
-}
-
-/// Keep the first and last few items of a Read body and put `marker(omitted)` between them.
-pub(super) fn cap_read_items<T>(items: Vec<T>, marker: impl FnOnce(usize) -> T) -> Vec<T> {
-    let visible_items = READ_BODY_HEAD_LINES.saturating_add(READ_BODY_TAIL_LINES);
-    let capped_count = visible_items.saturating_add(1);
-    if items.len() <= capped_count {
-        return items;
-    }
-
-    let omitted = items.len().saturating_sub(visible_items);
-    let tail_start = items.len().saturating_sub(READ_BODY_TAIL_LINES);
-    let mut out = Vec::with_capacity(capped_count);
-    let mut remaining = items.into_iter();
-    out.extend(remaining.by_ref().take(READ_BODY_HEAD_LINES));
-    out.push(marker(omitted));
-    out.extend(remaining.skip(tail_start.saturating_sub(READ_BODY_HEAD_LINES)));
-    out
-}
-
-pub(super) fn read_hidden_marker(omitted: usize) -> Line<'static> {
-    Line::from(Span::styled(
-        format!("... {omitted} lines hidden ..."),
-        Style::default().fg(theme::tertiary()).add_modifier(Modifier::ITALIC),
-    ))
-}
-
-fn render_plan_content(text: &str, width: u16) -> Vec<Line<'static>> {
+fn render_plan_content(text: &str, width: u16, control: &LayoutControl<'_>) -> Vec<Line<'static>> {
     let md_source = strip_outer_code_fence(text);
-    markdown::render_markdown_at_width(&md_source, width, None)
+    markdown::render_markdown_with_control(&md_source, width, None, false, control)
         .into_iter()
         .map(|line| {
             let owned: Vec<Span<'static>> = line
@@ -659,50 +579,43 @@ fn render_plan_content(text: &str, width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
-fn render_text_content(tc: &ToolCallInfo, text: &str, width: u16, lines: &mut Vec<Line<'static>>) {
-    if is_read_tool(tc) {
-        render_read_text_content(tc, text, width, lines);
-    } else {
-        render_generic_text_content(tc, text, width, lines);
-    }
-}
-
-fn render_read_text_content(
+fn render_text_content(
     tc: &ToolCallInfo,
     text: &str,
     width: u16,
     lines: &mut Vec<Line<'static>>,
-) {
-    let fenced_language = outer_code_fence_language(text);
-    let stripped = strip_outer_code_fence(text);
-    if let Some(failed_lines) = render_failed_tool_text_content(tc.status, &stripped) {
-        lines.extend(failed_lines);
-        return;
+    read_cursor: &mut Option<read::ReadCursor>,
+    control: &LayoutControl<'_>,
+) -> Poll<()> {
+    if is_read_tool(tc) {
+        let read = tc.read_output_metadata();
+        if read.is_none() {
+            let stripped = strip_outer_code_fence(text);
+            if let Some(failed_lines) = render_failed_tool_text_content(tc.status, &stripped) {
+                lines.extend(failed_lines);
+                return Poll::Ready(());
+            }
+            if let Some(viewed_image) = render_viewed_image_content(tc, &stripped) {
+                lines.push(viewed_image);
+                return Poll::Ready(());
+            }
+        }
+        let title_lang = lang_from_title(&tc.title);
+        let source = read::ReadSource {
+            text,
+            start_line: read.map(|read| read.start_line),
+            path: read.map(|read| read.file_path.as_path()).or_else(|| read_syntax_path(tc)),
+            language_fallback: (!title_lang.is_empty()).then_some(title_lang.as_str()),
+        };
+        let cursor = read_cursor.get_or_insert_with(|| read::ReadCursor::new(&source, width));
+        let Poll::Ready(rendered) = cursor.poll(&source, control) else {
+            return Poll::Pending;
+        };
+        lines.extend(rendered);
+    } else {
+        render_generic_text_content(tc, text, width, lines, control);
     }
-    if let Some(viewed_image) = render_viewed_image_content(tc, &stripped) {
-        lines.push(viewed_image);
-        return;
-    }
-    if read_content_is_markdown(tc) {
-        render_markdown_content(&stripped, width, lines);
-        return;
-    }
-
-    let clean = highlight::strip_ansi(&stripped);
-    let title_lang = lang_from_title(&tc.title);
-    if let Some(path) = read_syntax_path(tc) {
-        let language_fallback = (!title_lang.is_empty()).then_some(title_lang.as_str());
-        lines.extend(highlight::highlight_code_for_path_with_theme(
-            &clean,
-            path,
-            language_fallback,
-            read_syntax_theme(),
-        ));
-        return;
-    }
-
-    let fallback_lang = (!title_lang.is_empty()).then_some(title_lang.as_str()).or(fenced_language);
-    lines.extend(highlight::highlight_code_with_theme(&clean, fallback_lang, read_syntax_theme()));
+    Poll::Ready(())
 }
 
 fn render_viewed_image_content(tc: &ToolCallInfo, text: &str) -> Option<Line<'static>> {
@@ -732,6 +645,7 @@ fn render_generic_text_content(
     text: &str,
     width: u16,
     lines: &mut Vec<Line<'static>>,
+    control: &LayoutControl<'_>,
 ) {
     let stripped = strip_outer_code_fence(text);
     if let Some(failed_lines) = render_failed_tool_text_content(tc.status, &stripped) {
@@ -742,13 +656,14 @@ fn render_generic_text_content(
         stripped
     } else {
         let lang = lang_from_title(&tc.title);
-        lines.extend(highlight::highlight_code(
+        lines.extend(highlight::highlight_code_with_control(
             &stripped,
             (!lang.is_empty()).then_some(lang.as_str()),
+            control,
         ));
         return;
     };
-    render_markdown_content(&md_source, width, lines);
+    render_markdown_content(&md_source, width, lines, control);
 }
 
 fn render_mcp_resource_text_content(
@@ -756,6 +671,7 @@ fn render_mcp_resource_text_content(
     text: &str,
     width: u16,
     lines: &mut Vec<Line<'static>>,
+    control: &LayoutControl<'_>,
 ) {
     let stripped = strip_outer_code_fence(text);
     if let Some(failed_lines) = render_failed_tool_text_content(tc.status, &stripped) {
@@ -763,22 +679,23 @@ fn render_mcp_resource_text_content(
         return;
     }
     if is_markdown_file(&tc.title) {
-        render_markdown_content(&stripped, width, lines);
+        render_markdown_content(&stripped, width, lines, control);
     } else {
         lines.extend(highlight::plain_text_lines(&stripped));
     }
 }
 
-fn render_markdown_content(text: &str, width: u16, lines: &mut Vec<Line<'static>>) {
-    for line in markdown::render_markdown_at_width(text, width, None) {
+fn render_markdown_content(
+    text: &str,
+    width: u16,
+    lines: &mut Vec<Line<'static>>,
+    control: &LayoutControl<'_>,
+) {
+    for line in markdown::render_markdown_with_control(text, width, None, false, control) {
         let owned: Vec<Span<'static>> =
             line.spans.into_iter().map(|s| Span::styled(s.content.into_owned(), s.style)).collect();
         lines.push(Line::from(owned));
     }
-}
-
-fn read_content_is_markdown(tc: &ToolCallInfo) -> bool {
-    read_syntax_path(tc).is_some_and(path_is_markdown) || is_markdown_file(&tc.title)
 }
 
 fn read_syntax_path(tc: &ToolCallInfo) -> Option<&Path> {
@@ -798,27 +715,15 @@ fn raw_input_file_path(tc: &ToolCallInfo) -> Option<&str> {
         .filter(|path| !path.is_empty())
 }
 
-fn path_is_markdown(path: &Path) -> bool {
-    path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| {
-        matches!(extension.to_ascii_lowercase().as_str(), "md" | "mdx" | "markdown")
-    })
-}
-
-fn outer_code_fence_language(text: &str) -> Option<&str> {
-    let trimmed = text.trim_start();
-    let after_opening = trimmed.strip_prefix("```")?;
-    let first_line = after_opening.lines().next()?.trim();
-    (!first_line.is_empty()).then_some(first_line)
-}
-
 fn render_mcp_resource_content(
     tc: &ToolCallInfo,
     resource: &model::McpResource,
     width: u16,
+    control: &LayoutControl<'_>,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if let Some(text) = resource.text.as_deref() {
-        render_mcp_resource_text_content(tc, text, width, &mut lines);
+        render_mcp_resource_text_content(tc, text, width, &mut lines, control);
     }
     if let Some(blob_saved_to) = &resource.blob_saved_to {
         let saved_path = blob_saved_to.to_string_lossy().into_owned();
@@ -952,73 +857,135 @@ fn line_text_starts_with_diff_count_header(line: &Line<'static>) -> bool {
     line_plain_text(line).trim_start().starts_with('(')
 }
 
-#[derive(Clone)]
-struct WrappedContentRow {
-    source_index: usize,
-    row: Line<'static>,
-}
-
 fn cap_tool_content_lines(
     lines: Vec<Line<'static>>,
     width: u16,
     omitted_label: &str,
     protected_source_lines: usize,
+    control: &LayoutControl<'_>,
 ) -> Vec<Line<'static>> {
     let source_line_count = lines.len();
-    let wrapped = wrap_content_lines_with_source(lines, width);
-    if wrapped.len() <= TOOL_BODY_MAX_LINES {
-        return wrapped.into_iter().map(|wrapped| wrapped.row).collect();
+    let protected_source_lines = protected_source_lines.min(source_line_count);
+    let mut head = lines;
+    let rest = head.split_off(protected_source_lines);
+    let head = measure_content_lines(head, width, control);
+    let protected_rows = content_height(&head);
+
+    // Every logical line produces at least one row. When the source already
+    // exceeds the cap, only the protected prefix and the visible tail need layout.
+    // Hidden middle lines are counted by source identity, not wrapped into cells.
+    if source_line_count > TOOL_BODY_MAX_LINES && protected_rows < TOOL_BODY_MAX_LINES {
+        let tail_budget = TOOL_BODY_MAX_LINES - protected_rows - 1;
+        let mut tail = std::collections::VecDeque::new();
+        let mut first_tail = source_line_count;
+        for (index, line) in rest.into_iter().enumerate().rev() {
+            if tail.len() >= tail_budget || control.cancelled() {
+                break;
+            }
+            let layout = crate::ui::wrap::WrappedLineLayout::new(line, width);
+            let end = layout.height();
+            let start = end.saturating_sub(tail_budget - tail.len());
+            for row in layout.render(start..end, control).into_iter().rev() {
+                tail.push_front(row);
+                first_tail = protected_source_lines + index;
+            }
+        }
+        let omitted = first_tail.saturating_sub(protected_source_lines);
+        let (_, mut out) = render_content_window(head, 0..protected_rows, control);
+        out.push(Line::from(Span::styled(
+            format!("... {omitted} {omitted_label} ..."),
+            Style::default().fg(theme::tertiary()).add_modifier(Modifier::ITALIC),
+        )));
+        out.extend(tail);
+        return out;
+    }
+    let rest = measure_content_lines(rest, width, control);
+    let remaining_rows = content_height(&rest);
+    let total_rows = protected_rows + remaining_rows;
+    if total_rows <= TOOL_BODY_MAX_LINES {
+        return render_content_window(
+            head.into_iter().chain(rest).collect(),
+            0..total_rows,
+            control,
+        )
+        .1;
     }
 
-    let protected_source_lines = protected_source_lines.min(source_line_count);
-    let protected_rows =
-        wrapped.iter().take_while(|row| row.source_index < protected_source_lines).count();
     if protected_rows >= TOOL_BODY_MAX_LINES {
         let visible = TOOL_BODY_MAX_LINES.saturating_sub(1);
-        let omitted_rows = wrapped.len().saturating_sub(visible);
-        let mut out = Vec::with_capacity(TOOL_BODY_MAX_LINES);
-        out.extend(wrapped.iter().take(visible).map(|wrapped| wrapped.row.clone()));
-        if omitted_rows > 0 {
-            out.push(Line::from(Span::styled(
-                format!("... {omitted_rows} wrapped rows hidden ..."),
-                Style::default().fg(theme::tertiary()).add_modifier(Modifier::ITALIC),
-            )));
-        }
+        let omitted_rows = total_rows - visible;
+        let (_, mut out) = render_content_window(head, 0..visible, control);
+        out.push(Line::from(Span::styled(
+            format!("... {omitted_rows} wrapped rows hidden ..."),
+            Style::default().fg(theme::tertiary()).add_modifier(Modifier::ITALIC),
+        )));
         return out;
     }
 
     let tail = TOOL_BODY_MAX_LINES.saturating_sub(protected_rows + 1);
-    let tail_start = wrapped.len().saturating_sub(tail).max(protected_rows);
-    let omitted_rows = tail_start.saturating_sub(protected_rows);
-    let first_tail_source =
-        wrapped.get(tail_start).map_or(source_line_count, |row| row.source_index);
-    let omitted_source_lines = first_tail_source.saturating_sub(protected_source_lines);
+    let omitted_rows = remaining_rows.saturating_sub(tail);
+    let (first_tail_source, tail_rows) =
+        render_content_window(rest, omitted_rows..remaining_rows, control);
+    let omitted_source_lines =
+        first_tail_source.unwrap_or(source_line_count - protected_source_lines);
     let omitted = if omitted_source_lines > 0 {
         format!("... {omitted_source_lines} {omitted_label} ...")
     } else {
         format!("... {omitted_rows} wrapped rows hidden ...")
     };
 
-    let mut out = Vec::with_capacity(TOOL_BODY_MAX_LINES);
-    out.extend(wrapped.iter().take(protected_rows).map(|wrapped| wrapped.row.clone()));
+    let (_, mut out) = render_content_window(head, 0..protected_rows, control);
     out.push(Line::from(Span::styled(
         omitted,
         Style::default().fg(theme::tertiary()).add_modifier(Modifier::ITALIC),
     )));
-    out.extend(wrapped.into_iter().skip(tail_start).map(|wrapped| wrapped.row));
+    out.extend(tail_rows);
     out
 }
 
-fn wrap_content_lines_with_source(lines: Vec<Line<'static>>, width: u16) -> Vec<WrappedContentRow> {
-    let mut rows = Vec::new();
-    for (source_index, line) in lines.into_iter().enumerate() {
-        rows.extend(
-            wrap_lines_to_physical_rows(&[line], width)
-                .into_iter()
-                .map(|row| WrappedContentRow { source_index, row }),
-        );
+fn measure_content_lines(
+    lines: Vec<Line<'static>>,
+    width: u16,
+    control: &LayoutControl<'_>,
+) -> Vec<crate::ui::wrap::WrappedLineLayout> {
+    let mut layouts = Vec::new();
+    for line in lines {
+        if control.cancelled() {
+            return Vec::new();
+        }
+        layouts.push(crate::ui::wrap::WrappedLineLayout::new(line, width));
     }
-    rows
+    layouts
+}
+
+fn content_height(lines: &[crate::ui::wrap::WrappedLineLayout]) -> usize {
+    lines.iter().map(crate::ui::wrap::WrappedLineLayout::height).sum()
+}
+
+/// Materialize only the selected physical rows, retaining their source association
+/// for omission counts. Hidden rows never become terminal cells or owned spans.
+fn render_content_window(
+    lines: Vec<crate::ui::wrap::WrappedLineLayout>,
+    window: std::ops::Range<usize>,
+    control: &LayoutControl<'_>,
+) -> (Option<usize>, Vec<Line<'static>>) {
+    let mut rows = Vec::new();
+    let mut first_source = None;
+    let mut offset = 0;
+    for (source_index, line) in lines.into_iter().enumerate() {
+        if offset >= window.end || control.cancelled() {
+            break;
+        }
+        let height = line.height();
+        let start = window.start.saturating_sub(offset).min(height);
+        let end = window.end.saturating_sub(offset).min(height);
+        if start < end {
+            first_source.get_or_insert(source_index);
+            rows.extend(line.render(start..end, control));
+        }
+        offset += height;
+    }
+    (first_source, rows)
 }
 
 fn line_text_is_existing_omission_marker(line: &Line<'static>) -> bool {
@@ -1028,4 +995,88 @@ fn line_text_is_existing_omission_marker(line: &Line<'static>) -> bool {
 
 fn line_plain_text(line: &Line<'static>) -> String {
     line.spans.iter().flat_map(|span| span.content.chars()).collect()
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+
+    #[test]
+    fn capped_long_line_materializes_only_the_visible_tail() {
+        let source = format!("{}TAIL", "x".repeat(29_996));
+        let checks = std::cell::Cell::new(0);
+        let cancel_unbounded_materialization = || {
+            checks.set(checks.get() + 1);
+            checks.get() > 40
+        };
+        let control = LayoutControl::new(&cancel_unbounded_materialization);
+        let rows = cap_tool_content_lines(
+            vec![Line::from(Span::styled(source, Style::default().fg(theme::accent())))],
+            20,
+            "source lines hidden",
+            0,
+            &control,
+        );
+        assert!(!control.cancelled(), "hidden physical rows must not be materialized");
+        assert_eq!(rows[0].to_string(), "... 1492 wrapped rows hidden ...");
+        assert_eq!(rows.last().unwrap().to_string(), format!("{}TAIL", "x".repeat(16)));
+        assert_eq!(rows.len(), TOOL_BODY_MAX_LINES);
+        assert!(rows[1..].iter().all(|row| {
+            row.width() == 20 && row.spans.iter().all(|span| span.style.fg == Some(theme::accent()))
+        }));
+    }
+
+    #[test]
+    fn capped_content_preserves_protected_rows_and_source_omission_counts() {
+        let control = LayoutControl::uninterrupted();
+        let rows = cap_tool_content_lines(
+            vec![Line::from("HEADER"), Line::from("hidden"), Line::from("tail".repeat(40))],
+            20,
+            "source lines hidden",
+            1,
+            &control,
+        );
+        assert_eq!(rows[0].to_string().trim_end(), "HEADER");
+        assert_eq!(rows[1].to_string(), "... 1 source lines hidden ...");
+        assert_eq!(
+            rows[2..].iter().map(Line::to_string).collect::<Vec<_>>(),
+            vec!["tail".repeat(5); 7]
+        );
+
+        // A protected prefix that fills the preview keeps its beginning, not its tail.
+        let rows = cap_tool_content_lines(
+            vec![Line::from("HEAD".repeat(50)), Line::from("body".repeat(10))],
+            20,
+            "source lines hidden",
+            1,
+            &control,
+        );
+        assert_eq!(
+            rows[..8].iter().map(Line::to_string).collect::<Vec<_>>(),
+            vec!["HEAD".repeat(5); 8]
+        );
+        assert_eq!(rows[8].to_string(), "... 4 wrapped rows hidden ...");
+    }
+
+    #[test]
+    fn capped_output_does_not_lay_out_the_hidden_middle() {
+        let mut lines = vec![Line::from("HEADER")];
+        lines.extend((0..1000).map(|index| Line::from(format!("source {index}"))));
+        let checks = std::cell::Cell::new(0);
+        let cancel_after_bounded_work = || {
+            checks.set(checks.get() + 1);
+            checks.get() > 100
+        };
+        let control = LayoutControl::new(&cancel_after_bounded_work);
+        let rows = cap_tool_content_lines(lines, 40, "source lines hidden", 1, &control);
+        assert!(!control.cancelled(), "hidden middle lines must not consume layout work");
+        let text =
+            rows.iter().map(|line| line.to_string().trim_end().to_owned()).collect::<Vec<_>>();
+        assert_eq!(text[0], "HEADER");
+        assert_eq!(text[1], "... 993 source lines hidden ...");
+        assert_eq!(
+            &text[2..],
+            &(993..1000).map(|index| format!("source {index}")).collect::<Vec<_>>()
+        );
+    }
 }

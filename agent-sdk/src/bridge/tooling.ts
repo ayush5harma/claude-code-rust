@@ -1,4 +1,4 @@
-import type { Json, ToolCall, ToolCallUpdateFields } from "../types.js";
+import type { Json, ToolCall, ToolCallUpdateFields, ToolResultPresentation } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
 import { CACHE_SPLIT_POLICY, previewKilobyteLabel } from "./cache_policy.js";
 import {
@@ -91,7 +91,7 @@ function inputBoolean(
   return typeof input[key] === "boolean" ? input[key] : undefined;
 }
 
-function isAgentLikeToolName(name: string): boolean {
+export function isAgentLikeToolName(name: string): boolean {
   return name === "Agent" || name === "Task";
 }
 
@@ -762,7 +762,7 @@ function extractToolOutputMetadata(
     }
   }
 
-  if (toolName === "Agent" || toolName === "Task") {
+  if (isAgentLikeToolName(toolName)) {
     for (const candidate of candidates) {
       const resolvedModel = nonEmptyString(candidate.resolvedModel);
       const modelsUsed = orderedNonEmptyStrings(candidate.modelsUsed);
@@ -1314,34 +1314,6 @@ function buildShellDisplayOutput(record: Record<string, unknown>): string {
   return segments.join("\n");
 }
 
-// The SDK's Read result carries the file's own text and first line number next to the
-// numbered text the model sees; the numbered text is not parsed back apart here or in Rust.
-function fileTextReadContent(
-  rawResult: unknown,
-  rawContent: unknown,
-): ToolCall["content"] {
-  for (const candidate of resultRecordCandidates(rawResult, rawContent)) {
-    if (candidate.type !== "text") {
-      continue;
-    }
-    const file = asRecordOrNull(candidate.file);
-    const path = nonEmptyString(file?.filePath);
-    const text = typeof file?.content === "string" ? file.content : "";
-    const startLine = file?.startLine;
-    if (
-      !path ||
-      !text ||
-      typeof startLine !== "number" ||
-      !Number.isSafeInteger(startLine) ||
-      startLine < 1
-    ) {
-      continue;
-    }
-    return [{ type: "file_text", path, start_line: startLine, text }];
-  }
-  return [];
-}
-
 function fileUnchangedResultText(
   rawResult: unknown,
   rawContent: unknown,
@@ -1358,6 +1330,35 @@ function fileUnchangedResultText(
     }
   }
   return "";
+}
+
+type ReadTextResult = { content: string; filePath: string; startLine: number };
+
+/** File source from a structured Read result, without line numbers or reminders. */
+function readTextResult(
+  rawResult: unknown,
+  rawContent: unknown,
+): ReadTextResult | undefined {
+  for (const candidate of resultRecordCandidates(rawResult, rawContent)) {
+    if (candidate.type !== "text") {
+      continue;
+    }
+    const file = asRecordOrNull(candidate.file);
+    const content = file?.content;
+    const filePath = nonEmptyString(file?.filePath);
+    const startLine = nonNegativeInteger(file?.startLine);
+    // Empty reads keep the SDK's explanatory text instead of an empty body.
+    if (
+      typeof content === "string" &&
+      content.length > 0 &&
+      filePath &&
+      startLine !== undefined &&
+      startLine >= 1
+    ) {
+      return { content, filePath, startLine };
+    }
+  }
+  return undefined;
 }
 
 function agentTitleFromAgentOutput(
@@ -1947,124 +1948,193 @@ function readableCronSchedule(
   return normalizeHumanSchedule(humanSchedule);
 }
 
-function cronCreateResultText(
+type ResultSection = ToolResultPresentation["sections"][number];
+
+function resultField(
+  label: string,
+  value: string,
+): ResultSection["fields"][number] {
+  return { label, value: { type: "text", value } };
+}
+
+function timestampField(
+  label: string,
+  value: unknown,
+): ResultSection["fields"] {
+  return typeof value === "string" && value.trim()
+    ? [{ label, value: { type: "timestamp", value } }]
+    : [];
+}
+
+function nextRunField(value: unknown): ResultSection["fields"] {
+  // The SDK scheduler includes fractional milliseconds; Date keeps millisecond precision.
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0)
+    return [];
+  const date = new Date(value);
+  return Number.isFinite(date.getTime())
+    ? timestampField("Next run", date.toISOString())
+    : [];
+}
+
+function cronJobSection(
+  job: Record<string, unknown>,
+  single: boolean,
+): ResultSection {
+  const fields: ResultSection["fields"] = [];
+  if (typeof job.id === "string")
+    fields.push(resultField("Schedule ID", job.id));
+  const cron = nonEmptyString(job.cron);
+  if (single && cron) fields.push(resultField("Cron", cron));
+  const schedule = readableCronSchedule(job.cron, job.humanSchedule);
+  if (schedule) fields.push(resultField("Schedule", schedule));
+  else if (!single && cron) fields.push(resultField("Cron", cron));
+  fields.push(...nextRunField(job.nextFireAt));
+  if (typeof job.prompt === "string")
+    fields.push(resultField("Prompt", job.prompt));
+  if (single) {
+    for (const [key, label] of [
+      ["recurring", "Recurring"],
+      ["durable", "Durable"],
+    ]) {
+      if (typeof job[key] === "boolean")
+        fields.push(resultField(label, booleanLabel(job[key] as boolean)));
+    }
+  }
+  return { fields };
+}
+
+function cronResultPresentation(
+  toolName: string,
   candidate: Record<string, unknown>,
   rawInput: Json | undefined,
-): string | undefined {
-  const input = asRecordOrNull(rawInput);
-  const schedule = readableCronSchedule(input?.cron, candidate.humanSchedule);
-  if (
-    typeof candidate.id !== "string" ||
-    typeof candidate.recurring !== "boolean" ||
-    !schedule
-  ) {
-    return undefined;
+): ToolResultPresentation | undefined {
+  if (toolName === "CronCreate") {
+    const schedule = readableCronSchedule(
+      asRecordOrNull(rawInput)?.cron,
+      candidate.humanSchedule,
+    );
+    if (
+      typeof candidate.id !== "string" ||
+      typeof candidate.recurring !== "boolean" ||
+      !schedule
+    )
+      return undefined;
+    const section: ResultSection = {
+      fields: [
+        resultField("Schedule ID", candidate.id),
+        resultField("Schedule", schedule),
+        ...nextRunField(candidate.nextFireAt),
+        resultField("Recurring", booleanLabel(candidate.recurring)),
+      ],
+    };
+    const prompt = asRecordOrNull(rawInput)?.prompt;
+    if (typeof prompt === "string")
+      section.fields.splice(
+        section.fields.length - 1,
+        0,
+        resultField("Prompt", prompt),
+      );
+    if (typeof candidate.durable === "boolean")
+      section.fields.push(
+        resultField("Durable", booleanLabel(candidate.durable)),
+      );
+    return { sections: [section] };
   }
-
-  const lines = [
-    `Schedule ID: ${candidate.id}`,
-    `Schedule: ${schedule}`,
-    `Recurring: ${booleanLabel(candidate.recurring)}`,
-  ];
-  pushBooleanField(lines, "Durable", candidate.durable);
-  return lines.join("\n");
-}
-
-function cronDeleteResultText(
-  candidate: Record<string, unknown>,
-): string | undefined {
-  return typeof candidate.id === "string"
-    ? `Schedule ID: ${candidate.id}`
-    : undefined;
-}
-
-function cronListResultText(
-  candidate: Record<string, unknown>,
-): string | undefined {
-  if (!Array.isArray(candidate.jobs)) {
+  if (toolName === "CronDelete")
+    return typeof candidate.id === "string"
+      ? { sections: [{ fields: [resultField("Schedule ID", candidate.id)] }] }
+      : undefined;
+  if (toolName !== "CronList" || !Array.isArray(candidate.jobs))
     return undefined;
-  }
   const jobs = candidate.jobs
     .map(asRecordOrNull)
     .filter((job): job is Record<string, unknown> => job !== null);
-  if (jobs.length === 0) {
-    return "Jobs: none";
-  }
-
-  const lines: string[] = [];
-  if (jobs.length === 1) {
-    const [job] = jobs;
-    if (typeof job.id === "string") {
-      lines.push(`Schedule ID: ${job.id}`);
-    }
-    if (typeof job.cron === "string" && job.cron.trim()) {
-      lines.push(`Cron: ${job.cron.trim()}`);
-    }
-    const schedule = readableCronSchedule(job.cron, job.humanSchedule);
-    if (schedule) {
-      lines.push(`Schedule: ${schedule}`);
-    }
-    if (typeof job.prompt === "string") {
-      lines.push(`Prompt: ${job.prompt}`);
-    }
-    pushBooleanField(lines, "Recurring", job.recurring);
-    pushBooleanField(lines, "Durable", job.durable);
-  }
-
-  if (jobs.length > 1) {
-    for (const [index, job] of jobs.entries()) {
-      if (typeof job.id === "string") {
-        lines.push(`Schedule ID: ${job.id}`);
-      }
-      const schedule = readableCronSchedule(job.cron, job.humanSchedule);
-      if (schedule) {
-        lines.push(`Schedule: ${schedule}`);
-      } else if (typeof job.cron === "string" && job.cron.trim()) {
-        lines.push(`Cron: ${job.cron.trim()}`);
-      }
-      if (typeof job.prompt === "string") {
-        lines.push(`Prompt: ${job.prompt}`);
-      }
-      if (index < jobs.length - 1) {
-        lines.push(CRON_LIST_DIVIDER);
-      }
-    }
-  }
-
-  return lines.length > 0 ? lines.join("\n") : "Jobs: none";
+  return {
+    sections: jobs.length
+      ? jobs.map((job) => cronJobSection(job, jobs.length === 1))
+      : [{ fields: [resultField("Jobs", "none")] }],
+  };
 }
 
-function cronResultText(
+function notificationsResultPresentation(
+  candidate: Record<string, unknown>,
+): ToolResultPresentation | undefined {
+  if (
+    !Array.isArray(candidate.notifications) ||
+    typeof candidate.remaining !== "number" ||
+    !Number.isSafeInteger(candidate.remaining) ||
+    candidate.remaining < 0
+  )
+    return undefined;
+  const sections: ResultSection[] = [
+    {
+      fields: [
+        resultField("Remaining", String(candidate.remaining)),
+        ...timestampField("Read at", candidate.read_at),
+      ],
+    },
+  ];
+  for (const value of candidate.notifications) {
+    const item = asRecordOrNull(value);
+    if (
+      !item ||
+      typeof item.notification_id !== "string" ||
+      typeof item.content !== "string"
+    )
+      return undefined;
+    const fields = [resultField("Notification ID", item.notification_id)];
+    if (typeof item.origin === "string")
+      fields.push(resultField("Origin", item.origin));
+    fields.push(
+      ...timestampField("Queued at", item.queued_at),
+      ...timestampField("Arrived at", item.arrived_at),
+    );
+    sections.push({ fields, text: item.content });
+  }
+  if (!candidate.notifications.length)
+    sections[0].fields.push(resultField("Notifications", "none"));
+  return { sections };
+}
+
+function timedToolResultPresentation(
   toolName: string,
   rawResult: unknown,
   rawContent: unknown,
   rawInput: Json | undefined,
-): string | undefined {
-  if (!isCronToolName(toolName)) {
+): ToolResultPresentation | undefined {
+  if (!isCronToolName(toolName) && toolName !== "ReadNotifications")
     return undefined;
-  }
-
   const candidates = resultRecordCandidates(rawResult, rawContent);
   for (const parsed of [
     parseJsonCandidate(rawResult),
     parseJsonCandidate(rawContent),
-  ]) {
+  ])
     candidates.push(...resultRecordCandidates(parsed, undefined));
-  }
-
   for (const candidate of candidates) {
-    const output =
-      toolName === "CronCreate"
-        ? cronCreateResultText(candidate, rawInput)
-        : toolName === "CronDelete"
-          ? cronDeleteResultText(candidate)
-          : cronListResultText(candidate);
-    if (output !== undefined) {
-      return output;
-    }
+    const result =
+      toolName === "ReadNotifications"
+        ? notificationsResultPresentation(candidate)
+        : cronResultPresentation(toolName, candidate, rawInput);
+    if (result) return result;
   }
-
   return undefined;
+}
+
+/** Plain content/export projection of the same sections, without applying a host clock preference. */
+function resultPresentationText(
+  result: ToolResultPresentation,
+  cron: boolean,
+): string {
+  return result.sections
+    .map((section) =>
+      [
+        ...section.fields.map(
+          (field) => `${field.label}: ${field.value.value}`,
+        ),
+        ...(section.text !== undefined ? [section.text] : []),
+      ].join("\n"),
+    )
+    .join(cron ? `\n${CRON_LIST_DIVIDER}\n` : "\n\n");
 }
 
 function formatDurationSeconds(seconds: number): string {
@@ -2473,6 +2543,32 @@ function collectResultCandidates(
     candidates.push(...resultRecordCandidates(parsed, undefined));
   }
   return candidates;
+}
+
+/** Successful SendMessage acknowledgements explicitly identify a resumed task. */
+export function resumedAgentTaskIdFromResult(toolName: string, rawResult: unknown, rawContent: unknown): string | undefined {
+  if (toolName !== "SendMessage") return undefined;
+  const result = collectResultCandidates(rawResult, rawContent).find(candidate => candidate.success === true && nonEmptyString(candidate.resumedAgentId));
+  return nonEmptyString(result?.resumedAgentId);
+}
+
+/** Saved SDK Agent acknowledgements can replace an originally foreground call. */
+export function isDeferredAgentResult(rawResult: unknown, rawContent: unknown): boolean {
+  return collectResultCandidates(rawResult, rawContent).some(candidate => candidate.status === "async_launched" || candidate.isAsync === true)
+    || extractText(rawContent).trimStart().startsWith("Async agent launched successfully");
+}
+
+/** Common task metadata supplied by a saved Agent invocation. */
+export function agentTaskLaunchFields(tool: ToolCall | undefined): Record<string, unknown> {
+  if (!isAgentLikeToolName(resolveToolName(tool))) return {};
+  const input = asRecordOrNull(tool?.raw_input);
+  const subagentType = nonEmptyString(input?.subagent_type);
+  const description = nonEmptyString(input?.description);
+  return {
+    task_type: "local_agent",
+    ...(subagentType ? { subagent_type: subagentType } : {}),
+    ...(description ? { task_description: description } : {}),
+  };
 }
 
 type InlineSkillResult = {
@@ -2935,6 +3031,22 @@ export function buildToolResultFields(
     ];
     return fields;
   }
+  const readText =
+    !isError && toolName === "Read"
+      ? readTextResult(rawResult, rawContent)
+      : undefined;
+  if (readText) {
+    // The body carries the file source; line numbers come from the metadata.
+    fields.output_metadata = {
+      ...fields.output_metadata,
+      read: { file_path: readText.filePath, start_line: readText.startLine },
+    };
+    fields.raw_output = readText.content;
+    fields.content = [
+      { type: "content", content: { type: "text", text: readText.content } },
+    ];
+    return fields;
+  }
   const fileUnchangedText =
     !isError && toolName === "Read"
       ? fileUnchangedResultText(rawResult, rawContent)
@@ -2944,14 +3056,6 @@ export function buildToolResultFields(
     fields.content = [
       { type: "content", content: { type: "text", text: fileUnchangedText } },
     ];
-    return fields;
-  }
-  const fileTextContent =
-    !isError && toolName === "Read"
-      ? fileTextReadContent(rawResult, rawContent)
-      : [];
-  if (fileTextContent.length > 0) {
-    fields.content = fileTextContent;
     return fields;
   }
   const agentTitle =
@@ -3025,14 +3129,14 @@ export function buildToolResultFields(
     }
     return fields;
   }
-  const cronOutput = !isError
-    ? cronResultText(toolName, rawResult, rawContent, base?.raw_input)
+  const presentation = !isError
+    ? timedToolResultPresentation(toolName, rawResult, rawContent, base?.raw_input)
     : undefined;
-  if (cronOutput !== undefined) {
-    fields.raw_output = cronOutput;
-    fields.content = [
-      { type: "content", content: { type: "text", text: cronOutput } },
-    ];
+  if (presentation) {
+    fields.output_metadata = { ...fields.output_metadata, presentation };
+    const output = resultPresentationText(presentation, isCronToolName(toolName));
+    fields.raw_output = output;
+    fields.content = [{ type: "content", content: { type: "text", text: output } }];
     return fields;
   }
   const scheduleWakeupOutput = !isError

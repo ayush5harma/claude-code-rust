@@ -170,7 +170,7 @@ cleanup works.
 | Functionality | Claude Code | claude-rs (fork) | Evidence / notes |
 | --- | --- | --- | --- |
 | Context left in the footer | Context indicator near the prompt | PASS | `session.context` Loc: &lt;work&gt;/main … Ctx ▓░░░░░░░ 9% |
-| statusLine setting (user level) | Runs the command and shows its output under the prompt | PASS | `session.statusline` [environment: the statusLine command is the profile's own] the extra row 'personal \| Haiku 5.5 \| &lt;work&gt;/main.......... 8% of 900k' starts like the command's own output ('personal \| Haiku \| <work>') and was |
+| statusLine setting (user level) | Runs the command and shows its output under the prompt | PASS | `session.statusline` [environment: the statusLine command is the profile's own] the extra row 'personal \| Haiku 5.5 \| &lt;work&gt;/main.......... 8% of 900k' starts like the command's own output ('personal \| Haiku \| \<work\>') and was |
 | statusLine setting (project level) | Runs the project's command | **GAP** | `session.statusline_project` not run, by design: project and local settings cannot select an executable command (docs/src/settings.md); stock runs the fixture's printf PARITY_STATUSLINE |
 | Session cost | Cost of the session on request | PASS | `session.cost` Usage tab: $0.0572 cost · 2m 50s elapsed · 44s API time · +3 / -1 lines · 1 model |
 
@@ -184,8 +184,8 @@ cleanup works.
 
 | Functionality | Claude Code | claude-rs (fork) | Evidence / notes |
 | --- | --- | --- | --- |
-| --add-dir | Extra directory is readable without being the cwd | PASS | `fork.flag_add_dir` the reply names the added directory and the marker read from it: '<tmpdir>/claude-rs-dx-e2e-adddir.s0RLNY FKADDMARK_7731 FKSYS_5519'; the bridge log names it |
-| --append-system-prompt | Appended text reaches the system prompt | PASS | `fork.flag_append_prompt` the appended instruction was followed: reply '<tmpdir>/claude-rs-dx-e2e-adddir.s0RLNY FKADDMARK_7731 FKSYS_5519' |
+| --add-dir | Extra directory is readable without being the cwd | PASS | `fork.flag_add_dir` the reply names the added directory and the marker read from it: '\<tmpdir\>/claude-rs-dx-e2e-adddir.s0RLNY FKADDMARK_7731 FKSYS_5519'; the bridge log names it |
+| --append-system-prompt | Appended text reaches the system prompt | PASS | `fork.flag_append_prompt` the appended instruction was followed: reply '\<tmpdir\>/claude-rs-dx-e2e-adddir.s0RLNY FKADDMARK_7731 FKSYS_5519' |
 | --settings (inline JSON) | Flag-settings layer applies (env) | PASS | `fork.flag_settings` printenv FORK_ENV_MARK printed the inline env value: reply 'FKENV_4412' |
 | -n, --name | Session name shown in Status and the footer | PASS | `fork.flag_name` Session name: fk-name-122326; footer: [Bypass Permissions] [Haiku 5.5/Med] [FAST:OFF] fk-name-122326 |
 | --mcp-config with --strict-mcp-config | Only the given MCP servers are used | PASS | `fork.flag_mcp_strict` 1/1 total 1 connected 1 needs auth 0 pending 0 disabled 0 failed 0; listed: › fkecho connected dynamic stdio |
@@ -255,7 +255,7 @@ Found by `rename.resume_name`.
 
 **Steps**
 
-1. Run /rename <name>, then quit with Ctrl+Q. 2. Start claude-rs -r <session id>. 3. Run claude agents --json: the interactive entry's name is the directory-derived default (identity-NN), not <name>; stock keeps the name there. Observed in this run: the footer shows <name> again after the resume.
+1. Run /rename \<name\>, then quit with Ctrl+Q. 2. Start claude-rs -r \<session id\>. 3. Run claude agents --json: the interactive entry's name is the directory-derived default (identity-NN), not \<name\>; stock keeps the name there. Observed in this run: the footer shows \<name\> again after the resume.
 
 **Screen**
 
@@ -269,7 +269,7 @@ Found by `input.ctrl_o`.
 
 **Steps**
 
-1. Have a Bash tool call that prints one line in the session (here echo PARITY_BANG_7). 2. Press Ctrl+O. Observed in this run: under 'Tool: <command>' the output line appears twice in a row.
+1. Have a Bash tool call that prints one line in the session (here echo PARITY_BANG_7). 2. Press Ctrl+O. Observed in this run: under 'Tool: \<command\>' the output line appears twice in a row.
 
 **Screen**
 
@@ -324,13 +324,13 @@ Found by `fork.picker_current`.
 │                                                                                                                      │
 ~~~
 
-### /resume <title> that matches two sessions shows no error and leaves the UI stuck on "Resuming session"
+### /resume \<title\> that matches two sessions shows no error and leaves the UI stuck on "Resuming session"
 
 Found by `fork.resume_title_ambiguous`.
 
 **Steps**
 
-1. Have two sessions in one project with the same /rename title. 2. In a third session type /resume <that title> and press Enter. Observed in this run: the bridge log holds 1 slash_error event(s) for the session, but the screen shows no message, only the spinner row, and the composer does not come back. Seen manually on 2026-10-13 and not re-checked by the suite: only Ctrl+Q leaves that state; /resume <unknown title> behaves the same, on the installed 0.15.2-fork.2 as well; claude-rs -r <ambiguous title> at launch ends in an empty composer with no mode or model in the footer.
+1. Have two sessions in one project with the same /rename title. 2. In a third session type /resume \<that title\> and press Enter. Observed in this run: the bridge log holds 1 slash_error event(s) for the session, but the screen shows no message, only the spinner row, and the composer does not come back. Seen manually on 2026-10-13 and not re-checked by the suite: only Ctrl+Q leaves that state; /resume \<unknown title\> behaves the same, on the installed 0.15.2-fork.2 as well; claude-rs -r \<ambiguous title\> at launch ends in an empty composer with no mode or model in the footer.
 
 **Screen**
 

@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 use super::super::connect::take_connection_slot;
 use super::super::connect::{SessionStartReason, start_new_session};
 use super::super::state::RecentSessionInfo;
@@ -129,6 +128,13 @@ pub(crate) fn handle_sessions_listed_event(
             .any(|session| session.session_id == pending_title_change.session_id);
         pending_title_change_resolved = renamed_session_present;
         if renamed_session_present {
+            if matches!(
+                pending_title_change.kind,
+                crate::app::config::PendingSessionTitleChangeKind::Rename { .. }
+            ) && app.config.session_rename_overlay().is_some()
+            {
+                app.config.clear_overlay();
+            }
             app.config.last_error = None;
             app.config.status_message = Some(match pending_title_change.kind {
                 crate::app::config::PendingSessionTitleChangeKind::Rename { requested_title } => {
@@ -196,8 +202,8 @@ pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
     app.bump_session_scope_epoch();
     app.clear_session_runtime_identity();
     super::compaction::reset(app);
-    app.turn.clear_cancel_state();
     app.session_runtime.last_rate_limit_update = None;
+    app.turn.clear_cancel_state();
     app.session_runtime.account_info = None;
     app.mcp = super::super::McpState::default();
     app.config.pending_session_title_change = None;
@@ -270,6 +276,12 @@ fn startup_failure_message(reason: &str) -> &'static str {
         "remote_settings_required_unavailable" => {
             "Required remote managed settings could not be loaded. Check connectivity and contact your administrator."
         }
+        "org_config_required_unavailable" => {
+            "Required organization configuration is temporarily unavailable. Check connectivity and retry."
+        }
+        "org_config_refused" => {
+            "Organization configuration access was refused. Sign in with an allowed account or contact your administrator."
+        }
         "gateway_signin_required" => {
             "Authenticate through your organization's required gateway before starting Claude Code."
         }
@@ -309,9 +321,16 @@ fn startup_failure_message(reason: &str) -> &'static str {
 }
 
 pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
-    if app.config.pending_session_title_change.take().is_some() {
-        app.config.last_error = Some(msg.to_owned());
-        app.config.status_message = None;
+    if let Some(pending) = app.config.pending_session_title_change.take() {
+        // A failed rename stays in its dialog, with the draft, when it is open.
+        if matches!(pending.kind, crate::app::config::PendingSessionTitleChangeKind::Rename { .. })
+            && app.config.session_rename_overlay().is_some()
+        {
+            app.config.set_overlay_error(msg);
+        } else {
+            app.config.last_error = Some(msg.to_owned());
+            app.config.status_message = None;
+        }
         app.request_active_surface_repaint();
         return;
     }
@@ -461,6 +480,7 @@ pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplace
     let history_update_count = history_updates.len();
     let available_model_count = available_models.len();
     super::compaction::reset(app);
+    app.session_runtime.last_rate_limit_update = None;
     apply_session_cwd(app, cwd);
     app.sdk_inventory.available_models = available_models;
     reset_for_new_session(
@@ -731,6 +751,8 @@ mod tests {
                 "Required remote managed settings could not be loaded",
             ),
             ("gateway_signin_required", "Authenticate through"),
+            ("org_config_required_unavailable", "Check connectivity and retry"),
+            ("org_config_refused", "Sign in with an allowed account or contact your administrator"),
             ("gateway_access_denied", "gateway denied access"),
             ("proxy_invalid", "Correct your proxy URL"),
             ("temp_dir_unusable", "select a writable temporary directory"),

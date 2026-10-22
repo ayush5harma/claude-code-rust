@@ -9,10 +9,13 @@ import type { SessionState } from "./session_lifecycle.js";
 import { emitSessionUpdate } from "./events.js";
 import { asRecordOrNull } from "./shared.js";
 import { shortDisplayNameForModelId } from "./model_metadata.js";
-import { linkTaskToolUse, unlinkTaskToolUse } from "./task_links.js";
+import { childParentToolUseId, linkTaskToolUse, unlinkTaskToolUse } from "./task_links.js";
 
 type TaskPatch = {
   task_id: string;
+  run_id?: string;
+  parent_task_id?: string;
+  resetExecution?: boolean;
   subject?: string;
   description?: string;
   active_form?: string;
@@ -22,6 +25,7 @@ type TaskPatch = {
   blocked_by?: string[];
   metadata?: Json;
   source_tool_call_id?: string;
+  source_tool_call_run_id?: string;
 };
 
 const TASK_TOOL_NAMES = new Set([
@@ -42,6 +46,7 @@ const BACKGROUND_TASK_METADATA_KEY = "sdk_background_task";
 // the row is a runtime task the lifecycle owns, never a TaskList plan step,
 // and background inventory snapshots can no longer remove it.
 const LIFECYCLE_TASK_METADATA_KEY = "sdk_lifecycle_task";
+const INTERRUPTED_TERMINAL_STATUS = "interrupted";
 
 export function isTaskToolName(name: string): boolean {
   return TASK_TOOL_NAMES.has(name);
@@ -471,46 +476,51 @@ function taskOutputResultText(
 }
 
 export function upsertTask(session: Pick<SessionState, "tasksById" | "taskOrder">, patch: TaskPatch): TaskItem {
-  const existing = session.tasksById.get(patch.task_id);
-  const task: TaskItem = {
-    task_id: patch.task_id,
-    subject: patch.subject ?? existing?.subject ?? patch.task_id,
-    status: patch.status ?? existing?.status ?? "pending",
-    blocks: patch.blocks ?? existing?.blocks ?? [],
-    blocked_by: patch.blocked_by ?? existing?.blocked_by ?? [],
-  };
-
-  if (patch.description !== undefined) {
-    task.description = patch.description;
-  } else if (existing?.description !== undefined) {
-    task.description = existing.description;
-  }
-  if (patch.active_form !== undefined) {
-    task.active_form = patch.active_form;
-  } else if (existing?.active_form !== undefined) {
-    task.active_form = existing.active_form;
-  }
-  if (patch.owner !== undefined) {
-    task.owner = patch.owner;
-  } else if (existing?.owner !== undefined) {
-    task.owner = existing.owner;
-  }
-  if (patch.metadata !== undefined) {
-    task.metadata = patch.metadata;
-  } else if (existing?.metadata !== undefined) {
-    task.metadata = existing.metadata;
-  }
-  if (patch.source_tool_call_id !== undefined) {
-    task.source_tool_call_id = patch.source_tool_call_id;
-  } else if (existing?.source_tool_call_id !== undefined) {
-    task.source_tool_call_id = existing.source_tool_call_id;
-  }
+  const previous = session.tasksById.get(patch.task_id);
+  const task = composeTaskPatch(previous, patch);
 
   session.tasksById.set(task.task_id, task);
-  if (!existing && !session.taskOrder.includes(task.task_id)) {
+  if (!previous && !session.taskOrder.includes(task.task_id)) {
     session.taskOrder.push(task.task_id);
   }
   return cloneTask(task);
+}
+
+function composeTaskPatch(previous: TaskItem | undefined, patch: TaskPatch): TaskItem {
+  return upsertFromExisting(patch.resetExecution ? resetTaskExecution(previous) : previous, patch);
+}
+
+export interface SavedTaskObservation {
+  subtype: string;
+  message: Record<string, unknown>;
+}
+
+/** Saved discovery fills the same inventory without replacing live or recorded outcomes. */
+export function restoreSavedSubagentTask(
+  session: SessionState,
+  taskId: string,
+  parentTaskId: string | undefined,
+  observations: SavedTaskObservation[],
+): void {
+  const existing = session.tasksById.get(taskId);
+  if (existing && !isInterruptedRow(existing)) {
+    if (!existing.parent_task_id && parentTaskId) {
+      emitTaskStateUpdate(session, "task_lifecycle", [upsertTask(session, { task_id: taskId, parent_task_id: parentTaskId })]);
+    }
+    return;
+  }
+  let task = existing;
+  for (const observation of observations) {
+    const patch = taskLifecyclePatch(task, observation.subtype, {
+      ...observation.message, task_id: taskId, parent_task_id: parentTaskId,
+    }, undefined, session.removedTaskRuns?.get(taskId));
+    if (patch) task = composeTaskPatch(task, patch);
+  }
+  if (!task || task === existing) return;
+  if (task.status !== "completed") task = composeTaskPatch(task, interruptedTaskPatch(task));
+  if (JSON.stringify(task) === JSON.stringify(existing)) return;
+  session.removedTaskRuns?.delete(taskId);
+  emitTaskStateUpdate(session, "task_lifecycle", [upsertTask(session, task)]);
 }
 
 function removeTasks(session: SessionState, taskIds: string[]): string[] {
@@ -735,8 +745,11 @@ function upsertFromExisting(
   existing: TaskItem | undefined,
   patch: TaskPatch,
 ): TaskItem {
-  return {
+  const task: TaskItem = {
     task_id: patch.task_id,
+    run_id: patch.run_id ?? existing?.run_id,
+    parent_task_id: existing?.parent_task_id ?? patch.parent_task_id,
+    source_tool_call_run_id: patch.source_tool_call_run_id ?? existing?.source_tool_call_run_id,
     subject: patch.subject ?? existing?.subject ?? patch.task_id,
     description: patch.description ?? existing?.description,
     active_form: patch.active_form ?? existing?.active_form,
@@ -744,10 +757,13 @@ function upsertFromExisting(
     owner: patch.owner ?? existing?.owner,
     blocks: patch.blocks ?? existing?.blocks ?? [],
     blocked_by: patch.blocked_by ?? existing?.blocked_by ?? [],
-    metadata: patch.metadata ?? existing?.metadata,
-    source_tool_call_id:
-      patch.source_tool_call_id ?? existing?.source_tool_call_id,
+    metadata: patch.metadata !== undefined ? patch.metadata : existing?.metadata,
+    source_tool_call_id: patch.source_tool_call_id ?? existing?.source_tool_call_id,
   };
+  for (const key of ["run_id", "parent_task_id", "source_tool_call_run_id", "description", "active_form", "owner", "metadata", "source_tool_call_id"] as const) {
+    if (task[key] === undefined) delete task[key];
+  }
+  return task;
 }
 
 function taskStatusMarker(status: unknown): string {
@@ -1057,7 +1073,7 @@ function lifecycleMetadata(
   msg: Record<string, unknown>,
 ): Record<string, Json> | undefined {
   const patch = asRecordOrNull(msg.patch) ?? undefined;
-  const metadata: Record<string, Json> = { [LIFECYCLE_TASK_METADATA_KEY]: true };
+  const metadata: Record<string, Json> = {};
   const copyValue = (
     from: Record<string, unknown> | undefined,
     key: string,
@@ -1113,10 +1129,50 @@ function lifecycleMetadata(
   return Object.keys(metadata).length > 0 ? metadata : undefined;
 }
 
+/** SDK run IDs order only within one task, using plain string comparison. */
+function admitTaskRun(
+  existing: TaskItem | undefined,
+  subtype: string,
+  msg: Record<string, unknown>,
+  removedRun?: string,
+): { runId?: string; reset: boolean } | undefined {
+  const runId = nonEmptyString(msg.run_id);
+  const invocation = nonEmptyString(msg.tool_use_id);
+  const changedInvocation = Boolean(invocation && existing?.source_tool_call_id && invocation !== existing.source_tool_call_id);
+  if (!existing && removedRun && (!runId || runId < removedRun)) return undefined;
+  if (existing?.run_id) {
+    if (runId && runId < existing.run_id) return undefined;
+    if (!runId && (!invocation || invocation !== existing.source_tool_call_id || existing.source_tool_call_run_id !== existing.run_id)) return undefined;
+    return { runId: runId ?? existing.run_id, reset: runId ? runId > existing.run_id : changedInvocation };
+  }
+  return { runId, reset: Boolean(existing && (changedInvocation || (subtype === "task_started" && msg.synthesized_launch !== true && existing.status === "completed"))) };
+}
+
+/** The invocation's provenance survives a resume that has no new launch. */
+function taskInvocationRun(existing: TaskItem | undefined, admission: { runId?: string; reset: boolean }, invocation?: string): string | undefined {
+  if (invocation && invocation !== existing?.source_tool_call_id) return admission.runId;
+  if (!admission.reset && !existing?.run_id && existing?.source_tool_call_id) return admission.runId;
+  return existing?.source_tool_call_run_id;
+}
+
+/**
+ * A new run starts without the previous run's outcome and telemetry. The
+ * child model goes too: the reset unlinks the old tool use, which drops the
+ * model the bridge observed for it, and the new run's first child reply
+ * reports its own.
+ */
+function resetTaskExecution(task: TaskItem | undefined): TaskItem | undefined {
+  if (!task) return undefined;
+  const metadata = { ...asRecordOrNull(task.metadata) };
+  for (const key of ["error", "summary", "terminal_status", "terminal_reason", "end_time", "total_paused_ms", "subagent_retry", "output_file", "blocked", "is_backgrounded", "usage", "last_tool_name", "model", "model_display"]) delete metadata[key];
+  return { ...task, status: "in_progress", description: undefined, active_form: undefined, metadata: metadata as Json };
+}
+
 function childModelMetadata(model: string): Record<string, Json> {
   return { model, model_display: shortDisplayNameForModelId(model) };
 }
 
+/** Records the model a subagent's own replies report, so its row names it while it runs. */
 export function applyLinkedChildModel(session: SessionState, taskId: string, toolUseId: string): void {
   const model = session.childModelsByToolUseId.get(toolUseId);
   const task = session.tasksById.get(taskId);
@@ -1128,7 +1184,7 @@ export function applyLinkedChildModel(session: SessionState, taskId: string, too
 }
 
 export function observeTaskChildModel(session: SessionState, message: Record<string, unknown>): void {
-  const toolUseId = nonEmptyString(message.parent_tool_use_id);
+  const toolUseId = childParentToolUseId(session, message);
   const model = nonEmptyString(asRecordOrNull(message.message)?.model);
   if (!toolUseId || !model) return;
   session.childModelsByToolUseId.set(toolUseId, model);
@@ -1140,23 +1196,25 @@ export function applyTaskLifecycleState(
   session: SessionState,
   subtype: string,
   msg: Record<string, unknown>,
-): void {
+): boolean {
   const taskId = nonEmptyString(msg.task_id);
   if (!taskId) {
-    return;
+    return false;
   }
+  const task = taskLifecyclePatch(session.tasksById.get(taskId), subtype, msg, session.taskToolUseIds.get(taskId), session.removedTaskRuns?.get(taskId));
+  if (!task) return false;
+  if (task.resetExecution) unlinkTaskToolUse(session, taskId);
   const explicitToolUseId = nonEmptyString(msg.tool_use_id);
   if (explicitToolUseId) {
     linkTaskToolUse(session, taskId, explicitToolUseId);
   }
 
-  const task = taskLifecyclePatch(session.tasksById.get(taskId), subtype, msg, session.taskToolUseIds.get(taskId));
-  if (task) {
-    const toolUseId = session.taskToolUseIds.get(taskId);
-    const model = toolUseId ? session.childModelsByToolUseId.get(toolUseId) : undefined;
-    if (model) task.metadata = mergeMetadata(task.metadata, childModelMetadata(model));
-    emitTaskStateUpdate(session, "task_lifecycle", [upsertTask(session, task)]);
-  }
+  session.removedTaskRuns?.delete(taskId);
+  const toolUseId = session.taskToolUseIds.get(taskId);
+  const model = toolUseId ? session.childModelsByToolUseId.get(toolUseId) : undefined;
+  if (model) task.metadata = mergeMetadata(task.metadata, childModelMetadata(model));
+  emitTaskStateUpdate(session, "task_lifecycle", [upsertTask(session, task)]);
+  return true;
 }
 
 export function taskLifecyclePatch(
@@ -1164,14 +1222,22 @@ export function taskLifecyclePatch(
   subtype: string,
   msg: Record<string, unknown>,
   sourceToolCallId?: string,
+  removedRun?: string,
 ): TaskPatch | undefined {
   const taskId = nonEmptyString(msg.task_id);
   if (!taskId) return undefined;
+  const admission = admitTaskRun(existing, subtype, msg, removedRun);
+  if (!admission) return undefined;
+  const invocationRun = taskInvocationRun(existing, admission, nonEmptyString(msg.tool_use_id));
+  if (admission.reset) existing = resetTaskExecution(existing);
   const patch = asRecordOrNull(msg.patch);
   const status = lifecycleTaskStatus(subtype, msg);
   // Progress and updates can be queued behind the outcome. Only a new start
   // or another outcome may change a settled row.
-  if (existing?.status === "completed" && status !== "completed" && subtype !== "task_started") {
+  // A row settled only by our own inference (terminal_status "interrupted")
+  // is the exception: live evidence for it revives it.
+  const revived = isInterruptedRow(existing) && status === "in_progress";
+  if (existing?.status === "completed" && !revived && status !== "completed" && (existing.run_id || subtype !== "task_started" || msg.synthesized_launch === true)) {
     return undefined;
   }
   const description =
@@ -1187,13 +1253,16 @@ export function taskLifecyclePatch(
     nonEmptyString(msg.task_description) ??
     description ??
     taskId;
-  const lifecycle = lifecycleMetadata(msg);
-  // SDK 0.3.288 sends membership snapshots before or after lifecycle edges
-  // (2026-10-15). Once an edge owns a row, inventory cannot erase its history.
-  const metadata = mergeMetadata(existing?.metadata,
-    asRecordOrNull(existing?.metadata)?.[BACKGROUND_TASK_METADATA_KEY] === true
-      ? { ...lifecycle, [BACKGROUND_TASK_METADATA_KEY]: null }
-      : lifecycle);
+  // SDK 0.3.288 sends background snapshots before or after lifecycle edges.
+  // Once an edge owns a row, the inventory can no longer remove it.
+  const existingMetadata = asRecordOrNull(existing?.metadata);
+  const fields: Record<string, Json> = {
+    ...lifecycleMetadata(msg),
+    ...(revived ? { terminal_status: null } : {}),
+    ...(existingMetadata?.[LIFECYCLE_TASK_METADATA_KEY] === true ? {} : { [LIFECYCLE_TASK_METADATA_KEY]: true }),
+    ...(existingMetadata?.[BACKGROUND_TASK_METADATA_KEY] === true ? { [BACKGROUND_TASK_METADATA_KEY]: null, is_backgrounded: true } : {}),
+  };
+  const metadata = mergeMetadata(existing?.metadata, Object.keys(fields).length > 0 ? fields : undefined);
 
   if (
     !status &&
@@ -1207,13 +1276,38 @@ export function taskLifecyclePatch(
 
   return {
       task_id: taskId,
+      run_id: admission.runId,
+      parent_task_id: nonEmptyString(msg.parent_task_id) ?? nonEmptyString(patch?.parent_task_id),
+      resetExecution: admission.reset,
+      source_tool_call_run_id: invocationRun,
       subject,
       description,
       active_form: activeForm,
       status,
       metadata,
-      source_tool_call_id: sourceToolCallId,
+      source_tool_call_id: nonEmptyString(msg.tool_use_id) ?? existing?.source_tool_call_id ?? sourceToolCallId,
     };
+}
+
+function isInterruptedRow(task: TaskItem | undefined): boolean {
+  return (
+    task?.status === "completed" &&
+    asRecordOrNull(task.metadata)?.terminal_status === INTERRUPTED_TERMINAL_STATUS
+  );
+}
+
+/**
+ * A row that was running but that no live process reports any more. The wire
+ * has no "unknown" status, so it settles as `completed` carrying
+ * `terminal_status: "interrupted"`: not running, with no outcome claimed. A
+ * later real outcome still replaces it.
+ */
+export function interruptedTaskPatch(task: TaskItem): TaskPatch {
+  return {
+    task_id: task.task_id,
+    status: "completed",
+    metadata: mergeMetadata(task.metadata, { terminal_status: INTERRUPTED_TERMINAL_STATUS }),
+  };
 }
 
 export function applyBackgroundTasksChanged(
@@ -1231,34 +1325,70 @@ export function applyBackgroundTasksChanged(
       const taskType = nonEmptyString(task.task_type);
       const description = nonEmptyString(task.description);
       const ambient = typeof task.ambient === "boolean" ? task.ambient : undefined;
-      const existing = session.tasksById.get(taskId);
+      const previous = session.tasksById.get(taskId);
+      const admission = admitTaskRun(previous, "background_tasks_changed", task, session.removedTaskRuns?.get(taskId));
+      if (!admission) return previous ? { ...previous } : undefined;
+      const existing = admission.reset ? resetTaskExecution(previous) : previous;
       const inventoryOnly = !existing || asRecordOrNull(existing.metadata)?.[BACKGROUND_TASK_METADATA_KEY] === true;
+      // Listed means running in the background, whichever edge created the row.
+      // The SDK replaces the set with every live task, so a relisted row that
+      // we only inferred to be interrupted is live again. A recorded outcome
+      // is never undone by a listing.
+      const revived = isInterruptedRow(existing);
+      const listedByLifecycle = !inventoryOnly && (existing?.status === "in_progress" || revived);
       return {
         task_id: taskId,
+        run_id: admission.runId,
+        parent_task_id: nonEmptyString(task.parent_task_id),
+        resetExecution: admission.reset,
+        source_tool_call_run_id: taskInvocationRun(previous, admission),
         subject: description ?? taskType ?? taskId,
         description,
-        status: existing?.status ?? "in_progress",
+        status: revived ? "in_progress" : existing?.status ?? "in_progress",
         metadata: mergeMetadata(existing?.metadata, {
+          ...(revived ? { terminal_status: null } : {}),
           ...(inventoryOnly ? { [BACKGROUND_TASK_METADATA_KEY]: true } : {}),
           ...(taskType ? { task_type: taskType } : {}),
+          ...(nonEmptyString(task.subagent_type) ? { subagent_type: task.subagent_type as string } : {}),
           ...(ambient !== undefined ? { ambient } : {}),
+          ...(listedByLifecycle ? { is_backgrounded: true } : {}),
         }),
       };
     })
     .filter((task): task is TaskPatch => Boolean(task));
 
-  const nextIds = new Set(nextTasks.map((task) => task.task_id));
+  // A stale listed run is evidence of presence, not evidence that the newer
+  // execution disappeared. Empty snapshots retain process-local semantics.
+  const nextIds = new Set(rawTasks.flatMap(entry => {
+    const id = nonEmptyString(asRecordOrNull(entry)?.task_id);
+    return id ? [id] : [];
+  }));
   // The snapshot only says what is still in the background, so it removes
-  // only rows it alone owns. A lifecycle-owned row (a subagent that left before
-  // or after its outcome) stays until the lifecycle settles it.
-  const removedTaskIds = session.taskOrder.filter((taskId) => {
-    if (nextIds.has(taskId)) {
-      return false;
+  // only rows it alone owns. A lifecycle-owned row stays until its own outcome
+  // settles it; one that was listed and is still running when the snapshot no
+  // longer lists it is the missed-notification case the snapshot exists for,
+  // so it stops counting as running without claiming an outcome.
+  const removedTaskIds: string[] = [];
+  const unlisted: TaskPatch[] = [];
+  for (const taskId of session.taskOrder) {
+    if (nextIds.has(taskId)) continue;
+    const task = session.tasksById.get(taskId);
+    const metadata = asRecordOrNull(task?.metadata);
+    if (metadata?.[BACKGROUND_TASK_METADATA_KEY] === true) {
+      if (task?.run_id) {
+        session.removedTaskRuns ??= new Map();
+        session.removedTaskRuns.set(taskId, task.run_id);
+      }
+      removedTaskIds.push(taskId);
+    } else if (task?.status === "in_progress" && metadata?.[LIFECYCLE_TASK_METADATA_KEY] === true && metadata.is_backgrounded === true) {
+      unlisted.push(interruptedTaskPatch(task));
     }
-    const metadata = asRecordOrNull(session.tasksById.get(taskId)?.metadata);
-    return metadata?.[BACKGROUND_TASK_METADATA_KEY] === true;
+  }
+  const tasks = [...nextTasks, ...unlisted].map((task) => {
+    if (task.resetExecution) unlinkTaskToolUse(session, task.task_id);
+    session.removedTaskRuns?.delete(task.task_id);
+    return upsertTask(session, task);
   });
-  const tasks = nextTasks.map((task) => upsertTask(session, task));
   const removed = removeTasks(session, removedTaskIds);
   emitTaskStateUpdate(session, "background_tasks", tasks, removed, true);
 }

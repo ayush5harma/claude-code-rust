@@ -119,6 +119,7 @@ export interface RateLimitUpdate {
   utilization?: number;
   rate_limit_type?: string;
   limit_scope?: "service" | "channel" | "group_pool";
+  overage_enabled?: boolean;
   overage_status?: RateLimitStatus;
   overage_resets_at?: number;
   overage_disabled_reason?: string;
@@ -185,14 +186,6 @@ export type ToolCallContent =
       repository?: string;
     }
   | {
-      // A successful text Read: the file's own lines without line-number prefixes and the
-      // 1-based number of the first one, so the renderer never re-parses `cat -n` text.
-      type: "file_text";
-      path: string;
-      start_line: number;
-      text: string;
-    }
-  | {
       type: "mcp_resource";
       uri: string;
       mime_type?: string;
@@ -236,12 +229,27 @@ export interface SkillOutputMetadata {
   background?: boolean;
 }
 
+export interface ReadOutputMetadata {
+  file_path: string;
+  /** One-based file line number of the first line in the text content. */
+  start_line: number;
+}
+
 export interface ToolNonExecutionMetadata {
   kind: string;
   user_feedback?: string;
 }
 
+/** Canonical result sections; timestamps stay typed until the host applies its clock policy. */
+export interface ToolResultPresentation {
+  sections: Array<{
+    fields: Array<{ label: string; value: { type: "text" | "timestamp"; value: string } }>;
+    text?: string;
+  }>;
+}
+
 export interface ToolOutputMetadata {
+  presentation?: ToolResultPresentation;
   timing?: { duration_ms: number; source: "progress" | "task" };
   staged?: boolean;
   structured_content_omitted?: boolean;
@@ -249,6 +257,7 @@ export interface ToolOutputMetadata {
   agent?: AgentOutputMetadata;
   web_fetch?: WebFetchOutputMetadata;
   skill?: SkillOutputMetadata;
+  read?: ReadOutputMetadata;
   non_execution?: ToolNonExecutionMetadata;
 }
 
@@ -357,6 +366,8 @@ export type TaskUpdateSource =
 
 export interface TaskItem {
   task_id: string;
+  run_id?: string;
+  parent_task_id?: string;
   subject: string;
   description?: string;
   active_form?: string;
@@ -366,11 +377,14 @@ export interface TaskItem {
   blocked_by: string[];
   metadata?: Json;
   source_tool_call_id?: string;
+  /** Run that established the invocation; an older launch can still identify the producer. */
+  source_tool_call_run_id?: string;
 }
 
-/** One readable entry of a saved subagent transcript. */
+/** One readable entry of a saved subagent transcript. `system_reminder` is a
+ * reminder the SDK added to the subagent's context, without its XML wrapper. */
 export interface SubagentMessage {
-  role: "user" | "assistant" | "tool";
+  role: "user" | "assistant" | "tool" | "system_reminder";
   text: string;
 }
 
@@ -553,11 +567,12 @@ export interface ElicitationRequest {
   url?: string;
   elicitation_id?: string;
   requested_schema?: Record<string, Json>;
+  field_order: string[];
 }
 
-export interface ElicitationComplete {
-  elicitation_id: string;
-  server_name?: string;
+export interface ElicitationSettlement {
+  request_id: string;
+  session_closing: boolean;
 }
 
 export interface McpAuthRedirect {
@@ -745,6 +760,12 @@ export interface McpServerStatus {
   tools: McpTool[];
 }
 
+/** How one half of a skills-and-styles reload ended. */
+export type ReloadOutcome =
+  | { status: "reloaded"; names: string[] }
+  | { status: "failed"; message: string }
+  | { status: "timed_out"; after_ms: number };
+
 export interface McpSetServersResult {
   added: string[];
   removed: string[];
@@ -762,15 +783,16 @@ export interface SessionLaunchSettings {
   permission_mode?: import("@anthropic-ai/claude-agent-sdk").PermissionMode;
   effort?: EffortLevel;
   agent?: string;
+  /** The launch name: the initial session only. */
   name?: string;
-  /** Resume under a new session ID; ignored by a launch that resumes nothing. */
+  /** Resume under a new session ID: the initial session only, and nothing without a resume. */
   fork_session?: boolean;
-  /** Absolute paths, resolved by the app. */
+  /** From here on, the configuration kept for every session of the process. Absolute paths. */
   additional_directories?: string[];
-  /** Unparsed JSON text of a settings object; parsed by launch_config.ts. */
-  settings?: string;
-  /** Unparsed JSON texts of MCP configs in command-line order; parsed by launch_config.ts. */
-  mcp_configs?: string[];
+  /** A settings object for the SDK flag-settings layer, parsed by the app. */
+  settings?: { [key: string]: Json };
+  /** The `mcpServers` object of each --mcp-config, in command-line order. */
+  mcp_configs?: Array<{ [key: string]: Json }>;
   strict_mcp_config?: boolean;
   /** Replaces the claude_code preset; the runtime guard stays appended. */
   system_prompt?: string;
@@ -1055,6 +1077,7 @@ export type BridgeCommand =
       command: "stop_subagent";
       session_id: string;
       task_id: string;
+      expected_run_id?: string;
     }
   | {
       command: "get_rewind_targets";
@@ -1075,6 +1098,7 @@ export type BridgeCommand =
       command: "reload_plugins";
       session_id: string;
       force?: boolean;
+      add_plugins?: string[];
     }
   | {
       command: "reload_skills_and_styles";
@@ -1147,6 +1171,13 @@ export type TurnErrorKind =
   | "internal"
   | "other";
 
+export interface SessionPlugin {
+  name: string;
+  path: string;
+  source?: string;
+  version?: string;
+}
+
 export interface RuntimeReloadCacheImpact {
   mcp_servers_added: string[];
   mcp_servers_removed: string[];
@@ -1217,9 +1248,9 @@ export type BridgeEvent =
       request: ElicitationRequest;
     }
   | {
-      event: "elicitation_complete";
+      event: "elicitation_settled";
       session_id: string;
-      completion: ElicitationComplete;
+      settlement: ElicitationSettlement;
     }
   | {
       event: "mcp_auth_redirect";
@@ -1281,18 +1312,25 @@ export type BridgeEvent =
       session_id: string;
       message: string;
     }
-  | { event: "runtime_reload_completed"; session_id: string }
+  | { event: "plugin_inventory"; session_id: string; plugins: SessionPlugin[] }
+  | { event: "runtime_reload_completed"; session_id: string; error_count: number; reconciliation_error?: string }
   | {
       event: "runtime_reload_held";
       session_id: string;
       cache_impact: RuntimeReloadCacheImpact;
+      error_count: number;
     }
   | { event: "runtime_reload_failed"; session_id: string; message: string }
   | {
       event: "skills_and_styles_reloaded";
       session_id: string;
-      skills: string[];
-      output_styles: string[];
+      skills: ReloadOutcome;
+      output_styles: ReloadOutcome;
+    }
+  | {
+      event: "skills_and_styles_reload_expired";
+      session_id: string;
+      after_ms: number;
     }
   | {
       event: "session_replaced";
@@ -1340,6 +1378,7 @@ export type BridgeEvent =
       event: "subagent_stop_result";
       session_id: string;
       task_id: string;
+      run_id?: string;
       error?: string;
     }
   | {

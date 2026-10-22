@@ -1416,7 +1416,7 @@ async fn mode_sets_command_pending_and_mode_update_restores_ready() {
                 "expected CommandPending, got {:?}",
                 app.status
             );
-            assert_eq!(app.turn.pending_command_label.as_deref(), Some("Switching mode..."));
+            assert_eq!(app.displayed_status(), AppStatus::Ready);
 
             // Simulate mode-update ack arriving from bridge.
             super::super::events::handle_client_event(
@@ -1461,7 +1461,7 @@ async fn model_sets_command_pending_and_current_model_ack_updates_model_and_rest
                 "expected CommandPending, got {:?}",
                 app.status
             );
-            assert_eq!(app.turn.pending_command_label.as_deref(), Some("Switching model..."));
+            assert_eq!(app.displayed_status(), AppStatus::Ready);
             assert_eq!(
                 app.session_runtime.current_model.as_ref().map(|model| model.resolved_id.as_str()),
                 Some("old-model")
@@ -1506,7 +1506,7 @@ async fn effort_sets_command_pending_and_config_option_ack_restores_ready() {
             let consumed = try_handle_submit(&mut app, "/effort xhigh");
             assert!(consumed);
             assert!(matches!(app.status, AppStatus::CommandPending));
-            assert_eq!(app.turn.pending_command_label.as_deref(), Some("Switching effort..."));
+            assert_eq!(app.displayed_status(), AppStatus::Ready);
             assert!(matches!(
                 app.turn.pending_command_ack.as_ref(),
                 Some(super::super::PendingCommandAck::ConfigOption { option_id })
@@ -1588,7 +1588,7 @@ async fn agent_sets_command_pending_and_config_option_ack_restores_ready() {
             let consumed = try_handle_submit(&mut app, "/agent reviewer");
             assert!(consumed);
             assert!(matches!(app.status, AppStatus::CommandPending));
-            assert_eq!(app.turn.pending_command_label.as_deref(), Some("Switching agent..."));
+            assert_eq!(app.displayed_status(), AppStatus::Ready);
             assert!(matches!(
                 app.turn.pending_command_ack.as_ref(),
                 Some(super::super::PendingCommandAck::ConfigOption { option_id })
@@ -2251,7 +2251,9 @@ async fn reload_sends_one_bridge_command_and_blocks_input_until_acknowledged() {
 #[test]
 fn export_without_a_connection_is_refused() {
     let mut app = App::test_default();
+
     assert!(try_handle_submit(&mut app, "/export"));
+
     assert_eq!(app.status, AppStatus::Ready);
     assert!(app.history_export.is_none());
     let MessageBlock::Text(block) = &app.transcript.messages.last().expect("notice").blocks[0]
@@ -2299,6 +2301,7 @@ async fn export_requests_the_history_under_a_request_id_and_blocks_input() {
                         updates: Vec::new(),
                         last: true,
                         omitted_updates: 0,
+                        unmapped_updates: 0,
                         error: None,
                     },
                 },
@@ -2398,4 +2401,89 @@ fn command_ranking_is_case_insensitive_and_exact_wins() {
         ranked_names(&["/ecc:resume-session", "/Resume-All", "/resume"], "RESUME"),
         ["/resume", "/Resume-All", "/ecc:resume-session"]
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn only_the_exports_own_error_ends_the_export() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let mut app = App::test_default();
+            app.cwd_raw = dir.path().display().to_string();
+            let mut commands = attach_test_connection(&mut app);
+            app.session_runtime.session_id = Some("sess-1".into());
+            assert!(try_handle_submit(&mut app, "/export out.md"));
+            tokio::task::yield_now().await;
+            let request_id = commands.try_recv().expect("history request").request_id;
+            // A rename waiting for its answer takes the next generic slash error for itself.
+            app.config.pending_session_title_change =
+                Some(crate::app::config::PendingSessionTitleChangeState {
+                    session_id: "sess-1".to_owned(),
+                    kind: crate::app::config::PendingSessionTitleChangeKind::Generate,
+                });
+
+            crate::app::handle_client_event(
+                &mut app,
+                crate::agent::events::ClientEvent::SlashCommandError {
+                    session_id: Some("sess-1".to_owned()),
+                    message: "title generation failed".to_owned(),
+                },
+            );
+
+            assert!(app.history_export.is_some(), "an unrelated error must not cancel the export");
+            assert_eq!(app.status, AppStatus::CommandPending);
+
+            crate::app::handle_client_event(
+                &mut app,
+                crate::agent::events::ClientEvent::SessionHistoryChunk {
+                    session_id: "sess-1".to_owned(),
+                    chunk: crate::agent::events::HistoryChunk {
+                        request_id,
+                        updates: Vec::new(),
+                        last: true,
+                        omitted_updates: 0,
+                        unmapped_updates: 0,
+                        error: Some("unknown session: sess-1".to_owned()),
+                    },
+                },
+            );
+
+            assert!(app.history_export.is_none());
+            assert_eq!(app.status, AppStatus::Ready);
+            let MessageBlock::Notice(notice) =
+                &app.transcript.messages.last().expect("failure notice").blocks[0]
+            else {
+                panic!("expected notice block");
+            };
+            assert_eq!(notice.text.text, "unknown session: sess-1");
+            assert!(!dir.path().join("out.md").exists());
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_request_that_cannot_be_sent_fails_the_export_itself() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let mut app = App::test_default();
+            app.cwd_raw = dir.path().display().to_string();
+            let commands = attach_test_connection(&mut app);
+            app.session_runtime.session_id = Some("sess-1".into());
+            // With the bridge gone the send fails, as it does after the bridge exits.
+            drop(commands);
+            let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(8);
+            app.event_tx = event_tx;
+
+            assert!(try_handle_submit(&mut app, "/export out.md"));
+            let event = event_rx.recv().await.expect("failure event");
+
+            let crate::agent::events::ClientEvent::SessionHistoryChunk { chunk, .. } = event else {
+                panic!("the failure must travel on the export's own event");
+            };
+            assert!(chunk.last);
+            assert!(chunk.request_id.is_some());
+            assert!(chunk.error.is_some_and(|error| error.contains("Failed to run /export")));
+        })
+        .await;
 }

@@ -1,8 +1,10 @@
 import { refreshSessionModel } from "./bridge/session_model.js";
 import { applySessionEffort, applySessionAgent, applySessionFastMode, emitAgentConfigOptionUpdate } from "./bridge/session_preferences.js";
-import test from "node:test";
+import test, { mock } from "node:test";
 import { emitEffortConfigOptionUpdate, refreshSessionEffort } from "./bridge/effort.js";
 import assert from "node:assert/strict";
+import { resolve as resolvePath } from "node:path";
+import { query } from "@anthropic-ai/claude-agent-sdk";
 import {
   AsyncQueue,
   buildApiRetryUpdate,
@@ -43,6 +45,7 @@ import {
   rewindTargetsFromSessionMessages,
   updateAvailableCommands,
   handleReloadPluginsCommand,
+  scheduleBridgeCommand,
 } from "./bridge.js";
 import type { SessionState } from "./bridge.js";
 import { getSessionMessages, type Options, type SessionMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -68,6 +71,7 @@ import {
   beginSessionClose,
   closeAllSessions,
   handleUserDialogResponse,
+  handleElicitationResponse,
   handleQuestionResponse,
   closeSession,
   closeSessionsBeforeRegister,
@@ -108,6 +112,7 @@ import {
 } from "./bridge/message_handlers.js";
 import { dispatchCancelTurnCommand } from "./bridge/command_dispatch.js";
 import { handleSessionControlCommand } from "./bridge/command_session_control.js";
+import { BridgeCommandScheduler } from "./bridge/command_scheduler.js";
 import {
   handleSessionDataCommand,
   normalizeStructuredUsage,
@@ -122,6 +127,8 @@ const STARTUP_REASONS = {
   org_pin_mismatch: true,
   managed_settings_invalid: true,
   remote_settings_required_unavailable: true,
+  org_config_required_unavailable: true,
+  org_config_refused: true,
   gateway_signin_required: true,
   gateway_access_denied: true,
   proxy_invalid: true,
@@ -133,8 +140,6 @@ const STARTUP_REASONS = {
   worktree_unverified: true,
   cli_version_too_old: true,
   bypass_root: true,
-  org_config_required_unavailable: true,
-  org_config_refused: true,
 } satisfies Record<import("@anthropic-ai/claude-agent-sdk").SDKStartupFailureReason, boolean>;
 
 test("startup result reasons remain structured, correlated, and exclusive", () => {
@@ -179,6 +184,22 @@ test("startup errors are validated, bounded and redacted", () => {
   assert.equal(details.length, 8);
   assert.ok(details.every((detail) => detail.length === 1_024));
   assert.ok(details.every((detail) => !/private-key|secret-token|user:password|private-token/.test(detail)));
+});
+
+test("a structured invalid request does not turn refresh failure text into login", () => {
+  const session = makeSessionState();
+  session.lastAssistantError = "invalid_request";
+  const events = captureBridgeEvents(() => handleResultMessage(session, {
+    type: "result", subtype: "error_during_execution",
+    errors: ["Unable to save refreshed credentials: ENOSPC. Please login again."],
+    api_error_status: null,
+  }));
+  assert.equal(events.some(event => event.event === "auth_required"), false);
+  const error = events.find(event => event.event === "turn_error");
+  assert.ok(error);
+  assert.equal(error.assistant_error, "invalid_request");
+  assert.equal(Object.hasOwn(error, "api_error_status"), false);
+  assert.equal(session.lastAssistantError, undefined);
 });
 
 test("only execution result messages recognize startup reasons; older errors retain behavior", () => {
@@ -1699,6 +1720,30 @@ test("parseCommandEnvelope validates reload_plugins command", () => {
   );
 });
 
+test("folder reload commands preserve path intent and reject malformed paths before dispatch", () => {
+  const command = { command: "reload_plugins", session_id: "session-1", add_plugins: ["./folder with spaces"] };
+  assert.deepEqual(parseCommandEnvelope(JSON.stringify(command)).command, command);
+  for (const invalid of [null, "folder", [3], [""], [" \t"]]) {
+    assert.throws(() => parseCommandEnvelope(JSON.stringify({ ...command, add_plugins: invalid })), /local folder paths/);
+  }
+});
+
+test("unsafe folder text is a correlated reload refusal rather than a fatal command decode error", async () => {
+  const session = makeSessionState();
+  let calls = 0;
+  session.query = { reloadPlugins: async () => { calls += 1; throw new Error("must not dispatch"); } } as unknown as SessionState["query"];
+  for (const folder of ["bad\nfolder", "bad\u202efolder"]) {
+    const parsed = parseCommandEnvelope(JSON.stringify({ command: "reload_plugins", session_id: session.sessionId, add_plugins: [folder] }));
+    assert.equal(parsed.command.command, "reload_plugins");
+    const events = await captureBridgeEventsAsync(() => handleReloadPluginsCommand(session, "unsafe-folder", false, [folder]));
+    assert.equal(events.length, 1);
+    assert.equal(events[0].event, "runtime_reload_failed");
+    assert.equal(events[0].request_id, "unsafe-folder");
+    assert.match(String(events[0].message), /control or format characters/);
+  }
+  assert.equal(calls, 0);
+});
+
 test("parseCommandEnvelope validates reload_skills_and_styles command", () => {
   const parsed = parseCommandEnvelope(
     JSON.stringify({
@@ -1719,30 +1764,29 @@ test("parseCommandEnvelope validates reload_skills_and_styles command", () => {
   );
 });
 
-test("reload_skills_and_styles reports the names both SDK reloads returned", async () => {
+type ReloadQueryStub = {
+  reloadSkills: () => Promise<unknown>;
+  reloadOutputStyles: () => Promise<unknown>;
+};
+
+const SKILLS_RELOADED = {
+  skills: [
+    { name: "deploy", description: "d", argumentHint: "" },
+    { name: "lint", description: "l", argumentHint: "" },
+  ],
+};
+const STYLES_RELOADED = { available_output_styles: ["default", "Explanatory", "mine"] };
+
+// Runs the command against a stubbed query; `during` runs while the reload is in flight.
+async function runReloadSkillsAndStyles(
+  query: ReloadQueryStub,
+  during?: () => void | Promise<void>,
+  after?: () => void | Promise<void>,
+): Promise<{ sessionId: string; events: Array<Record<string, unknown>> }> {
   sessions.clear();
   const session = makeSessionState();
-  const calls: string[] = [];
-  let resolveSkills!: (value: { skills: Array<{ name: string; description: string; argumentHint: string }> }) => void;
-  let resolveStyles!: (value: { available_output_styles: string[] }) => void;
-  const skills = new Promise<{ skills: Array<{ name: string; description: string; argumentHint: string }> }>(resolve => {
-    resolveSkills = resolve;
-  });
-  const styles = new Promise<{ available_output_styles: string[] }>(resolve => {
-    resolveStyles = resolve;
-  });
-  session.query = {
-    reloadSkills: () => {
-      calls.push("skills");
-      return skills;
-    },
-    reloadOutputStyles: () => {
-      calls.push("styles");
-      return styles;
-    },
-  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+  session.query = query as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
   sessions.set(session.sessionId, session);
-
   try {
     const events = await captureBridgeEventsAsync(async () => {
       const reload = handleSessionControlCommand(
@@ -1750,57 +1794,197 @@ test("reload_skills_and_styles reports the names both SDK reloads returned", asy
         "req-reload",
         promptControlDeps(),
       );
-      assert.deepEqual(calls, ["skills", "styles"]);
-      resolveSkills({ skills: [{ name: "deploy", description: "d", argumentHint: "" }, { name: "lint", description: "l", argumentHint: "" }] });
-      resolveStyles({ available_output_styles: ["default", "Explanatory", "mine"] });
+      await during?.();
       await reload;
+      await after?.();
     });
+    return { sessionId: session.sessionId, events };
+  } finally {
+    sessions.clear();
+  }
+}
 
-    assert.deepEqual(calls, ["skills", "styles"]);
+test("reload_skills_and_styles reloads output styles before skills and reports both names", async () => {
+  const calls: string[] = [];
+  const { sessionId, events } = await runReloadSkillsAndStyles({
+    reloadSkills: async () => {
+      calls.push("skills");
+      return SKILLS_RELOADED;
+    },
+    reloadOutputStyles: async () => {
+      calls.push("styles");
+      return STYLES_RELOADED;
+    },
+  });
+
+  // reloadOutputStyles() drops the SDK's markdown scan cache, so skills are read after it.
+  assert.deepEqual(calls, ["styles", "skills"]);
+  assert.deepEqual(events, [
+    {
+      request_id: "req-reload",
+      event: "skills_and_styles_reloaded",
+      session_id: sessionId,
+      skills: { status: "reloaded", names: ["deploy", "lint"] },
+      output_styles: { status: "reloaded", names: ["default", "Explanatory", "mine"] },
+    },
+  ]);
+});
+
+test("reload_skills_and_styles reports a failed half next to the half that reloaded", async () => {
+  const { sessionId, events } = await runReloadSkillsAndStyles({
+    reloadSkills: async () => SKILLS_RELOADED,
+    reloadOutputStyles: async () => {
+      throw new Error("style directory unreadable");
+    },
+  });
+
+  assert.deepEqual(events, [
+    {
+      request_id: "req-reload",
+      event: "skills_and_styles_reloaded",
+      session_id: sessionId,
+      skills: { status: "reloaded", names: ["deploy", "lint"] },
+      output_styles: { status: "failed", message: "style directory unreadable" },
+    },
+  ]);
+});
+
+test("reload_skills_and_styles reports a synchronous SDK throw as a failed half", async () => {
+  const { events } = await runReloadSkillsAndStyles({
+    reloadSkills: () => {
+      throw new Error("query closed");
+    },
+    reloadOutputStyles: async () => STYLES_RELOADED,
+  });
+
+  assert.equal(events.length, 1);
+  assert.deepEqual(events[0]?.skills, { status: "failed", message: "query closed" });
+  assert.deepEqual(events[0]?.output_styles, {
+    status: "reloaded",
+    names: ["default", "Explanatory", "mine"],
+  });
+});
+
+test("reload_skills_and_styles reports an unanswered half after 10 seconds and ignores its late answer", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    let answerLate!: (value: unknown) => void;
+    const { sessionId, events } = await runReloadSkillsAndStyles(
+      {
+        reloadSkills: () =>
+          new Promise((resolve) => {
+            answerLate = resolve;
+          }),
+        reloadOutputStyles: async () => STYLES_RELOADED,
+      },
+      async () => {
+        // Styles answer at once; the skills request is then the one left waiting.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        mock.timers.tick(10_000);
+      },
+      async () => {
+        // The SDK answers after the bound: it must not produce a second event.
+        answerLate(SKILLS_RELOADED);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      },
+    );
+
     assert.deepEqual(events, [
       {
         request_id: "req-reload",
         event: "skills_and_styles_reloaded",
-        session_id: session.sessionId,
-        skills: ["deploy", "lint"],
-        output_styles: ["default", "Explanatory", "mine"],
+        session_id: sessionId,
+        skills: { status: "timed_out", after_ms: 10_000 },
+        output_styles: { status: "reloaded", names: ["default", "Explanatory", "mine"] },
       },
     ]);
   } finally {
-    sessions.clear();
+    mock.timers.reset();
   }
 });
 
-test("reload_skills_and_styles answers an SDK failure with a slash error and no reload event", async () => {
-  sessions.clear();
-  const session = makeSessionState();
-  session.query = {
-    reloadSkills: async () => ({ skills: [] }),
-    reloadOutputStyles: async () => {
-      throw new Error("style directory unreadable");
-    },
-  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
-  sessions.set(session.sessionId, session);
-
+test("reload_skills_and_styles reports unanswered output styles next to skills that reloaded", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
   try {
-    const events = await captureBridgeEventsAsync(async () => {
-      await handleSessionControlCommand(
-        { command: "reload_skills_and_styles", session_id: session.sessionId },
-        "req-fail",
-        promptControlDeps(),
-      );
-    });
+    const { sessionId, events } = await runReloadSkillsAndStyles(
+      {
+        reloadSkills: async () => SKILLS_RELOADED,
+        reloadOutputStyles: () => new Promise(() => undefined),
+      },
+      () => {
+        // Styles are asked first and stay silent; skills are only asked once that bound ends.
+        mock.timers.tick(10_000);
+      },
+    );
 
     assert.deepEqual(events, [
       {
-        request_id: "req-fail",
-        event: "slash_error",
-        session_id: session.sessionId,
-        message: "failed to reload skills and output styles: style directory unreadable",
+        request_id: "req-reload",
+        event: "skills_and_styles_reloaded",
+        session_id: sessionId,
+        skills: { status: "reloaded", names: ["deploy", "lint"] },
+        output_styles: { status: "timed_out", after_ms: 10_000 },
       },
     ]);
   } finally {
+    mock.timers.reset();
+  }
+});
+
+test("reload_skills_and_styles queued behind a stalled session request answers after 10 seconds and never reloads later", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  sessions.clear();
+  const session = makeSessionState();
+  const calls: string[] = [];
+  let answerUsage!: (usage: unknown) => void;
+  session.query = {
+    // An earlier request for the same session that has not answered yet.
+    getContextUsage: () =>
+      new Promise((resolve) => {
+        answerUsage = resolve;
+      }),
+    reloadSkills: async () => {
+      calls.push("skills");
+      return SKILLS_RELOADED;
+    },
+    reloadOutputStyles: async () => {
+      calls.push("styles");
+      return STYLES_RELOADED;
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+  sessions.set(session.sessionId, session);
+  try {
+    const scheduler = new BridgeCommandScheduler();
+    const allEvents = await captureBridgeEventsAsync(async () => {
+      // Both commands go through the bridge's own scheduling step, as main() schedules them.
+      const earlier = scheduleBridgeCommand(scheduler, {
+        requestId: "req-usage",
+        command: { command: "get_context_usage", session_id: session.sessionId },
+      });
+      const reload = scheduleBridgeCommand(scheduler, {
+        requestId: "req-reload",
+        command: { command: "reload_skills_and_styles", session_id: session.sessionId },
+      });
+      mock.timers.tick(10_000);
+      // The earlier request finishes after the deadline; the expired reload must stay skipped.
+      answerUsage({ percentage: 10, totalTokens: 100, maxTokens: 1000 });
+      await Promise.all([earlier, reload]);
+      await scheduler.whenIdle();
+    });
+    const events = allEvents.filter((event) => event.request_id === "req-reload");
+
+    assert.deepEqual(events, [
+      {
+        request_id: "req-reload",
+        event: "skills_and_styles_reload_expired",
+        session_id: session.sessionId,
+        after_ms: 10_000,
+      },
+    ]);
+    assert.deepEqual(calls, []);
+  } finally {
     sessions.clear();
+    mock.timers.reset();
   }
 });
 
@@ -1832,10 +2016,12 @@ test("handleReloadPluginsCommand holds cache-impacting reloads and sanitizes plu
 
   assert.deepEqual(optionsSeen, [{ holdOnCacheImpact: true }]);
   assert.deepEqual(events, [
+    { event: "plugin_inventory", session_id: session.sessionId, plugins: [] },
     {
       request_id: "req-held",
       event: "runtime_reload_held",
       session_id: "session-1",
+      error_count: 0,
       cache_impact: {
         mcp_servers_added: ["plugin:docs:search"],
         mcp_servers_removed: ["plugin:old:server"],
@@ -1867,6 +2053,92 @@ test("handleReloadPluginsCommand forces only through an optionless explicit requ
   });
 
   assert.deepEqual(argumentLists, [[]]);
+});
+
+test("local folder reload retains its exact request through hold and apply and reconciles partial results", async () => {
+  const session = makeSessionState();
+  const calls: unknown[] = [];
+  let held = true;
+  session.query = { reloadPlugins: async (options: unknown) => {
+    calls.push(options);
+    const folder = (options as { addPlugins: Array<{ path: string }> }).addPlugins[0].path;
+    return {
+      commands: [{ name: "fixture:hello", description: "Fixture", argumentHint: "" }],
+      agents: [{ name: "fixture-agent", description: "Fixture" }],
+      plugins: held ? [] : [{ name: "fixture", path: folder, source: "fixture@inline", version: "1.2.3" }],
+      mcpServers: [], error_count: 2, held,
+      cache_impact: { mcp_servers_added: ["plugin:fixture:tools"], mcp_servers_removed: [] },
+    };
+  } } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+  const before = session.availableCommands;
+  const heldEvents = await captureBridgeEventsAsync(() => handleReloadPluginsCommand(session, "held", false, ["fixture"]));
+  assert.equal(session.availableCommands, before);
+  assert.ok(heldEvents.some(event => event.event === "runtime_reload_held" && event.error_count === 2));
+  assert.deepEqual(session.pluginInventory, []);
+  held = false;
+  const applied = await captureBridgeEventsAsync(() => handleReloadPluginsCommand(session, "applied", true, ["fixture"]));
+  const first = calls[0] as { addPlugins: unknown };
+  assert.deepEqual(calls[1], { addPlugins: first.addPlugins });
+  const inventory = applied.find(event => event.event === "plugin_inventory")?.plugins as Array<{ path: string }>;
+  assert.equal(inventory.length, 1);
+  assert.equal(inventory[0].path, resolvePath(session.cwd, "fixture"));
+  assert.ok(applied.some(event => event.event === "runtime_reload_completed" && event.error_count === 2));
+  assert.equal(applied.some(event => event.event === "runtime_reload_failed"), false);
+  assert.ok(session.availableCommands?.commands.some(command => command.name === "fixture:hello"));
+  assert.ok(session.availableAgents?.some(agent => agent.name === "fixture-agent"));
+});
+
+test("a rejected folder reload preserves confirmed plugin inventory and reports its correlated error", async () => {
+  const session = makeSessionState();
+  session.pluginInventory = [{ name: "existing", path: session.cwd, source: "existing@inline" }];
+  const confirmed = session.pluginInventory;
+  session.query = { reloadPlugins: async () => { throw new Error("Local plugins are disabled by managed settings"); } } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+  const events = await captureBridgeEventsAsync(() => handleReloadPluginsCommand(session, "rejected", false, ["new-folder"]));
+  assert.equal(session.pluginInventory, confirmed);
+  assert.deepEqual(events, [{ request_id: "rejected", event: "runtime_reload_failed", session_id: session.sessionId, message: "Local plugins are disabled by managed settings" }]);
+});
+
+test("an applied folder reload reports host reconciliation failure without offering native retry", async () => {
+  const session = makeSessionState();
+  let nativeCalls = 0;
+  session.query = { reloadPlugins: async () => {
+    nativeCalls += 1;
+    return { plugins: [{ name: "confirmed", path: session.cwd, source: "confirmed@inline" }], commands: [], agents: [], mcpServers: [], error_count: 1 };
+  } } as unknown as SessionState["query"];
+  const events: Array<Record<string, unknown>> = [];
+  const restore = replaceProtocolEventWriter(line => {
+    const event = JSON.parse(line);
+    if (event.event === "mcp_snapshot") throw new Error("MCP snapshot delivery failed");
+    events.push(event);
+  });
+  try {
+    await handleReloadPluginsCommand(session, "reconcile", false, ["confirmed"]);
+    assert.equal(nativeCalls, 1);
+    assert.ok(events.some(event => event.event === "plugin_inventory"));
+    assert.deepEqual(events.at(-1), { request_id: "reconcile", event: "runtime_reload_completed", session_id: session.sessionId, error_count: 1, reconciliation_error: "MCP snapshot delivery failed" });
+    assert.equal(events.some(event => event.event === "runtime_reload_failed"), false);
+  } finally { restore(); }
+});
+
+test("closing a query while its folder reload is awaiting the SDK suppresses late inventory and outcomes", async () => {
+  for (const fail of [false, true]) {
+    const session = makeSessionState();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    session.query = { reloadPlugins: async () => {
+      await gate;
+      if (fail) throw new Error("closed");
+      return { plugins: [], commands: [], agents: [], mcpServers: [], error_count: 0 };
+    } } as unknown as SessionState["query"];
+    const events = await captureBridgeEventsAsync(async () => {
+      const reload = handleReloadPluginsCommand(session, "closed", false, ["folder"]);
+      session.closing = true;
+      release();
+      await reload;
+    });
+    assert.deepEqual(events, []);
+    assert.equal(session.pluginInventory, undefined);
+  }
 });
 
 test("handleReloadPluginsCommand emits MCP snapshot from reload result", async () => {
@@ -1935,6 +2207,7 @@ test("handleReloadPluginsCommand emits MCP snapshot from reload result", async (
         request_id: "req-reload",
         event: "runtime_reload_completed",
         session_id: "session-1",
+      error_count: 0,
       },
     ],
   );
@@ -2668,6 +2941,7 @@ test("buildQueryOptions includes resumeSessionAt when provided", () => {
   const options = buildQueryOptions({
     resolvedSettings: {},
     cwd: "C:/work",
+    pluginPaths: ["C:/plugins/confirmed"],
     resume: "session-1",
     resumeSessionAt: "assistant-1",
     resumeDropsTurn: "user-2",
@@ -2685,6 +2959,7 @@ test("buildQueryOptions includes resumeSessionAt when provided", () => {
   assert.equal(options.resumeSessionAt, "assistant-1");
   assert.equal(options.resumeDropsTurn, "user-2");
   assert.equal(options.forkSession, true);
+  assert.deepEqual(options.plugins, [{ type: "local", path: "C:/plugins/confirmed" }]);
   assert.equal(options.sessionId, "session-1");
   assert.deepEqual(options.systemPrompt, {
     type: "preset",
@@ -3091,13 +3366,6 @@ test("handleTaskSystemMessage preserves blocked and parent agent metadata", () =
       tool_call_id: "tool-1",
       fields: {
         status: "in_progress",
-        raw_output: "Investigate release blocker",
-        content: [
-          {
-            type: "content",
-            content: { type: "text", text: "Investigate release blocker" },
-          },
-        ],
         task_metadata: {
           blocked: true,
           parent_agent_id: "agent-parent",
@@ -3167,16 +3435,6 @@ test("handleTaskSystemMessage keeps Agent completed notification provisional unt
     tool_call_update: {
       tool_call_id: "tool-1",
       fields: {
-        raw_output: "Found the auth bug and prepared the fix",
-        content: [
-          {
-            type: "content",
-            content: {
-              type: "text",
-              text: "Found the auth bug and prepared the fix",
-            },
-          },
-        ],
         task_metadata: {
           summary: "Found the auth bug and prepared the fix",
           terminal_status: "completed",
@@ -3185,6 +3443,7 @@ test("handleTaskSystemMessage keeps Agent completed notification provisional unt
     },
   });
   assert.equal(session.toolCalls.get("tool-1")?.status, "in_progress");
+  assert.equal(session.toolCalls.get("tool-1")?.raw_output, "Analyzing authentication flow");
   assert.equal(session.taskToolUseIds.get("task-1"), "tool-1");
   assert.equal(session.taskIdsByToolUseId.get("tool-1"), "task-1");
 });
@@ -3239,7 +3498,7 @@ test("emitToolResultUpdate finalizes deferred Agent completion and unlinks lifec
   assert.equal(session.taskIdsByToolUseId.has("tool-1"), false);
 });
 
-test("task notifications close Bash without replacing concrete tool output", () => {
+test("task notifications leave foreground tools open with their concrete tool output", () => {
   const session = makeSessionState();
   const protectedTools = [
     createToolCall("tool-bash", "Bash", { command: "git status" }),
@@ -3256,7 +3515,7 @@ test("task notifications close Bash without replacing concrete tool output", () 
     session.toolCalls.set(toolCall.tool_call_id, toolCall);
   }
 
-  const events = captureBridgeEvents(() => {
+  captureBridgeEvents(() => {
     for (const toolCall of protectedTools) {
       const taskId = `task-${toolCall.tool_call_id}`;
       handleTaskSystemMessage(session, "task_started", {
@@ -3273,21 +3532,9 @@ test("task notifications close Bash without replacing concrete tool output", () 
     }
   });
 
-  assert.equal(
-    events.filter(
-      (event) =>
-        event.event === "session_update" &&
-        (event.update as { type?: unknown } | undefined)?.type ===
-          "tool_call_update",
-    ).length,
-    1,
-  );
   for (const toolCall of protectedTools) {
     const stored = session.toolCalls.get(toolCall.tool_call_id);
-    assert.equal(
-      stored?.status,
-      toolCall.tool_call_id === "tool-bash" ? "completed" : "in_progress",
-    );
+    assert.equal(stored?.status, "in_progress");
     assert.equal(
       stored?.raw_output,
       `actual output for ${toolCall.tool_call_id}`,
@@ -3295,7 +3542,40 @@ test("task notifications close Bash without replacing concrete tool output", () 
   }
 });
 
-test("handleSdkMessage ignores tool_use_summary for Bash Read and Write tools", () => {
+test("foreground shell task lifecycle never shows its description and completes only with the real result", () => {
+  const session = makeSessionState();
+  captureBridgeEvents(() => {
+    emitToolCall(session, "tool-ps", "PowerShell", { command: "git diff --stat" });
+    handleTaskSystemMessage(session, "task_started", {
+      task_id: "task-ps",
+      tool_use_id: "tool-ps",
+      description: "Show diff summary of uncommitted changes",
+    });
+    handleTaskSystemMessage(session, "task_notification", {
+      task_id: "task-ps",
+      tool_use_id: "tool-ps",
+      status: "completed",
+      summary: "Show diff summary of uncommitted changes",
+    });
+  });
+  const pending = session.toolCalls.get("tool-ps");
+  assert.equal(pending?.status, "in_progress");
+  assert.equal(pending?.raw_output, undefined);
+
+  captureBridgeEvents(() => {
+    emitToolResultUpdate(session, "tool-ps", false, {
+      stdout: " src/app/tasks.rs | 25 +++-",
+      stderr: "",
+      interrupted: false,
+    });
+  });
+  const finished = session.toolCalls.get("tool-ps");
+  assert.equal(finished?.status, "completed");
+  assert.match(finished?.raw_output ?? "", /src\/app\/tasks\.rs \| 25/);
+  assert.doesNotMatch(finished?.raw_output ?? "", /Show diff summary/);
+});
+
+test("handleSdkMessage keeps real tool output when tool_use_summary arrives", () => {
   const session = makeSessionState();
   const protectedTools = [
     createToolCall("tool-bash", "Bash", { command: "git diff" }),
@@ -3304,6 +3584,11 @@ test("handleSdkMessage ignores tool_use_summary for Bash Read and Write tools", 
       file_path: "src/main.rs",
       content: "updated file contents",
     }),
+    createToolCall("tool-agent", "Agent", { prompt: "Inspect auth flow" }),
+    createToolCall("tool-task", "Task", { prompt: "Inspect auth flow" }),
+    createToolCall("tool-search", "WebSearch", { query: "ratatui" }),
+    createToolCall("tool-fetch", "WebFetch", { url: "https://example.com" }),
+    createToolCall("tool-plan", "ExitPlanMode", { plan: "Ship it" }),
   ];
 
   for (const toolCall of protectedTools) {
@@ -3331,51 +3616,6 @@ test("handleSdkMessage ignores tool_use_summary for Bash Read and Write tools", 
       `actual output for ${toolCall.tool_call_id}`,
     );
   }
-});
-
-test("handleSdkMessage applies tool_use_summary for summary-oriented tools", () => {
-  const session = makeSessionState();
-  const toolCall = createToolCall("tool-agent", "Agent", {
-    prompt: "Inspect auth flow",
-  });
-  session.toolCalls.set(toolCall.tool_call_id, toolCall);
-
-  const events = captureBridgeEvents(() => {
-    handleSdkMessage(session, {
-      type: "tool_use_summary",
-      summary: "Inspected auth flow and found the failing check",
-      preceding_tool_use_ids: [toolCall.tool_call_id],
-      uuid: "message-summary",
-      session_id: "session-1",
-    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
-  });
-
-  const lastEvent = events.at(-1);
-  assert.ok(lastEvent);
-  assert.equal(lastEvent.event, "session_update");
-  assert.deepEqual(lastEvent.update, {
-    type: "tool_call_update",
-    tool_call_update: {
-      tool_call_id: "tool-agent",
-      fields: {
-        status: "completed",
-        raw_output: "Inspected auth flow and found the failing check",
-        content: [
-          {
-            type: "content",
-            content: {
-              type: "text",
-              text: "Inspected auth flow and found the failing check",
-            },
-          },
-        ],
-      },
-    },
-  });
-  assert.equal(
-    session.toolCalls.get(toolCall.tool_call_id)?.raw_output,
-    "Inspected auth flow and found the failing check",
-  );
 });
 
 test("handleSdkMessage suppresses ToolSearch bridge events without denying SDK use", () => {
@@ -3877,6 +4117,7 @@ test("task notification appends resource links with or without a summary", () =>
   for (const summary of ["Export complete", undefined]) {
     const session = makeSessionState();
     const events = captureBridgeEvents(() => {
+      emitToolCall(session, "tool-mcp", "mcp__docs__export", {});
       handleTaskSystemMessage(session, "task_started", {
         task_id: "task-mcp",
         tool_use_id: "tool-mcp",
@@ -5513,10 +5754,10 @@ test("handleTaskSystemMessage emits task state for unlinked task_updated message
             task_id: "task-missing",
             subject: "This should not be emitted",
             description: "This should not be emitted",
-            metadata: { sdk_lifecycle_task: true },
             status: "in_progress",
             blocks: [],
             blocked_by: [],
+            metadata: { sdk_lifecycle_task: true },
           },
         ],
         removed_task_ids: [],
@@ -5562,8 +5803,8 @@ test("handleTaskSystemMessage maps stopped notifications to terminal task state"
             blocks: [],
             blocked_by: [],
             metadata: {
-              sdk_lifecycle_task: true,
               output_file: "C:/tmp/task-1.txt",
+              sdk_lifecycle_task: true,
               summary: "Stopped background watch",
               terminal_status: "stopped",
               terminal_reason: "worker_restart",
@@ -5995,7 +6236,7 @@ test("handleSdkMessage updates and clears subagent retry progress in place", () 
         tool_call_id: "tool-agent-retry",
         fields: {
           output_metadata: { timing: { duration_ms: 7000, source: "progress" } },
-          task_metadata: { subagent_retry: { state: "clear" } },
+          task_metadata: { subagent_type: "reviewer" },
         },
       },
     },
@@ -6070,9 +6311,7 @@ test("emitToolResultUpdate clears active subagent retry metadata", () => {
   const update = events.at(-1)?.update as Record<string, unknown>;
   const toolCallUpdate = update.tool_call_update as Record<string, unknown>;
   const fields = toolCallUpdate.fields as Record<string, unknown>;
-  assert.deepEqual(fields.task_metadata, {
-    subagent_retry: { state: "clear" },
-  });
+  assert.deepEqual(fields.task_metadata, {});
   assert.equal(
     session.toolCalls.get(toolCall.tool_call_id)?.task_metadata?.subagent_retry,
     undefined,
@@ -6635,6 +6874,19 @@ test("buildRateLimitUpdate normalizes SDK overage boolean spellings", () => {
       ...fields,
     });
     assert.equal(update?.is_using_overage, expected, name);
+  }
+});
+
+test("overage enablement remains distinct from use, status and unknown", () => {
+  for (const enabled of [true, false, undefined, null, "true"]) {
+    const update = buildRateLimitUpdate({
+      status: "allowed_warning", overageEnabled: enabled,
+      overageStatus: "allowed", overageInUse: false,
+    });
+    assert.equal(update?.overage_enabled, typeof enabled === "boolean" ? enabled : undefined);
+    assert.equal(Object.hasOwn(update ?? {}, "overage_enabled"), typeof enabled === "boolean");
+    assert.equal(update?.is_using_overage, false);
+    assert.equal(update?.overage_status, "allowed");
   }
 });
 
@@ -7871,86 +8123,21 @@ test("handleTaskSystemMessage preserves task correlation metadata", () => {
   const session = makeSessionState();
   const events = captureBridgeEvents(() => {
     handleTaskSystemMessage(session, "task_started", {
-      task_id: "task-1",
-      tool_use_id: "tool-1",
-      description: "Run checks",
-      request_id: "request-1",
-      subagent_type: "tester",
-      task_description: "Validate the branch",
+      task_id: "task-1", tool_use_id: "tool-1", description: "Run checks",
+      request_id: "request-1", subagent_type: "tester", task_description: "Validate the branch",
     });
   });
-
-  assert.deepEqual(
-    events.map((event) => event.update),
-    [
-      {
-        type: "tool_call",
-        tool_call: {
-          tool_call_id: "tool-1",
-          title: "Agent",
-          kind: "think",
-          status: "pending",
-          content: [],
-          raw_input: {},
-          locations: [],
-          meta: { claudeCode: { toolName: "Agent", parentToolUseId: null } },
-        },
-      },
-      {
-        type: "task_state_update",
-        source: "task_lifecycle",
-        tasks: [
-          {
-            task_id: "task-1",
-            subject: "Validate the branch",
-            description: "Run checks",
-            status: "in_progress",
-            blocks: [],
-            blocked_by: [],
-            metadata: {
-              sdk_lifecycle_task: true,
-              request_id: "request-1",
-              subagent_type: "tester",
-              task_description: "Validate the branch",
-            },
-            source_tool_call_id: "tool-1",
-          },
-        ],
-        removed_task_ids: [],
-        is_complete_snapshot: false,
-      },
-      {
-        type: "tool_call_update",
-        tool_call_update: {
-          tool_call_id: "tool-1",
-          fields: {
-            status: "in_progress",
-          },
-        },
-      },
-      {
-        type: "tool_call_update",
-        tool_call_update: {
-          tool_call_id: "tool-1",
-          fields: {
-            status: "in_progress",
-            raw_output: "Run checks",
-            content: [
-              {
-                type: "content",
-                content: { type: "text", text: "Run checks" },
-              },
-            ],
-            task_metadata: {
-              request_id: "request-1",
-              subagent_type: "tester",
-              task_description: "Validate the branch",
-            },
-          },
-        },
-      },
-    ],
-  );
+  const tool = session.toolCalls.get("tool-1");
+  const task = session.tasksById.get("task-1");
+  assert.equal(task?.source_tool_call_id, "tool-1");
+  assert.equal(task?.subject, "Validate the branch");
+  assert.equal(task?.status, "in_progress");
+  const metadata = { request_id: "request-1", subagent_type: "tester", task_description: "Validate the branch" };
+  assert.deepEqual(tool?.task_metadata, metadata);
+  assert.deepEqual(task?.metadata, { ...metadata, sdk_lifecycle_task: true });
+  assert.equal(tool?.raw_output, undefined);
+  const published = events.map(event => event.update as import("./types.js").SessionUpdate).filter(update => update.type === "tool_call_update").at(-1);
+  assert.deepEqual(published?.tool_call_update.fields.task_metadata, metadata);
 });
 
 test("ambient task lifecycle stays in inventory without creating a visible tool call", () => {
@@ -7979,7 +8166,7 @@ test("ambient task lifecycle stays in inventory without creating a visible tool 
             status: "in_progress",
             blocks: [],
             blocked_by: [],
-            metadata: { sdk_lifecycle_task: true, task_type: "artifact_watch", ambient: true },
+            metadata: { task_type: "artifact_watch", ambient: true, sdk_lifecycle_task: true },
           },
         ],
         removed_task_ids: [],
@@ -8767,6 +8954,23 @@ test("closing a session settles detached calls without waiting for another turn"
   assert.equal(call.status, "killed");
 });
 
+test("live Read results carry file source and start line", () => {
+  const session = makeSessionState();
+  const source = "line one\r\n\tline two  \r\n";
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, { type: "assistant", message: { content: [{ type: "tool_use", id: "read-live", name: "Read", input: { file_path: "notes.txt" } }] } } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "user", tool_use_result: { type: "text", file: { filePath: "notes.txt", content: source, numLines: 2, startLine: 1, totalLines: 2 } },
+      message: { content: [{ type: "tool_result", tool_use_id: "read-live", content: "1\tline one\n2\tline two" }] },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+  const update = events.at(-1)?.update as { tool_call_update: { tool_call_id: string; fields: { raw_output: string; output_metadata: unknown; content: unknown } } };
+  assert.equal(update.tool_call_update.tool_call_id, "read-live");
+  assert.deepEqual(update.tool_call_update.fields.output_metadata, { read: { file_path: "notes.txt", start_line: 1 } });
+  assert.equal(update.tool_call_update.fields.raw_output, source);
+  assert.deepEqual(update.tool_call_update.fields.content, [{ type: "content", content: { type: "text", text: source } }]);
+});
+
 test("MCP structured-content omission keeps readable output and resource links", () => {
   const session = makeSessionState();
   const events = captureBridgeEvents(() => {
@@ -8856,8 +9060,123 @@ test("cut-short message_stop does not duplicate text or complete the model turn"
 });
 
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.300");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.302");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
+});
+
+test("the pinned SDK forwards named options unchanged through the host to a real child", { timeout: 15000 }, async (context) => {
+  const { fileURLToPath } = await import("node:url");
+  const fixture = fileURLToPath(new URL("../../tests/fixtures/sdk-compatibility-peer.js", import.meta.url));
+  for (const special of [false, true]) {
+    const session = makeSessionState();
+    const host = buildQueryOptions({ resolvedSettings: {}, cwd: process.cwd(), launchSettings: {},
+      provisionalSessionId: session.sessionId, input: session.input, canUseTool: async () => ({behavior:"deny",message:"unused"}),
+      claudeCodeExecutable: fixture, enableSdkDebug:false, enableSpawnDebug:false, sessionIdForLogs:()=>session.sessionId });
+    let generated: string[] | undefined;
+    const sdkQuery = query({prompt:session.input,options:{
+      ...host, executable:"node", persistSession:false, settings:{language:"value with = signs"},
+      ...(special ? {model:"-model with = signs",debugFile:"-debug path=example.log",permissionMode:"plan" as const,
+        settings:{language:""},settingSources:[]} : {}),
+      spawnClaudeCodeProcess(options) {
+        generated = [...options.args];
+        return host.spawnClaudeCodeProcess(options);
+      },
+    }});
+    context.after(()=>sdkQuery.close());
+    try {
+      const commands = await sdkQuery.supportedCommands();
+      const report = commands.find(command=>command.name === "received-argv");
+      assert.ok(report);
+      assert.ok(generated);
+      assert.equal(generated[0],fixture);
+      assert.deepEqual(JSON.parse(report.description),generated.slice(1));
+      if (special) {
+        assert.ok(generated.includes("--model=-model with = signs"));
+        assert.ok(generated.includes("--debug-file=-debug path=example.log"));
+        assert.ok(generated.includes("--permission-mode=plan"));
+        assert.ok(generated.includes("--setting-sources="));
+      } else {
+        assert.ok(!generated.some(arg=>arg.startsWith("--model=") || arg.startsWith("--debug-file=")));
+        assert.ok(generated.includes("--setting-sources=user,project,local"));
+      }
+      assert.equal(generated[generated.indexOf("--settings")+1],special ? '{"language":""}' : '{"language":"value with = signs"}');
+    } finally {sdkQuery.close();}
+  }
+});
+
+test("usage attribution preserves both windows and future keys in the emitted response", async () => {
+  const {readFileSync} = await import("node:fs");
+  const raw = JSON.parse(readFileSync(new URL("../../tests/fixtures/sdk-usage-attribution.json",import.meta.url),"utf8"));
+  const session = makeSessionState();
+  session.query = {usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET:async()=>raw} as unknown as SessionState["query"];
+  sessions.set(session.sessionId,session);
+  try {
+    const events = await captureBridgeEventsAsync(()=>handleSessionDataCommand({command:"get_usage",session_id:session.sessionId},"usage-request",{
+      generatePersistedSessionTitle,buildSessionMutationOptions,rewindTargetsFromSessionMessages,handleRewind:async()=>assert.fail("unused"),
+    }));
+    assert.equal(events.length,1);
+    assert.equal(events[0].request_id,"usage-request");
+    assert.equal(events[0].event,"usage_snapshot");
+    assert.equal(events[0].session_id,session.sessionId);
+    const snapshot = events[0].snapshot as import("./types.js").StructuredUsageSnapshot;
+    assert.deepEqual(snapshot.activity_day?.behaviors,[
+      {key:"max_effort",pct:71,count:7},{key:"workflow",pct:62,count:6},{key:"always_on_context",pct:53,count:5},
+      {key:"large_tool_results",pct:44,count:4},{key:"future_behavior",pct:35,count:3},{key:"sixth_behavior",pct:26,count:2},
+    ]);
+    assert.deepEqual(snapshot.activity_week?.behaviors,[
+      {key:"max_effort",pct:81,count:17},{key:"workflow",pct:72,count:16},{key:"always_on_context",pct:63,count:15},
+      {key:"large_tool_results",pct:54,count:14},{key:"future_behavior",pct:45,count:13},{key:"sixth_behavior",pct:36,count:12},
+    ]);
+    assert.equal(snapshot.activity_day?.request_count,20);
+    assert.equal(snapshot.activity_week?.request_count,100);
+  } finally {sessions.delete(session.sessionId);}
+});
+
+test("pinned SDK preserves supplied citations and the host delivers streamed and saved text once", {timeout:15000}, async (context) => {
+  // This peer checks transport and host consumers. settings_runtime.test.ts
+  // separately exercises the native producer with actual API citation deltas.
+  const {fileURLToPath} = await import("node:url");
+  const fixture = fileURLToPath(new URL("../../tests/fixtures/sdk-compatibility-peer.js",import.meta.url));
+  const session = makeSessionState();
+  const host = buildQueryOptions({resolvedSettings:{},cwd:process.cwd(),launchSettings:{},provisionalSessionId:session.sessionId,
+    input:session.input,canUseTool:async()=>({behavior:"deny",message:"unused"}),claudeCodeExecutable:fixture,
+    enableSdkDebug:false,enableSpawnDebug:false,sessionIdForLogs:()=>session.sessionId});
+  const sdkQuery = query({prompt:"COMPAT-CITATIONS",options:{...host,executable:"node",persistSession:false}});
+  context.after(()=>sdkQuery.close());
+  const completed: SessionMessage[] = [];
+  let citationDeltaSeen = false;
+  try {
+    const events = await captureBridgeEventsAsync(async()=>{
+      for await (const message of sdkQuery) {
+        if (message.type === "stream_event" && message.event.type === "content_block_delta" && message.event.delta.type === "citations_delta") citationDeltaSeen = true;
+        if (message.type === "assistant") {
+          assert.deepEqual(message.message.content,[{type:"text",text:"Evidence: [source](https://example.test/source).",citations:[{
+            type:"web_search_result_location",url:"https://example.test/citation-only",title:"Metadata source",encrypted_index:"fixture-only",cited_text:"Evidence",
+          }]}]);
+          completed.push({...message,parent_agent_id:null});
+        }
+        handleSdkMessage(session,message);
+        if (message.type === "result") break;
+      }
+    });
+    assert.ok(citationDeltaSeen);
+    assert.equal(completed.length,1);
+    const live = events.flatMap(event=>{const update=event.update as import("./types.js").SessionUpdate|undefined;return update?.type === "agent_message_chunk" ? [update.content] : [];});
+    assert.deepEqual(live,[{type:"text",text:"Evidence: "},{type:"text",text:"[source](https://example.test/source)."}]);
+    assert.equal(events.filter(event=>event.event === "turn_complete").length,1);
+    const saved = await getSessionMessages("11111111-1111-4111-8111-111111111111",{dir:process.cwd(),sessionStore:{
+      load:async()=>[{type:"assistant",uuid:"22222222-2222-4222-8222-222222222222",parentUuid:null,
+        sessionId:"11111111-1111-4111-8111-111111111111",isSidechain:false,timestamp:"2026-10-18T12:00:00Z",message:completed[0].message}],
+      append:async()=>assert.fail("history reads must not write"),
+    }});
+    assert.equal(saved.length,1);
+    assert.deepEqual(saved[0].message,completed[0].message);
+    const replay = mapSessionMessagesToUpdates(saved).filter(update=>update.type === "agent_message_chunk");
+    assert.deepEqual(replay.map(update=>update.content),[{type:"text",text:"Evidence: [source](https://example.test/source)."}]);
+    // Completed-only replies also keep the same visible text without needing deltas.
+    const fallback = captureBridgeEvents(()=>handleSdkMessage(makeSessionState(),completed[0] as import("@anthropic-ai/claude-agent-sdk").SDKMessage));
+    assert.deepEqual(fallback.flatMap(event=>{const update=event.update as import("./types.js").SessionUpdate|undefined;return update?.type === "agent_message_chunk" ? [update.content] : [];}),replay.map(update=>update.content));
+  } finally {sdkQuery.close();}
 });
 
 test("mapSessionMessagesToUpdates maps message content blocks", () => {
@@ -9419,7 +9738,14 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
   const taskUpdates = updates.filter(
     (update) => update.type === "task_state_update",
   );
-  assert.equal(taskUpdates.length, 4);
+  // The three starts, then one update settling those with no saved outcome.
+  assert.equal(taskUpdates.length, 5);
+  const settled = taskUpdates.at(4);
+  assert.ok(settled?.type === "task_state_update");
+  assert.deepEqual(
+    settled.tasks.map((task) => [task.task_id, task.status, (task.metadata as Record<string, unknown>).terminal_status]),
+    [["task-bg", "completed", "interrupted"], ["task-remote", "completed", "interrupted"], ["task-mcp", "completed", "interrupted"]],
+  );
   assert.deepEqual(taskUpdates.at(1), {
     type: "task_state_update",
     source: "task_lifecycle",
@@ -9432,12 +9758,12 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
         blocks: [],
         blocked_by: [],
         metadata: {
-          sdk_lifecycle_task: true,
           // The saved start has no task_type; its Agent call makes it a subagent.
           task_type: "local_agent",
           subagent_type: "general-purpose",
           is_backgrounded: true,
           spawn_depth: 2,
+          sdk_lifecycle_task: true,
         },
         source_tool_call_id: "tool-agent",
       },
@@ -9457,10 +9783,10 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
         blocks: [],
         blocked_by: [],
         metadata: {
-          sdk_lifecycle_task: true,
           task_description: "Remote agent smoke",
           task_type: "remote_agent",
           prompt: "Continue remotely",
+          sdk_lifecycle_task: true,
         },
       },
     ],
@@ -9479,10 +9805,10 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
         blocks: [],
         blocked_by: [],
         metadata: {
-          sdk_lifecycle_task: true,
           task_type: "mcp",
           workflow_name: "docs",
           prompt: "Read resource",
+          sdk_lifecycle_task: true,
         },
       },
     ],
@@ -9572,9 +9898,8 @@ test("handleResultMessage emits terminal reason on successful turn completion", 
   });
 });
 
-test("handleResultMessage preserves new SDK terminal reasons", () => {
+test("handleResultMessage preserves non-API SDK terminal reasons", () => {
   const terminalReasons = [
-    "api_error",
     "malformed_tool_use_exhausted",
     "budget_exhausted",
     "structured_output_retry_exhausted",
@@ -9773,6 +10098,7 @@ test("commitDeferredSession publishes connect before all buffered session-scoped
       writeEvent({
         event: "runtime_reload_completed",
         session_id: session.sessionId,
+        error_count: 0,
       });
       sessions.delete(session.sessionId);
       session.sessionId = "session-committed";
@@ -10597,53 +10923,6 @@ test("buildQueryOptions adapts resolved checkpoint preferences and keeps host re
   }
 });
 
-test("buildQueryOptions layers host restrictions over the user's --settings", () => {
-  const build = (
-    settings: import("@anthropic-ai/claude-agent-sdk").Settings,
-    resolvedSettings: import("@anthropic-ai/claude-agent-sdk").Settings = {},
-  ) => buildQueryOptions({
-    cwd: "C:/work", launchSettings: {}, launchConfig: { settings }, resolvedSettings,
-    provisionalSessionId: "session-flags", input: new AsyncQueue(),
-    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
-    enableSdkDebug: false, enableSpawnDebug: false, sessionIdForLogs: () => "session-flags",
-  });
-
-  const restricted = build(
-    { spinnerTipsEnabled: false, feedbackDrafts: "notify", crossSessionInbound: "hold", fileCheckpointingEnabled: false },
-    { crossSessionInbound: "accept", fileCheckpointingEnabled: true },
-  );
-  assert.deepEqual(restricted.settings, {
-    spinnerTipsEnabled: false, feedbackDrafts: "off", crossSessionInbound: "refuse", fileCheckpointingEnabled: false,
-  });
-  assert.equal(restricted.enableFileCheckpointing, false);
-
-  const accepted = build({ crossSessionInbound: "accept" }, { crossSessionInbound: "hold" });
-  assert.deepEqual(accepted.settings, { crossSessionInbound: "accept", feedbackDrafts: "off" });
-
-  const saved = build({ spinnerTipsEnabled: true }, { crossSessionInbound: "refuse", fileCheckpointingEnabled: false });
-  assert.deepEqual(saved.settings, { spinnerTipsEnabled: true, feedbackDrafts: "off" });
-  assert.equal(saved.enableFileCheckpointing, false);
-});
-
-test("buildQueryOptions keeps the runtime guard with replaced and appended system prompts", () => {
-  const systemPrompt = (launchSettings: import("./types.js").SessionLaunchSettings) => buildQueryOptions({
-    cwd: "C:/work", launchSettings, resolvedSettings: {},
-    provisionalSessionId: "session-prompt", input: new AsyncQueue(),
-    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
-    enableSdkDebug: false, enableSpawnDebug: false, sessionIdForLogs: () => "session-prompt",
-  }).systemPrompt;
-
-  assert.deepEqual(systemPrompt({ append_system_prompt: "End with DONE." }), {
-    type: "preset", preset: "claude_code", append: `${BRIDGE_RUNTIME_GUARD_PROMPT}\n\nEnd with DONE.`, snapshot: true,
-  });
-  assert.deepEqual(systemPrompt({ system_prompt: "You are a release bot." }), {
-    type: "custom", prompt: ["You are a release bot.", BRIDGE_RUNTIME_GUARD_PROMPT], snapshot: true,
-  });
-  assert.deepEqual(systemPrompt({ system_prompt: "You are a release bot.", append_system_prompt: "End with DONE." }), {
-    type: "custom", prompt: ["You are a release bot.", `${BRIDGE_RUNTIME_GUARD_PROMPT}\n\nEnd with DONE.`], snapshot: true,
-  });
-});
-
 test("inherited model identity follows SDK initialization metadata", async () => {
   const session = makeSessionState();
   session.requestedModelId = undefined;
@@ -10814,4 +11093,196 @@ test("failed proactive tool execution remains failed output instead of a local a
   assert.equal(result.type, "tool_call_update");
   assert.equal(result.tool_call_update?.fields?.status, "failed");
   assert.equal(events.length, 2);
+});
+
+function elicitationHandlerForTest(): NonNullable<Options["onElicitation"]> {
+  const session = makeSessionState();
+  sessions.set(session.sessionId, session);
+  const options = buildQueryOptions({
+    resolvedSettings: {}, cwd: "C:/work", launchSettings: {}, provisionalSessionId: session.sessionId,
+    input: session.input, canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+    enableSdkDebug: false, enableSpawnDebug: false, sessionIdForLogs: () => session.sessionId,
+  });
+  assert.ok(options.onElicitation);
+  return options.onElicitation;
+}
+
+const formElicitation = { serverName: "forms", message: "Fill this form", mode: "form" as const,
+  requestedSchema: { type: "object", properties: { zulu: { type: "boolean" }, alpha: { type: "string" } } } };
+
+for (const action of ["accept", "decline", "cancel"] as const) {
+  test(`elicitation ${action} settles its callback once and preserves typed answers`, async () => {
+    try {
+      const handler = elicitationHandlerForTest();
+      const session = sessions.get("session-1");
+    assert.ok(session);
+      const abort = new AbortController();
+      const content = { zero: 0, no: false, blank: "", tags: ["wire-a"] };
+      const events = await captureBridgeEventsAsync(async () => {
+        const result = handler(formElicitation, { requestId: "request-a", signal: abort.signal });
+        assert.equal(session.pendingElicitations.size, 1);
+        const command = { command: "elicitation_response" as const, session_id: session.sessionId,
+          elicitation_request_id: "request-a", action, content };
+        handleElicitationResponse(command);
+        handleElicitationResponse(command);
+        abort.abort();
+        assert.deepEqual(await result, action === "accept" ? { action, content } : { action });
+        assert.equal(session.pendingElicitations.size, 0);
+      });
+      const requestEvent = events.find(e => e.event === "elicitation_request");
+      assert.ok(requestEvent);
+      assert.deepEqual((requestEvent.request as Record<string, unknown>).field_order, ["zulu", "alpha"]);
+      assert.deepEqual(events.filter(e => e.event === "elicitation_settled"), [{event: "elicitation_settled", session_id:"session-1", settlement:{request_id:"request-a",session_closing:false}}]);
+    } finally { sessions.clear(); }
+  });
+}
+
+test("elicitation accepts an empty form object without dropping it", async () => {
+  try {
+    const handler = elicitationHandlerForTest();
+    await captureBridgeEventsAsync(async () => {
+      const result = handler(formElicitation, { requestId:"empty",signal:new AbortController().signal });
+      handleElicitationResponse({command:"elicitation_response",session_id:"session-1",elicitation_request_id:"empty",action:"accept",content:{}});
+      assert.deepEqual(await result, { action:"accept",content:{} });
+    });
+  } finally { sessions.clear(); }
+});
+
+test("elicitation aborts active or queued callbacks independently and fences old sessions", async () => {
+  try {
+    const handler = elicitationHandlerForTest();
+    const session = sessions.get("session-1");
+    assert.ok(session);
+    const a = new AbortController(), b = new AbortController();
+    const events = await captureBridgeEventsAsync(async () => {
+      const first = handler(formElicitation,{requestId:"a",signal:a.signal});
+      const second = handler(formElicitation,{requestId:"b",signal:b.signal});
+      const duplicate = handler(formElicitation,{requestId:"a",signal:new AbortController().signal});
+      assert.deepEqual(await duplicate,{action:"cancel"});
+      b.abort();
+      assert.deepEqual(await second,{action:"cancel"});
+      handleElicitationResponse({command:"elicitation_response",session_id:"session-1",elicitation_request_id:"b",action:"accept",content:{late:true}});
+      assert.equal(session.pendingElicitations.has("a"),true);
+      session.sessionId = "replacement";
+      a.abort();
+      assert.deepEqual(await first,{action:"cancel"});
+    });
+    assert.deepEqual(events.filter(e=>e.event === "elicitation_settled").map(e=>[e.session_id,(e.settlement as {request_id:string}).request_id]),[["session-1","b"],["session-1","a"]]);
+  } finally { sessions.clear(); }
+});
+
+test("URL completion correlates server and elicitation ID without clearing unrelated forms", async () => {
+  try {
+    const handler = elicitationHandlerForTest();
+    const session = sessions.get("session-1");
+    assert.ok(session);
+    const abort = new AbortController();
+    const events = await captureBridgeEventsAsync(async () => {
+      const form = handler(formElicitation,{requestId:"form",signal:abort.signal});
+      const a = handler({serverName:"one",message:"URL one",mode:"url",url:"https://example.test",elicitationId:"same"},{requestId:"url-one",signal:abort.signal});
+      const b = handler({serverName:"two",message:"URL two",mode:"url",url:"https://example.test",elicitationId:"same"},{requestId:"url-two",signal:abort.signal});
+      handleSdkMessage(session,{type:"system",subtype:"elicitation_complete",elicitation_id:"same",mcp_server_name:"two"} as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+      assert.deepEqual(await b,{action:"accept"});
+      assert.deepEqual([...session.pendingElicitations.keys()],["form","url-one"]);
+      abort.abort();
+      assert.deepEqual(await form,{action:"cancel"});
+      assert.deepEqual(await a,{action:"cancel"});
+    });
+    assert.deepEqual(events.filter(e=>e.event === "elicitation_settled").map(e=>(e.settlement as {request_id:string}).request_id),["url-two","form","url-one"]);
+  } finally { sessions.clear(); }
+});
+
+test("session teardown settles all elicitation callbacks and already-aborted callbacks never publish", async () => {
+  try {
+    const handler = elicitationHandlerForTest();
+    const session = sessions.get("session-1");
+    assert.ok(session);
+    session.query = { close() {} } as import("@anthropic-ai/claude-agent-sdk").Query;
+    const abort = new AbortController(); abort.abort();
+    const events = await captureBridgeEventsAsync(async () => {
+      assert.deepEqual(await handler(formElicitation,{requestId:"gone",signal:abort.signal}),{action:"cancel"});
+      const a = handler(formElicitation,{requestId:"a",signal:new AbortController().signal});
+      const b = handler(formElicitation,{requestId:"b",signal:new AbortController().signal});
+      await closeSession(session);
+      assert.deepEqual(await a,{action:"cancel"});
+      assert.deepEqual(await b,{action:"cancel"});
+      assert.equal(session.pendingElicitations.size,0);
+    });
+    assert.equal(events.filter(e=>e.event === "elicitation_request").length,2);
+    assert.equal(events.filter(e=>e.event === "elicitation_settled").length,2);
+    assert.ok(events.filter(e=>e.event === "elicitation_settled").every(e=>(e.settlement as {session_closing:boolean}).session_closing));
+  } finally { sessions.clear(); }
+});
+
+test("pinned SDK 0.3.302 forwards public elicitation identities, schema order, responses and aborts", { timeout: 15000 }, async (context) => {
+  const { spawn } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  const fixture = fileURLToPath(new URL("../../tests/fixtures/sdk-elicitation-peer.cjs", import.meta.url));
+  const handler = elicitationHandlerForTest();
+  let child: ReturnType<typeof spawn> | undefined;
+  let sdkQuery: ReturnType<typeof query> | undefined;
+  let arrived = 0;
+  let readyResolve: () => void = () => {};
+  const ready = new Promise<void>(resolve => { readyResolve = resolve; });
+  let acceptedResolve: (value: Record<string, unknown>) => void = () => {};
+  const accepted = new Promise<Record<string, unknown>>(resolve => { acceptedResolve = resolve; });
+  const eventsDuringAbort: Array<Record<string, unknown>> = [];
+  context.after(() => { sdkQuery?.close(); child?.kill(); sessions.clear(); });
+  {
+    const events = await captureBridgeEventsAsync(async () => {
+      sdkQuery = query({ prompt: new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>(), options: {
+        onElicitation: (request, options) => {
+          const pending = handler(request, options);
+          if (++arrived === 2) readyResolve();
+          return pending;
+        },
+        spawnClaudeCodeProcess() {
+          child = spawn(process.execPath, [fixture], { stdio: ["pipe","pipe","pipe","ipc"], windowsHide:true });
+          child.on("message", message => {
+            const value = message as { response?: { request_id?:string } };
+            if (value.response?.request_id === "sdk-form-a") acceptedResolve(message as Record<string, unknown>);
+          });
+          return child as ReturnType<NonNullable<Options["spawnClaudeCodeProcess"]>>;
+        },
+      } });
+      await sdkQuery.supportedCommands();
+      await ready;
+      handleElicitationResponse({command:"elicitation_response",session_id:"session-1",elicitation_request_id:"sdk-form-a",action:"accept",content:{flag:false,count:0,tags:["a"],blank:""}});
+      const result = await accepted;
+      assert.deepEqual((result.response as { response:unknown }).response,{ action:"accept",content:{flag:false,count:0,tags:["a"],blank:""} });
+      assert.ok(child);
+      // SDK abort dispatch is asynchronous. Observe the correlated bridge event, not a delay.
+      let aborted: () => void = () => {};
+      const waitForAbort = new Promise<void>(resolve => { aborted = resolve; });
+      const restore = replaceProtocolEventWriter(line => {
+        const event = JSON.parse(line) as import("./types.js").BridgeEvent;
+        eventsDuringAbort.push(event as unknown as Record<string, unknown>);
+        if (event.event === "elicitation_settled" && event.settlement.request_id === "sdk-form-b") aborted();
+      });
+      try { child.send({cancel:"sdk-form-b"}); await waitForAbort; } finally { restore(); }
+    });
+    const requests = events.filter(event => event.event === "elicitation_request");
+    assert.deepEqual(requests.map(event=>(event.request as { request_id:string }).request_id),["sdk-form-a","sdk-form-b"]);
+    assert.deepEqual((requests[0].request as { field_order:string[] }).field_order,["zulu","alpha"]);
+    assert.equal(eventsDuringAbort.filter(event=>event.event === "elicitation_settled").length,1);
+  }
+});
+
+test("elicitation answer values never enter detailed bridge diagnostics", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const lifecycle = new URL("./bridge/session_lifecycle.js", import.meta.url).href;
+  const logger = new URL("./bridge/logger.js", import.meta.url).href;
+  const script = `
+    const { sessions, handleElicitationResponse } = await import(${JSON.stringify(lifecycle)});
+    const { logBridgeCommandReceived } = await import(${JSON.stringify(logger)});
+    const command = { command:"elicitation_response",session_id:"private-session",elicitation_request_id:"private-request",action:"accept",content:{password:"DO-NOT-LOG-THIS-ANSWER",private_array:["DO-NOT-LOG-THIS-CHOICE"]} };
+    sessions.set("private-session",{pendingElicitations:new Map([["private-request",{serverName:"test",resolve(){}}]])});
+    logBridgeCommandReceived(command);
+    handleElicitationResponse(command);
+  `;
+  const result = spawnSync(process.execPath,["--input-type=module","-e",script],{env:{...process.env,CLAUDE_RS_BRIDGE_DIAGNOSTICS:"1"},encoding:"utf8"});
+  assert.equal(result.status,0,result.stderr);
+  assert.ok(result.stderr.includes("elicitation_response_applied"));
+  assert.ok(!result.stderr.includes("DO-NOT-LOG-THIS"));
+  assert.ok(!result.stderr.includes("password"));
 });

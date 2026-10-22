@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::agent::model::{TaskItem, TaskStatus};
-use crate::app::agents::{SubagentStatus, is_subagent_task, subagent_status};
-use crate::app::{App, MessageBlock, ToolCallInfo};
+use crate::app::agents::{SubagentStatus, launching_call, recent_child_tools, subagent_rows};
+use crate::app::{App, ToolCallInfo};
 use crate::ui::theme;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -16,10 +16,8 @@ pub(crate) struct AgentRow<'a> {
     pub name: &'a str,
     pub model: &'a str,
     pub model_requested: bool,
-    pub requested_model: Option<&'a str>,
-    pub definition_model: Option<&'a str>,
-    pub raw_input: Option<&'a serde_json::Value>,
-    pub parent_id: Option<&'a str>,
+    /// The launching Agent call asked for an isolated worktree.
+    pub isolated_worktree: bool,
     pub now: Cow<'a, str>,
     pub tools: Option<u64>,
     pub tokens: Option<u64>,
@@ -27,21 +25,17 @@ pub(crate) struct AgentRow<'a> {
     pub accent: Color,
 }
 
-pub(crate) fn linked_agent_tool<'a>(app: &'a App, task: &TaskItem) -> Option<&'a ToolCallInfo> {
-    let (mi, bi) = app.lookup_tool_call(task.source_tool_call_id.as_deref()?)?;
-    match app.transcript.messages.get(mi)?.blocks.get(bi)? {
-        MessageBlock::ToolCall(tool) => Some(tool),
-        _ => None,
-    }
-}
-
 fn text<'a>(value: Option<&'a serde_json::Value>, key: &str) -> Option<&'a str> {
     value?.get(key)?.as_str().filter(|s| !s.is_empty())
 }
 
-pub(crate) fn agent_row<'a>(app: &'a App, task: &'a TaskItem) -> AgentRow<'a> {
+pub(crate) fn agent_row<'a>(
+    app: &'a App,
+    task: &'a TaskItem,
+    status: SubagentStatus,
+) -> AgentRow<'a> {
     let metadata = task.metadata.as_ref();
-    let raw_input = linked_agent_tool(app, task).and_then(|tool| tool.raw_input.as_ref());
+    let raw_input = launching_call(app, task).and_then(|tool| tool.raw_input.as_ref());
     let agent_type = text(raw_input, "subagent_type").or_else(|| text(metadata, "subagent_type"));
     let name = text(raw_input, "name").or(agent_type).unwrap_or("agent");
     let requested_model = text(raw_input, "model");
@@ -50,18 +44,18 @@ pub(crate) fn agent_row<'a>(app: &'a App, task: &'a TaskItem) -> AgentRow<'a> {
         .and_then(|agent| agent.model.as_deref());
     let resolved_model = text(metadata, "model_display");
     let model = resolved_model.or(requested_model).or(definition_model).unwrap_or("");
-    let parent_id = task.source_tool_call_id.as_deref();
-    let status = subagent_status(app, task);
-    let now = parent_id
-        .and_then(|id| app.recent_child_tools(id).next())
-        .map(tool_activity)
+    let now = recent_child_tools(app, task)
+        .first()
+        .map(|tool| tool_activity(tool))
         .or_else(|| text(metadata, "summary").map(Cow::Borrowed))
         .or_else(|| text(metadata, "last_tool_name").map(Cow::Borrowed))
         .unwrap_or_else(|| match status {
             SubagentStatus::Failed => text(metadata, "error")
                 .or_else(|| text(metadata, "terminal_reason"))
                 .map_or(Cow::Borrowed("failed"), |reason| Cow::Owned(format!("failed: {reason}"))),
-            SubagentStatus::Completed | SubagentStatus::Stopped => Cow::Borrowed(status.label()),
+            SubagentStatus::Completed | SubagentStatus::Stopped | SubagentStatus::Interrupted => {
+                Cow::Borrowed(status.label())
+            }
             SubagentStatus::Pending | SubagentStatus::Running | SubagentStatus::Stopping => {
                 Cow::Borrowed("")
             }
@@ -81,15 +75,18 @@ pub(crate) fn agent_row<'a>(app: &'a App, task: &'a TaskItem) -> AgentRow<'a> {
             duration.saturating_add(extra)
         })
         .or_else(|| {
-            observation.map(|o| {
-                u64::try_from(
-                    o.finished_at
-                        .unwrap_or_else(std::time::Instant::now)
-                        .saturating_duration_since(o.started_at)
-                        .as_millis(),
-                )
-                .unwrap_or(u64::MAX)
-            })
+            // A row first seen already finished (a resumed session) has no observed clock.
+            observation
+                .filter(|o| o.finished_at.is_none_or(|finished| finished > o.started_at))
+                .map(|o| {
+                    u64::try_from(
+                        o.finished_at
+                            .unwrap_or_else(std::time::Instant::now)
+                            .saturating_duration_since(o.started_at)
+                            .as_millis(),
+                    )
+                    .unwrap_or(u64::MAX)
+                })
         });
     AgentRow {
         task,
@@ -97,10 +94,7 @@ pub(crate) fn agent_row<'a>(app: &'a App, task: &'a TaskItem) -> AgentRow<'a> {
         name,
         model,
         model_requested: resolved_model.is_none() && requested_model.is_some(),
-        requested_model,
-        definition_model,
-        raw_input,
-        parent_id,
+        isolated_worktree: text(raw_input, "isolation") == Some("worktree"),
         now,
         tools: usage.and_then(|u| u.get("tool_uses")).and_then(serde_json::Value::as_u64),
         tokens: usage.and_then(|u| u.get("total_tokens")).and_then(serde_json::Value::as_u64),
@@ -124,23 +118,9 @@ pub(crate) fn tool_activity(tool: &ToolCallInfo) -> Cow<'_, str> {
     }
 }
 
+/// The session's subagents in lifecycle order, as the footer shelf and the Ctrl+T list show them.
 pub(crate) fn session_agent_rows(app: &App) -> Vec<AgentRow<'_>> {
-    let mut tasks: Vec<_> =
-        app.sdk_inventory.tasks.iter().filter(|t| is_subagent_task(t)).collect();
-    tasks.sort_by(|a, b| {
-        let running_a = a.status == TaskStatus::InProgress;
-        let running_b = b.status == TaskStatus::InProgress;
-        running_b.cmp(&running_a).then_with(|| {
-            let a = app.sdk_inventory.task_observations.get(&a.task_id);
-            let b = app.sdk_inventory.task_observations.get(&b.task_id);
-            if running_a {
-                a.map(|o| o.started_at).cmp(&b.map(|o| o.started_at))
-            } else {
-                b.and_then(|o| o.finished_at).cmp(&a.and_then(|o| o.finished_at))
-            }
-        })
-    });
-    tasks.into_iter().map(|t| agent_row(app, t)).collect()
+    subagent_rows(app).into_iter().map(|row| agent_row(app, row.task, row.status)).collect()
 }
 
 pub(crate) struct AgentColumns {
@@ -162,8 +142,23 @@ pub(crate) fn status_glyph(row: &AgentRow<'_>) -> (&'static str, Color) {
         SubagentStatus::Stopping => ("●", theme::warning()),
         SubagentStatus::Completed => ("✓", theme::success()),
         SubagentStatus::Failed => ("✗", theme::danger()),
-        SubagentStatus::Pending | SubagentStatus::Stopped => ("○", theme::tertiary()),
+        SubagentStatus::Pending | SubagentStatus::Stopped | SubagentStatus::Interrupted => {
+            ("○", theme::tertiary())
+        }
     }
+}
+
+/// `12 tools · 34k tokens · 1m02s` for the `/agents` details; `None` without any figure.
+pub(crate) fn usage_text(row: &AgentRow<'_>) -> Option<String> {
+    let parts: Vec<String> = [
+        row.tools.map(|tools| format!("{tools} tools")),
+        row.tokens.map(|tokens| format!("{} tokens", token_text(tokens))),
+        row.elapsed_ms.map(|ms| elapsed_text(Some(ms))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    (!parts.is_empty()).then(|| parts.join(" \u{b7} "))
 }
 
 pub(crate) fn elapsed_text(ms: Option<u64>) -> String {
@@ -334,13 +329,13 @@ mod tests {
         app.sdk_inventory
             .available_agents
             .push(model::AvailableAgent::new("Explore", "map").model("haiku"));
-        let row = agent_row(&app, &task);
+        let row = agent_row(&app, &task, SubagentStatus::Running);
         assert_eq!(row.model, "sonnet");
         assert!(row.model_requested);
         assert_eq!(row.name, "mapper");
         task.metadata.as_mut().expect("metadata")["model_display"] =
             serde_json::json!("Sonnet 5.5");
-        let row = agent_row(&app, &task);
+        let row = agent_row(&app, &task, SubagentStatus::Running);
         assert_eq!(row.model, "Sonnet 5.5");
         assert!(!row.model_requested);
         for index in 0..10 {
@@ -352,14 +347,14 @@ mod tests {
                 Some("root"),
             );
         }
-        assert_eq!(app.recent_child_tools("root").count(), 8);
-        assert_eq!(agent_row(&app, &task).now, "Read file-9.rs");
+        assert_eq!(recent_child_tools(&app, &task).len(), 6);
+        assert_eq!(agent_row(&app, &task, SubagentStatus::Running).now, "Read file-9.rs");
         let (mi, bi) = app.lookup_tool_call("child-8").expect("child");
         app.clear_tool_call_index();
         app.index_tool_call("child-8".into(), mi, bi);
-        assert_eq!(agent_row(&app, &task).now, "Read file-8.rs");
-        app.clear_tool_scope_tracking();
-        assert_eq!(agent_row(&app, &task).now, "Reading source");
+        assert_eq!(agent_row(&app, &task, SubagentStatus::Running).now, "Read file-8.rs");
+        app.clear_tool_call_index();
+        assert_eq!(agent_row(&app, &task, SubagentStatus::Running).now, "Reading source");
         task.metadata
             .as_mut()
             .expect("metadata")
@@ -367,6 +362,6 @@ mod tests {
             .expect("object")
             .remove("model_display");
         task.source_tool_call_id = None;
-        assert_eq!(agent_row(&app, &task).model, "");
+        assert_eq!(agent_row(&app, &task, SubagentStatus::Running).model, "");
     }
 }

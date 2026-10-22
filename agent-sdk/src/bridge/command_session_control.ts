@@ -1,6 +1,6 @@
 import { rememberColorPrompt } from "./session_color.js";
 import type { Query, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { BridgeCommand, EffortLevel, FastModeSnapshot } from "../types.js";
+import type { BridgeCommand, EffortLevel, FastModeSnapshot, ReloadOutcome } from "../types.js";
 import {
   buildModeState,
   markModeUnavailableForSession,
@@ -19,11 +19,20 @@ import { refreshSessionEffort } from "./effort.js";
 import { refreshSessionModel } from "./session_model.js";
 import { readQuerySettings } from "./query_settings.js";
 import { asRecordOrNull } from "./shared.js";
+import type { QueueDeadline } from "./command_scheduler.js";
 import { FastModeVerificationError } from "./session_preferences.js";
 import { SessionObservations } from "./session_observations.js";
 
 const thinkingObservations = new SessionObservations();
-const RELOAD_CONTROL_TIMEOUT_MS = 10_000;
+// Each SDK reload request is given this long. Without a bound a request the SDK never answers
+// would keep the composer blocked for the rest of the session. Seen in the fork on 2026-10-13 on
+// a freshly started session (the SDK applied the reload and never acknowledged it); not seen since.
+const RELOAD_REQUEST_TIMEOUT_MS = 10_000;
+// How long /reload may wait behind earlier requests for its session, from when the bridge receives
+// it. Rust blocks input as soon as /reload is submitted, so an earlier request that never finishes
+// (a background context-usage refresh, say) would otherwise keep input blocked. Any earlier request
+// that takes longer than this, stalled or merely slow (an MCP reconnect can), makes the reload skip.
+const RELOAD_QUEUE_TIMEOUT_MS = 10_000;
 import {
   applyUltracode,
   emitUltracodeUpdate,
@@ -81,6 +90,7 @@ export type SessionControlCommandDeps = {
     session: SessionState,
     requestId?: string,
     force?: boolean,
+    addPlugins?: string[],
   ) => Promise<void>;
 };
 
@@ -541,12 +551,17 @@ async function reloadPlugins(
 ): Promise<void> {
   const session = requireSession(command.session_id, requestId);
   if (session) {
-    await deps.handleReloadPluginsCommand(session, requestId, command.force);
+    await deps.handleReloadPluginsCommand(session, requestId, command.force, command.add_plugins);
   }
 }
 
-// The SDK also announces a changed command list (`commands_changed`), which the
-// existing inventory path applies; this command only reports what was reloaded.
+// The SDK pushes `commands_changed` after a skills reload, which the existing inventory path
+// applies; this command only reports how each half ended.
+//
+// Output styles go first: the SDK documents that reloadOutputStyles() also drops the shared
+// markdown-file scan cache, so skills read afterwards are re-scanned. Each half is settled on its
+// own, so one that fails or never answers does not hide what the other did, and exactly one
+// event answers the command.
 async function reloadSkillsAndStyles(
   command: Extract<SessionControlCommand, { command: "reload_skills_and_styles" }>,
   requestId: string | undefined,
@@ -555,92 +570,106 @@ async function reloadSkillsAndStyles(
   if (!session) {
     return;
   }
+  const outputStyles = await settleReload(
+    "output_styles",
+    () => session.query.reloadOutputStyles(),
+    (result) => result.available_output_styles,
+    session.sessionId,
+    requestId,
+  );
+  const skills = await settleReload(
+    "skills",
+    () => session.query.reloadSkills(),
+    (result) => result.skills.map((skill) => skill.name),
+    session.sessionId,
+    requestId,
+  );
+  writeEvent(
+    {
+      event: "skills_and_styles_reloaded",
+      session_id: session.sessionId,
+      skills,
+      output_styles: outputStyles,
+    },
+    requestId,
+  );
+}
+
+/** The queue deadline the scheduler applies to a command, if it has one. */
+export function commandQueueDeadline(
+  command: BridgeCommand,
+  requestId: string | undefined,
+): QueueDeadline | undefined {
+  if (command.command !== "reload_skills_and_styles") {
+    return undefined;
+  }
+  const sessionId = command.session_id;
+  return {
+    ms: RELOAD_QUEUE_TIMEOUT_MS,
+    // The scheduler skips the reload once this has answered, so nothing reloads after the notice.
+    onExpired: () => {
+      logReloadOutcome(
+        "skills and output styles",
+        "timeout",
+        "did not start: an earlier request for the session is still running",
+        sessionId,
+        requestId,
+      );
+      writeEvent(
+        {
+          event: "skills_and_styles_reload_expired",
+          session_id: sessionId,
+          after_ms: RELOAD_QUEUE_TIMEOUT_MS,
+        },
+        requestId,
+      );
+    },
+  };
+}
+
+async function settleReload<T>(
+  what: "skills" | "output_styles",
+  start: () => Promise<T>,
+  names: (result: T) => string[],
+  sessionId: string,
+  requestId: string | undefined,
+): Promise<ReloadOutcome> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<"timed_out">((resolve) => {
+    timer = setTimeout(() => resolve("timed_out"), RELOAD_REQUEST_TIMEOUT_MS);
+  });
   try {
-    // The SDK control plane may leave a request pending while it still applies
-    // its side effects. Measured 2026-10-13: a fresh session reloaded skills
-    // but never acknowledged the request, leaving the composer disabled.
-    const skillsRequest = boundedReloadControl(
-      "skills",
-      session.sessionId,
-      session.query.reloadSkills(),
-    );
-    const stylesRequest = boundedReloadControl(
-      "output_styles",
-      session.sessionId,
-      session.query.reloadOutputStyles(),
-    );
-    const [skillsResult, stylesResult] = await Promise.all([
-      skillsRequest,
-      stylesRequest,
-    ]);
-    const { skills } = skillsResult;
-    const { available_output_styles: outputStyles } = stylesResult;
-    writeEvent(
-      {
-        event: "skills_and_styles_reloaded",
-        session_id: session.sessionId,
-        skills: skills.map((skill) => skill.name),
-        output_styles: outputStyles,
-      },
-      requestId,
-    );
+    const result = await Promise.race([start(), timedOut]);
+    if (result === "timed_out") {
+      logReloadOutcome(what, "timeout", "did not answer", sessionId, requestId);
+      return { status: "timed_out", after_ms: RELOAD_REQUEST_TIMEOUT_MS };
+    }
+    return { status: "reloaded", names: names(result) };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    bridgeLogger.warn({
-      target: LOG_TARGETS.APP_SESSION,
-      eventName: "reload_skills_and_styles_failed",
-      message: "failed to reload skills and output styles",
-      outcome: "failure",
-      ...(requestId ? { requestId } : {}),
-      sessionId: session.sessionId,
-      fields: { error_message: message },
-    });
-    slashError(
-      command.session_id,
-      `failed to reload skills and output styles: ${message}`,
-      requestId,
-    );
+    logReloadOutcome(what, "failure", message, sessionId, requestId);
+    return { status: "failed", message };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
-async function boundedReloadControl<T>(
-  phase: "skills" | "output_styles",
+function logReloadOutcome(
+  what: string,
+  outcome: "failure" | "timeout",
+  detail: string,
   sessionId: string,
-  request: Promise<T>,
-): Promise<T> {
-  bridgeLogger.debug({
+  requestId: string | undefined,
+): void {
+  bridgeLogger.warn({
     target: LOG_TARGETS.APP_SESSION,
-    eventName: "reload_skills_and_styles_control_started",
-    message: "reload skills and styles SDK control started",
-    outcome: "start",
+    eventName: "reload_skills_and_styles_incomplete",
+    message: `reload of ${what} did not complete`,
+    outcome,
+    ...(requestId ? { requestId } : {}),
     sessionId,
-    fields: { phase },
+    fields: { what, detail },
   });
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const result = await Promise.race([
-      request,
-      new Promise<T>((_, reject) => {
-        timeout = setTimeout(
-          () => reject(new Error(`reload ${phase.replace("_", " ")} request timed out.`)),
-          RELOAD_CONTROL_TIMEOUT_MS,
-        );
-      }),
-    ]);
-    bridgeLogger.debug({
-      target: LOG_TARGETS.APP_SESSION,
-      eventName: "reload_skills_and_styles_control_completed",
-      message: "reload skills and styles SDK control completed",
-      outcome: "success",
-      sessionId,
-      fields: { phase },
-    });
-    return result;
-  } finally {
-    if (timeout !== undefined) {
-      clearTimeout(timeout);
-    }
-  }
 }
 
 function requireSession(

@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 mod chat_session;
 mod chat_terminal;
@@ -77,6 +76,19 @@ impl BootstrapSeedMode {
 }
 
 impl TerminalRuntime {
+    pub(crate) fn has_pending_surface_work(&self, app: &App) -> bool {
+        app.surface_dirty.active_surface_needs_draw(app.terminal_lifecycle)
+            || (matches!(
+                app.terminal_lifecycle,
+                TerminalLifecycleState::Running(SurfaceMode::Chat)
+            ) && matches!(&self.session, Some(SurfaceTerminalSession::Chat(session)) if session.has_pending_work()))
+    }
+
+    pub(crate) fn chat_layout_ready(&self, app: &App) -> bool {
+        matches!(app.terminal_lifecycle, TerminalLifecycleState::Running(SurfaceMode::Chat))
+            && matches!(&self.session, Some(SurfaceTerminalSession::Chat(session)) if session.layout_ready())
+    }
+
     pub(crate) fn bootstrap(app: &mut App) -> anyhow::Result<Self> {
         Self::bootstrap_inner(app, BootstrapSeedMode::MeasureBeforeInputReader)
     }
@@ -252,9 +264,9 @@ impl TerminalRuntime {
         }
     }
 
-    pub(crate) fn draw_active_surface(&mut self, app: &mut App) -> anyhow::Result<()> {
+    pub(crate) fn update_active_surface(&mut self, app: &mut App) -> anyhow::Result<()> {
         match self.session_mut()? {
-            SurfaceTerminalSession::Chat(session) => session.draw(app),
+            SurfaceTerminalSession::Chat(session) => session.update(app),
             SurfaceTerminalSession::Fullscreen(session) => session.draw(app),
         }
     }
@@ -276,15 +288,31 @@ impl TerminalRuntime {
             app.terminal_lifecycle = TerminalLifecycleState::Restoring;
         }
 
-        let _session = self.session.take();
-        let _suspended_chat_session = self.suspended_chat_session.take();
+        let session = self.session.take();
+        let suspended_chat_session = self.suspended_chat_session.take();
         let _cached_chat_seed = self.cached_chat_seed.take();
+        let chat_session = match &session {
+            Some(SurfaceTerminalSession::Chat(chat_session)) => Some(chat_session),
+            _ => suspended_chat_session.as_ref(),
+        };
         restore_once(self.restored.as_ref(), || {
             if let Err(err) = restore_terminal_modes(self.alternate_screen_active.as_ref()) {
                 tracing::warn!(
                     target: crate::logging::targets::APP_LIFECYCLE,
                     event_name = "terminal_restore_failed",
                     message = "failed to restore terminal state",
+                    outcome = "failure",
+                    error_message = %err,
+                );
+            }
+            // Output printed after exit, such as the resume hint, starts below the chat viewport.
+            if let Some(chat_session) = chat_session
+                && let Err(err) = chat_session.park_cursor_at_viewport_end()
+            {
+                tracing::warn!(
+                    target: crate::logging::targets::APP_LIFECYCLE,
+                    event_name = "terminal_cursor_park_failed",
+                    message = "failed to move cursor below chat viewport",
                     outcome = "failure",
                     error_message = %err,
                 );

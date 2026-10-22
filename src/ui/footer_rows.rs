@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use crate::agent::model;
 use crate::app::agents::SubagentStatus;
-use crate::app::footer::{FooterFieldId, FooterLayout, FooterSide, SETTING_ID};
+use crate::app::footer::{FooterFieldId, FooterLayout, FooterSide};
 use crate::app::{App, MessageBlock, MessageRole};
 use crate::ui::theme;
 use ratatui::buffer::Buffer;
@@ -31,7 +30,7 @@ pub(crate) struct SerializedFooterRows {
 }
 
 pub(crate) fn serialize_footer_rows(app: &App, total_width: u16) -> SerializedFooterRows {
-    let layout = FooterLayout::from_saved(app.config.saved_value(SETTING_ID)).unwrap_or_default();
+    let layout = app.config.footer.layout();
     let mut rows = Vec::new();
     if let Some(plan) = build_plan_line(app, total_width) {
         rows.push(plan);
@@ -110,7 +109,7 @@ fn build_agent_shelf(app: &App, width: u16) -> Vec<Line<'static>> {
     rows
 }
 
-/// The dialog preview and chat use exactly the same formatter and width policy.
+/// Format the configured fields and notices within the chat footer's single row.
 pub(crate) fn serialize_footer(app: &App, layout: &FooterLayout, width: u16) -> Line<'static> {
     let width = usize::from(width);
     let notice = footer_notice(app)
@@ -125,7 +124,7 @@ pub(crate) fn serialize_footer(app: &App, layout: &FooterLayout, width: u16) -> 
                 id: field.id,
                 side: field.side,
                 text,
-                color,
+                color: field.color.map_or(color, crate::app::footer::FooterColor::color),
             })
         })
         .collect();
@@ -230,6 +229,10 @@ fn format_field(app: &App, id: FooterFieldId) -> FooterItem {
         FooterFieldId::FastMode => {
             let (text, color) = fast_mode_badge(app.session_runtime.fast_mode_state);
             Some((format!("[{text}]"), color))
+        }
+        FooterFieldId::RunningSubagents => {
+            let running = crate::app::agents::running_subagent_count(app);
+            (running > 0).then(|| (format!("[AGENTS:{running}]"), theme::warning()))
         }
         FooterFieldId::Directory => Some((format!("Loc: {}", app.cwd), gray)),
         FooterFieldId::GitBranch => app
@@ -491,7 +494,7 @@ fn fast_mode_badge(state: model::FastModeState) -> (&'static str, Color) {
 }
 
 fn startup_status_badge(app: &App) -> Option<(&'static str, Color)> {
-    match app.status {
+    match app.displayed_status() {
         crate::app::AppStatus::Connecting => None,
         crate::app::AppStatus::Ready => Some(("READY", theme::tertiary())),
         crate::app::AppStatus::CommandPending
@@ -664,7 +667,7 @@ mod tests {
     use super::*;
     use crate::agent::model::{McpServerConnectionStatus, McpServerStatus};
     use crate::app::{
-        AppStatus, BlockCache, ChatMessage, InlinePermission, MessageBlock, MessageRole, ModeState,
+        App, AppStatus, ChatMessage, InlinePermission, MessageBlock, MessageRole, ModeState,
         ToolCallInfo,
     };
     use tokio::sync::oneshot;
@@ -716,6 +719,37 @@ mod tests {
 
         assert!(text.contains("[default]"));
         assert!(text.contains("[FAST:OFF]"));
+    }
+
+    #[test]
+    fn footer_counts_running_subagents_and_hides_the_count_at_zero() {
+        let subagent = |id: &str, status, terminal: Option<&str>| {
+            let mut task = model::TaskItem::new(id, id, status);
+            task.metadata = Some(
+                serde_json::json!({ "task_type": "local_agent", "terminal_status": terminal }),
+            );
+            task
+        };
+        let mut shell = model::TaskItem::new("shell", "shell", model::TaskStatus::InProgress);
+        shell.metadata = Some(serde_json::json!({ "task_type": "local_bash" }));
+        let mut app = app_with_mode();
+        app.sdk_inventory.tasks = vec![
+            subagent("agent-1", model::TaskStatus::InProgress, None),
+            subagent("agent-2", model::TaskStatus::InProgress, None),
+            subagent("agent-3", model::TaskStatus::Completed, Some("completed")),
+            shell,
+        ];
+        // The configured row; the fork's agent shelf sits above it while subagents run.
+        let status_row =
+            |app: &App| line_text(&serialize_footer(app, &app.config.footer.layout(), 80));
+        let text = status_row(&app);
+        assert!(text.contains("[FAST:OFF] · [AGENTS:2]"), "{text}");
+
+        for task in &mut app.sdk_inventory.tasks {
+            task.status = model::TaskStatus::Completed;
+        }
+        let text = status_row(&app);
+        assert!(!text.contains("AGENTS"), "{text}");
     }
 
     #[test]
@@ -817,23 +851,8 @@ mod tests {
         app.transcript.messages.push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
-                id: "perm-1".into(),
-                source_message_uuids: Vec::new(),
                 title: "Read".into(),
-                sdk_tool_name: "Read".into(),
-                raw_input: None,
-                raw_input_bytes: 0,
-                locations: Vec::new(),
-                output_metadata: None,
-                task_metadata: None,
-                status: model::ToolCallStatus::Pending,
                 content: vec![],
-                hidden: false,
-                terminal_id: None,
-                terminal_command: None,
-                terminal_output: None,
-                terminal_output_len: 0,
-                cache: BlockCache::default(),
                 pending_permission: Some(InlinePermission {
                     options: vec![],
                     display: None,
@@ -842,8 +861,11 @@ mod tests {
                     selected_index: 0,
                     focused: true,
                 }),
-                pending_question: None,
-                history: crate::app::ToolCallHistory::Live,
+                ..crate::app::test_support::named_tool_call_info(
+                    "perm-1",
+                    "Read",
+                    model::ToolCallStatus::Pending,
+                )
             }))],
             None,
         ));
@@ -853,10 +875,10 @@ mod tests {
         let serialized = serialize_footer_rows(&app, 80);
         let text = line_text(&serialized.rows[0]);
         assert!(text.ends_with("1 PEND. PERM."));
-        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
-            SETTING_ID,
-            serde_json::json!([]),
-        ));
+        let directory = tempfile::tempdir().expect("preferences");
+        let path = directory.path().join("settings.json");
+        std::fs::write(&path, r#"{"presentation":{"footer":[]}}"#).expect("save layout");
+        app.config.load_footer(Some(&path));
         let text = line_text(&serialize_footer_rows(&app, 80).rows[0]);
         assert!(text.ends_with("1 PEND. PERM."));
         assert!(!text.contains("FAST:"));
@@ -1194,5 +1216,34 @@ mod tests {
         let row = serialize_footer_rows(&app, 200).rows.remove(0);
         let context = row.spans.iter().find(|span| span.content == "Context: 8%");
         assert_eq!(context.and_then(|span| span.style.fg), Some(theme::danger()));
+    }
+
+    #[test]
+    fn each_informational_field_renders_its_own_color_instead_of_a_global_override() {
+        let mut app = app_with_mode();
+        app.cwd = "~/work".into();
+        app.set_git_branch_for_test(Some("feature/footer"));
+        app.session_runtime.session_usage.context_usage_percent = Some(42);
+        let layout = FooterLayout::from_saved(Some(&serde_json::json!([
+            {"id":"model","visible":true,"side":"left","color":"cyan"},
+            {"id":"directory","visible":true,"side":"left","color":"orange"},
+            {"id":"gitBranch","visible":true,"side":"right","color":"pink"},
+            {"id":"contextRemaining","visible":true,"side":"right","color":"green"}
+        ])))
+        .expect("layout");
+        let line = serialize_footer(&app, &layout, 160);
+        for (text, color) in [
+            ("test-model", Color::Rgb(34, 211, 238)),
+            ("Loc: ~/work", Color::Rgb(251, 146, 60)),
+            ("Branch: feature/footer", Color::Rgb(244, 114, 182)),
+            ("Context: 58%", Color::Rgb(74, 222, 128)),
+        ] {
+            let span = line
+                .spans
+                .iter()
+                .find(|span| span.content.contains(text))
+                .expect("associated field");
+            assert_eq!(span.style.fg, Some(color), "{text}");
+        }
     }
 }

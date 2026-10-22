@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -7,6 +6,12 @@ use std::path::PathBuf;
 use super::content::{Content, ContentBlock, TextContent};
 use super::mcp::{McpResource, McpResourceLink};
 use super::tasks::TaskMetadata;
+
+#[must_use]
+pub fn is_agent_tool_name(name: &str) -> bool {
+    matches!(name, "Task" | "Agent")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolKind {
@@ -99,27 +104,10 @@ impl Diff {
     }
 }
 
-/// A text file's own lines (no line-number prefixes) as a Read returned them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FileText {
-    pub path: PathBuf,
-    /// 1-based number of the first line in `text`.
-    pub start_line: u32,
-    pub text: String,
-}
-
-impl FileText {
-    #[must_use]
-    pub fn new(path: impl Into<PathBuf>, start_line: u32, text: impl Into<String>) -> Self {
-        Self { path: path.into(), start_line, text: text.into() }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolCallContent {
     Content(Content),
     Diff(Diff),
-    FileText(FileText),
     McpResource(McpResource),
     ResourceLink(McpResourceLink),
     Terminal(TerminalToolCallContent),
@@ -134,7 +122,6 @@ impl ToolCallContent {
                 ContentBlock::Text(text) => Some(text.text.as_str()),
                 ContentBlock::Image(_) => None,
             },
-            Self::FileText(file) => Some(file.text.as_str()),
             Self::Diff(_) | Self::McpResource(_) | Self::ResourceLink(_) | Self::Terminal(_) => {
                 None
             }
@@ -400,7 +387,9 @@ impl BashOutputMetadata {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolOutputMetadata {
+    pub presentation: Option<Box<ToolResultPresentation>>,
     pub timing: Option<ToolTiming>,
+    #[serde(default)]
     pub staged: bool,
     #[serde(default)]
     pub structured_content_omitted: bool,
@@ -408,7 +397,35 @@ pub struct ToolOutputMetadata {
     pub agent: Option<AgentOutputMetadata>,
     pub web_fetch: Option<WebFetchOutputMetadata>,
     pub skill: Option<SkillOutputMetadata>,
+    /// Set when the text content is the file source of a Read, without line numbers.
+    pub read: Option<ReadOutputMetadata>,
     pub non_execution: Option<ToolNonExecutionMetadata>,
+}
+
+/// Normalized SDK result sections. Each timestamp belongs to its section, never to a chat receive time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolResultPresentation {
+    pub sections: Vec<ToolResultSection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolResultSection {
+    pub fields: Vec<ToolResultField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolResultField {
+    pub label: String,
+    pub value: ToolResultValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+pub enum ToolResultValue {
+    Text(String),
+    Timestamp(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -447,12 +464,25 @@ pub struct SkillOutputMetadata {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadOutputMetadata {
+    pub file_path: PathBuf,
+    /// One-based file line number of the first content line.
+    pub start_line: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolNonExecutionMetadata {
     pub kind: String,
     pub user_feedback: Option<String>,
 }
 
 impl ToolOutputMetadata {
+    #[must_use]
+    pub fn presentation(mut self, presentation: Option<Box<ToolResultPresentation>>) -> Self {
+        self.presentation = presentation;
+        self
+    }
+
     #[must_use]
     pub fn timing(mut self, timing: Option<ToolTiming>) -> Self {
         self.timing = timing;
@@ -496,6 +526,12 @@ impl ToolOutputMetadata {
     #[must_use]
     pub fn skill(mut self, skill: Option<SkillOutputMetadata>) -> Self {
         self.skill = skill;
+        self
+    }
+
+    #[must_use]
+    pub fn read(mut self, read: Option<ReadOutputMetadata>) -> Self {
+        self.read = read;
         self
     }
 

@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::notices::upsert_turn_notice;
 use crate::agent::model::ApiRetryError;
-use crate::app::{App, NoticeDedupKey, NoticeStage, SystemSeverity};
+use crate::app::{App, NoticeDedupKey, SystemSeverity};
 
 pub(super) fn handle_api_retry_update(
     app: &mut App,
@@ -15,13 +14,7 @@ pub(super) fn handle_api_retry_update(
 ) {
     let message =
         format_api_retry_message(attempt, max_retries, retry_delay_ms, error_status, error);
-    upsert_turn_notice(
-        app,
-        NoticeDedupKey::ApiRetry,
-        NoticeStage::Warning,
-        SystemSeverity::Warning,
-        &message,
-    );
+    upsert_turn_notice(app, NoticeDedupKey::ApiRetry, SystemSeverity::Warning, &message);
 }
 
 fn format_api_retry_message(

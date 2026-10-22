@@ -61,7 +61,7 @@ pub(crate) fn refresh(app: &mut App) {
             match block {
                 MessageBlock::Text(text) => push_lines(&mut search.rows, role, &text.text),
                 MessageBlock::ToolCall(tool) | MessageBlock::ToolResult { tool, .. }
-                    if !tool.hidden =>
+                    if !tool.hidden_unless_focused_interaction() =>
                 {
                     push_lines(&mut search.rows, "Tool", &tool.display().title);
                     for content in &tool.content {
@@ -247,7 +247,7 @@ mod tests {
         ))));
         let mut hidden =
             crate::app::test_support::tool_call_info("hidden", ToolCallStatus::Completed);
-        hidden.hidden = true;
+        hidden.parent_tool_use_id = Some("subagent-root".to_owned());
         hidden.title = "concealed".to_owned();
         hidden.content.push(ToolCallContent::Content(Content::new(ContentBlock::Text(
             TextContent::new("concealed"),

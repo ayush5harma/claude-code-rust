@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 mod api_retry;
 mod client;
@@ -410,6 +409,7 @@ fn handle_session_update(
                 complete_snapshot = update.is_complete_snapshot,
             );
             apply_task_state_update(app, update);
+            super::agents::tasks_changed(app);
         }
         model::SessionUpdate::TodoPlanUpdate(items) => {
             app.footer.apply_todo_plan(items);
@@ -685,6 +685,14 @@ fn handle_settings_parse_error(app: &mut App, file: Option<&str>, path: &str, me
         (None, "") => format!("Settings parse error: {trimmed}"),
         (None, path) => format!("Settings parse error at {path}: {trimmed}"),
     };
+    // The transcript row scrolls away, and the default log is where a later report starts.
+    tracing::warn!(
+        target: crate::logging::targets::APP_CONFIG,
+        event_name = "settings_parse_error",
+        message = "settings file could not be parsed",
+        outcome = "failure",
+        error_message = %rendered,
+    );
     push_system_message_with_severity(app, Some(SystemSeverity::Error), &rendered);
 }
 
@@ -736,7 +744,6 @@ pub(crate) fn push_active_turn_submission_blocked_notice(app: &mut App, label: &
     notices::upsert_turn_notice(
         app,
         super::NoticeDedupKey::ActiveTurnSubmissionBlocked,
-        super::NoticeStage::Informational,
         SystemSeverity::Info,
         &message,
     );

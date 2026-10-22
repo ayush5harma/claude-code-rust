@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 pub(crate) mod activity;
 pub(crate) mod agents;
@@ -66,7 +65,6 @@ pub use cache_policy::{
     DEFAULT_TOOL_PREVIEW_LIMIT_BYTES, TextSplitDecision, TextSplitKind, default_cache_split_policy,
     find_text_split, find_text_split_index,
 };
-pub(crate) use cache_policy::{markdown_table_tail_is_open, starts_with_markdown_table_row};
 pub use config::{ConfigHelpSection, ConfigState, ConfigTab};
 pub use connect::{create_app, start_connection};
 pub use events::{handle_client_event, handle_terminal_event};
@@ -88,15 +86,15 @@ pub use state::{
     ChatMessage, ChatMessageId, ChatRenderState, CompactionState, ComposerRenderState, ExtraUsage,
     HistoryOutputId, ImageAttachmentBlock, InlinePermission, InlineQuestion, InvalidationLevel,
     LayoutInvalidation, LiveRegionRenderState, LoginHint, McpState, MessageBlock, MessageBlockId,
-    MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock, NoticeDedupKey, NoticeStage,
-    PasteSessionState, PendingCommandAck, PostExitAction, RateLimitIncidentKey, RecentSessionInfo,
-    SelectionPoint, SessionPickerMutation, SessionPickerState, SessionUsageState,
-    SessionUsageSummary, ShutdownState, SubagentPermissionContext, SystemSeverity, TerminalSize,
-    TerminalSizeChange, TextBlock, TextBlockSpacing, ToolCallInfo, ToolCallScope,
-    TurnNoticeLocation, TurnNoticeRef, UpdatePromptAction, UpdatePromptState, UsageActivitySummary,
-    UsageActivityWindow, UsageBehaviorAttribution, UsageNamedAttribution, UsageSnapshot,
-    UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, UserDialogBlock, WelcomeBlock,
-    hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
+    MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock, NoticeDedupKey, PasteSessionState,
+    PendingCommandAck, PostExitAction, RateLimitIncidentKey, RecentSessionInfo, SelectionPoint,
+    SessionPickerMutation, SessionPickerState, SessionUsageState, SessionUsageSummary,
+    ShutdownState, SubagentPermissionContext, SystemSeverity, TerminalSize, TerminalSizeChange,
+    TextBlock, TextBlockSpacing, ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef,
+    UpdatePromptAction, UpdatePromptState, UsageActivitySummary, UsageActivityWindow,
+    UsageBehaviorAttribution, UsageNamedAttribution, UsageSnapshot, UsageSourceKind,
+    UsageSourceMode, UsageState, UsageWindow, UserDialogBlock, WelcomeBlock,
+    hash_text_block_content, hash_welcome_block_content,
 };
 pub(crate) use state::{
     BtwRequestState, BtwRequests, PendingUserMessage, PendingUserMessageInsertError,
@@ -193,6 +191,9 @@ async fn run_tui_loop(
                 app.request_shutdown();
             }
             _ = event_loop_interval.tick() => {}
+            // Continue prepared history without adding an idle tick per layout step.
+            // The next phase still drains input fairly before the next layout step.
+            () = tokio::task::yield_now(), if terminal_runtime.chat_layout_ready(app) => {}
         }
 
         // Phase 2: process a bounded, fair batch of already-ready events.
@@ -290,7 +291,7 @@ async fn run_tui_loop(
 
         terminal_runtime.sync_surface(app)?;
 
-        // Phase 3: render once (only when something changed)
+        // Phase 3: advance layout and render only when something visible changed.
         let is_animating = schedule_animation_frame(app, now);
         schedule_agent_shelf_frame(app, now);
         if is_animating {
@@ -300,7 +301,7 @@ async fn run_tui_loop(
         if !is_animating && app.surface_dirty.active_surface_needs_draw(app.terminal_lifecycle) {
             tab_title::update_tab_title(app);
         }
-        draw_pending_surface(app, terminal_runtime)?;
+        update_pending_surface(app, terminal_runtime)?;
         if app.startup.timeline.awaiting_ready() && app.composer_access().can_submit() {
             app.startup.timeline.mark_ready(Instant::now());
         }
@@ -322,7 +323,7 @@ async fn run_tui_loop(
     Ok(())
 }
 
-fn draw_pending_surface(
+fn update_pending_surface(
     app: &mut App,
     terminal_runtime: &mut terminal_runtime::TerminalRuntime,
 ) -> anyhow::Result<()> {
@@ -330,8 +331,8 @@ fn draw_pending_surface(
         crossterm::terminal::size().context("failed to read terminal size before draw")?;
     events::reconcile_terminal_size(app, width, height);
     terminal_runtime.apply_surface_rebuilds(app)?;
-    if app.surface_dirty.active_surface_needs_draw(app.terminal_lifecycle) {
-        terminal_runtime.draw_active_surface(app)?;
+    if terminal_runtime.has_pending_surface_work(app) {
+        terminal_runtime.update_active_surface(app)?;
     }
     Ok(())
 }
@@ -343,11 +344,11 @@ async fn finish_shutdown_render(
 ) -> anyhow::Result<()> {
     let mut interval = event_loop_interval();
     let mut os_shutdown = Box::pin(wait_for_shutdown_signal().fuse());
-    // The terminal owner requests another draw when replay is incomplete or a
-    // resize interrupts a transaction. Keep its progress instead of resetting it.
+    // Preparation can continue without repainting. Drain both pending layout and
+    // terminal output before restoration, while still accepting resize and force exit.
     while !app.shutdown_forced() {
-        draw_pending_surface(app, terminal_runtime)?;
-        if !app.surface_dirty.active_surface_needs_draw(app.terminal_lifecycle) {
+        update_pending_surface(app, terminal_runtime)?;
+        if !terminal_runtime.has_pending_surface_work(app) {
             break;
         }
         tokio::select! {
@@ -367,6 +368,7 @@ async fn finish_shutdown_render(
                 }
             }
             _ = interval.tick() => {}
+            () = tokio::task::yield_now(), if terminal_runtime.chat_layout_ready(app) => {}
         }
     }
     Ok(())
@@ -712,10 +714,11 @@ fn schedule_agent_shelf_frame(app: &mut App, now: Instant) {
         SurfaceMode::Fullscreen(FullscreenView::Tasks) => true,
         SurfaceMode::Fullscreen(_) => false,
     };
-    let visible = shows_agent_rows
-        && app.sdk_inventory.tasks.iter().any(|task| {
-            task.status == model::TaskStatus::InProgress && agents::is_subagent_task(task)
-        });
+    let visible =
+        shows_agent_rows
+            && app.sdk_inventory.tasks.iter().any(|task| {
+                task.status == model::TaskStatus::InProgress && agents::is_subagent(task)
+            });
     if !visible {
         app.agent_shelf_last_redraw = None;
         return;

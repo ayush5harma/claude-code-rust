@@ -2,6 +2,16 @@ import type { BridgeCommand } from "../types.js";
 
 type CommandTask = () => Promise<void>;
 
+/**
+ * How long a command may wait in its lane before it would start, measured from when it is
+ * scheduled. On expiry `onExpired` answers for the command and the command is skipped when its
+ * turn comes; a command that has started is not cut short.
+ */
+export interface QueueDeadline {
+  ms: number;
+  onExpired: () => void;
+}
+
 type CommandLane =
   | { kind: "lifecycle" }
   | { kind: "session"; sessionId: string }
@@ -33,13 +43,12 @@ const UNBLOCKING_COMMANDS = new Set<BridgeCommand["command"]>([
   "mcp_oauth_callback_url",
 ]);
 
-// Commands that either read SDK state or issue isolated control requests. They run at once and
-// neither wait for nor delay anything: measured 2026-10-13 with the owner's profile, a stalled
-// startup context read queued /reload behind settings inspection indefinitely. Unlike unblocking
-// commands they are refused once shutdown is queued.
+// Commands that only read SDK state. They run at once and neither wait for nor delay anything,
+// so the /resume picker's refresh never queues behind a stalled session request. Unlike
+// unblocking commands they are refused once shutdown is queued. /reload is not one of them: it
+// waits in its session lane under a queue deadline (commandQueueDeadline).
 const CONCURRENT_COMMANDS = new Set<BridgeCommand["command"]>([
   "list_sessions",
-  "reload_skills_and_styles",
 ]);
 
 function commandLane(command: BridgeCommand): CommandLane {
@@ -65,6 +74,24 @@ function settle(task: Promise<void>): Promise<void> {
   );
 }
 
+// The timer is armed before the lane can start the task, so a task that starts at once clears it.
+function withQueueDeadline(
+  task: CommandTask,
+  deadline: QueueDeadline,
+): CommandTask {
+  let expired = false;
+  const timer = setTimeout(() => {
+    expired = true;
+    deadline.onExpired();
+  }, deadline.ms);
+  return async () => {
+    clearTimeout(timer);
+    if (!expired) {
+      await task();
+    }
+  };
+}
+
 export class BridgeCommandScheduler {
   private lifecycleTail: Promise<void> | undefined;
   private readonly sessionTails = new Map<string, Promise<void>>();
@@ -75,19 +102,23 @@ export class BridgeCommandScheduler {
   schedule(
     command: BridgeCommand,
     task: CommandTask,
+    queueDeadline?: QueueDeadline,
   ): Promise<void> | undefined {
     const lane = commandLane(command);
     if (!this.accepts(command, lane)) {
       return undefined;
     }
 
-    let scheduledTask = task;
+    const boundedTask = queueDeadline
+      ? withQueueDeadline(task, queueDeadline)
+      : task;
+    let scheduledTask = boundedTask;
     if (command.command === "shutdown") {
       this.shutdownState = "queued";
       scheduledTask = async () => {
         this.shutdownState = "running";
         try {
-          await task();
+          await boundedTask();
         } finally {
           this.shutdownState = "complete";
         }

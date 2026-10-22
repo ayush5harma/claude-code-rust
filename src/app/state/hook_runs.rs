@@ -48,14 +48,6 @@ pub struct HookRun {
     pub notice_pending: bool,
 }
 
-/// What the Status tab and the notice rule need to say about a run, decided
-/// once here.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HookNotice {
-    pub failed: bool,
-    pub text: String,
-}
-
 impl HookRun {
     #[must_use]
     pub fn is_finished(&self) -> bool {
@@ -88,35 +80,23 @@ impl HookRun {
         }
     }
 
-    /// The notice a finished run earns under `mode`, if any.
+    /// The timing notice a finished run earns under `mode`, if any. Failures and blocking
+    /// decisions are noticed by the bridge, which knows what the SDK already showed for them.
     #[must_use]
-    pub fn notice(&self, mode: HookNoticeMode, slow_threshold: Duration) -> Option<HookNotice> {
+    pub fn notice(&self, mode: HookNoticeMode, slow_threshold: Duration) -> Option<String> {
         if !self.is_finished() || mode == HookNoticeMode::Off {
             return None;
         }
         let label = self.label();
-        if self.failed() {
-            let verdict = match (self.outcome, self.exit_code) {
-                (Some(HookOutcome::Cancelled), _) => "was cancelled".to_owned(),
-                (_, Some(code)) => format!("failed (exit {code})"),
-                _ => "failed".to_owned(),
-            };
-            let detail = self.output.as_deref().map_or_else(String::new, |out| format!(": {out}"));
-            return Some(HookNotice {
-                failed: true,
-                text: format!("Hook {label} {verdict}{detail}"),
-            });
-        }
         let duration = self.duration();
         let slow = duration.is_some_and(|duration| duration >= slow_threshold);
         if mode == HookNoticeMode::SlowAndFailed && !slow {
             return None;
         }
-        let text = duration.map_or_else(
+        Some(duration.map_or_else(
             || format!("Hook {label} finished"),
             |duration| format!("Hook {label} took {}", format_elapsed(duration)),
-        );
-        Some(HookNotice { failed: false, text })
+        ))
     }
 }
 
@@ -406,46 +386,23 @@ mod tests {
         let mode = HookNoticeMode::SlowAndFailed;
         assert_eq!(
             at_threshold.notice(mode, SLOW),
-            Some(HookNotice {
-                failed: false,
-                text: "Hook SessionStart:startup took 500 ms".to_owned()
-            })
+            Some("Hook SessionStart:startup took 500 ms".to_owned())
         );
         assert_eq!(just_under.notice(mode, SLOW), None);
         assert_eq!(
-            slow.notice(mode, SLOW).map(|notice| notice.text),
+            slow.notice(mode, SLOW),
             Some("Hook SessionStart:startup took 2.5 s".to_owned())
         );
     }
 
     #[test]
-    fn a_failed_or_cancelled_hook_is_noticed_however_fast_it_was() {
-        let mut runs = HookRuns::default();
-        let pre_tool_use = |activity: HookActivity| HookActivity {
-            hook_name: "PreToolUse:Bash".to_owned(),
-            hook_event: "PreToolUse".to_owned(),
-            ..activity
-        };
-        runs.record(&pre_tool_use(activity("f", HookPhase::Started, 0)));
-        let failed = runs
-            .record(&pre_tool_use(HookActivity {
-                output: Some("denied by policy".to_owned()),
-                ..finished("f", 20, HookOutcome::Error, Some(2))
-            }))
-            .cloned()
-            .expect("finished");
-        assert_eq!(
-            failed.notice(HookNoticeMode::SlowAndFailed, SLOW),
-            Some(HookNotice {
-                failed: true,
-                text: "Hook PreToolUse:Bash failed (exit 2): denied by policy".to_owned()
-            })
-        );
+    fn a_fast_failed_or_cancelled_hook_earns_no_timing_notice() {
+        // The bridge reports failures; this rule only times hooks.
+        let failed = run_of(0, 20, HookOutcome::Error, Some(1));
+        assert!(failed.failed());
+        assert_eq!(failed.notice(HookNoticeMode::SlowAndFailed, SLOW), None);
         let cancelled = run_of(0, 5, HookOutcome::Cancelled, None);
-        assert_eq!(
-            cancelled.notice(HookNoticeMode::SlowAndFailed, SLOW).map(|notice| notice.text),
-            Some("Hook SessionStart:startup was cancelled".to_owned())
-        );
+        assert_eq!(cancelled.notice(HookNoticeMode::SlowAndFailed, SLOW), None);
     }
 
     #[test]
@@ -463,7 +420,7 @@ mod tests {
     fn all_notices_every_finished_hook_and_off_none() {
         let fast = run_of(0, 12, HookOutcome::Success, Some(0));
         assert_eq!(
-            fast.notice(HookNoticeMode::All, SLOW).map(|notice| notice.text),
+            fast.notice(HookNoticeMode::All, SLOW),
             Some("Hook SessionStart:startup took 12 ms".to_owned())
         );
         let failed = run_of(0, 12, HookOutcome::Error, Some(1));

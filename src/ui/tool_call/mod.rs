@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 //! Tool-call rendering: entry points, caching, and shared helpers.
 //!
 //! Submodules handle specific rendering concerns:
@@ -17,9 +16,10 @@ mod interactions;
 mod monitor;
 mod projects;
 mod push_notification;
-mod read_file;
+mod read;
 mod remote_trigger;
 mod repl;
+mod result_presentation;
 mod schedule_wakeup;
 mod skill;
 mod standard;
@@ -42,19 +42,21 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 // Re-export submodule items used by tests.
 #[cfg(test)]
 use errors::{
-    extract_tool_use_error_message, failed_tool_text_summary, looks_like_internal_error,
+    extract_tool_use_error_message, looks_like_internal_error, render_failed_tool_text_content,
     render_tool_use_error_content, summarize_internal_error,
 };
 
 #[cfg(test)]
-use standard::{cap_write_diff_lines, content_summary};
+use standard::cap_write_diff_lines;
 
 pub(super) const TOOL_MAX_RENDER_LINES: usize = 10;
 pub(super) const TOOL_BODY_MAX_LINES: usize = TOOL_MAX_RENDER_LINES - 1;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Default)]
 pub struct ToolCallRenderContext<'a> {
+    pub clock: crate::app::presentation::ClockFormat<'a>,
     pub current_mode_id: Option<&'a str>,
+    pub control: Option<&'a crate::ui::layout_control::LayoutControl<'a>>,
 }
 
 pub fn status_icon(
@@ -79,42 +81,85 @@ pub fn status_icon(
 // Public entry points (delegating to submodules)
 // ---------------------------------------------------------------------------
 
-/// Render a tool call with caching. Only re-renders when cache is stale.
-///
-/// Title content and body are cached independently; title chrome stays live.
-/// Tool content is capped by policy, while pending permission/question controls remain visible.
+/// One active tool traversal. Title and body can be delivered separately, while
+/// a large file preview keeps its syntax state across scheduling turns.
+#[derive(Default)]
+pub(crate) struct ToolRowsCursor {
+    source_revision: Option<u64>,
+    body: standard::ToolBodyCursor,
+    finished: bool,
+}
+
+impl ToolRowsCursor {
+    pub(crate) fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    pub(crate) fn next(
+        &mut self,
+        tc: &mut ToolCallInfo,
+        context: ToolCallRenderContext<'_>,
+        width: u16,
+        spinner: crate::ui::SpinnerState,
+    ) -> Vec<Line<'static>> {
+        let uninterrupted = crate::ui::layout_control::LayoutControl::uninterrupted();
+        let control = context.control.unwrap_or(&uninterrupted);
+        if self.finished || control.cancelled() {
+            return Vec::new();
+        }
+        if self.source_revision.is_some_and(|revision| revision != tc.cache.source_revision()) {
+            control.cancel();
+            return Vec::new();
+        }
+        if self.source_revision.is_none() {
+            self.source_revision = Some(tc.cache.source_revision());
+            self.finished = !standard::tool_call_has_body(tc);
+            return vec![standard::render_tool_call_title(tc, context, width, spinner)];
+        }
+        if let Some(cached) = tc.cache.get_for_width(width) {
+            self.finished = true;
+            return cached.clone();
+        }
+        let body = if let Some(result) =
+            tc.output_metadata.as_ref().and_then(|metadata| metadata.presentation.as_deref())
+        {
+            std::task::Poll::Ready(standard::render_result_presentation(
+                tc,
+                result,
+                context.clock,
+                width,
+                control,
+            ))
+        } else if control.can_yield() {
+            self.body.poll(tc, width, control)
+        } else {
+            std::task::Poll::Ready(self.body.render(tc, width, control))
+        };
+        let std::task::Poll::Ready(body) = body else {
+            return Vec::new();
+        };
+        if control.cancelled() {
+            return Vec::new();
+        }
+        self.finished = true;
+        tc.cache.store_for_width(body.clone(), width);
+        body
+    }
+}
+
+/// Synchronous consumers drain the same cursor used by incremental replay.
 pub fn render_tool_call_cached(
     tc: &mut ToolCallInfo,
-    render_context: ToolCallRenderContext<'_>,
+    context: ToolCallRenderContext<'_>,
     width: u16,
     spinner: crate::ui::SpinnerState,
     out: &mut Vec<Line<'static>>,
 ) {
-    let title = standard::render_tool_call_title(tc, render_context, width, spinner);
-    out.push(title);
-
-    if !standard::tool_call_has_body(tc) {
-        return;
-    }
-
-    let body_depends_on_width = standard::tool_call_body_depends_on_width(tc);
-
-    // Expanded body: use cache if valid, otherwise render and cache.
-    let cached_body =
-        if body_depends_on_width { tc.cache.get_for_width(width) } else { tc.cache.get() };
-    if let Some(cached_body) = cached_body {
-        out.extend_from_slice(cached_body);
-    } else {
-        let body = standard::render_tool_call_body(tc, width);
-        if body_depends_on_width {
-            tc.cache.store_for_width(body, width);
-        } else {
-            tc.cache.store(body);
-        }
-        let stored =
-            if body_depends_on_width { tc.cache.get_for_width(width) } else { tc.cache.get() };
-        if let Some(stored) = stored {
-            out.extend_from_slice(stored);
+    let mut cursor = ToolRowsCursor::default();
+    while !cursor.is_finished() {
+        out.extend(cursor.next(tc, context, width, spinner));
+        if context.control.is_some_and(crate::ui::layout_control::LayoutControl::cancelled) {
+            break;
         }
     }
 }
@@ -204,7 +249,7 @@ fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
         ));
     }
 
-    if matches!(tc.sdk_tool_name.as_str(), "Agent" | "Task") {
+    if model::is_agent_tool_name(&tc.sdk_tool_name) {
         if let Some(depth) = tc.task_spawn_depth() {
             badges.push(Span::styled(
                 format!("  [depth: {depth}]"),
@@ -223,14 +268,10 @@ fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
                 Style::default().fg(theme::info()).add_modifier(Modifier::BOLD),
             ));
         }
-        if let Some(models) = agent_model_route_badge(tc) {
+        if let Some((model, _)) = agent_model_choice(Some(tc), None, None) {
+            let label = if model.contains(" -> ") { "models" } else { "model" };
             badges.push(Span::styled(
-                format!("  [models: {}]", models.join(" -> ")),
-                Style::default().fg(theme::info()).add_modifier(Modifier::BOLD),
-            ));
-        } else if let Some(model) = agent_display_model_badge(tc) {
-            badges.push(Span::styled(
-                format!("  [model: {model}]"),
+                format!("  [{label}: {model}]"),
                 Style::default().fg(theme::info()).add_modifier(Modifier::BOLD),
             ));
         }
@@ -303,23 +344,32 @@ fn agent_requested_type_badge(tc: &ToolCallInfo) -> Option<String> {
     Some(subagent_type.to_owned())
 }
 
-fn agent_model_route_badge(tc: &ToolCallInfo) -> Option<&[String]> {
-    tc.output_metadata
-        .as_ref()
-        .and_then(|metadata| metadata.agent.as_ref())
-        .and_then(|agent| agent.models_used.as_deref())
-        .filter(|models| models.len() >= 2)
-}
-
-fn agent_display_model_badge(tc: &ToolCallInfo) -> Option<String> {
-    tc.output_metadata
-        .as_ref()
-        .and_then(|metadata| metadata.agent.as_ref())
-        .and_then(|agent| agent.resolved_model.as_deref())
+pub(crate) fn agent_model_choice(
+    tc: Option<&ToolCallInfo>,
+    kind: Option<&str>,
+    default: Option<&str>,
+) -> Option<(String, &'static str)> {
+    let metadata = tc.and_then(|tc| tc.output_metadata.as_ref()?.agent.as_ref());
+    if let Some(models) =
+        metadata.and_then(|meta| meta.models_used.as_ref()).filter(|models| models.len() >= 2)
+    {
+        return Some((models.join(" -> "), "observed"));
+    }
+    if let Some(model) = metadata
+        .and_then(|meta| meta.resolved_model.as_deref())
         .map(str::trim)
-        .filter(|resolved_model| !resolved_model.is_empty())
-        .or_else(|| tool_raw_input_string(tc, "model"))
-        .map(str::to_owned)
+        .filter(|model| !model.is_empty())
+    {
+        return Some((model.to_owned(), "observed"));
+    }
+    if kind.or_else(|| tc.and_then(|tc| tool_raw_input_string(tc, "subagent_type"))) == Some("fork")
+    {
+        return Some(("parent model".to_owned(), "inherited"));
+    }
+    if let Some(model) = tc.and_then(|tc| tool_raw_input_string(tc, "model")) {
+        return Some((model.to_owned(), "requested"));
+    }
+    default.map(|model| (model.to_owned(), "agent default"))
 }
 
 fn tool_display_title<'a>(
@@ -371,7 +421,7 @@ fn ask_user_question_display_title(tc: &ToolCallInfo) -> Cow<'static, str> {
 #[cfg(test)]
 pub(super) mod test_support {
     use crate::agent::model;
-    use crate::app::{BlockCache, ToolCallInfo};
+    use crate::app::ToolCallInfo;
     use ratatui::text::Line;
 
     pub(super) fn tool_call(
@@ -383,26 +433,9 @@ pub(super) mod test_support {
         status: model::ToolCallStatus,
     ) -> ToolCallInfo {
         let mut tc = ToolCallInfo {
-            id: id.to_owned(),
-            source_message_uuids: Vec::new(),
             title: title.to_owned(),
-            sdk_tool_name: sdk_tool_name.to_owned(),
             raw_input: Some(raw_input),
-            raw_input_bytes: 0,
-            locations: Vec::new(),
-            output_metadata: None,
-            task_metadata: None,
-            status,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: None,
-            terminal_command: None,
-            terminal_output: None,
-            terminal_output_len: 0,
-            cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
-            history: crate::app::ToolCallHistory::Live,
+            ..crate::app::test_support::named_tool_call_info(id, sdk_tool_name, status)
         };
         if let Some(content) = content {
             tc.content = vec![model::ToolCallContent::from(content)];

@@ -8,7 +8,6 @@ import { asRecordOrNull } from "./shared.js";
 import { applyTaskLifecycleState, applyTaskToolResult } from "./tasks.js";
 import {
   activeTaskIdForToolUse,
-  linkTaskToolUse,
   unlinkTaskToolUse,
 } from "./task_links.js";
 import {
@@ -16,6 +15,7 @@ import {
   backgroundToolLaunchTaskIdFromResult,
   buildToolResultFields,
   createToolCall,
+  isAgentLikeToolName,
   isShellToolName,
 } from "./tooling.js";
 import { appendResourceLinks } from "./resource_links.js";
@@ -40,13 +40,6 @@ export type ToolCorrelationMetadata = {
   parentAgentId?: string;
 };
 
-const TOOL_SUMMARY_TOOL_NAMES = new Set([
-  "Agent",
-  "Task",
-  "WebSearch",
-  "WebFetch",
-  "ExitPlanMode",
-]);
 const TASK_LIFECYCLE_TOOL_NAMES = new Set([
   "Agent",
   "Task",
@@ -100,11 +93,6 @@ function toolName(
   return toolNameFromMeta(base?.meta);
 }
 
-export function toolUsesSummaryOutput(base: ToolCall | undefined): boolean {
-  const baseToolName = toolName(base);
-  return Boolean(baseToolName && TOOL_SUMMARY_TOOL_NAMES.has(baseToolName));
-}
-
 export function toolAcceptsTaskLifecycle(base: ToolCall | undefined): boolean {
   const baseToolName = toolName(base);
   return Boolean(baseToolName && (
@@ -118,11 +106,12 @@ export function toolPreservesTaskNotificationOutput(
   return isShellToolName(toolName(base) ?? "");
 }
 
+/** Foreground Agent, Task and shell calls complete with their own tool result. */
 export function defersTaskNotificationCompletion(
   base: ToolCall | undefined,
 ): boolean {
-  const baseToolName = toolName(base);
-  return baseToolName === "Agent" || baseToolName === "Task";
+  const baseToolName = toolName(base) ?? "";
+  return isAgentLikeToolName(baseToolName) || isShellToolName(baseToolName);
 }
 
 function classifyFailureKind(
@@ -236,7 +225,7 @@ function mergeTaskMetadata(
   return merged;
 }
 
-export function applyFieldsToBase(base: ToolCall, fields: ToolCallUpdateFields): void {
+export function applyFieldsToBase(base: ToolCall, fields: ToolCallUpdateFields, composed = false): void {
   if (fields.title !== undefined) {
     base.title = fields.title;
   }
@@ -260,10 +249,11 @@ export function applyFieldsToBase(base: ToolCall, fields: ToolCallUpdateFields):
     base.output_metadata = fields.output_metadata;
   }
   if (fields.task_metadata !== undefined) {
-    base.task_metadata = mergeTaskMetadata(
+    fields.task_metadata = composed ? fields.task_metadata : mergeTaskMetadata(
       base.task_metadata,
       fields.task_metadata,
     );
+    base.task_metadata = fields.task_metadata;
   }
   if (fields.meta !== undefined) {
     base.meta = fields.meta;
@@ -446,6 +436,8 @@ export function emitToolCallUpdate(
     // Compose the complete metadata before publication; the receiver replaces
     // the projection and must not merge a second copy of these semantics.
     applyFieldsToBase(base, fields);
+  } else if (fields.task_metadata !== undefined) {
+    fields.task_metadata = mergeTaskMetadata(undefined, fields.task_metadata);
   }
   emitSessionUpdate(session.sessionId, {
     type: "tool_call_update",
@@ -580,11 +572,10 @@ export function emitToolResultUpdate(
       rawContent,
     );
     if (taskId) {
-      linkTaskToolUse(session, taskId, toolUseId);
-      applyTaskLifecycleState(session, "task_started", {
+      if (!applyTaskLifecycleState(session, "task_started", {
         task_id: taskId, tool_use_id: toolUseId,
-        description: base?.title, is_backgrounded: true,
-      });
+        description: base?.title, is_backgrounded: true, synthesized_launch: true,
+      })) return;
     }
   }
   emitToolCallUpdate(session, toolUseId, fields, "result", sourceMessageUuid);
@@ -604,7 +595,7 @@ export function emitToolResultUpdate(
     rawContent,
     rawResult,
   );
-  if ((baseToolName === "Agent" || baseToolName === "Task") &&
+  if ((isAgentLikeToolName(baseToolName)) &&
       (base?.status === "completed" || base?.status === "failed" || base?.status === "killed")) {
     const taskId = activeTaskIdForToolUse(session, toolUseId);
     if (taskId) {
@@ -618,6 +609,9 @@ function toolBelongsToBackgroundExecution(session: SessionState, toolUseId: stri
   for (let depth = 0; current && depth <= session.toolCalls.size; depth++) {
     const tool = session.toolCalls.get(current);
     if (tool?.status === "detached") return true;
+    // A resumed task can have no new launch invocation. Its original card is
+    // historical, but its current background run still owns these children.
+    if ([...session.tasksById.values()].some(task => task.source_tool_call_id === current && task.status === "in_progress" && asRecordOrNull(task.metadata)?.is_backgrounded === true)) return true;
     current = parentToolUseIdFromMeta(tool?.meta);
   }
   return false;
@@ -696,29 +690,6 @@ export function emitToolProgressUpdate(
   }
 }
 
-export function emitToolSummaryUpdate(
-  session: SessionState,
-  toolUseId: string,
-  summary: string,
-): void {
-  const base = session.toolCalls.get(toolUseId);
-  if (!base) {
-    return;
-  }
-  if (!toolUsesSummaryOutput(base) || base.status === "detached") {
-    return;
-  }
-  const fields: ToolCallUpdateFields = {
-    status:
-      base.status === "failed" || base.status === "killed"
-        ? base.status
-        : "completed",
-    raw_output: summary,
-    content: [{ type: "content", content: { type: "text", text: summary } }],
-  };
-  emitToolCallUpdate(session, toolUseId, fields, "summary");
-}
-
 export function setToolCallStatus(
   session: SessionState,
   toolUseId: string,
@@ -752,7 +723,9 @@ export function resolveTaskToolUseId(
   if (!taskId) {
     return "";
   }
-  return session.taskToolUseIds.get(taskId) ?? session.tasksById.get(taskId)?.source_tool_call_id ?? "";
+  const task = session.tasksById.get(taskId);
+  if (task?.run_id && task.source_tool_call_run_id !== task.run_id) return "";
+  return session.taskToolUseIds.get(taskId) ?? task?.source_tool_call_id ?? "";
 }
 
 export function taskProgressText(msg: Record<string, unknown>): string {

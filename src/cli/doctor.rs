@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::style::HumanStyle;
 use crate::agent::bridge::{
@@ -72,7 +71,7 @@ pub(crate) fn build_report(cli: &Cli) -> DoctorReport {
         bridge_runtime_version_check(runtime.resolved_path.as_deref()),
         bridge_script_check(&script),
     ];
-    checks.extend(config_path_checks(cli.dir.as_deref()));
+    checks.extend(config_path_checks(cli.working_dir().ok().as_deref()));
     checks.extend(log_path_checks());
     checks.extend(npm_metadata_checks(&script));
     checks.push(credentials_check());

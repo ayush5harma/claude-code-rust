@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::prelude::*;
 
@@ -123,18 +122,17 @@ fn clear_missing_mcp_server_overlays(app: &mut App) {
         Some(ConfigOverlayState::McpAuthRedirect(overlay)) => {
             Some(overlay.redirect.server_name.as_str())
         }
-        Some(ConfigOverlayState::McpElicitation(overlay)) => {
-            Some(overlay.request.server_name.as_str())
-        }
         Some(
-            ConfigOverlayState::Setting(_)
+            ConfigOverlayState::McpElicitation(_)
+            | ConfigOverlayState::Setting(_)
             | ConfigOverlayState::Footer(_)
             | ConfigOverlayState::SessionRename(_)
             | ConfigOverlayState::Confirmation(_)
             | ConfigOverlayState::InstalledPluginActions(_)
             | ConfigOverlayState::PluginInstallActions(_)
             | ConfigOverlayState::MarketplaceActions(_)
-            | ConfigOverlayState::AddMarketplace(_),
+            | ConfigOverlayState::AddMarketplace(_)
+            | ConfigOverlayState::LocalPluginFolder(_),
         )
         | None => None,
     }

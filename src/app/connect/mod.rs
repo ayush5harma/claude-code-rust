@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 //! App creation and bridge connection lifecycle.
 //!
@@ -29,7 +28,6 @@ use crate::agent::client::AgentConnection;
 use crate::agent::events::ClientEvent;
 use crate::agent::wire::SessionLaunchSettings;
 use crate::error::AppError;
-use std::collections::HashMap;
 use std::rc::Rc;
 use tokio::sync::{mpsc, oneshot};
 
@@ -68,13 +66,8 @@ pub(crate) const CLIENT_EVENT_QUEUE_CAPACITY: usize = super::READY_EVENT_DRAIN_R
 
 /// Create the `App` struct in `Connecting` state and load shared settings state.
 ///
-/// `session_config` is the resolved [`Cli::session_config`], kept for every session.
-#[allow(clippy::too_many_lines)]
+/// `session_config` is the resolved [`Cli::resolve_session_config`], kept for every session.
 pub fn create_app(cli: &Cli, session_config: crate::agent::wire::SessionConfig) -> App {
-    let cwd = cli.startup_cwd();
-
-    let (event_tx, event_rx) = mpsc::channel(CLIENT_EVENT_QUEUE_CAPACITY);
-    let (file_index_event_tx, file_index_event_rx) = super::file_index::event_channel();
     let loaded_settings = match settings::load_global_settings() {
         Ok(loaded) => loaded,
         Err(err) => {
@@ -91,6 +84,19 @@ pub fn create_app(cli: &Cli, session_config: crate::agent::wire::SessionConfig) 
             }
         }
     };
+    let mut app = create_app_with_settings(cli, loaded_settings);
+    app.startup = app.startup.with_session_config(session_config);
+    app
+}
+
+#[allow(clippy::too_many_lines)]
+pub(super) fn create_app_with_settings(
+    cli: &Cli,
+    loaded_settings: settings::LoadedAppSettings,
+) -> App {
+    let cwd = cli.startup_cwd();
+    let (event_tx, event_rx) = mpsc::channel(CLIENT_EVENT_QUEUE_CAPACITY);
+    let (file_index_event_tx, file_index_event_rx) = super::file_index::event_channel();
     let (update_prompt, update_install_failure) =
         if super::update_check::update_check_disabled(cli.no_update_check) {
             (None, None)
@@ -148,8 +154,6 @@ pub fn create_app(cli: &Cli, session_config: crate::agent::wire::SessionConfig) 
         file_index_event_rx,
         spinner_frame: 0,
         spinner_last_advance_at: None,
-        tool_call_scopes: HashMap::new(),
-        recent_child_tool_ids: HashMap::new(),
         agent_shelf_last_redraw: None,
         pending_interaction_ids: Vec::new(),
         focus: FocusManager::default(),
@@ -189,10 +193,11 @@ pub fn create_app(cli: &Cli, session_config: crate::agent::wire::SessionConfig) 
         history_retention: HistoryRetentionPolicy::default(),
         history_retention_stats: HistoryRetentionStats::default(),
         cache_metrics: CacheMetrics::default(),
-        startup: StartupState::from_cli(cli).with_session_config(session_config),
+        startup: StartupState::from_cli(cli),
         bridge_task: None,
     };
 
+    app.config.load_footer(app.global_settings_path.as_deref());
     app.rebuild_history_retention_accounting();
     app.rebuild_render_cache_accounting();
     trust::initialize(&mut app);

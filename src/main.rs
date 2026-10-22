@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use claude_code_rust::Cli;
 use claude_code_rust::app::PostExitAction;
@@ -58,7 +57,9 @@ fn run() -> anyhow::Result<i32> {
     )? {
         return Ok(exit_code);
     }
-    let session_config = match cli.session_config() {
+    // Before logging, the bridge and the terminal: a bad flag must stop the launch with nothing
+    // started or written.
+    let session_config = match cli.resolve_session_config() {
         Ok(session_config) => session_config,
         Err(error) => {
             error.print()?;
