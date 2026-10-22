@@ -1105,10 +1105,6 @@ export type BridgeCommand =
       session_id: string;
     }
   | {
-      command: "reload_skills_and_styles";
-      session_id: string;
-    }
-  | {
       command: "mcp_status";
       session_id: string;
     }

@@ -61,7 +61,7 @@ import {
   applyTaskLifecycleState,
   observeTaskChildModel,
 } from "./tasks.js";
-import { unlinkTaskToolUse } from "./task_links.js";
+import { childParentToolUseId, unlinkTaskToolUse } from "./task_links.js";
 import {
   emitAuthRequired,
   classifyTurnErrorKind,
@@ -1426,7 +1426,7 @@ export function handleAssistantMessage(
 ): void {
   observeTaskChildModel(session, message);
   const producer = trimmedStringField(message, "agent_id");
-  const parent = trimmedStringField(message, "parent_tool_use_id") ?? (producer ? session.taskToolUseIds.get(producer) ?? session.tasksById.get(producer)?.source_tool_call_id : undefined);
+  const parent = childParentToolUseId(session, message);
   if (producer || parent) {
     const payload = asRecordOrNull(message.message);
     for (const item of Array.isArray(payload?.content) ? payload.content : []) {

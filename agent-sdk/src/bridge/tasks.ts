@@ -9,7 +9,7 @@ import type { SessionState } from "./session_lifecycle.js";
 import { emitSessionUpdate } from "./events.js";
 import { asRecordOrNull } from "./shared.js";
 import { shortDisplayNameForModelId } from "./model_metadata.js";
-import { linkTaskToolUse, unlinkTaskToolUse } from "./task_links.js";
+import { childParentToolUseId, linkTaskToolUse, unlinkTaskToolUse } from "./task_links.js";
 
 type TaskPatch = {
   task_id: string;
@@ -1155,10 +1155,16 @@ function taskInvocationRun(existing: TaskItem | undefined, admission: { runId?: 
   return existing?.source_tool_call_run_id;
 }
 
+/**
+ * A new run starts without the previous run's outcome and telemetry. The
+ * child model goes too: the reset unlinks the old tool use, which drops the
+ * model the bridge observed for it, and the new run's first child reply
+ * reports its own.
+ */
 function resetTaskExecution(task: TaskItem | undefined): TaskItem | undefined {
   if (!task) return undefined;
   const metadata = { ...asRecordOrNull(task.metadata) };
-  for (const key of ["error", "summary", "terminal_status", "terminal_reason", "end_time", "total_paused_ms", "subagent_retry", "output_file", "blocked", "is_backgrounded"]) delete metadata[key];
+  for (const key of ["error", "summary", "terminal_status", "terminal_reason", "end_time", "total_paused_ms", "subagent_retry", "output_file", "blocked", "is_backgrounded", "usage", "last_tool_name", "model", "model_display"]) delete metadata[key];
   return { ...task, status: "in_progress", description: undefined, active_form: undefined, metadata: metadata as Json };
 }
 
@@ -1178,7 +1184,7 @@ export function applyLinkedChildModel(session: SessionState, taskId: string, too
 }
 
 export function observeTaskChildModel(session: SessionState, message: Record<string, unknown>): void {
-  const toolUseId = nonEmptyString(message.parent_tool_use_id);
+  const toolUseId = childParentToolUseId(session, message);
   const model = nonEmptyString(asRecordOrNull(message.message)?.model);
   if (!toolUseId || !model) return;
   session.childModelsByToolUseId.set(toolUseId, model);

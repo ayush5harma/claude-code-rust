@@ -788,6 +788,43 @@ test("a child model observed before linkage appears on the first emitted task", 
   assert.equal(updates[0]?.tasks[0]?.metadata.model_display, "Opus 5.5");
 });
 
+test("a child reply without a parent tool use names its model through the producing agent's task", () => {
+  const session = makeSession();
+  taskUpdates(() => startTask(session));
+  const orphan = { ...childAssistant("tool-1", "claude-sonnet-5-5"), parent_tool_use_id: null, agent_id: "agent-1" } as SDKMessage;
+  const updates = taskUpdates(() => handleSdkMessage(session, orphan));
+  assert.equal(updates.at(-1)?.tasks[0]?.task_id, "agent-1");
+  assert.equal(updates.at(-1)?.tasks[0]?.metadata.model_display, "Sonnet 5.5");
+  assert.equal(session.currentModel, undefined);
+});
+
+for (const nextLaunch of ["tool-1", "tool-2"]) {
+  test(`a new SDK run drops the previous run's telemetry and child model (next launch ${nextLaunch})`, () => {
+    const session = makeSession();
+    const edge = (subtype: string, extra: Record<string, unknown>) => handleSdkMessage(session, {
+      type: "system", subtype, session_id: "session-1", uuid: crypto.randomUUID(), task_id: "agent-1", task_type: "local_agent", ...extra,
+    } as unknown as SDKMessage);
+    const metadata = () => session.tasksById.get("agent-1")?.metadata as Record<string, unknown> | undefined;
+    const updates = taskUpdates(() => {
+      edge("task_started", { run_id: "A", tool_use_id: "tool-1", description: "Inspect the source" });
+      handleSdkMessage(session, childAssistant("tool-1", "claude-sonnet-5-5"));
+      edge("task_progress", { run_id: "A", tool_use_id: "tool-1", last_tool_name: "Read", usage: { total_tokens: 100, tool_uses: 1, duration_ms: 10 } });
+      edge("task_notification", { run_id: "A", tool_use_id: "tool-1", status: "completed", summary: "Finished" });
+      assert.equal(metadata()?.model_display, "Sonnet 5.5");
+      assert.equal(metadata()?.last_tool_name, "Read");
+      assert.ok(metadata()?.usage);
+      edge("task_started", { run_id: "B", tool_use_id: nextLaunch, description: "Continue" });
+    });
+    const runB = updates.at(-1)?.tasks[0]?.metadata;
+    for (const key of ["usage", "last_tool_name", "model", "model_display", "summary"]) {
+      assert.equal(runB?.[key], undefined, `run B must not show run A's ${key}`);
+    }
+    assert.equal(session.tasksById.get("agent-1")?.status, "in_progress");
+    const later = taskUpdates(() => handleSdkMessage(session, childAssistant(nextLaunch, "claude-opus-5-5")));
+    assert.equal(later.at(-1)?.tasks[0]?.metadata.model_display, "Opus 5.5");
+  });
+}
+
 test("a remembered child model is applied when an existing task gains its tool link", () => {
   const session = makeSession();
   const updates = taskUpdates(() => {
