@@ -80,11 +80,12 @@ impl HookRun {
         }
     }
 
-    /// The timing notice a finished run earns under `mode`, if any. Failures and blocking
-    /// decisions are noticed by the bridge, which knows what the SDK already showed for them.
+    /// The timing notice a successful finished run earns under `mode`, if any. Failed,
+    /// cancelled and blocking runs get none however long they took: the bridge owns their
+    /// notices, because it knows what the SDK already showed for them.
     #[must_use]
     pub fn notice(&self, mode: HookNoticeMode, slow_threshold: Duration) -> Option<String> {
-        if !self.is_finished() || mode == HookNoticeMode::Off {
+        if !self.is_finished() || self.failed() || mode == HookNoticeMode::Off {
             return None;
         }
         let label = self.label();
@@ -396,13 +397,17 @@ mod tests {
     }
 
     #[test]
-    fn a_fast_failed_or_cancelled_hook_earns_no_timing_notice() {
-        // The bridge reports failures; this rule only times hooks.
-        let failed = run_of(0, 20, HookOutcome::Error, Some(1));
-        assert!(failed.failed());
-        assert_eq!(failed.notice(HookNoticeMode::SlowAndFailed, SLOW), None);
-        let cancelled = run_of(0, 5, HookOutcome::Cancelled, None);
-        assert_eq!(cancelled.notice(HookNoticeMode::SlowAndFailed, SLOW), None);
+    fn a_failed_cancelled_or_blocking_hook_earns_no_timing_notice_however_slow() {
+        // The bridge owns these notices; a timing notice would be a second one.
+        let failed = run_of(0, 2_500, HookOutcome::Error, Some(1));
+        let decision = run_of(0, 2_500, HookOutcome::Error, Some(2));
+        let cancelled = run_of(0, 2_500, HookOutcome::Cancelled, None);
+        for run in [failed, decision, cancelled] {
+            assert!(run.failed());
+            for mode in [HookNoticeMode::SlowAndFailed, HookNoticeMode::All] {
+                assert_eq!(run.notice(mode, SLOW), None, "{:?} under {mode:?}", run.outcome);
+            }
+        }
     }
 
     #[test]

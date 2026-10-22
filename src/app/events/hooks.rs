@@ -125,10 +125,11 @@ mod tests {
                 outcome: Some(HookOutcome::Error),
                 exit_code: Some(2),
                 output: Some("rm -rf is not allowed".to_owned()),
-                ..report("deny", "PreToolUse", HookPhase::Finished, 30)
+                ..report("deny", "PreToolUse", HookPhase::Finished, 2_500)
             }),
         );
-        // The bridge decides whether a failure or a blocking decision needs a notice.
+        // The bridge decides whether a failure or a blocking decision needs a notice,
+        // so even a slow one gets no timing notice here.
         assert_eq!(notices(&app), []);
         assert_eq!(app.session_runtime.hook_runs.summary().failed, 1);
     }
