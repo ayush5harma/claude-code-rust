@@ -3070,14 +3070,26 @@ fn style_at(test: &TerminalTest, needle: &str) -> Option<(vt100::Color, bool)> {
 #[test]
 fn bash_output_shows_sgr_colours_and_ignores_other_control_sequences() {
     let mut test = TerminalTest::start("bash-colour", 3);
-    // Wait for the styled cells, not only the text: a slower terminal (Windows ConPTY)
-    // can show a frame with the text before the frame that colours it.
+    test.wait_screen("FIXTURE_LINK end");
+    // Wait for the styled cells, not only the text, and say what was drawn if they never come.
     let styled = |test: &TerminalTest, needle: &str| {
         style_at(test, needle).filter(|(colour, _)| *colour != vt100::Color::Default)
     };
-    let (red, orange) = test.wait_for("coloured Bash output", |test| {
-        Some((styled(test, "FIXTURE_RED")?, styled(test, "FIXTURE_ORANGE")?))
-    });
+    let started = Instant::now();
+    let (red, orange) = loop {
+        let found = (styled(&test, "FIXTURE_RED"), styled(&test, "FIXTURE_ORANGE"));
+        if let (Some(red), Some(orange)) = found {
+            break (red, orange);
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "Bash output never got its colours: red {:?}, orange {:?}\nraw output around it:\n{}",
+            style_at(&test, "FIXTURE_RED"),
+            style_at(&test, "FIXTURE_ORANGE"),
+            raw_around(&test, "FIXTURE_RED"),
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
 
     assert_eq!(red, (vt100::Color::Idx(1), false));
     assert_eq!(orange, (vt100::Color::Idx(208), true));
@@ -3088,6 +3100,16 @@ fn bash_output_shows_sgr_colours_and_ignores_other_control_sequences() {
     assert!(!screen.contains("hijacked"), "{screen}");
     assert!(!screen.contains("example.com"), "{screen}");
     test.shutdown();
+}
+
+/// The raw output around the last draw of `needle`, with escapes made visible.
+fn raw_around(test: &TerminalTest, needle: &str) -> String {
+    let Ok(captured) = test.output.lock() else { return String::new() };
+    let raw = String::from_utf8_lossy(&captured.raw);
+    let Some(at) = raw.rfind(needle) else { return format!("{needle} not in the raw output") };
+    let start = raw[..at].char_indices().rev().nth(200).map_or(0, |(index, _)| index);
+    let end = raw[at..].char_indices().nth(300).map_or(raw.len(), |(index, _)| at + index);
+    raw[start..end].replace('\u{1b}', "<ESC>")
 }
 
 /// The rows of `screen` that mention `needle`.
