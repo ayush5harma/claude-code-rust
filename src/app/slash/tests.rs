@@ -2462,6 +2462,49 @@ async fn only_the_exports_own_error_ends_the_export() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn an_unrelated_slash_error_during_an_export_does_not_drop_the_export() {
+    tokio::task::LocalSet::new()
+        .run_until(Box::pin(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let mut app = App::test_default();
+            app.cwd_raw = dir.path().display().to_string();
+            let mut commands = attach_test_connection(&mut app);
+            app.session_runtime.session_id = Some("sess-1".into());
+            assert!(try_handle_submit(&mut app, "/export out.md"));
+            tokio::task::yield_now().await;
+            let request_id = commands.try_recv().expect("history request").request_id;
+
+            // No rename is waiting, so the error is reported as a generic slash error.
+            crate::app::handle_client_event(
+                &mut app,
+                crate::agent::events::ClientEvent::SlashCommandError {
+                    session_id: Some("sess-1".to_owned()),
+                    message: "/compact failed".to_owned(),
+                },
+            );
+            assert!(app.history_export.is_some(), "the export reports its own failures");
+
+            crate::app::handle_client_event(
+                &mut app,
+                crate::agent::events::ClientEvent::SessionHistoryChunk {
+                    session_id: "sess-1".to_owned(),
+                    chunk: crate::agent::events::HistoryChunk {
+                        request_id,
+                        updates: Vec::new(),
+                        last: true,
+                        omitted_updates: 0,
+                        unmapped_updates: 0,
+                        error: None,
+                    },
+                },
+            );
+            assert!(app.history_export.is_none());
+            assert!(dir.path().join("out.md").is_file(), "the export is still written");
+        }))
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn a_request_that_cannot_be_sent_fails_the_export_itself() {
     tokio::task::LocalSet::new()
         .run_until(async {
