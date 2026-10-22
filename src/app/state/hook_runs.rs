@@ -7,11 +7,11 @@ use std::time::Duration;
 /// Hook runs kept per session; older runs are counted, not kept.
 pub const HOOK_RUN_CAPACITY: usize = 200;
 
-/// A finished hook at or above this duration gets a notice under the default
+/// A successful hook at or above this duration gets a timing notice under the default
 /// `slow_and_failed` mode.
 pub const HOOK_NOTICE_SLOW_THRESHOLD: Duration = Duration::from_millis(500);
 
-/// The `presentation.hookNotices` setting: which finished hooks get a notice.
+/// The `presentation.hookNotices` setting: which successful hooks get a timing notice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HookNoticeMode {
     #[default]
