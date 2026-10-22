@@ -60,8 +60,9 @@ macro_rules! help_examples {
     };
 }
 
-/// Exit statuses and environment variables, closing `--help`. `docs/src/cli.md` has the
-/// same two lists; `tests/docs_cli_contract.rs` checks both against `AppError`.
+/// Exit statuses and environment variables, closing `--help`. `docs/src/usage.md` has the
+/// same two lists; `tests/docs_cli_contract.rs` checks the statuses against `AppError` and
+/// that every documented variable is listed here.
 macro_rules! help_exit_status_and_environment {
     () => {
         "Exit status:
@@ -80,6 +81,8 @@ Environment:
   CLAUDE_RS_AGENT_BRIDGE_RUNTIME  Runtime for the bridge script (debug builds only)
   CLAUDE_RUST_NO_UPDATE_CHECK     1, true or yes disables update checks, as --no-update-check does
   CLAUDE_CONFIG_DIR               Claude profile directory to use instead of ~/.claude
+  CLAUDE_RS_CONFIG_DIR            Directory for claude-rs's own settings.json instead of the
+                                  OS config directory
   RUST_LOG                        Tracing filter used without --log-filter or --diagnostics-preset;
                                   setting it turns on detailed logging
   NO_COLOR                        Disables colour in support command output"

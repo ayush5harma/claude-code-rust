@@ -78,6 +78,7 @@ Statuses 20 to 24 come with a failure report on stderr naming a next step; see [
 | `CLAUDE_RS_AGENT_BRIDGE_RUNTIME` | Runtime that runs the bridge script; debug builds only. |
 | `CLAUDE_RUST_NO_UPDATE_CHECK` | `1`, `true` or `yes` disables update checks, as `--no-update-check` does. |
 | `CLAUDE_CONFIG_DIR` | Claude profile directory to use instead of `~/.claude`; see [Settings](settings.md#where-settings-are-saved). |
+| `CLAUDE_RS_CONFIG_DIR` | Directory for `claude-rs`'s own `settings.json` (app preferences such as the footer layout) instead of the OS config directory; see [Settings](settings.md#where-settings-are-saved). |
 | `RUST_LOG` | Tracing filter used without `--log-filter` or `--diagnostics-preset`; setting it turns on detailed logging. |
 | `NO_COLOR` | Disables colour in support command output. |
 

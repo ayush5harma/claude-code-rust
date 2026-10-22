@@ -131,11 +131,10 @@ SDK-local commands such as `/rename`, `/color` and `/context` show their replies
 
 Hooks run invisibly, so claude-rs asks the Agent SDK to report hook events and shows a one-line notice in the transcript when something about a hook deserves attention:
 
-- `Hook SessionStart:startup took 2.5 s`, dim, when it took 500 ms or longer (a timing notice);
-- a warning when a hook failed, with the SDK's exit code and a bounded excerpt of its error output (one line, control characters removed), or when a hook's decision blocked an action;
-- `Hook <name> was cancelled`, as a warning, when it was cancelled.
+- `Hook SessionStart:startup took 2.5 s`, dim, when it succeeded and took 500 ms or longer (a timing notice);
+- a warning when a hook failed, with the SDK's exit code and a bounded excerpt of its error output (one line, control characters removed), or a notice when a hook's decision blocked an action that the SDK does not already report.
 
-Fast, successful hooks show nothing. Failed hooks and blocking decisions are reported by the bridge whatever the setting says. `presentation.hookNotices` in Settings > Hooks governs only the timing notices: `slow_and_failed` (the default) shows hooks that took 500 ms or longer, `all` shows every finished hook with its duration, and `off` shows none; the 500 ms threshold is fixed. The name is the SDK's: for events with a matcher it reads `Event:matcher`, and it does not identify the command. A hook's duration is the time between the bridge seeing its start and its end, because the SDK reports no hook timing. `SessionStart` hooks finish before the app has read its settings, so their timing notices appear once the saved choice is known. The Status tab lists hook timings and the startup timeline whatever the setting; see [Status Tab](commands.md#status-tab).
+Fast, successful hooks show nothing, and neither does a cancelled hook. Failed hooks and blocking decisions are reported by the bridge whatever the setting says, and never also get a timing notice, however long they took. `presentation.hookNotices` in Settings > Hooks governs only the timing notices: `slow_and_failed` (the default) shows successful hooks that took 500 ms or longer, `all` shows every successful hook with its duration, and `off` shows none; the 500 ms threshold is fixed. The name is the SDK's: for events with a matcher it reads `Event:matcher`, and it does not identify the command. A hook's duration is the time between the bridge seeing its start and its end, because the SDK reports no hook timing. `SessionStart` hooks finish before the app has read its settings, so their timing notices appear once the saved choice is known. The Status tab lists hook timings and the startup timeline whatever the setting; see [Status Tab](commands.md#status-tab).
 
 ## Read and stop subagents
 

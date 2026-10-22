@@ -10,13 +10,13 @@ This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.
 
 ### Reporting Bugs
 
-- Use the [Bug Report](https://github.com/srothgan/claude-code-rust/issues/new?template=bug_report.yml) issue template
+- Use the [Bug Report](https://github.com/ayush5harma/claude-code-rust/issues/new?template=bug_report.yml) issue template
 - Include reproduction steps, expected vs actual behavior, and environment details
 - Follow [Useful Issue Reports](docs/src/diagnostics.md#useful-issue-reports) for redacted diagnostics; review collected material before sharing it
 
 ### Suggesting Features
 
-- Use the [Feature Request](https://github.com/srothgan/claude-code-rust/issues/new?template=feature_request.yml) template
+- Use the [Feature Request](https://github.com/ayush5harma/claude-code-rust/issues/new?template=feature_request.yml) template
 - Check existing issues and discussions first
 - Describe the problem being solved, not just the desired solution
 
