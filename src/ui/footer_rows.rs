@@ -73,6 +73,9 @@ fn build_agent_shelf(app: &App, width: u16) -> Vec<Line<'static>> {
     if running == 0 {
         return Vec::new();
     }
+    // The shelf has few rows, so running agents take them first. Each group keeps launch
+    // order, as the full lists do.
+    agents.sort_by_key(|a| !a.status.is_running());
     let listed = agents.len().min(shelf_row_capacity(app.chat_render.terminal_height));
     let failed = agents.iter().filter(|a| a.status == SubagentStatus::Failed).count();
     let done = agents
@@ -1072,6 +1075,32 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert!(line_text(&rows[0]).contains("3 agents"));
         assert!(!line_text(&rows[0]).contains("ctrl+t"));
+    }
+    #[test]
+    fn a_full_shelf_lists_running_agents_before_earlier_finished_ones() {
+        let mut app = fixture();
+        app.chat_render.terminal_height = 40;
+        assert_eq!(shelf_row_capacity(40), 4);
+        app.sdk_inventory.tasks = vec![
+            agent("a", model::TaskStatus::Completed, "done-a", "Sonnet 5.5"),
+            agent("b", model::TaskStatus::Completed, "done-b", "Sonnet 5.5"),
+            agent("c", model::TaskStatus::Completed, "done-c", "Sonnet 5.5"),
+            agent("d", model::TaskStatus::Completed, "done-d", "Sonnet 5.5"),
+            agent("e", model::TaskStatus::InProgress, "live-e", "Opus 5.5"),
+            agent("f", model::TaskStatus::InProgress, "live-f", "Opus 5.5"),
+        ];
+        let shelf = build_agent_shelf(&app, 200);
+        assert!(line_text(&shelf[0]).contains("2 running · 4 done"), "{}", line_text(&shelf[0]));
+        assert!(line_text(&shelf[0]).contains("+2 more"), "{}", line_text(&shelf[0]));
+        let listed: Vec<String> = shelf[1..].iter().map(line_text).collect();
+        assert_eq!(listed.len(), 4);
+        for (row, name) in listed.iter().zip(["live-e", "live-f", "done-a", "done-b"]) {
+            assert!(row.contains(name), "expected {name} in {row}");
+        }
+        // The full lists keep launch order.
+        let names: Vec<&str> =
+            crate::ui::agent_rows::session_agent_rows(&app).iter().map(|row| row.name).collect();
+        assert_eq!(names, ["done-a", "done-b", "done-c", "done-d", "live-e", "live-f"]);
     }
     #[test]
     fn plan_precedes_shelf_and_status_command_stays_last() {
