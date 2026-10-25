@@ -42,7 +42,7 @@ const send = event => {
   process.stdout.write(`${JSON.stringify(event)}\n`);
   // 2026-10-15: lifecycle-ordered fixture output preserves completion barriers
   // after the product footer stops displaying its former default Ready badge.
-  if (SCENARIO !== 'footer-agents') {
+  if (SCENARIO !== 'footer-agents' && !(SCENARIO === 'showcase' && process.env.FAKE_BRIDGE_SHOWCASE_SCENE)) {
     let text;
     if (['connected', 'session_replaced', 'turn_complete', 'turn_error', 'slash_command_error'].includes(event.event)) text = '[READY]';
     if (event.event === 'user_message_started') text = null;
@@ -100,11 +100,22 @@ if (presentationScenario) {
   settingDefinitions.unshift(['autoScrollEnabled', 'Auto-scroll', 'Follow new output', 'boolean', ['autoScrollEnabled']]);
   settingDefinitions.push(['showMessageTimestamps', 'Show message timestamps', 'Show message times', 'boolean', ['showMessageTimestamps']], ['showTurnDuration', 'Show turn duration', 'Show completed turn clocks', 'boolean', ['showTurnDuration']], ['timeFormat', 'Time format', 'Clock format', 'string', ['timeFormat']]);
 }
+// The /config tabs of the README screenshot: real catalog entries with plausible saved values.
+const showcaseSettings = SCENARIO === 'showcase' && process.env.FAKE_BRIDGE_SHOWCASE_SCENE === 'settings';
+if (showcaseSettings) {
+  Object.assign(preferences, {
+    model: 'sonnet', language: 'English', spinnerTipsEnabled: true, idleCompaction: true, 'sandbox.enabled': true,
+    'permissions.allow': ['Bash(cargo test *)', 'Bash(cargo clippy *)', 'Read(./src/**)'], 'permissions.deny': ['Read(./.env)', 'Bash(rm -rf *)'],
+  });
+  delete preferences.alwaysThinkingEnabled;
+  settingDefinitions.splice(0, settingDefinitions.length, ...['model', 'language', 'spinnerTipsEnabled', 'idleCompaction', 'permissions.allow', 'permissions.deny', 'sandbox.enabled']
+    .map(id => settingsUiFixture.catalog.find(setting => setting.id === id)).map(setting => [setting.id, setting.label, setting.description, setting.kind, setting.key_path]));
+}
 function settingsSnapshot() {
   return {
-    categories: hooksScenario ? settingsUiFixture.categories : [{ id: 'general', label: 'General', short_label: 'General' }, { id: 'permissions', label: 'Permissions', short_label: 'Permissions' }], cwd, context: 'fixture-settings', diagnostics: [], resolution_sources: [], provenance: {},
+    categories: hooksScenario || showcaseSettings ? settingsUiFixture.categories : [{ id: 'general', label: 'General', short_label: 'General' }, { id: 'permissions', label: 'Permissions', short_label: 'Permissions' }], cwd, context: 'fixture-settings', diagnostics: [], resolution_sources: [], provenance: {},
     catalog: settingDefinitions.map(([id, label, description, kind, key_path]) => ({
-      category: id === 'hooks' ? 'hooks' : id.startsWith('permissions.') ? 'permissions' : 'general', id, label, description, kind, key_path, options: kind === 'boolean' ? [true, false] : id === 'preferredNotifChannel' ? ['auto', 'iterm2', 'terminal_bell', 'iterm2_with_bell', 'kitty', 'ghostty', 'notifications_disabled'] : [],
+      category: showcaseSettings ? settingsUiFixture.catalog.find(setting => setting.id === id).category : id === 'hooks' ? 'hooks' : id.startsWith('permissions.') ? 'permissions' : 'general', id, label, description, kind, key_path, options: kind === 'boolean' ? [true, false] : id === 'preferredNotifChannel' ? ['auto', 'iterm2', 'terminal_bell', 'iterm2_with_bell', 'kitty', 'ghostty', 'notifications_disabled'] : [],
       ...(settingsUiFixture.catalog.find(setting => setting.id === id)?.editor ? { editor: settingsUiFixture.catalog.find(setting => setting.id === id).editor } : {}),
       allows_custom: kind !== 'boolean' && id !== 'preferredNotifChannel', writable_scopes: ['user'],
       reset: 'Reset removes the saved value here', application: presentationScenario || notificationScenario || activityScenario ? 'host' : 'next_session',
@@ -482,6 +493,94 @@ function renameSession(message) {
   send({ event: 'sessions_listed', sessions: [listedSession({ custom_title: message.title })] });
 }
 
+// README screenshots (recordings/showcase.sh): the `showcase` scenario with
+// FAKE_BRIDGE_SHOWCASE_SCENE set to the scene being recorded. Without a scene the
+// scenario only serves the MCP snapshot and the default stream.
+const SHOWCASE_SCENE = SCENARIO === 'showcase' ? (process.env.FAKE_BRIDGE_SHOWCASE_SCENE ?? '') : '';
+if (SHOWCASE_SCENE) Object.assign(model, { resolved_id: 'claude-sonnet-5-5', display_name_short: 'Sonnet 5.5', display_name_long: 'Sonnet 5.5' });
+
+const HOUR_MS = 3600 * 1000;
+function showcaseSessions() {
+  const now = Date.now();
+  const session = (session_id, custom_title, ago_ms, file_size_bytes, git_branch, tag = null) => ({
+    session_id, summary: custom_title, last_modified_ms: now - ago_ms, file_size_bytes, cwd, git_branch, custom_title, first_prompt: null, tag,
+  });
+  return [
+    session('demo-verbose', 'Add a --verbose flag to the CLI', 4 * 60 * 1000, 86 * 1024, 'feature/verbose', 'in-progress'),
+    session('demo-parser', 'Speed up the config parser', 3 * HOUR_MS, 412 * 1024, 'perf/parser', 'perf'),
+    session('demo-errors', 'Rework error messages with thiserror', 27 * HOUR_MS + 1800 * 1000, 1536 * 1024, 'main', 'review'),
+    session('demo-ci', 'Fix flaky integration test on CI', 3 * 24 * HOUR_MS + 5 * HOUR_MS, 238 * 1024, 'fix/flaky-ci'),
+    session('demo-docs', 'Document the plugin API', 6 * 24 * HOUR_MS + 2 * HOUR_MS, 3 * 1024 * 1024 + 300 * 1024, 'docs/plugins', 'docs'),
+    session('demo-release', 'Prepare the 0.4.0 release notes', 9 * 24 * HOUR_MS + 7 * HOUR_MS, 57 * 1024, 'main'),
+  ];
+}
+
+// A finished turn: Read with preview, Edit with a diff, Bash with coloured test
+// output, then a Markdown answer.
+function showcaseChatTurn(message) {
+  const update = update => send({ event: 'session_update', session_id: SESSION, update });
+  const tool = (tool_call_id, title, kind, toolName, raw_input, extra = {}) => update({ type: 'tool_call', tool_call: {
+    tool_call_id, title, kind, status: 'in_progress', content: [], raw_input, locations: [], meta: { claudeCode: { toolName } }, ...extra } });
+  const done = (tool_call_id, fields) => update({ type: 'tool_call_update', tool_call_update: { tool_call_id, fields: { status: 'completed', ...fields } } });
+  const text = text => update({ type: 'agent_message_chunk', content: { type: 'text', text }, source_message_uuid: null });
+  send({ event: 'user_message_started', session_id: SESSION, message_uuid: message.message_uuid, source: 'command_lifecycle' });
+  text("I'll start with how the CLI parses its arguments.\n\n");
+  const source = [
+    'use clap::Parser;', '', '#[derive(Parser)]', '#[command(name = "tally", about = "Count lines of code")]', 'struct Cli {',
+    '    /// Directory to scan', '    path: std::path::PathBuf,', '}', '', 'fn main() -> anyhow::Result<()> {',
+    '    let cli = Cli::parse();', '    let report = tally::scan(&cli.path)?;', '    println!("{report}");', '    Ok(())', '}',
+  ].join('\n') + '\n';
+  tool('showcase-read', 'Read src/main.rs', 'read', 'Read', { file_path: 'src/main.rs' }, { locations: [{ path: 'src/main.rs' }] });
+  done('showcase-read', { content: [{ type: 'content', content: { type: 'text', text: source } }], output_metadata: { read: { file_path: 'src/main.rs', start_line: 1 } } });
+  text('The Cli struct has no flags yet, so I will add --verbose and pass it to the scanner.\n\n');
+  const oldText = '    path: std::path::PathBuf,\n}\n\nfn main() -> anyhow::Result<()> {\n    let cli = Cli::parse();\n    let report = tally::scan(&cli.path)?;\n';
+  const newText = '    path: std::path::PathBuf,\n\n    /// Print every file as it is scanned\n    #[arg(short, long)]\n    verbose: bool,\n}\n\nfn main() -> anyhow::Result<()> {\n    let cli = Cli::parse();\n    let report = tally::scan(&cli.path, cli.verbose)?;\n';
+  tool('showcase-edit', 'Edit src/main.rs', 'edit', 'Edit', { file_path: 'src/main.rs' }, { content: [{ type: 'diff', old_path: 'src/main.rs', new_path: 'src/main.rs', old: oldText, new: newText }], locations: [{ path: 'src/main.rs' }] });
+  done('showcase-edit', {});
+  tool('showcase-bash', 'cargo test', 'execute', 'Bash', { command: 'cargo test', description: 'Run the test suite' });
+  const output = [
+    '\x1b[1m\x1b[32m   Compiling\x1b[0m tally v0.3.1 (~/demo-project)',
+    '\x1b[1m\x1b[32m    Finished\x1b[0m `test` profile [unoptimized + debuginfo] target(s) in 1.84s',
+    '\x1b[1m\x1b[32m     Running\x1b[0m unittests src/main.rs (target/debug/deps/tally-3f9a1c)',
+    '', 'running 4 tests',
+    'test scan::tests::counts_blank_lines ... \x1b[32mok\x1b[0m',
+    'test scan::tests::skips_hidden_dirs ... \x1b[32mok\x1b[0m',
+    'test scan::tests::verbose_lists_files ... \x1b[32mok\x1b[0m',
+    'test scan::tests::handles_empty_dir ... \x1b[32mok\x1b[0m',
+    '', 'test result: \x1b[32mok\x1b[0m. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out',
+  ].join('\n');
+  done('showcase-bash', { raw_output: output });
+  text([
+    '## Added --verbose', '',
+    'The flag is wired from the CLI into the scanner, and all four tests pass.', '',
+    '- the Cli struct gains a verbose: bool field (-v / --verbose)',
+    '- tally::scan takes the flag and prints each file path as it is visited',
+    '- the new verbose_lists_files test covers the output', '',
+    'The call site now looks like this:', '',
+    '```rust', 'let report = tally::scan(&cli.path, cli.verbose)?;', 'println!("{report}");', '```', '',
+    'Run it with cargo run -- --verbose . to see the file list.',
+  ].join('\n'));
+  send({ event: 'context_usage', session_id: SESSION, percentage: 12 });
+  send({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'completed', queued_turn_count: 0 });
+}
+
+// Three subagents for the /agents view: one running, two finished.
+function showcaseAgents() {
+  const update = update => send({ event: 'session_update', session_id: SESSION, update });
+  const subjects = { 'agent-tests': 'Add tests for the scanner', 'agent-docs': 'Update the README usage section', 'agent-bench': 'Profile directory traversal' };
+  const calls = [['agent-tests', 'test-writer', 'sonnet'], ['agent-docs', 'docs-writer', 'sonnet'], ['agent-bench', 'profiler', 'opus']];
+  for (const [id, name, requested] of calls) {
+    update({ type: 'tool_call', tool_call: { tool_call_id: `parent-${id}`, title: subjects[id], kind: 'other', status: id === 'agent-tests' ? 'detached' : 'completed', content: [], locations: [],
+      raw_input: { name, subagent_type: 'general-purpose', model: requested, description: subjects[id], prompt: `${subjects[id]}. Keep the change small and run cargo test when you are done.` }, meta: { claudeCode: { toolName: 'Agent' } } } });
+  }
+  sendTasks([
+    { ...agentTask('agent-tests', subjects['agent-tests'], 'in_progress', null, { model_display: 'Sonnet 5.5', summary: 'Writing the empty-directory case', usage: { total_tokens: 18400, tool_uses: 7, duration_ms: 48000 } }), source_tool_call_id: 'parent-agent-tests' },
+    { ...agentTask('agent-docs', subjects['agent-docs'], 'completed', 'completed', { model_display: 'Sonnet 5.5', summary: 'Documented --verbose and the exit codes', usage: { total_tokens: 9100, tool_uses: 3, duration_ms: 21000 } }), source_tool_call_id: 'parent-agent-docs' },
+    { ...agentTask('agent-bench', subjects['agent-bench'], 'completed', 'completed', { model_display: 'Opus 5.5', summary: 'Traversal is IO bound; no change needed', usage: { total_tokens: 41700, tool_uses: 15, duration_ms: 96000 } }), source_tool_call_id: 'parent-agent-bench' },
+  ]);
+  update({ type: 'tool_call', tool_call: { tool_call_id: 'agent-tests-read', title: 'Read src/scan.rs', kind: 'read', status: 'completed', content: [], locations: [], raw_input: { file_path: 'src/scan.rs' }, meta: { claudeCode: { toolName: 'Read', parentToolUseId: 'parent-agent-tests' } } } });
+}
+
 readline
   .createInterface({ input: process.stdin })
   .on('line', raw => {
@@ -583,6 +682,8 @@ readline
           const output = '\x1b[31mFIXTURE_RED\x1b[0m plain \x1b[1;38;5;208mFIXTURE_ORANGE\x1b[0m\n\x1b]8;;https://example.com\x1b\\FIXTURE_LINK\x1b]8;;\x1b\\\x1b]0;hijacked\x07\x1b[2A end';
           send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call_update', tool_call_update: { tool_call_id: 'bash-colour', fields: { status: 'completed', raw_output: output } } } });
         }
+        if (SHOWCASE_SCENE === 'sessions') send({ event: 'sessions_listed', sessions: showcaseSessions() });
+        if (SHOWCASE_SCENE === 'agents') showcaseAgents();
         if (SCENARIO === 'hook-activity') startupHooks();
         if (SCENARIO === 'agents-list') {
           // Two running subagents with their Agent calls (requested alias, worktree
@@ -622,7 +723,7 @@ readline
         // The listing as the SDK knows it now, which includes the active session. The
         // `session-refresh` scenario holds the answer until the release file appears, so the
         // picker's loading state can be observed.
-        const answer = () => send({ event: 'sessions_listed', request_id: message.request_id, sessions: managedSessions() });
+        const answer = () => send({ event: 'sessions_listed', request_id: message.request_id, sessions: SHOWCASE_SCENE === 'sessions' ? showcaseSessions() : managedSessions() });
         if (SCENARIO !== 'session-refresh') {
           answer();
           break;
@@ -660,7 +761,7 @@ readline
         }
         break;
       case 'list_subagents':
-        send({ event: 'subagents_listed', session_id: SESSION, agent_ids: resumedAgents
+        send({ event: 'subagents_listed', session_id: SESSION, agent_ids: SHOWCASE_SCENE === 'agents' ? ['agent-tests', 'agent-docs', 'agent-bench'] : resumedAgents
           ? resumedAgents.history_updates.flatMap(update => update.type === 'task_state_update' ? update.tasks.map(task => task.task_id) : []).filter((id, index, ids) => ids.indexOf(id) === index)
           : ['agent-done'] });
         break;
@@ -681,6 +782,10 @@ readline
         sendTasks([agentTask(message.task_id, 'Review parser', 'completed', 'killed')]);
         break;
       case 'prompt':
+        if (SHOWCASE_SCENE === 'chat') {
+          showcaseChatTurn(message);
+          break;
+        }
         if (SCENARIO === 'footer-agents') {
           const update = update => send({ event: 'session_update', session_id: SESSION, update });
           send({ event: 'user_message_started', session_id: SESSION, message_uuid: message.message_uuid, source: 'command_lifecycle' });

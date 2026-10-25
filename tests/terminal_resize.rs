@@ -3057,8 +3057,13 @@ fn style_at(test: &TerminalTest, needle: &str) -> Option<(vt100::Color, bool)> {
     for row in 0..rows {
         let glyphs: Vec<&str> =
             (0..cols).map(|col| screen.cell(row, col).map_or("", |cell| cell.contents())).collect();
-        // Wide glyphs leave empty continuation cells, so search by cell, not by byte.
-        let start = (0..cols).find(|&col| glyphs[usize::from(col)..].concat().starts_with(needle));
+        // Wide glyphs leave empty continuation cells, so search by cell, not by byte. Erased
+        // cells are empty too (ConPTY clears indentation with ECH), so a match starts on a
+        // drawn cell.
+        let start = (0..cols).find(|&col| {
+            let col = usize::from(col);
+            !glyphs[col].is_empty() && glyphs[col..].concat().starts_with(needle)
+        });
         if let Some(col) = start {
             let cell = screen.cell(row, col)?;
             return Some((cell.fgcolor(), cell.bold()));
@@ -3070,30 +3075,10 @@ fn style_at(test: &TerminalTest, needle: &str) -> Option<(vt100::Color, bool)> {
 #[test]
 fn bash_output_shows_sgr_colours_and_ignores_other_control_sequences() {
     let mut test = TerminalTest::start("bash-colour", 3);
-    test.wait_screen("FIXTURE_LINK end");
-    // Wait for the styled cells, not only the text, and say what was drawn if they never come.
-    let styled = |test: &TerminalTest, needle: &str| {
-        style_at(test, needle).filter(|(colour, _)| *colour != vt100::Color::Default)
-    };
-    let started = Instant::now();
-    let (red, orange) = loop {
-        let found = (styled(&test, "FIXTURE_RED"), styled(&test, "FIXTURE_ORANGE"));
-        if let (Some(red), Some(orange)) = found {
-            break (red, orange);
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(10),
-            "Bash output lost its colours: red {:?}, orange {:?}\ncells: {}\nraw from there:\n{}",
-            style_at(&test, "FIXTURE_RED"),
-            style_at(&test, "FIXTURE_ORANGE"),
-            row_cells(&test, "FIXTURE_RED"),
-            raw_around(&test, "FIXTURE_RED"),
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    };
+    test.wait_for("coloured Bash output", |test| style_at(test, "FIXTURE_ORANGE"));
 
-    assert_eq!(red, (vt100::Color::Idx(1), false));
-    assert_eq!(orange, (vt100::Color::Idx(208), true));
+    assert_eq!(style_at(&test, "FIXTURE_RED"), Some((vt100::Color::Idx(1), false)));
+    assert_eq!(style_at(&test, "FIXTURE_ORANGE"), Some((vt100::Color::Idx(208), true)));
     // The hyperlink keeps its label, the cursor-up is not obeyed (" end" follows on the
     // same row) and the title text is not printed.
     let screen = test.screen();
@@ -3101,34 +3086,6 @@ fn bash_output_shows_sgr_colours_and_ignores_other_control_sequences() {
     assert!(!screen.contains("hijacked"), "{screen}");
     assert!(!screen.contains("example.com"), "{screen}");
     test.shutdown();
-}
-
-/// The raw output around the last draw of `needle`, with escapes made visible.
-fn raw_around(test: &TerminalTest, needle: &str) -> String {
-    let Ok(captured) = test.output.lock() else { return String::new() };
-    let raw = String::from_utf8_lossy(&captured.raw);
-    let Some(at) = raw.rfind(needle) else { return format!("{needle} not in the raw output") };
-    let start = raw[..at].char_indices().rev().nth(200).map_or(0, |(index, _)| index);
-    let end = raw[at..].char_indices().nth(3000).map_or(raw.len(), |(index, _)| at + index);
-    raw[start..end].replace('\u{1b}', "<ESC>")
-}
-
-/// Each cell of the first screen row holding `needle`, with its foreground colour.
-fn row_cells(test: &TerminalTest, needle: &str) -> String {
-    let Ok(captured) = test.output.lock() else { return String::new() };
-    let screen = captured.parser.screen();
-    let (rows, cols) = screen.size();
-    let cells = |row| (0..cols).filter_map(move |col| screen.cell(row, col));
-    let Some(row) = (0..rows).find(|&row| {
-        cells(row).map(|cell| cell.contents()).collect::<String>().contains(needle)
-    }) else {
-        return format!("{needle} not on screen");
-    };
-    cells(row)
-        .filter(|cell| cell.has_contents())
-        .map(|cell| format!("{}={:?}", cell.contents(), cell.fgcolor()))
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 /// The rows of `screen` that mention `needle`.
