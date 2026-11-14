@@ -3559,8 +3559,14 @@ fn bash_output_shows_sgr_colours_and_ignores_other_control_sequences() {
     let mut test = TerminalTest::start("bash-colour", 3);
     test.wait_for("coloured Bash output", |test| style_at(test, "FIXTURE_ORANGE"));
 
-    assert_eq!(style_at(&test, "FIXTURE_RED"), Some((vt100::Color::Idx(1), false)));
-    assert_eq!(style_at(&test, "FIXTURE_ORANGE"), Some((vt100::Color::Idx(208), true)));
+    let wire = test.output.lock().ok().map(|captured| {
+        let at = captured.raw.windows(11).position(|w| w == b"FIXTURE_RED").unwrap_or(0);
+        captured.raw[at.saturating_sub(120)..(at + 160).min(captured.raw.len())]
+            .escape_ascii()
+            .to_string()
+    });
+    assert_eq!(style_at(&test, "FIXTURE_RED"), Some((vt100::Color::Idx(1), false)), "{wire:?}");
+    assert_eq!(style_at(&test, "FIXTURE_ORANGE"), Some((vt100::Color::Idx(208), true)), "{wire:?}");
     // The hyperlink keeps its label, the cursor-up is not obeyed (" end" follows on the
     // same row) and the title text is not printed.
     let screen = test.screen();
