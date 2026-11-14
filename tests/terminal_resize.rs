@@ -3560,10 +3560,14 @@ fn bash_output_shows_sgr_colours_and_ignores_other_control_sequences() {
     test.wait_for("coloured Bash output", |test| style_at(test, "FIXTURE_ORANGE"));
 
     let wire = test.output.lock().ok().map(|captured| {
-        let at = captured.raw.windows(11).position(|w| w == b"FIXTURE_RED").unwrap_or(0);
-        captured.raw[at.saturating_sub(120)..(at + 160).min(captured.raw.len())]
-            .escape_ascii()
-            .to_string()
+        let raw = &captured.raw;
+        let shown: Vec<String> = (0..raw.len().saturating_sub(11))
+            .filter(|&at| &raw[at..at + 11] == b"FIXTURE_RED")
+            .map(|at| {
+                raw[at.saturating_sub(60)..(at + 40).min(raw.len())].escape_ascii().to_string()
+            })
+            .collect();
+        (shown, raw[raw.len().saturating_sub(500)..].escape_ascii().to_string())
     });
     assert_eq!(style_at(&test, "FIXTURE_RED"), Some((vt100::Color::Idx(1), false)), "{wire:?}");
     assert_eq!(style_at(&test, "FIXTURE_ORANGE"), Some((vt100::Color::Idx(208), true)), "{wire:?}");
