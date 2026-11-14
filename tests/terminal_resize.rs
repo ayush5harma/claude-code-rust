@@ -62,7 +62,6 @@ fn configure_test_profiles(command: &mut CommandBuilder, root: &Path) {
 struct CapturedTerminal {
     parser: vt100::Parser,
     raw: Vec<u8>,
-    chunks: Vec<usize>,
     ended: bool,
 }
 
@@ -151,7 +150,6 @@ fn capture_output(
     let output = Arc::new(Mutex::new(CapturedTerminal {
         parser: capture_parser(SHORT_ROWS, COLS),
         raw: Vec::new(),
-        chunks: Vec::new(),
         ended: false,
     }));
     let captured = Arc::clone(&output);
@@ -167,7 +165,6 @@ fn capture_output(
             let mut captured = captured.lock().expect("output lock");
             captured.parser.process(&buffer[..read]);
             captured.raw.extend_from_slice(&buffer[..read]);
-            captured.chunks.push(read);
             if query.windows(4).any(|s| s == b"\x1b[6n") {
                 let (row, col) = captured.parser.screen().cursor_position();
                 let reply = format!("\x1b[{};{}R", row + 1, col + 1);
@@ -3541,14 +3538,23 @@ fn read_result_shows_one_source_line_per_row_behind_a_gutter() {
 /// Foreground colour and boldness of the cell where `needle` starts on the visible screen.
 fn style_at(test: &TerminalTest, needle: &str) -> Option<(vt100::Color, bool)> {
     let captured = test.output.lock().ok()?;
-    let screen = captured.parser.screen();
+    style_in(captured.parser.screen(), needle)
+}
+
+fn style_in(screen: &vt100::Screen, needle: &str) -> Option<(vt100::Color, bool)> {
     let (rows, cols) = screen.size();
     let (rows, cols) = (rows.get(), cols.get());
     for row in 0..rows {
         let glyphs: Vec<&str> =
             (0..cols).map(|col| screen.cell(row, col).map_or("", |cell| cell.contents())).collect();
-        // Wide glyphs leave empty continuation cells, so search by cell, not by byte.
-        let start = (0..cols).find(|&col| glyphs[usize::from(col)..].concat().starts_with(needle));
+        // Wide glyphs leave empty continuation cells, so search by cell, not by byte. The
+        // match must start on a drawn cell: ConPTY indents a row by erasing and skipping
+        // cells (`CSI 9 X`, `CSI 9 C`), which leaves empty cells that concatenate to nothing
+        // and would otherwise match a column early, with the default colour.
+        let start = (0..cols).find(|&col| {
+            !glyphs[usize::from(col)].is_empty()
+                && glyphs[usize::from(col)..].concat().starts_with(needle)
+        });
         if let Some(col) = start {
             let cell = screen.cell(row, col)?;
             return Some((cell.fgcolor(), cell.bold()));
@@ -3558,61 +3564,23 @@ fn style_at(test: &TerminalTest, needle: &str) -> Option<(vt100::Color, bool)> {
 }
 
 #[test]
+fn style_lookup_skips_the_empty_cells_conpty_leaves_before_indented_text() {
+    let mut parser = capture_parser(3, 40);
+    // ConPTY redraws the Bash row as it appears on the wire in the Windows CI log.
+    parser.process(
+        b"\x1b[9X\x1b[38;5;1m\x1b[9CFIXTURE_RED \x1b[38;5;208m\x1b[1mFIXTURE_ORANGE\x1b[m",
+    );
+    assert_eq!(style_in(parser.screen(), "FIXTURE_RED"), Some((vt100::Color::Idx(1), false)));
+    assert_eq!(style_in(parser.screen(), "FIXTURE_ORANGE"), Some((vt100::Color::Idx(208), true)));
+}
+
+#[test]
 fn bash_output_shows_sgr_colours_and_ignores_other_control_sequences() {
     let mut test = TerminalTest::start("bash-colour", 3);
     test.wait_for("coloured Bash output", |test| style_at(test, "FIXTURE_ORANGE"));
 
-    let wire = test.output.lock().ok().map(|captured| {
-        let raw = &captured.raw;
-        let (rows, cols) = captured.parser.screen().size();
-        let mut fresh = vt100::Parser::new(rows, cols, SCROLLBACK_ROWS);
-        fresh.process(raw);
-        let replay: Vec<_> = ["FIXTURE_RED", "FIXTURE_ORANGE", "plain"]
-            .iter()
-            .map(|needle| {
-                let screen = fresh.screen();
-                (0..rows.get()).find_map(|row| {
-                    (0..cols.get()).find_map(|col| {
-                        let text: String = (col..cols.get())
-                            .map(|c| screen.cell(row, c).map_or("", |cell| cell.contents()))
-                            .collect();
-                        text.starts_with(needle).then(|| {
-                            let cell = screen.cell(row, col)?;
-                            Some((row, col, cell.fgcolor()))
-                        })?
-                    })
-                })
-            })
-            .collect();
-        let mut kinds: Vec<String> = Vec::new();
-        for (at, _) in raw.iter().enumerate().filter(|(_, b)| **b == 0x1b) {
-            let end = (at + 24).min(raw.len());
-            let seq = raw[at..end].escape_ascii().to_string();
-            let seq: String = seq.chars().take(18).collect();
-            if !seq.starts_with("\\x1b[3")
-                && !seq.starts_with("\\x1b[4")
-                && !kinds.contains(&seq)
-                && kinds.len() < 60
-            {
-                kinds.push(seq);
-            }
-        }
-        let red = raw.windows(11).position(|w| w == b"FIXTURE_RED").unwrap_or(0);
-        let mut start = 0;
-        let near: Vec<(usize, usize)> = captured
-            .chunks
-            .iter()
-            .map(|&len| {
-                let range = (start, len);
-                start += len;
-                range
-            })
-            .filter(|&(start, len)| start + len + 100 > red && start < red + 100)
-            .collect();
-        (replay, near, red, kinds)
-    });
-    assert_eq!(style_at(&test, "FIXTURE_RED"), Some((vt100::Color::Idx(1), false)), "{wire:?}");
-    assert_eq!(style_at(&test, "FIXTURE_ORANGE"), Some((vt100::Color::Idx(208), true)), "{wire:?}");
+    assert_eq!(style_at(&test, "FIXTURE_RED"), Some((vt100::Color::Idx(1), false)));
+    assert_eq!(style_at(&test, "FIXTURE_ORANGE"), Some((vt100::Color::Idx(208), true)));
     // The hyperlink keeps its label, the cursor-up is not obeyed (" end" follows on the
     // same row) and the title text is not printed.
     let screen = test.screen();
