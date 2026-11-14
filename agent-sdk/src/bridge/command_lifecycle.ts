@@ -272,7 +272,7 @@ async function resume(
     sessionId: command.session_id,
   });
   try {
-    const { limit: _limit, ...listOptions } = currentSessionListOptions();
+    const listOptions = currentSessionListOptions();
     const sdkSessions = await listSessions(listOptions);
     const listedId = sdkSessions.find((entry) => entry.sessionId === command.session_id);
     const exactId = listedId ?? (/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(command.session_id)

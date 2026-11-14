@@ -941,6 +941,39 @@ mod tests {
     }
 
     #[test]
+    fn every_listed_session_is_searchable_by_its_name() {
+        // The bridge once sent the newest 50 and an older picker kept 10, so a session renamed
+        // long ago could not be found. The picker keeps whatever the listing holds.
+        let mut app = picker_app();
+        let mut rx = attach(&mut app);
+        let sessions = (0..120_u64)
+            .map(|index| crate::agent::types::SessionListEntry {
+                session_id: format!("saved-{index}"),
+                summary: format!("prompt {index}"),
+                last_modified_ms: 1_000 + index,
+                file_size_bytes: 1,
+                cwd: Some("/test".to_owned()),
+                git_branch: None,
+                custom_title: (index == 0).then(|| "Quarterly planning".to_owned()),
+                first_prompt: Some(format!("prompt {index}")),
+                tag: None,
+            })
+            .rev()
+            .collect();
+        crate::app::events::session::handle_sessions_listed_event(&mut app, sessions);
+        assert_eq!(super::picker_sessions(&app).count(), 120);
+        for ch in "quarterly".chars() {
+            key(&mut app, KeyCode::Char(ch));
+        }
+        assert_eq!(
+            super::picker_sessions(&app).map(|s| s.session_id.as_str()).collect::<Vec<_>>(),
+            ["saved-0"]
+        );
+        key(&mut app, KeyCode::Enter);
+        expect_resume(&mut rx, "saved-0");
+    }
+
+    #[test]
     fn no_matches_cannot_resume_or_fork_and_backspace_restores_results() {
         let mut app = picker_app();
         let (connection, mut rx) = AgentConnection::test_channel();

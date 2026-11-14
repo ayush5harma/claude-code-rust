@@ -24,7 +24,6 @@ import {
   type SessionState,
 } from "./session_lifecycle.js";
 
-const SESSION_LIST_LIMIT = 50;
 let sessionListingDir: string | undefined;
 type ProtocolEventWriter = (line: string) => void;
 
@@ -77,13 +76,15 @@ export function replaceProtocolEventWriter(
   };
 }
 
-export function buildSessionListOptions(
-  dir: string | undefined,
-  limit = SESSION_LIST_LIMIT,
-): ListSessionsOptions {
+// No limit: the picker searches what it is given, so a cap hid every older session from
+// /resume, and tag, delete, history and fork lookups failed for them. Stock Claude Code's
+// picker reaches every session of the project too (it pages them in as the list scrolls).
+// includeProgrammatic stays on because claude-rs's own sessions are saved with the SDK's
+// `sdk-ts` entrypoint, which the SDK otherwise filters out.
+export function buildSessionListOptions(dir: string | undefined): ListSessionsOptions {
   return dir
-    ? { dir, includeProgrammatic: true, includeWorktrees: true, limit }
-    : { includeProgrammatic: true, limit };
+    ? { dir, includeProgrammatic: true, includeWorktrees: true }
+    : { includeProgrammatic: true };
 }
 
 export function setSessionListingDir(dir: string | undefined): void {
@@ -475,14 +476,11 @@ export async function emitSessionsList(requestId?: string): Promise<void> {
     message: "sessions list requested",
     outcome: "start",
     ...(requestId ? { requestId } : {}),
-    fields: {
-      has_listing_dir: sessionListingDir !== undefined,
-      limit: SESSION_LIST_LIMIT,
-    },
+    fields: { has_listing_dir: sessionListingDir !== undefined },
   });
   try {
     const sdkSessions = await listSessions(currentSessionListOptions());
-    const sessions = mapSdkSessions(sdkSessions, SESSION_LIST_LIMIT);
+    const sessions = mapSdkSessions(sdkSessions);
     bridgeLogger.info({
       target: LOG_TARGETS.APP_SESSION,
       eventName: "sessions_list_completed",

@@ -1443,7 +1443,12 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): {
     export async function listSessions(options) {
       record({ type: "list", options });
       if (process.env.LIST_SESSIONS_FAILURE === "1") throw new Error("fixture list failed");
-      return sessionEntries().filter(entry => !options?.dir || entry.cwd === options.dir);
+      // Like the SDK: newest first, then offset and limit.
+      const listed = sessionEntries()
+        .filter(entry => !options?.dir || entry.cwd === options.dir)
+        .sort((a, b) => b.lastModified - a.lastModified);
+      const offset = options?.offset ?? 0;
+      return listed.slice(offset, options?.limit === undefined ? undefined : offset + options.limit);
     }
     export async function getSessionInfo(sessionId, options) {
       const entry = sessionEntries().find(candidate => candidate.sessionId === sessionId);
@@ -4296,6 +4301,29 @@ test("list_sessions answers with a fresh SDK listing under its request id", asyn
     const ids = (listed.sessions as BridgeEnvelope[]).map(session => session.session_id);
     assert.ok(ids.includes("older"));
     assert.ok(ids.includes(connected.session_id as string));
+  } finally { await cleanup(); }
+});
+
+test("list_sessions lists every saved session of the project, however old", async () => {
+  const cwd = process.cwd();
+  // More sessions than the picker once received (50); the oldest carries a name from /rename.
+  const sessions = Array.from({ length: 120 }, (_, index) => ({
+    sessionId: `saved-${index}`,
+    summary: `prompt ${index}`,
+    cwd,
+    lastModified: 1_000 + index,
+    ...(index === 0 ? { customTitle: "Quarterly planning" } : {}),
+  }));
+  const { bridge, cleanup } = ultracodeFixtureBridge({ STARTUP_SESSIONS_FIXTURE: JSON.stringify(sessions) });
+  try {
+    bridge.writeCommand({ command: "create_session", cwd, launch_settings: {} });
+    await nextMatching(bridge, event => event.event === "connected");
+    bridge.writeCommand({ command: "list_sessions", request_id: "picker-open" });
+    const listed = await nextMatching(bridge, event => event.event === "sessions_listed" && event.request_id === "picker-open");
+    const entries = listed.sessions as BridgeEnvelope[];
+    const missing = sessions.filter(session => !entries.some(entry => entry.session_id === session.sessionId));
+    assert.deepEqual(missing.map(session => session.sessionId), []);
+    assert.equal(entries.find(entry => entry.session_id === "saved-0")?.custom_title, "Quarterly planning");
   } finally { await cleanup(); }
 });
 

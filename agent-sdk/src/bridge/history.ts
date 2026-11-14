@@ -269,10 +269,7 @@ export function mapSdkSessionInfo(info: SDKSessionInfo): SessionListEntry {
   };
 }
 
-export function mapSdkSessions(
-  infos: SDKSessionInfo[],
-  limit = 50,
-): SessionListEntry[] {
+export function mapSdkSessions(infos: SDKSessionInfo[]): SessionListEntry[] {
   const sorted = [...infos].sort((a, b) => b.lastModified - a.lastModified);
   const entries: SessionListEntry[] = [];
   const seen = new Set<string>();
@@ -282,9 +279,6 @@ export function mapSdkSessions(
     }
     seen.add(info.sessionId);
     entries.push(mapSdkSessionInfo(info));
-    if (entries.length >= limit) {
-      break;
-    }
   }
   return entries;
 }

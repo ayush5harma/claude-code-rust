@@ -163,7 +163,7 @@ export async function mutateListedSession(
       await deps.deleteSession(command.session_id, { dir });
     }
     try {
-      const sessions = mapSdkSessions(await deps.listSessions(options), 50);
+      const sessions = mapSdkSessions(await deps.listSessions(options));
       return { event: "session_mutation_result", session_id: command.session_id, operation, sessions };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

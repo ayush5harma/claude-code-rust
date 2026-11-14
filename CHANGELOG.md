@@ -12,6 +12,10 @@ All notable changes to this project will be documented in this file.
 - The footer is upstream's configurable row. The fork's session name, usage-limit windows and finished-agent count are new fields in it; the plan row, agent shelf and `statusLine` row stay around it. The fork's two-row responsive footer is removed.
 - Code blocks inside quotes use the fork's shaded code style, and links in lists are shortened like other links. Code inside lists is drawn by the vendored `tui-markdown` with the code fill but without the rail and language label; porting the shaded style there is not done yet.
 
+### Fixes
+
+- `/resume` lists every saved session of the project, as Claude Code's own picker does, so a conversation renamed long ago is found by its name. The bridge asked the Agent SDK for the newest 50 sessions only, which also made tagging, deleting, reading or forking an older session fail with "no longer in this project" or "unknown session".
+
 ## [0.16.3] - 2026-11-13 [Changes][v0.16.3]
 
 ### Features

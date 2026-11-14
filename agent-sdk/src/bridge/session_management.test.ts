@@ -30,6 +30,30 @@ test("delete rechecks a target that becomes active while the SDK list is delayed
   assert.equal(deletes, 0);
 });
 
+test("a session older than the newest fifty can be tagged and stays in the returned listing", async () => {
+  const tags = new Map<string, string>();
+  const sessions = Array.from({ length: 120 }, (_, index) => ({
+    sessionId: `saved-${index}`, summary: `prompt ${index}`, lastModified: 1_000 + index, cwd: "/project",
+  }));
+  const result = await mutateListedSession(
+    { command: "tag_session", session_id: "saved-0", tag: "keep" },
+    {
+      // Like the SDK: newest first, then the requested limit.
+      listSessions: async (options) => sessions
+        .map((session) => ({ ...session, ...(tags.has(session.sessionId) ? { tag: tags.get(session.sessionId) } : {}) }))
+        .sort((a, b) => b.lastModified - a.lastModified)
+        .slice(0, options?.limit),
+      sessionById: () => null,
+      tagSession: async (id, tag) => { tags.set(id, tag ?? ""); },
+      deleteSession: async () => {},
+    },
+  );
+  assert.equal(result.error, undefined);
+  assert.deepEqual([...tags], [["saved-0", "keep"]]);
+  assert.equal(result.sessions?.length, 120);
+  assert.equal(result.sessions?.find((session) => session.session_id === "saved-0")?.tag, "keep");
+});
+
 test("session mutations use SDK IDs and directory, acknowledge failures, then return fresh metadata", async () => {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), "bridge-session-management-")));
   const project = join(directory, "project");
