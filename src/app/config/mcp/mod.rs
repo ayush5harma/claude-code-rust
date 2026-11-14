@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 mod actions;
 mod auth;
 mod elicitation;
+pub(crate) mod form;
+pub(crate) use form::ElicitationQueue;
 mod errors;
 mod overlays;
 mod ownership;
@@ -19,8 +20,7 @@ pub(crate) use auth::{
     open_url_in_browser, present_mcp_auth_redirect, submit_mcp_oauth_callback_url,
 };
 pub(crate) use elicitation::{
-    handle_mcp_elicitation_completed, handle_mcp_elicitation_response_queued,
-    present_mcp_elicitation_request, send_mcp_elicitation_response,
+    handle_mcp_elicitation_settled, present_mcp_elicitation_request, send_mcp_elicitation_response,
 };
 pub(crate) use errors::handle_mcp_operation_error;
 pub(crate) use overlays::{
@@ -36,8 +36,6 @@ pub(crate) use removal::{
     apply_pending_dynamic_mcp_removal_confirmation, handle_mcp_set_servers_result,
     pending_dynamic_mcp_removal_confirmation_from_snapshot, remove_mcp_server_from_config,
 };
-#[cfg(test)]
-pub(crate) use snapshot::request_mcp_snapshot;
 pub(crate) use snapshot::{
     apply_removed_config_mcp_server_confirmation_failures, filter_removed_config_mcp_servers,
     filter_stale_plugin_mcp_servers, reconcile_removed_config_mcp_server_guards,

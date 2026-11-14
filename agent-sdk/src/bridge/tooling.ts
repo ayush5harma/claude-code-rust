@@ -1,8 +1,8 @@
-import type { Json, ToolCall, ToolCallUpdateFields } from "../types.js";
+import type { Json, ToolCall, ToolCallUpdateFields, ToolResultPresentation } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
-import { CACHE_SPLIT_POLICY, previewKilobyteLabel } from "./cache_policy.js";
 import {
   isTaskToolName,
+  taskCreateResult,
   taskToolResultText,
   taskToolTitle,
   taskUpdateSucceeded,
@@ -91,7 +91,7 @@ function inputBoolean(
   return typeof input[key] === "boolean" ? input[key] : undefined;
 }
 
-function isAgentLikeToolName(name: string): boolean {
+export function isAgentLikeToolName(name: string): boolean {
   return name === "Agent" || name === "Task";
 }
 
@@ -735,11 +735,12 @@ function extractToolOutputMetadata(
       const backgroundCwdHint = nonEmptyString(candidate.backgroundCwdHint);
       const hasBackgroundEndsWithFinalResponse =
         typeof candidate.backgroundEndsWithFinalResponse === "boolean";
+      const hasBackgroundWakesOwner = typeof candidate.backgroundWakesOwner === "boolean";
       if (
         hasAssistantAutoBackgrounded ||
         timedOutAfterMs !== undefined ||
         backgroundCwdHint ||
-        hasBackgroundEndsWithFinalResponse
+        hasBackgroundEndsWithFinalResponse || hasBackgroundWakesOwner
       ) {
         const bashMetadata: import("../types.js").BashOutputMetadata = {};
         if (hasAssistantAutoBackgrounded) {
@@ -756,13 +757,14 @@ function extractToolOutputMetadata(
           bashMetadata.background_ends_with_final_response =
             candidate.backgroundEndsWithFinalResponse as boolean;
         }
+        if (hasBackgroundWakesOwner) bashMetadata.background_wakes_owner = candidate.backgroundWakesOwner as boolean;
         metadata.bash = bashMetadata;
         break;
       }
     }
   }
 
-  if (toolName === "Agent" || toolName === "Task") {
+  if (isAgentLikeToolName(toolName)) {
     for (const candidate of candidates) {
       const resolvedModel = nonEmptyString(candidate.resolvedModel);
       const modelsUsed = orderedNonEmptyStrings(candidate.modelsUsed);
@@ -904,20 +906,12 @@ export function extractText(value: unknown): string {
 
 const PERSISTED_OUTPUT_OPEN_TAG = "<persisted-output>";
 const PERSISTED_OUTPUT_CLOSE_TAG = "</persisted-output>";
-const EXPECTED_PREVIEW_LINE = `preview (first ${previewKilobyteLabel(CACHE_SPLIT_POLICY).toLowerCase()}):`;
 
 function extractPersistedOutputInnerText(text: string): string | null {
-  const lower = text.toLowerCase();
-  const openIdx = lower.indexOf(PERSISTED_OUTPUT_OPEN_TAG);
-  if (openIdx < 0) {
-    return null;
-  }
-  const bodyStart = openIdx + PERSISTED_OUTPUT_OPEN_TAG.length;
-  const closeIdx = lower.indexOf(PERSISTED_OUTPUT_CLOSE_TAG, bodyStart);
-  if (closeIdx < 0) {
-    return null;
-  }
-  return text.slice(bodyStart, closeIdx);
+  const envelope = text.trim();
+  const lower = envelope.toLowerCase();
+  if (!lower.startsWith(PERSISTED_OUTPUT_OPEN_TAG) || !lower.endsWith(PERSISTED_OUTPUT_CLOSE_TAG)) return null;
+  return envelope.slice(PERSISTED_OUTPUT_OPEN_TAG.length, -PERSISTED_OUTPUT_CLOSE_TAG.length);
 }
 
 function persistedOutputFirstLine(text: string): string | null {
@@ -929,10 +923,8 @@ function persistedOutputFirstLine(text: string): string | null {
   for (const line of inner.split(/\r?\n/)) {
     const cleaned = line.replace(/^[\s|│┃║]+/u, "").trim();
     if (cleaned.length > 0) {
-      if (cleaned.toLowerCase() === EXPECTED_PREVIEW_LINE) {
-        continue;
-      }
-      return cleaned;
+      // Only the SDK receipt identifies persisted output; ordinary examples remain literal.
+      return /^Output too large \([^)]+\)\. Full output saved to: \S.*$/.test(cleaned) ? cleaned : null;
     }
   }
   return null;
@@ -1055,14 +1047,10 @@ function boundedDisplayText(value: string, maxCharacters = 240): string {
 }
 
 function writeResultPresentation(
+  rawResult: unknown,
   rawContent: unknown,
 ): WriteResultPresentation | undefined {
-  const candidates = resultRecordCandidates(rawContent, undefined);
-  const parsed = parseJsonCandidate(rawContent);
-  if (parsed !== undefined) {
-    candidates.push(...resultRecordCandidates(parsed, undefined));
-  }
-  for (const candidate of candidates) {
+  for (const candidate of collectResultCandidates(rawResult, rawContent)) {
     const record = candidate;
     const filePath =
       typeof record.filePath === "string"
@@ -1314,34 +1302,6 @@ function buildShellDisplayOutput(record: Record<string, unknown>): string {
   return segments.join("\n");
 }
 
-// The SDK's Read result carries the file's own text and first line number next to the
-// numbered text the model sees; the numbered text is not parsed back apart here or in Rust.
-function fileTextReadContent(
-  rawResult: unknown,
-  rawContent: unknown,
-): ToolCall["content"] {
-  for (const candidate of resultRecordCandidates(rawResult, rawContent)) {
-    if (candidate.type !== "text") {
-      continue;
-    }
-    const file = asRecordOrNull(candidate.file);
-    const path = nonEmptyString(file?.filePath);
-    const text = typeof file?.content === "string" ? file.content : "";
-    const startLine = file?.startLine;
-    if (
-      !path ||
-      !text ||
-      typeof startLine !== "number" ||
-      !Number.isSafeInteger(startLine) ||
-      startLine < 1
-    ) {
-      continue;
-    }
-    return [{ type: "file_text", path, start_line: startLine, text }];
-  }
-  return [];
-}
-
 function fileUnchangedResultText(
   rawResult: unknown,
   rawContent: unknown,
@@ -1358,6 +1318,35 @@ function fileUnchangedResultText(
     }
   }
   return "";
+}
+
+type ReadTextResult = { content: string; filePath: string; startLine: number };
+
+/** File source from a structured Read result, without line numbers or reminders. */
+function readTextResult(
+  rawResult: unknown,
+  rawContent: unknown,
+): ReadTextResult | undefined {
+  for (const candidate of resultRecordCandidates(rawResult, rawContent)) {
+    if (candidate.type !== "text") {
+      continue;
+    }
+    const file = asRecordOrNull(candidate.file);
+    const content = file?.content;
+    const filePath = nonEmptyString(file?.filePath);
+    const startLine = nonNegativeInteger(file?.startLine);
+    // Empty reads keep the SDK's explanatory text instead of an empty body.
+    if (
+      typeof content === "string" &&
+      content.length > 0 &&
+      filePath &&
+      startLine !== undefined &&
+      startLine >= 1
+    ) {
+      return { content, filePath, startLine };
+    }
+  }
+  return undefined;
 }
 
 function agentTitleFromAgentOutput(
@@ -1468,12 +1457,12 @@ function truncateList(
 
 function globResultText(record: Record<string, unknown>): string | undefined {
   const filenames = searchFilenames(record);
-  const numFiles = recordNumber(record, "numFiles") ?? filenames.length;
+  const numFiles = recordNonNegativeInteger(record, "numFiles") ?? filenames.length;
   const truncated = record.truncated === true;
   const lines: string[] = [];
 
   if (numFiles === 0 && filenames.length === 0) {
-    lines.push("No files found");
+    lines.push(record.timedOut === true ? "No files found before the search timed out" : "No files found");
   } else {
     lines.push(
       `${numFiles} ${pluralize(numFiles, "file")} found${truncated ? " (truncated)" : ""}`,
@@ -1487,6 +1476,8 @@ function globResultText(record: Record<string, unknown>): string | undefined {
       lines.push(`... ${hidden} more ${pluralize(hidden, "file")} hidden`);
     }
   }
+
+  if (record.timedOut === true) lines.push("Search timed out; results may be incomplete.");
 
   const durationMs = recordNumber(record, "durationMs");
   if (durationMs !== undefined) {
@@ -1524,8 +1515,10 @@ function grepResultText(record: Record<string, unknown>): string | undefined {
       lines.push(`... ${hidden} more ${pluralize(hidden, "file")} hidden`);
     }
   } else {
-    lines.push("No matches found");
+    lines.push(record.timedOut === true ? "No matches found before the search timed out" : "No matches found");
   }
+
+  if (record.timedOut === true) lines.push("Search timed out; results may be incomplete.");
 
   const summaryParts: string[] = [];
   if (numFiles !== undefined) {
@@ -1567,43 +1560,69 @@ function searchResultText(
 }
 
 function worktreeResultFields(
-  toolName: string,
-  rawResult: unknown,
-  rawContent: unknown,
-): { output?: string } | undefined {
-  if (toolName !== "EnterWorktree" && toolName !== "ExitWorktree") {
-    return undefined;
-  }
+	toolName: string,
+	rawResult: unknown,
+	rawContent: unknown,
+): { output?: string; presentation?: ToolResultPresentation } | undefined {
+	if (toolName !== "EnterWorktree" && toolName !== "ExitWorktree") {
+		return undefined;
+	}
 
-  const candidates = resultRecordCandidates(rawResult, rawContent);
-  for (const parsed of [
-    parseJsonCandidate(rawResult),
-    parseJsonCandidate(rawContent),
-  ]) {
-    candidates.push(...resultRecordCandidates(parsed, undefined));
-  }
+	const candidates = resultRecordCandidates(rawResult, rawContent);
+	for (const parsed of [
+		parseJsonCandidate(rawResult),
+		parseJsonCandidate(rawContent),
+	]) {
+		candidates.push(...resultRecordCandidates(parsed, undefined));
+	}
 
-  for (const candidate of candidates) {
-    const branch =
-      typeof candidate.worktreeBranch === "string"
-        ? candidate.worktreeBranch.trim()
-        : "";
-    const path =
-      typeof candidate.worktreePath === "string"
-        ? candidate.worktreePath.trim()
-        : "";
-    const output = branch ? `Branch: ${branch}` : path ? `Path: ${path}` : "";
-    const isStructuredWorktreeOutput =
-      "message" in candidate ||
-      "worktreeBranch" in candidate ||
-      "worktreePath" in candidate ||
-      "originalCwd" in candidate;
-    if (output || isStructuredWorktreeOutput) {
-      return output ? { output } : {};
-    }
-  }
+	for (const candidate of candidates) {
+		if (
+			toolName === "ExitWorktree" &&
+			(candidate.action === "keep" || candidate.action === "remove")
+		) {
+			const fields = [resultField("Action", candidate.action)];
+			for (const [key, label] of [
+				["worktreePath", "Worktree"],
+				["originalCwd", "Restored directory"],
+				["worktreeBranch", "Branch"],
+			]) {
+				const value = nonEmptyString(candidate[key]);
+				if (value) fields.push(resultField(label, value));
+			}
+			for (const [key, label] of [
+				["discardedFiles", "Discarded files"],
+				["discardedCommits", "Discarded commits"],
+			]) {
+				const count = recordNonNegativeInteger(candidate, key);
+				if (count !== undefined) fields.push(resultField(label, String(count)));
+			}
+			const presentation = { sections: [{ fields }] };
+			return {
+				output: resultPresentationText(presentation, false),
+				presentation,
+			};
+		}
+		const branch =
+			typeof candidate.worktreeBranch === "string"
+				? candidate.worktreeBranch.trim()
+				: "";
+		const path =
+			typeof candidate.worktreePath === "string"
+				? candidate.worktreePath.trim()
+				: "";
+		const output = branch ? `Branch: ${branch}` : path ? `Path: ${path}` : "";
+		const isStructuredWorktreeOutput =
+			"message" in candidate ||
+			"worktreeBranch" in candidate ||
+			"worktreePath" in candidate ||
+			"originalCwd" in candidate;
+		if (output || isStructuredWorktreeOutput) {
+			return output ? { output } : {};
+		}
+	}
 
-  return undefined;
+	return undefined;
 }
 
 function booleanLabel(value: boolean): string {
@@ -1947,124 +1966,193 @@ function readableCronSchedule(
   return normalizeHumanSchedule(humanSchedule);
 }
 
-function cronCreateResultText(
+type ResultSection = ToolResultPresentation["sections"][number];
+
+function resultField(
+  label: string,
+  value: string,
+): ResultSection["fields"][number] {
+  return { label, value: { type: "text", value } };
+}
+
+function timestampField(
+  label: string,
+  value: unknown,
+): ResultSection["fields"] {
+  return typeof value === "string" && value.trim()
+    ? [{ label, value: { type: "timestamp", value } }]
+    : [];
+}
+
+function nextRunField(value: unknown): ResultSection["fields"] {
+  // The SDK scheduler includes fractional milliseconds; Date keeps millisecond precision.
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0)
+    return [];
+  const date = new Date(value);
+  return Number.isFinite(date.getTime())
+    ? timestampField("Next run", date.toISOString())
+    : [];
+}
+
+function cronJobSection(
+  job: Record<string, unknown>,
+  single: boolean,
+): ResultSection {
+  const fields: ResultSection["fields"] = [];
+  if (typeof job.id === "string")
+    fields.push(resultField("Schedule ID", job.id));
+  const cron = nonEmptyString(job.cron);
+  if (single && cron) fields.push(resultField("Cron", cron));
+  const schedule = readableCronSchedule(job.cron, job.humanSchedule);
+  if (schedule) fields.push(resultField("Schedule", schedule));
+  else if (!single && cron) fields.push(resultField("Cron", cron));
+  fields.push(...nextRunField(job.nextFireAt));
+  if (typeof job.prompt === "string")
+    fields.push(resultField("Prompt", job.prompt));
+  if (single) {
+    for (const [key, label] of [
+      ["recurring", "Recurring"],
+      ["durable", "Durable"],
+    ]) {
+      if (typeof job[key] === "boolean")
+        fields.push(resultField(label, booleanLabel(job[key] as boolean)));
+    }
+  }
+  return { fields };
+}
+
+function cronResultPresentation(
+  toolName: string,
   candidate: Record<string, unknown>,
   rawInput: Json | undefined,
-): string | undefined {
-  const input = asRecordOrNull(rawInput);
-  const schedule = readableCronSchedule(input?.cron, candidate.humanSchedule);
-  if (
-    typeof candidate.id !== "string" ||
-    typeof candidate.recurring !== "boolean" ||
-    !schedule
-  ) {
-    return undefined;
+): ToolResultPresentation | undefined {
+  if (toolName === "CronCreate") {
+    const schedule = readableCronSchedule(
+      asRecordOrNull(rawInput)?.cron,
+      candidate.humanSchedule,
+    );
+    if (
+      typeof candidate.id !== "string" ||
+      typeof candidate.recurring !== "boolean" ||
+      !schedule
+    )
+      return undefined;
+    const section: ResultSection = {
+      fields: [
+        resultField("Schedule ID", candidate.id),
+        resultField("Schedule", schedule),
+        ...nextRunField(candidate.nextFireAt),
+        resultField("Recurring", booleanLabel(candidate.recurring)),
+      ],
+    };
+    const prompt = asRecordOrNull(rawInput)?.prompt;
+    if (typeof prompt === "string")
+      section.fields.splice(
+        section.fields.length - 1,
+        0,
+        resultField("Prompt", prompt),
+      );
+    if (typeof candidate.durable === "boolean")
+      section.fields.push(
+        resultField("Durable", booleanLabel(candidate.durable)),
+      );
+    return { sections: [section] };
   }
-
-  const lines = [
-    `Schedule ID: ${candidate.id}`,
-    `Schedule: ${schedule}`,
-    `Recurring: ${booleanLabel(candidate.recurring)}`,
-  ];
-  pushBooleanField(lines, "Durable", candidate.durable);
-  return lines.join("\n");
-}
-
-function cronDeleteResultText(
-  candidate: Record<string, unknown>,
-): string | undefined {
-  return typeof candidate.id === "string"
-    ? `Schedule ID: ${candidate.id}`
-    : undefined;
-}
-
-function cronListResultText(
-  candidate: Record<string, unknown>,
-): string | undefined {
-  if (!Array.isArray(candidate.jobs)) {
+  if (toolName === "CronDelete")
+    return typeof candidate.id === "string"
+      ? { sections: [{ fields: [resultField("Schedule ID", candidate.id), ...(candidate.endedLoopWakeup === true ? [resultField("Loop wakeup ended", "yes")] : [])] }] }
+      : undefined;
+  if (toolName !== "CronList" || !Array.isArray(candidate.jobs))
     return undefined;
-  }
   const jobs = candidate.jobs
     .map(asRecordOrNull)
     .filter((job): job is Record<string, unknown> => job !== null);
-  if (jobs.length === 0) {
-    return "Jobs: none";
-  }
-
-  const lines: string[] = [];
-  if (jobs.length === 1) {
-    const [job] = jobs;
-    if (typeof job.id === "string") {
-      lines.push(`Schedule ID: ${job.id}`);
-    }
-    if (typeof job.cron === "string" && job.cron.trim()) {
-      lines.push(`Cron: ${job.cron.trim()}`);
-    }
-    const schedule = readableCronSchedule(job.cron, job.humanSchedule);
-    if (schedule) {
-      lines.push(`Schedule: ${schedule}`);
-    }
-    if (typeof job.prompt === "string") {
-      lines.push(`Prompt: ${job.prompt}`);
-    }
-    pushBooleanField(lines, "Recurring", job.recurring);
-    pushBooleanField(lines, "Durable", job.durable);
-  }
-
-  if (jobs.length > 1) {
-    for (const [index, job] of jobs.entries()) {
-      if (typeof job.id === "string") {
-        lines.push(`Schedule ID: ${job.id}`);
-      }
-      const schedule = readableCronSchedule(job.cron, job.humanSchedule);
-      if (schedule) {
-        lines.push(`Schedule: ${schedule}`);
-      } else if (typeof job.cron === "string" && job.cron.trim()) {
-        lines.push(`Cron: ${job.cron.trim()}`);
-      }
-      if (typeof job.prompt === "string") {
-        lines.push(`Prompt: ${job.prompt}`);
-      }
-      if (index < jobs.length - 1) {
-        lines.push(CRON_LIST_DIVIDER);
-      }
-    }
-  }
-
-  return lines.length > 0 ? lines.join("\n") : "Jobs: none";
+  return {
+    sections: jobs.length
+      ? jobs.map((job) => cronJobSection(job, jobs.length === 1))
+      : [{ fields: [resultField("Jobs", "none")] }],
+  };
 }
 
-function cronResultText(
+function notificationsResultPresentation(
+  candidate: Record<string, unknown>,
+): ToolResultPresentation | undefined {
+  if (
+    !Array.isArray(candidate.notifications) ||
+    typeof candidate.remaining !== "number" ||
+    !Number.isSafeInteger(candidate.remaining) ||
+    candidate.remaining < 0
+  )
+    return undefined;
+  const sections: ResultSection[] = [
+    {
+      fields: [
+        resultField("Remaining", String(candidate.remaining)),
+        ...timestampField("Read at", candidate.read_at),
+      ],
+    },
+  ];
+  for (const value of candidate.notifications) {
+    const item = asRecordOrNull(value);
+    if (
+      !item ||
+      typeof item.notification_id !== "string" ||
+      typeof item.content !== "string"
+    )
+      return undefined;
+    const fields = [resultField("Notification ID", item.notification_id)];
+    if (typeof item.origin === "string")
+      fields.push(resultField("Origin", item.origin));
+    fields.push(
+      ...timestampField("Queued at", item.queued_at),
+      ...timestampField("Arrived at", item.arrived_at),
+    );
+    sections.push({ fields, text: item.content });
+  }
+  if (!candidate.notifications.length)
+    sections[0].fields.push(resultField("Notifications", "none"));
+  return { sections };
+}
+
+function timedToolResultPresentation(
   toolName: string,
   rawResult: unknown,
   rawContent: unknown,
   rawInput: Json | undefined,
-): string | undefined {
-  if (!isCronToolName(toolName)) {
+): ToolResultPresentation | undefined {
+  if (!isCronToolName(toolName) && toolName !== "ReadNotifications")
     return undefined;
-  }
-
   const candidates = resultRecordCandidates(rawResult, rawContent);
   for (const parsed of [
     parseJsonCandidate(rawResult),
     parseJsonCandidate(rawContent),
-  ]) {
+  ])
     candidates.push(...resultRecordCandidates(parsed, undefined));
-  }
-
   for (const candidate of candidates) {
-    const output =
-      toolName === "CronCreate"
-        ? cronCreateResultText(candidate, rawInput)
-        : toolName === "CronDelete"
-          ? cronDeleteResultText(candidate)
-          : cronListResultText(candidate);
-    if (output !== undefined) {
-      return output;
-    }
+    const result =
+      toolName === "ReadNotifications"
+        ? notificationsResultPresentation(candidate)
+        : cronResultPresentation(toolName, candidate, rawInput);
+    if (result) return result;
   }
-
   return undefined;
+}
+
+/** Plain content/export projection of the same sections, without applying a host clock preference. */
+function resultPresentationText(
+  result: ToolResultPresentation,
+  cron: boolean,
+): string {
+  return result.sections
+    .map((section) =>
+      [
+        ...section.fields.map(
+          (field) => `${field.label}: ${field.value.value}`,
+        ),
+        ...(section.text !== undefined ? [section.text] : []),
+      ].join("\n"),
+    )
+    .join(cron ? `\n${CRON_LIST_DIVIDER}\n` : "\n\n");
 }
 
 function formatDurationSeconds(seconds: number): string {
@@ -2119,47 +2207,60 @@ function formatIsoTimestamp(value: unknown): string | undefined {
   return Number.isFinite(parsed) ? formatLocalTimestamp(parsed) : raw;
 }
 
-function scheduleWakeupResultText(
-  toolName: string,
-  rawResult: unknown,
-  rawContent: unknown,
-): string | undefined {
-  if (toolName !== SCHEDULE_WAKEUP_TOOL_NAME) {
-    return undefined;
-  }
+function scheduleWakeupResultPresentation(
+	toolName: string,
+	rawResult: unknown,
+	rawContent: unknown,
+): ToolResultPresentation | undefined {
+	if (toolName !== SCHEDULE_WAKEUP_TOOL_NAME) {
+		return undefined;
+	}
 
-  const candidates = resultRecordCandidates(rawResult, rawContent);
-  for (const parsed of [
-    parseJsonCandidate(rawResult),
-    parseJsonCandidate(rawContent),
-  ]) {
-    candidates.push(...resultRecordCandidates(parsed, undefined));
-  }
+	const candidates = resultRecordCandidates(rawResult, rawContent);
+	for (const parsed of [
+		parseJsonCandidate(rawResult),
+		parseJsonCandidate(rawContent),
+	]) {
+		candidates.push(...resultRecordCandidates(parsed, undefined));
+	}
 
-  for (const candidate of candidates) {
-    const scheduledFor =
-      typeof candidate.scheduledFor === "number"
-        ? formatLocalTimestamp(candidate.scheduledFor)
-        : undefined;
-    const clampedDelaySeconds =
-      typeof candidate.clampedDelaySeconds === "number"
-        ? formatDurationSeconds(candidate.clampedDelaySeconds)
-        : undefined;
-    if (
-      !scheduledFor ||
-      !clampedDelaySeconds ||
-      typeof candidate.wasClamped !== "boolean"
-    ) {
-      continue;
-    }
-    return [
-      `Scheduled for: ${scheduledFor}`,
-      `Actual delay: ${clampedDelaySeconds}`,
-      `Clamped: ${booleanLabel(candidate.wasClamped)}`,
-    ].join("\n");
-  }
+	for (const candidate of candidates) {
+		if (candidate.stopped === true) {
+			const fields = [resultField("Stopped", "yes")];
+			const cancelled = recordNonNegativeInteger(candidate, "cancelledWakeups");
+			if (cancelled !== undefined)
+				fields.push(resultField("Cancelled wakeups", String(cancelled)));
+			return { sections: [{ fields }] };
+		}
+		const scheduledFor =
+			typeof candidate.scheduledFor === "number"
+				? formatLocalTimestamp(candidate.scheduledFor)
+				: undefined;
+		const clampedDelaySeconds =
+			typeof candidate.clampedDelaySeconds === "number"
+				? formatDurationSeconds(candidate.clampedDelaySeconds)
+				: undefined;
+		if (
+			!scheduledFor ||
+			!clampedDelaySeconds ||
+			typeof candidate.wasClamped !== "boolean"
+		) {
+			continue;
+		}
+		return {
+			sections: [
+				{
+					fields: [
+						resultField("Scheduled for", scheduledFor),
+						resultField("Actual delay", clampedDelaySeconds),
+						resultField("Clamped", booleanLabel(candidate.wasClamped)),
+					],
+				},
+			],
+		};
+	}
 
-  return undefined;
+	return undefined;
 }
 
 function pushNotificationDisabledReason(value: unknown): string | undefined {
@@ -2344,114 +2445,131 @@ function isReplOutputRecord(record: Record<string, unknown>): boolean {
 }
 
 function replResultFields(
-  toolName: string,
-  rawResult: unknown,
-  rawContent: unknown,
-): { output?: string; failed: boolean } | undefined {
-  if (toolName !== REPL_TOOL_NAME) {
-    return undefined;
-  }
+	toolName: string,
+	rawResult: unknown,
+	rawContent: unknown,
+):
+	| { output?: string; failed: boolean; presentation?: ToolResultPresentation }
+	| undefined {
+	if (toolName !== REPL_TOOL_NAME) {
+		return undefined;
+	}
 
-  const candidates = resultRecordCandidates(rawResult, rawContent);
-  for (const parsed of [
-    parseJsonCandidate(rawResult),
-    parseJsonCandidate(rawContent),
-  ]) {
-    candidates.push(...resultRecordCandidates(parsed, undefined));
-  }
+	const candidates = resultRecordCandidates(rawResult, rawContent);
+	for (const parsed of [
+		parseJsonCandidate(rawResult),
+		parseJsonCandidate(rawContent),
+	]) {
+		candidates.push(...resultRecordCandidates(parsed, undefined));
+	}
 
-  for (const candidate of candidates) {
-    if (!isReplOutputRecord(candidate)) {
-      continue;
-    }
+	for (const candidate of candidates) {
+		if (!isReplOutputRecord(candidate)) {
+			continue;
+		}
 
-    const lines: string[] = [];
-    let failed = false;
-    if ("error" in candidate) {
-      failed = true;
-      const error = compactJson(candidate.error);
-      if (error) {
-        lines.push(`Error: ${error}`);
-      }
-    }
+		const fields: ToolResultPresentation["sections"][number]["fields"] = [];
+		let failed = false;
+		if ("error" in candidate) {
+			failed = true;
+			const error = compactJson(candidate.error);
+			if (error) {
+				fields.push(resultField("Error", error));
+			}
+		}
 
-    const stdout = typeof candidate.stdout === "string" ? candidate.stdout : "";
-    if (stdout) {
-      lines.push(`Stdout: ${stdout}`);
-    }
-    const stderr = typeof candidate.stderr === "string" ? candidate.stderr : "";
-    if (stderr) {
-      lines.push(`Stderr: ${stderr}`);
-    }
-    const result = compactJson(candidate.result);
-    if (result) {
-      lines.push(`Result: ${result}`);
-    }
+		const stdout = typeof candidate.stdout === "string" ? candidate.stdout : "";
+		if (stdout) {
+			fields.push(resultField("Stdout", stdout));
+		}
+		const stderr = typeof candidate.stderr === "string" ? candidate.stderr : "";
+		if (stderr) {
+			fields.push(resultField("Stderr", stderr));
+		}
+		const result = compactJson(candidate.result);
+		if (result) {
+			fields.push(resultField("Result", result));
+		}
 
-    if (Array.isArray(candidate.registeredTools)) {
-      const registeredTools = candidate.registeredTools.filter(
-        (tool): tool is string =>
-          typeof tool === "string" && tool.trim().length > 0,
-      );
-      if (registeredTools.length > 0) {
-        lines.push(`Registered tools: ${registeredTools.join(", ")}`);
-      }
-    }
-    if (Array.isArray(candidate.images) && candidate.images.length > 0) {
-      lines.push(`Images: ${candidate.images.length}`);
-    }
-    if (Array.isArray(candidate.documents) && candidate.documents.length > 0) {
-      lines.push(`Documents: ${candidate.documents.length}`);
-    }
-    const imagesOmitted = nonNegativeInteger(candidate.imagesOmitted);
-    if (imagesOmitted !== undefined && imagesOmitted > 0) {
-      lines.push(`Images omitted: ${imagesOmitted}`);
-    }
-    const failedPages = Array.isArray(candidate.imagePagesFailed)
-      ? candidate.imagePagesFailed
-      : [];
-    const failedPageLimit = 20;
-    let renderedFailedPages = 0;
-    let locallyOmittedFailedPages = 0;
-    for (const value of failedPages) {
-      const failedPage = asRecordOrNull(value);
-      const page = nonNegativeInteger(failedPage?.page);
-      if (!failedPage || page === undefined) {
-        continue;
-      }
-      if (renderedFailedPages >= failedPageLimit) {
-        locallyOmittedFailedPages += 1;
-        continue;
-      }
-      const file = nonEmptyString(failedPage.file);
-      const error = nonEmptyString(failedPage.error);
-      const context = [
-        file ? `file ${boundedDisplayText(file)}` : undefined,
-        error ? boundedDisplayText(error) : undefined,
-      ]
-        .filter((value): value is string => value !== undefined)
-        .join(": ");
-      lines.push(
-        `Failed image page: ${page}${context ? ` (${context})` : ""}`,
-      );
-      renderedFailedPages += 1;
-    }
-    const upstreamFailedPagesOmitted =
-      nonNegativeInteger(candidate.imagePagesFailedOmitted) ?? 0;
-    const failedPagesOmitted =
-      upstreamFailedPagesOmitted + locallyOmittedFailedPages;
-    if (failedPagesOmitted > 0) {
-      lines.push(`Failed image pages omitted: ${failedPagesOmitted}`);
-    }
-    const documentsOmitted = nonNegativeInteger(candidate.documentsOmitted);
-    if (documentsOmitted !== undefined && documentsOmitted > 0) {
-      lines.push(`Documents omitted: ${documentsOmitted}`);
-    }
+		if (Array.isArray(candidate.registeredTools)) {
+			const registeredTools = candidate.registeredTools.filter(
+				(tool): tool is string =>
+					typeof tool === "string" && tool.trim().length > 0,
+			);
+			if (registeredTools.length > 0) {
+				fields.push(
+					resultField("Registered tools", registeredTools.join(", ")),
+				);
+			}
+		}
+		if (Array.isArray(candidate.images) && candidate.images.length > 0) {
+			fields.push(resultField("Images", String(candidate.images.length)));
+		}
+		if (Array.isArray(candidate.documents) && candidate.documents.length > 0) {
+			fields.push(resultField("Documents", String(candidate.documents.length)));
+		}
+		const imagesOmitted = nonNegativeInteger(candidate.imagesOmitted);
+		if (imagesOmitted !== undefined && imagesOmitted > 0) {
+			fields.push(resultField("Images omitted", String(imagesOmitted)));
+		}
+		const failedPages = Array.isArray(candidate.imagePagesFailed)
+			? candidate.imagePagesFailed
+			: [];
+		const failedPageLimit = 20;
+		let renderedFailedPages = 0;
+		let locallyOmittedFailedPages = 0;
+		for (const value of failedPages) {
+			const failedPage = asRecordOrNull(value);
+			const page = nonNegativeInteger(failedPage?.page);
+			if (!failedPage || page === undefined) {
+				continue;
+			}
+			if (renderedFailedPages >= failedPageLimit) {
+				locallyOmittedFailedPages += 1;
+				continue;
+			}
+			const file = nonEmptyString(failedPage.file);
+			const error = nonEmptyString(failedPage.error);
+			const context = [
+				file ? `file ${boundedDisplayText(file)}` : undefined,
+				error ? boundedDisplayText(error) : undefined,
+			]
+				.filter((value): value is string => value !== undefined)
+				.join(": ");
+			fields.push(
+				resultField(
+					"Failed image page",
+					`${page}${context ? ` (${context})` : ""}`,
+				),
+			);
+			renderedFailedPages += 1;
+		}
+		const upstreamFailedPagesOmitted =
+			nonNegativeInteger(candidate.imagePagesFailedOmitted) ?? 0;
+		const failedPagesOmitted =
+			upstreamFailedPagesOmitted + locallyOmittedFailedPages;
+		if (failedPagesOmitted > 0) {
+			fields.push(
+				resultField("Failed image pages omitted", String(failedPagesOmitted)),
+			);
+		}
+		const documentsOmitted = nonNegativeInteger(candidate.documentsOmitted);
+		if (documentsOmitted !== undefined && documentsOmitted > 0) {
+			fields.push(resultField("Documents omitted", String(documentsOmitted)));
+		}
 
-    return { output: lines.length > 0 ? lines.join("\n") : undefined, failed };
-  }
+		const presentation =
+			fields.length > 0 ? { sections: [{ fields }] } : undefined;
+		return {
+			output: presentation
+				? resultPresentationText(presentation, false)
+				: undefined,
+			failed,
+			presentation,
+		};
+	}
 
-  return undefined;
+	return undefined;
 }
 
 type BackgroundLaunchResult = {
@@ -2473,6 +2591,32 @@ function collectResultCandidates(
     candidates.push(...resultRecordCandidates(parsed, undefined));
   }
   return candidates;
+}
+
+/** Successful SendMessage acknowledgements explicitly identify a resumed task. */
+export function resumedAgentTaskIdFromResult(toolName: string, rawResult: unknown, rawContent: unknown): string | undefined {
+  if (toolName !== "SendMessage") return undefined;
+  const result = collectResultCandidates(rawResult, rawContent).find(candidate => candidate.success === true && nonEmptyString(candidate.resumedAgentId));
+  return nonEmptyString(result?.resumedAgentId);
+}
+
+/** Saved SDK Agent acknowledgements can replace an originally foreground call. */
+export function isDeferredAgentResult(rawResult: unknown, rawContent: unknown): boolean {
+  return collectResultCandidates(rawResult, rawContent).some(candidate => candidate.status === "async_launched" || candidate.isAsync === true)
+    || extractText(rawContent).trimStart().startsWith("Async agent launched successfully");
+}
+
+/** Common task metadata supplied by a saved Agent invocation. */
+export function agentTaskLaunchFields(tool: ToolCall | undefined): Record<string, unknown> {
+  if (!isAgentLikeToolName(resolveToolName(tool))) return {};
+  const input = asRecordOrNull(tool?.raw_input);
+  const subagentType = nonEmptyString(input?.subagent_type);
+  const description = nonEmptyString(input?.description);
+  return {
+    task_type: "local_agent",
+    ...(subagentType ? { subagent_type: subagentType } : {}),
+    ...(description ? { task_description: description } : {}),
+  };
 }
 
 type InlineSkillResult = {
@@ -2877,341 +3021,392 @@ export function parseDetachedToolNotification(message: Record<string, unknown>):
 }
 
 export function buildToolResultFields(
-  isError: boolean,
-  rawContent: unknown,
-  base?: ToolCall,
-  rawResult?: unknown,
-  _context: TaskTitleContext = {},
+	isError: boolean,
+	rawContent: unknown,
+	base?: ToolCall,
+	rawResult?: unknown,
+	_context: TaskTitleContext = {},
 ): ToolCallUpdateFields {
-  const toolName = resolveToolName(base);
-  if (
-    !isError &&
-    (toolName === "WebFetch" || toolName === "WebSearch") &&
-    resultRecordCandidates(rawResult, rawContent).some(
-      (candidate) => candidate.detachedToolCall === true,
-    )
-  ) {
-    return { status: "detached", raw_output: "", content: [] };
-  }
-  const fields: ToolCallUpdateFields = {
-    status: isError ? "failed" : "completed",
-  };
-  const outputMetadata = extractToolOutputMetadata(
-    toolName,
-    rawResult,
-    rawContent,
-  );
-  if (outputMetadata) {
-    fields.output_metadata = outputMetadata;
-  }
-  const skillResult = !isError
-    ? parseSkillResult(toolName, rawResult, rawContent)
-    : undefined;
-  if (skillResult) {
-    fields.title = `${SKILL_TOOL_NAME}: ${skillDisplayName(skillResult.commandName)}`;
-    if (!skillResult.success) {
-      fields.status = "failed";
-    } else if (skillResult.status === "inline") {
-      return fields;
-    } else {
-      const output = skillResult.result.trim();
-      if (output) {
-        fields.raw_output = output;
-        fields.content = [
-          { type: "content", content: { type: "text", text: output } },
-        ];
-      }
+	const toolName = resolveToolName(base);
+	if (
+		!isError &&
+		(toolName === "WebFetch" || toolName === "WebSearch") &&
+		resultRecordCandidates(rawResult, rawContent).some(
+			(candidate) => candidate.detachedToolCall === true,
+		)
+	) {
+		return { status: "detached", raw_output: "", content: [] };
+	}
+	const fields: ToolCallUpdateFields = {
+		status: isError ? "failed" : "completed",
+	};
+	const outputMetadata = extractToolOutputMetadata(
+		toolName,
+		rawResult,
+		rawContent,
+	);
+	if (outputMetadata) {
+		fields.output_metadata = outputMetadata;
+	}
+  if (!isError && toolName === "TaskCreate") {
+    const task = taskCreateResult(rawResult, rawContent, base?.raw_input, base?.tool_call_id ?? "");
+    if (task) {
+      const taskFields: ResultSection["fields"] = [];
+      if (task.description) taskFields.push(resultField("Description", task.description));
+      const metadata = compactJson(task.metadata);
+      if (metadata) taskFields.push(resultField("Metadata", metadata));
+      const presentation = { sections: [{ fields: taskFields }] };
+      fields.output_metadata = { ...fields.output_metadata, presentation };
+      const output = resultPresentationText(presentation, false);
+      fields.raw_output = output;
+      fields.content = output ? [{ type: "content", content: { type: "text", text: output } }] : [];
       return fields;
     }
   }
-  const imageReadText =
-    !isError && toolName === "Read"
-      ? imageReadResultText(rawResult, rawContent, base?.raw_input)
-      : undefined;
-  if (imageReadText !== undefined) {
-    fields.raw_output = imageReadText;
-    fields.content = [
-      { type: "content", content: { type: "text", text: imageReadText } },
-    ];
-    return fields;
-  }
-  const fileUnchangedText =
-    !isError && toolName === "Read"
-      ? fileUnchangedResultText(rawResult, rawContent)
-      : "";
-  if (fileUnchangedText) {
-    fields.raw_output = fileUnchangedText;
-    fields.content = [
-      { type: "content", content: { type: "text", text: fileUnchangedText } },
-    ];
-    return fields;
-  }
-  const fileTextContent =
-    !isError && toolName === "Read"
-      ? fileTextReadContent(rawResult, rawContent)
-      : [];
-  if (fileTextContent.length > 0) {
-    fields.content = fileTextContent;
-    return fields;
-  }
-  const agentTitle =
-    !isError && toolName === "Agent"
-      ? agentTitleFromAgentOutput(rawResult, rawContent, base)
-      : "";
-  if (agentTitle) {
-    fields.title = agentTitle;
-  }
-  const readMcpResourceError = mcpResourceReadErrorText(
-    toolName,
-    rawResult,
-    rawContent,
-  );
-  if (readMcpResourceError) {
-    fields.status = "failed";
-    fields.raw_output = readMcpResourceError;
-    fields.content = [
-      {
-        type: "content",
-        content: { type: "text", text: readMcpResourceError },
-      },
-    ];
-    return fields;
-  }
-  const readMcpResourceDirOutput = !isError
-    ? mcpResourceDirTextFromResult(toolName, rawResult, rawContent)
-    : undefined;
-  if (readMcpResourceDirOutput !== undefined) {
-    fields.raw_output = readMcpResourceDirOutput;
-    fields.content = [
-      {
-        type: "content",
-        content: { type: "text", text: readMcpResourceDirOutput },
-      },
-    ];
-    return fields;
-  }
-  const searchOutput = !isError
-    ? searchResultText(toolName, rawResult, rawContent)
-    : undefined;
-  if (searchOutput !== undefined) {
-    fields.raw_output = searchOutput;
-    fields.content = [
-      { type: "content", content: { type: "text", text: searchOutput } },
-    ];
-    return fields;
-  }
-  const webFetchOutput = !isError
-    ? webFetchResultText(toolName, rawResult, rawContent)
-    : undefined;
-  if (webFetchOutput !== undefined) {
-    fields.raw_output = webFetchOutput;
-    fields.content = [
-      { type: "content", content: { type: "text", text: webFetchOutput } },
-    ];
-    return fields;
-  }
-  const worktreeOutput = !isError
-    ? worktreeResultFields(toolName, rawResult, rawContent)
-    : undefined;
-  if (worktreeOutput) {
-    if (worktreeOutput.output) {
-      fields.raw_output = worktreeOutput.output;
-      fields.content = [
-        {
-          type: "content",
-          content: { type: "text", text: worktreeOutput.output },
-        },
-      ];
-    }
-    return fields;
-  }
-  const cronOutput = !isError
-    ? cronResultText(toolName, rawResult, rawContent, base?.raw_input)
-    : undefined;
-  if (cronOutput !== undefined) {
-    fields.raw_output = cronOutput;
-    fields.content = [
-      { type: "content", content: { type: "text", text: cronOutput } },
-    ];
-    return fields;
-  }
-  const scheduleWakeupOutput = !isError
-    ? scheduleWakeupResultText(toolName, rawResult, rawContent)
-    : undefined;
-  if (scheduleWakeupOutput !== undefined) {
-    fields.raw_output = scheduleWakeupOutput;
-    fields.content = [
-      {
-        type: "content",
-        content: { type: "text", text: scheduleWakeupOutput },
-      },
-    ];
-    return fields;
-  }
-  const pushNotificationOutput = !isError
-    ? pushNotificationResultText(
-        toolName,
-        rawResult,
-        rawContent,
-        base?.raw_input,
-      )
-    : undefined;
-  if (pushNotificationOutput !== undefined) {
-    fields.raw_output = pushNotificationOutput;
-    fields.content = [
-      {
-        type: "content",
-        content: { type: "text", text: pushNotificationOutput },
-      },
-    ];
-    return fields;
-  }
-  if (
-    !isError &&
-    enterPlanModeStructuredOutputHandled(toolName, rawResult, rawContent)
-  ) {
-    return fields;
-  }
-  const remoteTriggerOutput = remoteTriggerResultFields(
-    toolName,
-    rawResult,
-    rawContent,
-  );
-  if (remoteTriggerOutput !== undefined) {
-    if (remoteTriggerOutput.failed) {
-      fields.status = "failed";
-    }
-    if (remoteTriggerOutput.output) {
-      fields.raw_output = remoteTriggerOutput.output;
-      fields.content = [
-        {
-          type: "content",
-          content: { type: "text", text: remoteTriggerOutput.output },
-        },
-      ];
-    }
-    return fields;
-  }
-  const replOutput = replResultFields(toolName, rawResult, rawContent);
-  if (replOutput !== undefined) {
-    if (replOutput.failed) {
-      fields.status = "failed";
-    }
-    if (replOutput.output) {
-      fields.raw_output = replOutput.output;
-      fields.content = [
-        { type: "content", content: { type: "text", text: replOutput.output } },
-      ];
-    }
-    return fields;
-  }
-  const backgroundLaunchOutput = !isError
-    ? backgroundLaunchResultFields(toolName, rawResult, rawContent)
-    : undefined;
-  if (backgroundLaunchOutput !== undefined) {
-    fields.status = backgroundLaunchOutput.failed
-      ? "failed"
-      : backgroundLaunchOutput.keepRunning
-        ? "detached"
-        : "completed";
-    if (backgroundLaunchOutput.output) {
-      fields.raw_output = backgroundLaunchOutput.output;
-      fields.content = [
-        {
-          type: "content",
-          content: { type: "text", text: backgroundLaunchOutput.output },
-        },
-      ];
-    }
-    return fields;
-  }
-  const shellResultRecord = isShellToolName(toolName)
-    ? findShellResultRecord(rawResult, rawContent)
-    : undefined;
-  const normalizedRawOutput = normalizeToolResultText(rawContent, isError);
-  const rawOutput = shellResultRecord
-    ? buildShellDisplayOutput(shellResultRecord)
-    : normalizedRawOutput || JSON.stringify(rawContent);
-  if (rawOutput && !(isTaskToolName(toolName) && !isError)) {
-    fields.raw_output = rawOutput;
-  }
-  if (!isError && isTaskToolName(toolName)) {
-    if (
-      toolName === "TaskUpdate" &&
-      taskUpdateSucceeded(rawResult, rawContent) === false
-    ) {
-      fields.status = "failed";
-    }
-    const taskOutput = taskToolResultText(
-      toolName,
-      rawResult,
-      rawContent,
-      base?.raw_input,
-    );
-    if (taskOutput) {
-      fields.content = [
-        { type: "content", content: { type: "text", text: taskOutput } },
-      ];
-      return fields;
-    }
-    if (
-      toolName === "TaskCreate" ||
-      toolName === "TaskUpdate" ||
-      toolName === "TaskOutput" ||
-      toolName === "TaskStop"
-    ) {
-      return fields;
-    }
-  }
+	const skillResult = !isError
+		? parseSkillResult(toolName, rawResult, rawContent)
+		: undefined;
+	if (skillResult) {
+		fields.title = `${SKILL_TOOL_NAME}: ${skillDisplayName(skillResult.commandName)}`;
+		if (!skillResult.success) {
+			fields.status = "failed";
+		} else if (skillResult.status === "inline") {
+			return fields;
+		} else {
+			const output = skillResult.result.trim();
+			if (output) {
+				fields.raw_output = output;
+				fields.content = [
+					{ type: "content", content: { type: "text", text: output } },
+				];
+			}
+			return fields;
+		}
+	}
+	const imageReadText =
+		!isError && toolName === "Read"
+			? imageReadResultText(rawResult, rawContent, base?.raw_input)
+			: undefined;
+	if (imageReadText !== undefined) {
+		fields.raw_output = imageReadText;
+		fields.content = [
+			{ type: "content", content: { type: "text", text: imageReadText } },
+		];
+		return fields;
+	}
+	const readText =
+		!isError && toolName === "Read"
+			? readTextResult(rawResult, rawContent)
+			: undefined;
+	if (readText) {
+		// The body carries the file source; line numbers come from the metadata.
+		fields.output_metadata = {
+			...fields.output_metadata,
+			read: { file_path: readText.filePath, start_line: readText.startLine },
+		};
+		fields.raw_output = readText.content;
+		fields.content = [
+			{ type: "content", content: { type: "text", text: readText.content } },
+		];
+		return fields;
+	}
+	const fileUnchangedText =
+		!isError && toolName === "Read"
+			? fileUnchangedResultText(rawResult, rawContent)
+			: "";
+	if (fileUnchangedText) {
+		fields.raw_output = fileUnchangedText;
+		fields.content = [
+			{ type: "content", content: { type: "text", text: fileUnchangedText } },
+		];
+		return fields;
+	}
+	const agentTitle =
+		!isError && toolName === "Agent"
+			? agentTitleFromAgentOutput(rawResult, rawContent, base)
+			: "";
+	if (agentTitle) {
+		fields.title = agentTitle;
+	}
+	const readMcpResourceError = mcpResourceReadErrorText(
+		toolName,
+		rawResult,
+		rawContent,
+	);
+	if (readMcpResourceError) {
+		fields.status = "failed";
+		fields.raw_output = readMcpResourceError;
+		fields.content = [
+			{
+				type: "content",
+				content: { type: "text", text: readMcpResourceError },
+			},
+		];
+		return fields;
+	}
+	const readMcpResourceDirOutput = !isError
+		? mcpResourceDirTextFromResult(toolName, rawResult, rawContent)
+		: undefined;
+	if (readMcpResourceDirOutput !== undefined) {
+		fields.raw_output = readMcpResourceDirOutput;
+		fields.content = [
+			{
+				type: "content",
+				content: { type: "text", text: readMcpResourceDirOutput },
+			},
+		];
+		return fields;
+	}
+	const searchOutput = !isError
+		? searchResultText(toolName, rawResult, rawContent)
+		: undefined;
+	if (searchOutput !== undefined) {
+		fields.raw_output = searchOutput;
+		fields.content = [
+			{ type: "content", content: { type: "text", text: searchOutput } },
+		];
+		return fields;
+	}
+	const webFetchOutput = !isError
+		? webFetchResultText(toolName, rawResult, rawContent)
+		: undefined;
+	if (webFetchOutput !== undefined) {
+		fields.raw_output = webFetchOutput;
+		fields.content = [
+			{ type: "content", content: { type: "text", text: webFetchOutput } },
+		];
+		return fields;
+	}
+	const worktreeOutput = !isError
+		? worktreeResultFields(toolName, rawResult, rawContent)
+		: undefined;
+	if (worktreeOutput) {
+		if (worktreeOutput.presentation)
+			fields.output_metadata = {
+				...fields.output_metadata,
+				presentation: worktreeOutput.presentation,
+			};
+		if (worktreeOutput.output) {
+			fields.raw_output = worktreeOutput.output;
+			fields.content = [
+				{
+					type: "content",
+					content: { type: "text", text: worktreeOutput.output },
+				},
+			];
+		}
+		return fields;
+	}
+	const presentation = !isError
+		? timedToolResultPresentation(
+				toolName,
+				rawResult,
+				rawContent,
+				base?.raw_input,
+			)
+		: undefined;
+	if (presentation) {
+		fields.output_metadata = { ...fields.output_metadata, presentation };
+		const output = resultPresentationText(
+			presentation,
+			isCronToolName(toolName),
+		);
+		fields.raw_output = output;
+		fields.content = [
+			{ type: "content", content: { type: "text", text: output } },
+		];
+		return fields;
+	}
+	const scheduleWakeupPresentation = !isError
+		? scheduleWakeupResultPresentation(toolName, rawResult, rawContent)
+		: undefined;
+	if (scheduleWakeupPresentation !== undefined) {
+		const scheduleWakeupOutput = resultPresentationText(
+			scheduleWakeupPresentation,
+			false,
+		);
+		fields.output_metadata = {
+			...fields.output_metadata,
+			presentation: scheduleWakeupPresentation,
+		};
+		fields.raw_output = scheduleWakeupOutput;
+		fields.content = [
+			{
+				type: "content",
+				content: { type: "text", text: scheduleWakeupOutput },
+			},
+		];
+		return fields;
+	}
+	const pushNotificationOutput = !isError
+		? pushNotificationResultText(
+				toolName,
+				rawResult,
+				rawContent,
+				base?.raw_input,
+			)
+		: undefined;
+	if (pushNotificationOutput !== undefined) {
+		fields.raw_output = pushNotificationOutput;
+		fields.content = [
+			{
+				type: "content",
+				content: { type: "text", text: pushNotificationOutput },
+			},
+		];
+		return fields;
+	}
+	if (
+		!isError &&
+		enterPlanModeStructuredOutputHandled(toolName, rawResult, rawContent)
+	) {
+		return fields;
+	}
+	const remoteTriggerOutput = remoteTriggerResultFields(
+		toolName,
+		rawResult,
+		rawContent,
+	);
+	if (remoteTriggerOutput !== undefined) {
+		if (remoteTriggerOutput.failed) {
+			fields.status = "failed";
+		}
+		if (remoteTriggerOutput.output) {
+			fields.raw_output = remoteTriggerOutput.output;
+			fields.content = [
+				{
+					type: "content",
+					content: { type: "text", text: remoteTriggerOutput.output },
+				},
+			];
+		}
+		return fields;
+	}
+	const replOutput = replResultFields(toolName, rawResult, rawContent);
+	if (replOutput !== undefined) {
+		if (replOutput.presentation)
+			fields.output_metadata = {
+				...fields.output_metadata,
+				presentation: replOutput.presentation,
+			};
+		if (replOutput.failed) {
+			fields.status = "failed";
+		}
+		if (replOutput.output) {
+			fields.raw_output = replOutput.output;
+			fields.content = [
+				{ type: "content", content: { type: "text", text: replOutput.output } },
+			];
+		}
+		return fields;
+	}
+	const backgroundLaunchOutput = !isError
+		? backgroundLaunchResultFields(toolName, rawResult, rawContent)
+		: undefined;
+	if (backgroundLaunchOutput !== undefined) {
+		fields.status = backgroundLaunchOutput.failed
+			? "failed"
+			: backgroundLaunchOutput.keepRunning
+				? "detached"
+				: "completed";
+		if (backgroundLaunchOutput.output) {
+			fields.raw_output = backgroundLaunchOutput.output;
+			fields.content = [
+				{
+					type: "content",
+					content: { type: "text", text: backgroundLaunchOutput.output },
+				},
+			];
+		}
+		return fields;
+	}
+	const shellResultRecord = isShellToolName(toolName)
+		? findShellResultRecord(rawResult, rawContent)
+		: undefined;
+	const normalizedRawOutput = normalizeToolResultText(rawContent, isError);
+	const rawOutput = shellResultRecord
+		? buildShellDisplayOutput(shellResultRecord)
+		: normalizedRawOutput || JSON.stringify(rawContent);
+	if (rawOutput && !(isTaskToolName(toolName) && !isError)) {
+		fields.raw_output = rawOutput;
+	}
+	if (!isError && isTaskToolName(toolName)) {
+		if (
+			toolName === "TaskUpdate" &&
+			taskUpdateSucceeded(rawResult, rawContent) === false
+		) {
+			fields.status = "failed";
+		}
+		const taskOutput = taskToolResultText(
+			toolName,
+			rawResult,
+			rawContent,
+			base?.raw_input,
+		);
+		if (taskOutput) {
+			fields.content = [
+				{ type: "content", content: { type: "text", text: taskOutput } },
+			];
+			return fields;
+		}
+		if (
+			toolName === "TaskCreate" ||
+			toolName === "TaskUpdate" ||
+			toolName === "TaskOutput" ||
+			toolName === "TaskStop"
+		) {
+			return fields;
+		}
+	}
 
-  if (!isError && toolName === "Write") {
-    const presentation = writeResultPresentation(rawContent);
-    if (presentation?.kind === "diff") {
-      fields.content = presentation.content;
-      return fields;
-    }
-    if (presentation?.kind === "text") {
-      fields.raw_output = presentation.text;
-      fields.content = [
-        { type: "content", content: { type: "text", text: presentation.text } },
-      ];
-      return fields;
-    }
-    const inputDiff = writeDiffFromInput(base?.raw_input);
-    if (inputDiff.length > 0) {
-      fields.content = inputDiff;
-      return fields;
-    }
-  }
+	if (!isError && toolName === "Write") {
+		const presentation = writeResultPresentation(rawResult, rawContent);
+		if (presentation?.kind === "diff") {
+			fields.content = presentation.content;
+			return fields;
+		}
+		if (presentation?.kind === "text") {
+			fields.raw_output = presentation.text;
+			fields.content = [
+				{ type: "content", content: { type: "text", text: presentation.text } },
+			];
+			return fields;
+		}
+		const inputDiff = writeDiffFromInput(base?.raw_input);
+		if (inputDiff.length > 0) {
+			fields.content = inputDiff;
+			return fields;
+		}
+	}
 
-  if (!isError && toolName === "Edit") {
-    const structuredDiff = editDiffFromResult(rawResult, base?.raw_input);
-    if (structuredDiff.length > 0) {
-      fields.content = structuredDiff;
-      return fields;
-    }
-    if (base?.content.some((entry) => entry.type === "diff")) {
-      return fields;
-    }
-  }
+	if (!isError && toolName === "Edit") {
+		const structuredDiff = editDiffFromResult(rawResult, base?.raw_input);
+		if (structuredDiff.length > 0) {
+			fields.content = structuredDiff;
+			return fields;
+		}
+		if (base?.content.some((entry) => entry.type === "diff")) {
+			return fields;
+		}
+	}
 
-  if (!isError && toolName === READ_MCP_RESOURCE_TOOL_NAME) {
-    const structuredResourceContent = mcpResourceContentFromResult(
-      rawResult,
-      rawContent,
-    );
-    if (structuredResourceContent.length > 0) {
-      fields.content = structuredResourceContent;
-      return fields;
-    }
-  }
+	if (!isError && toolName === READ_MCP_RESOURCE_TOOL_NAME) {
+		const structuredResourceContent = mcpResourceContentFromResult(
+			rawResult,
+			rawContent,
+		);
+		if (structuredResourceContent.length > 0) {
+			fields.content = structuredResourceContent;
+			return fields;
+		}
+	}
 
-  if (rawOutput) {
-    fields.content = [
-      { type: "content", content: { type: "text", text: rawOutput } },
-    ];
-  }
-  return fields;
+	if (rawOutput) {
+		fields.content = [
+			{ type: "content", content: { type: "text", text: rawOutput } },
+		];
+	}
+	return fields;
 }
 
 export function unwrapToolUseResult(rawResult: unknown): {

@@ -4,13 +4,117 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.16.3-fork.1] - 2026-11-15
+
 ### Upstream sync
 
+- Upstream main at `62deb8b` (0.16.0-0.16.3, #484-#547). Upstream merged this fork's #487-#494 (`/reload`, rename after save, `--dir` validation, trust prompt directory, `/export`, launch flags, `/agents`, logging); the fork's later work on them (the `/agents` inspector, export naming, CLI fixes, picker tags, delete, refresh and compact-first) is rebuilt on upstream's versions. Upstream's incremental replay, consolidated SDK types, tui-markdown lists and tables, Oniguruma highlighting and Read output metadata replace the fork's equivalents. The bridge no longer posts hook notices; the app's hook activity owns them.
 - Upstream main at `1c25754`: the live session name in Status (#445), the top-level bridge test glob (#471), issue triage CI (#474), the fullscreen Git diff viewer (#476), unified session picking with normalized saved history (#477), the unified chat layout and Markdown lists (#478), the composer prompt glyph on sent messages (#480) and the configurable single-row footer (#481). The welcome crab keeps this fork's pixel art and clock; #479's review fixes to its scheduling are kept.
 - `/diff` is upstream's Git viewer (HEAD, staged and unstaged comparisons). The fork's `/diff`, which also listed the session's Edit and Write diffs, is removed.
 - The session picker is upstream's searchable picker. Printable keys now search, so compact-first resume moved to Tab, tagging to Ctrl+T and deletion to Ctrl+D; `/resume` takes no argument (resume by exact title stays available as `claude-rs resume <title>`). Rows show upstream's title fallback (name, first prompt, summary).
 - The footer is upstream's configurable row. The fork's session name, usage-limit windows and finished-agent count are new fields in it; the plan row, agent shelf and `statusLine` row stay around it. The fork's two-row responsive footer is removed.
-- Code blocks inside lists and quotes use the fork's shaded code style, and links in lists are shortened like other links.
+- Code blocks inside quotes use the fork's shaded code style, and links in lists are shortened like other links. Code inside lists is drawn by the vendored `tui-markdown` with the code fill but without the rail and language label; porting the shaded style there is not done yet.
+
+### Fixes
+
+- `/resume` lists every saved session of the project, as Claude Code's own picker does, so a conversation renamed long ago is found by its name. The bridge asked the Agent SDK for the newest 50 sessions only, which also made tagging, deleting, reading or forking an older session fail with "no longer in this project" or "unknown session".
+
+### Dependencies
+
+- Agent SDK 0.3.325, Biome 2.6.7, knip 6.45.1, jscpd 5.4.3, every Cargo dependency at its latest compatible version, and refreshed `nixpkgs` and `rust-overlay` flake inputs.
+
+## [0.16.3] - 2026-11-13 [Changes][v0.16.3]
+
+### Features
+
+- **Fable 5.2 and Agent SDK migration** (#544, @srothgan): Upgrade Agent SDK from `0.3.311` to `0.3.323` with Fable 5.2 support and improved question handling and permission controls.
+
+### Fixes
+
+- **Workflow reliability** (#546, @srothgan): Fix draft and attachment loss, terminal recovery, clipped dialogs, incomplete tool results, background updates, and diagnostic file handling.
+- **Linux keyboard shortcuts** (#534, @cambordas): Recognize Shift+Enter and Ctrl+Enter separately from Enter in supported Linux terminals.
+
+### CI and Dependencies
+
+- **Test suite overhaul** (#546, @srothgan): Replace weak and overlapping tests across Rust, the bridge, and native terminals with workflow coverage for command delivery, persistence, rendering, recovery, and session isolation.
+
+## [0.16.2] - 2026-10-27 [Changes][v0.16.2]
+
+### Features
+
+- **Usage view** (#531, @srothgan): Add usage recommendations, keyboard scrolling, and clearer formatting to `/usage`.
+
+### Fixes
+
+- **Context usage** (#508, @srothgan): Refresh context usage every five seconds during active turns.
+
+### Documentation
+
+- **Manual and demo** (#508, #509, @srothgan): Reorganize user and maintainer guides, expand feature documentation, and refresh the demo.
+
+### CI and Dependencies
+
+- **Agent SDK** (#531, @srothgan): Upgrade Agent SDK from `0.3.302` to `0.3.311`.
+- **Security updates** (#510, #527, #528, @srothgan): Update `hono`, `rustls-webpki`, `zod`, `body-parser`, `ip-address`, and `fast-uri`.
+- **npm workspace** (#528, @srothgan): Install root and bridge dependencies with one root `npm ci` and a shared lockfile.
+- **Regression coverage** (#512, @srothgan): Expand permission delivery and cancellation coverage and stabilize the hidden-footer subagent test.
+
+## [0.16.1] - 2026-10-19 [Changes][v0.16.1]
+
+### Fixes
+
+- **Tool output** (#500, @srothgan): Show actual shell, subagent, web, and plan results consistently before and after terminal resizing.
+- **Tool preview performance** (#501, @srothgan): Reduce rendering stalls in tool previews with long output lines.
+- **Turn errors** (#505, @srothgan): Show consistent errors for every failed reply, keep rate-limited input editable, and preserve the composer background.
+
+### Refactor
+
+- **SDK and tool cleanup** (#505, @srothgan): Consolidate duplicate SDK types and tool-state logic, and remove unused task tracking and cached error messages.
+
+### CI and Dependencies
+
+- **Dependency updates** (#502, #503, #504, @dependabot): Update `arboard` to `3.7.0`, `serde_json` to `1.0.154`, `tokio` to `1.53.3`, CodeQL action pins, and `actions/github-script` to `9.0.0`.
+
+## [0.16.0] - 2026-10-18 [Changes][v0.16.0]
+
+A special thank-you to Ayush Sharma ([@ayush5harma](https://github.com/ayush5harma)) for his work and contributions. He has been the leading motivator behind this release, with his issues and ideas driving most of the work in 0.16.0.
+
+### Features
+
+- **Background automatic updates** (#437, @srothgan): Install automatic updates in the background after exit, and show a warning at startup when the last one failed.
+- **Session name in Status** (#445, @ayush5harma): Show the live session name in the Status tab.
+- **Fullscreen Git diff viewer** (#476, @srothgan): Add `/diff` with HEAD, staged, and unstaged comparisons, a file tree, and full file contents. Fixes #467.
+- **Fullscreen session picker** (#477, @srothgan): Replace `/resume` arguments with a searchable fullscreen picker, retain direct resume through `claude-rs resume <session_id>`, and show saved commands readably without internal fork points. Fixes #468.
+- **Chat layout** (#478, #480, @srothgan): Show sent messages as full-width cards marked with the composer prompt glyph, and group assistant text and tools under one response marker.
+- **Welcome animation** (#479, @ayush5harma): Animate the welcome crab while the first session connects.
+- **Configurable footer** (#481, #485, #493, @srothgan, @ayush5harma): Add a single-row footer with per-field visibility, alignment, order, colors, and a running-subagent count, and apply the saved layout from startup. Fixes #466, #482.
+- **Mode and effort shortcuts** (#486, @srothgan): Add Shift+Left and Shift+Right to change permission mode and Shift+Up and Shift+Down to change effort. Fixes #483.
+- **Skills and styles reload** (#487, @ayush5harma): Add `/reload` to reload skills and output styles in the active session. Fixes #464.
+- **Conversation export** (#491, @ayush5harma): Add `/export [path]` to save session history as Markdown without overwriting existing files. Fixes #465.
+- **Session launch flags** (#492, @ayush5harma): Add session naming and forking, extra directories, settings and MCP configuration, and system prompt replacement or extension from text or files. Fixes #462.
+- **Subagents view** (#493, #496, @ayush5harma, @srothgan): Add fullscreen `/agents` with live status, ancestry, stop controls, saved-response previews, and refreshable transcripts, and restore saved nested subagents without marking historical runs as active. Fixes #439.
+- **Bridge and hook diagnostics** (#494, @ayush5harma): Record bridge and SDK warnings and errors in the default log and show hook failures in the transcript. Fixes #463.
+- **Agent SDK migration** (#496, @srothgan): Upgrade Agent SDK from `0.3.288` to `0.3.302`, add session-local plugin folders, typed MCP forms, hook failure policies, `idleCompaction`, `CLAUDE_RS_CONFIG_DIR`, and scheduler and notification timestamps, and correct startup, authentication, and extra-usage errors. Fixes #421.
+
+### Fixes
+
+- **Local command replies** (#444, @ayush5harma): Show missing replies to commands handled locally by Claude Code, including `/rename`, `/color`, and `/context`.
+- **Markdown and tool previews** (#478, #484, @srothgan): Preserve fenced code, streamed tables, nested lists, and full-file indentation, show numbered file source in Read previews, and retain shell output colors. Fixes #461.
+- **Status tab rename** (#488, @ayush5harma): Keep renaming unavailable until the session is saved and retain the draft when a rename fails. Fixes #469.
+- **Path arguments** (#489, @ayush5harma): Stop invalid `--dir` and `--bridge-script` paths from reaching the trust prompt or failing as a bridge spawn error. Fixes #472.
+- **Trust prompt directory** (#490, @ayush5harma): Show the directory that the trust prompt will trust. Fixes #473.
+- **Read and replay performance** (#495, #497, @srothgan): Reduce long stalls during large file reads, session resume, and terminal resizing, stop startup history purges, and add Read preview timing diagnostics and updated source-build instructions.
+- **Markdown lists and tables** (#498, @srothgan): Keep text following a list at the normal column and display tables with borders and wrapped cells.
+
+### Documentation
+
+- **Contribution requirements** (#470, @srothgan): Require an issue and maintainer scope agreement before implementation or pull requests.
+
+### CI and Dependencies
+
+- **Dependency updates** (#448, #449, #450, #451, #470, #484, @srothgan, @dependabot): Bump `rustls` to `0.23.46`, `zip` to `9.0.4`, and `tokio` to `1.53.2`, remove `ansi-to-tui`, and update bridge dev dependencies, `jscpd`, and GitHub Actions pins.
+- **Bridge test coverage** (#471, @ayush5harma): Run the top-level bridge test files in CI. Fixes #446.
+- **Issue triage automation** (#474, @srothgan): Add the `Issue Triage` workflow with `/triaged` and `/duplicate` commands.
 
 ## [0.15.2-fork.7] - 2026-10-16
 
@@ -1059,6 +1163,10 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.16.3]: https://github.com/srothgan/claude-code-rust/compare/v0.16.2...v0.16.3
+[v0.16.2]: https://github.com/srothgan/claude-code-rust/compare/v0.16.1...v0.16.2
+[v0.16.1]: https://github.com/srothgan/claude-code-rust/compare/v0.16.0...v0.16.1
+[v0.16.0]: https://github.com/srothgan/claude-code-rust/compare/v0.15.2...v0.16.0
 [v0.15.2]: https://github.com/srothgan/claude-code-rust/compare/v0.15.1...v0.15.2
 [v0.15.1]: https://github.com/srothgan/claude-code-rust/compare/v0.15.0...v0.15.1
 [v0.15.0]: https://github.com/srothgan/claude-code-rust/compare/v0.14.9...v0.15.0

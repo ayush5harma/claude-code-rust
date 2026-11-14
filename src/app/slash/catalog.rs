@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 //! Static metadata for app-owned slash commands.
 
@@ -265,7 +264,7 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         name: "/plugins",
         usage: "Usage: /plugins",
         short_description: "Open plugins",
-        long_description: "Open the fullscreen plugins tab.",
+        long_description: "Manage installed plugins, marketplaces and session-only local folders.",
         args: NO_ARGS,
     },
     AppSlashCommandSpec {
@@ -462,8 +461,8 @@ impl AppSlashCommand {
             | Self::Login
             | Self::Logout
             | Self::NewSession
-            | Self::Reload
-            | Self::Resume => {
+            | Self::Resume
+            | Self::Reload => {
                 if args.is_empty() {
                     SubmissionClass::TurnExclusive
                 } else {
@@ -503,7 +502,6 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
-            Self::Export => SubmissionClass::TurnExclusive,
             Self::Rewind => {
                 if matches!(args, [_, "both" | "conversation" | "code"]) {
                     SubmissionClass::TurnExclusive
@@ -511,6 +509,8 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
+            // The optional path is read from the raw text, so any number of words is valid.
+            Self::Export => SubmissionClass::TurnExclusive,
         }
     }
 }

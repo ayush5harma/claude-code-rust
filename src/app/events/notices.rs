@@ -1,16 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::super::{
-    App, ChatMessage, ChatMessageId, InvalidationLevel, MessageBlock, MessageRole, NoticeBlock,
-    NoticeDedupKey, NoticeStage, SystemSeverity, TurnNoticeLocation, TurnNoticeRef,
+    App, ChatMessage, ChatMessageId, MessageBlock, MessageRole, NoticeBlock, NoticeDedupKey,
+    SystemSeverity, TurnNoticeLocation, TurnNoticeRef,
 };
-
-#[derive(Clone)]
-struct TurnNoticeTracking {
-    dedup_key: NoticeDedupKey,
-    stage: NoticeStage,
-}
 
 pub(super) fn emit_system_notice(app: &mut App, severity: SystemSeverity, message: &str) {
     insert_notice(app, severity, message, None);
@@ -34,7 +27,6 @@ pub(super) fn emit_system_notice_for_message(
 pub(super) fn upsert_turn_notice(
     app: &mut App,
     dedup_key: NoticeDedupKey,
-    stage: NoticeStage,
     severity: SystemSeverity,
     message: &str,
 ) {
@@ -42,22 +34,17 @@ pub(super) fn upsert_turn_notice(
     let Some(existing) =
         app.turn.notice_refs.iter().find(|notice_ref| notice_ref.dedup_key == dedup_key).cloned()
     else {
-        insert_new_notice(app, dedup_key, stage, severity, message);
+        insert_notice(app, severity, message, Some(dedup_key));
         return;
     };
-
-    if stage < existing.stage {
-        return;
-    }
 
     match existing.location {
         TurnNoticeLocation::Inline { msg_idx, block_idx } => {
             if update_inline_notice(app, msg_idx, block_idx, &dedup_key, severity, message) {
-                update_turn_notice_ref_stage(app, &dedup_key, stage);
                 return;
             }
             remove_turn_notice_refs(app, &dedup_key);
-            insert_new_notice(app, dedup_key, stage, severity, message);
+            insert_notice(app, severity, message, Some(dedup_key));
         }
         TurnNoticeLocation::Standalone { msg_idx } => {
             if app.active_turn_assistant_idx().is_some()
@@ -65,32 +52,17 @@ pub(super) fn upsert_turn_notice(
                 && let Some(owner_idx) = app.active_turn_assistant_idx()
             {
                 remove_turn_notice_refs(app, &dedup_key);
-                insert_inline_notice(
-                    app,
-                    owner_idx,
-                    severity,
-                    message,
-                    Some(TurnNoticeTracking { dedup_key, stage }),
-                );
+                insert_inline_notice(app, owner_idx, severity, message, Some(dedup_key));
                 return;
             }
 
             if update_standalone_notice(app, msg_idx, &dedup_key, severity, message) {
-                update_turn_notice_ref_stage(app, &dedup_key, stage);
                 return;
             }
 
             remove_turn_notice_refs(app, &dedup_key);
-            insert_new_notice(app, dedup_key, stage, severity, message);
+            insert_notice(app, severity, message, Some(dedup_key));
         }
-    }
-}
-
-fn update_turn_notice_ref_stage(app: &mut App, dedup_key: &NoticeDedupKey, stage: NoticeStage) {
-    if let Some(notice_ref) =
-        app.turn.notice_refs.iter_mut().find(|notice_ref| &notice_ref.dedup_key == dedup_key)
-    {
-        notice_ref.stage = stage;
     }
 }
 
@@ -98,29 +70,18 @@ fn remove_turn_notice_refs(app: &mut App, dedup_key: &NoticeDedupKey) {
     app.turn.notice_refs.retain(|notice_ref| &notice_ref.dedup_key != dedup_key);
 }
 
-fn insert_new_notice(
-    app: &mut App,
-    dedup_key: NoticeDedupKey,
-    stage: NoticeStage,
-    severity: SystemSeverity,
-    message: &str,
-) {
-    insert_notice(app, severity, message, Some(TurnNoticeTracking { dedup_key, stage }));
-}
-
 fn insert_notice(
     app: &mut App,
     severity: SystemSeverity,
     message: &str,
-    tracking: Option<TurnNoticeTracking>,
+    dedup_key: Option<NoticeDedupKey>,
 ) {
-    let dedup_key = tracking.as_ref().map(|entry| entry.dedup_key.clone());
     let location = insert_turn_presentation_block(
         app,
-        MessageBlock::Notice(notice_block(severity, message, dedup_key)),
+        MessageBlock::Notice(notice_block(severity, message, dedup_key.clone())),
         MessageRole::System(Some(severity)),
     );
-    track_turn_notice(app, tracking, location);
+    track_turn_notice(app, dedup_key, location);
 }
 
 /// Insert presentation-only content at the current point in the active turn, or as a
@@ -155,13 +116,12 @@ fn insert_presentation_block(
 
 fn track_turn_notice(
     app: &mut App,
-    tracking: Option<TurnNoticeTracking>,
+    dedup_key: Option<NoticeDedupKey>,
     (msg_idx, block_idx): (usize, Option<usize>),
 ) {
-    if let Some(tracking) = tracking {
+    if let Some(dedup_key) = dedup_key {
         app.turn.notice_refs.push(TurnNoticeRef {
-            dedup_key: tracking.dedup_key,
-            stage: tracking.stage,
+            dedup_key,
             location: block_idx.map_or(TurnNoticeLocation::Standalone { msg_idx }, |block_idx| {
                 TurnNoticeLocation::Inline { msg_idx, block_idx }
             }),
@@ -174,16 +134,15 @@ fn insert_inline_notice(
     owner_idx: usize,
     severity: SystemSeverity,
     message: &str,
-    tracking: Option<TurnNoticeTracking>,
+    dedup_key: Option<NoticeDedupKey>,
 ) {
-    let dedup_key = tracking.as_ref().map(|entry| entry.dedup_key.clone());
     let location = insert_presentation_block(
         app,
         Some(owner_idx),
-        MessageBlock::Notice(notice_block(severity, message, dedup_key)),
+        MessageBlock::Notice(notice_block(severity, message, dedup_key.clone())),
         MessageRole::System(Some(severity)),
     );
-    track_turn_notice(app, tracking, location);
+    track_turn_notice(app, dedup_key, location);
 }
 
 fn notice_block(
@@ -213,9 +172,7 @@ fn update_inline_notice(
     }
     notice.severity = severity;
     notice.replace_text(message);
-    app.sync_render_cache_slot(msg_idx, block_idx);
-    app.recompute_message_retained_bytes(msg_idx);
-    app.invalidate_layout(InvalidationLevel::MessageChanged(msg_idx));
+    app.sync_after_message_blocks_changed(msg_idx);
     true
 }
 
@@ -241,9 +198,7 @@ fn update_standalone_notice(
     msg.role = MessageRole::System(Some(severity));
     notice.severity = severity;
     notice.replace_text(message);
-    app.sync_render_cache_slot(msg_idx, 0);
-    app.recompute_message_retained_bytes(msg_idx);
-    app.invalidate_layout(InvalidationLevel::MessageChanged(msg_idx));
+    app.sync_after_message_blocks_changed(msg_idx);
     true
 }
 
@@ -279,102 +234,4 @@ fn prune_invalid_turn_notice_refs(app: &mut App) {
             )
         ),
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{update_inline_notice, upsert_turn_notice};
-    use crate::app::{
-        App, ChatMessage, MessageBlock, MessageRole, NoticeDedupKey, NoticeStage, SystemSeverity,
-        TurnNoticeLocation,
-    };
-
-    #[test]
-    fn inline_notice_insert_updates_canonical_assistant_message() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
-        app.bind_active_turn_assistant(0);
-
-        upsert_turn_notice(
-            &mut app,
-            crate::app::NoticeDedupKey::ApiRetry,
-            NoticeStage::Warning,
-            SystemSeverity::Warning,
-            "retrying",
-        );
-
-        assert_eq!(app.transcript.messages[0].blocks.len(), 1);
-        let Some(MessageBlock::Notice(notice)) = app.transcript.messages[0].blocks.first() else {
-            panic!("expected notice block");
-        };
-        assert_eq!(notice.severity, SystemSeverity::Warning);
-        assert_eq!(notice.text.text, "retrying");
-    }
-
-    #[test]
-    fn inline_notice_update_mutates_canonical_notice() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
-        app.bind_active_turn_assistant(0);
-
-        upsert_turn_notice(
-            &mut app,
-            crate::app::NoticeDedupKey::ApiRetry,
-            NoticeStage::Warning,
-            SystemSeverity::Warning,
-            "retrying",
-        );
-        assert!(update_inline_notice(
-            &mut app,
-            0,
-            0,
-            &crate::app::NoticeDedupKey::ApiRetry,
-            SystemSeverity::Error,
-            "failed",
-        ));
-
-        let Some(MessageBlock::Notice(notice)) = app.transcript.messages[0].blocks.first() else {
-            panic!("expected notice block");
-        };
-        assert_eq!(notice.severity, SystemSeverity::Error);
-        assert_eq!(notice.text.text, "failed");
-    }
-
-    #[test]
-    fn standalone_notice_migrates_inline_without_double_removing_tracking() {
-        let mut app = App::test_default();
-
-        upsert_turn_notice(
-            &mut app,
-            NoticeDedupKey::ApiRetry,
-            NoticeStage::Warning,
-            SystemSeverity::Warning,
-            "retrying before assistant",
-        );
-        assert_eq!(app.transcript.messages.len(), 1);
-        assert_eq!(app.turn.notice_refs.len(), 1);
-
-        app.transcript.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
-        app.bind_active_turn_assistant(1);
-
-        upsert_turn_notice(
-            &mut app,
-            NoticeDedupKey::ApiRetry,
-            NoticeStage::Warning,
-            SystemSeverity::Warning,
-            "retrying with assistant",
-        );
-
-        assert_eq!(app.transcript.messages.len(), 1);
-        assert!(matches!(app.transcript.messages[0].role, MessageRole::Assistant));
-        let Some(MessageBlock::Notice(notice)) = app.transcript.messages[0].blocks.first() else {
-            panic!("expected migrated inline notice");
-        };
-        assert_eq!(notice.text.text, "retrying with assistant");
-        assert_eq!(app.turn.notice_refs.len(), 1);
-        assert!(matches!(
-            app.turn.notice_refs[0].location,
-            TurnNoticeLocation::Inline { msg_idx: 0, block_idx: 0 }
-        ));
-    }
 }

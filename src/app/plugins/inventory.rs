@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::actions::start_runtime_reload;
 use super::prelude::*;
@@ -95,6 +94,9 @@ pub(crate) fn apply_inventory_refresh_failure(app: &mut App, message: String) {
 }
 
 pub(crate) fn reset_for_session_change(app: &mut App) {
+    app.plugins.session_plugins.clear();
+    app.plugins.pending_reload = None;
+    app.plugins.session_selected_index = 0;
     app.plugins.loading = false;
     app.plugins.status_message = None;
     app.plugins.last_error = None;

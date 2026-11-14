@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 mod api_retry;
 mod client;
@@ -22,8 +21,6 @@ use super::{
     TextBlock, TranscriptUpdateSource,
 };
 use crate::agent::model;
-#[cfg(all(test, target_os = "macos"))]
-use crate::app::keys::CMD_MOD;
 #[cfg(test)]
 use crate::app::keys::WORD_NAV_MOD;
 use crate::app::keys::{KeyOutcome, RuntimeCommand, reclaim_input_from_inline_prompt_if_needed};
@@ -110,7 +107,7 @@ pub fn handle_terminal_event(app: &mut App, event: Event) -> TerminalEventOutcom
     if matches!(&event, Event::Key(key) if should_dispatch_key_event(app, *key))
         || matches!(&event, Event::Paste(_) | Event::Mouse(_))
     {
-        super::questions::record_activity(app, std::time::Instant::now());
+        super::questions::record_activity(app, super::input_event_now());
     }
     let outcome = match event {
         Event::Key(key) if should_dispatch_key_event(app, key) => dispatch_key_by_view(app, key),
@@ -150,6 +147,9 @@ pub fn reconcile_terminal_size(app: &mut App, width: u16, height: u16) {
 }
 
 fn should_dispatch_key_event(app: &App, key: crossterm::event::KeyEvent) -> bool {
+    if super::keys::is_ctrl_char_shortcut(key, 'v') {
+        return super::keys::is_clipboard_paste_trigger(app, key);
+    }
     // ConPTY delivers zero-width text (for example a combining accent) as a
     // release-only console event. Dropping it changes the user's input payload.
     let zero_width_text_release = cfg!(windows)
@@ -157,9 +157,7 @@ fn should_dispatch_key_event(app: &App, key: crossterm::event::KeyEvent) -> bool
         && super::keys::is_printable_text_modifiers(key.modifiers)
         && matches!(key.code, crossterm::event::KeyCode::Char(ch)
             if !ch.is_control() && unicode_width::UnicodeWidthChar::width(ch) == Some(0));
-    key.kind == KeyEventKind::Press
-        || super::keys::is_clipboard_paste_trigger(app, key)
-        || zero_width_text_release
+    key.kind == KeyEventKind::Press || zero_width_text_release
 }
 
 fn handle_resize(app: &mut App, width: u16, height: u16) -> bool {
@@ -250,7 +248,9 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> Termi
 
     match app.surface_mode {
         SurfaceMode::Chat => {
-            app.paste.clear_active_session();
+            if !super::keys::can_extend_paste_burst(key) {
+                app.paste.clear_active_session();
+            }
             TerminalEventOutcome::from_key_outcome(super::keys::dispatch_key_by_focus(app, key))
         }
         SurfaceMode::Fullscreen(FullscreenView::Copy) => {
@@ -324,7 +324,7 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
                 reclaim_input_from_inline_prompt_if_needed(app);
                 // A terminal paste follows any characters still held by the
                 // key-burst detector. Flush them before queuing its payload.
-                if let Some(action) = app.paste.burst.on_non_char_key(std::time::Instant::now()) {
+                if let Some(action) = app.paste.burst.on_non_char_key(super::input_event_now()) {
                     super::apply_paste_burst_flush(app, action);
                 }
                 app.queue_paste_text(text);
@@ -410,6 +410,7 @@ fn handle_session_update(
                 complete_snapshot = update.is_complete_snapshot,
             );
             apply_task_state_update(app, update);
+            super::agents::tasks_changed(app);
         }
         model::SessionUpdate::TodoPlanUpdate(items) => {
             app.footer.apply_todo_plan(items);
@@ -494,6 +495,9 @@ fn handle_session_update(
             let next_display_long = update.current_model.display_name_long.clone();
             let pending_ack_before = format!("{:?}", app.turn.pending_command_ack);
             app.session_runtime.current_model = Some(update.current_model);
+            if app.slash.is_visible() {
+                super::slash::sync_with_cursor(app);
+            }
             let clearing_pending =
                 matches!(app.turn.pending_command_ack, Some(PendingCommandAck::CurrentModel));
             if matches!(app.turn.pending_command_ack, Some(PendingCommandAck::CurrentModel)) {
@@ -657,7 +661,7 @@ fn handle_runtime_session_state_update(app: &mut App, state: model::RuntimeSessi
                 app.status = AppStatus::Running;
             }
             if matches!(app.status, AppStatus::Running | AppStatus::Thinking) {
-                app.begin_turn_activity(std::time::Instant::now());
+                app.begin_turn_activity(crate::app::activity::now());
                 app.session_runtime.runtime_session_state = Some(state);
             }
         }
@@ -685,6 +689,14 @@ fn handle_settings_parse_error(app: &mut App, file: Option<&str>, path: &str, me
         (None, "") => format!("Settings parse error: {trimmed}"),
         (None, path) => format!("Settings parse error at {path}: {trimmed}"),
     };
+    // The transcript row scrolls away, and the default log is where a later report starts.
+    tracing::warn!(
+        target: crate::logging::targets::APP_CONFIG,
+        event_name = "settings_parse_error",
+        message = "settings file could not be parsed",
+        outcome = "failure",
+        error_message = %rendered,
+    );
     push_system_message_with_severity(app, Some(SystemSeverity::Error), &rendered);
 }
 
@@ -736,7 +748,6 @@ pub(crate) fn push_active_turn_submission_blocked_notice(app: &mut App, label: &
     notices::upsert_turn_notice(
         app,
         super::NoticeDedupKey::ActiveTurnSubmissionBlocked,
-        super::NoticeStage::Informational,
         SystemSeverity::Info,
         &message,
     );

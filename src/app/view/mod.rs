@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::lifecycle::TerminalLifecycleState;
 use crate::app::App;
-use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FullscreenView {
@@ -42,6 +40,9 @@ pub fn set_surface_mode(app: &mut App, next: SurfaceMode) {
     }
 
     let previous_surface = app.surface_mode;
+    super::flush_held_input(app);
+    // Accepted paste belongs to the draft even when the detector held no input.
+    super::finalize_pending_paste_event(app);
     clear_transient_view_state(app);
     app.surface_mode = next;
     app.surface_dirty.mark_view_transition(previous_surface, next);
@@ -114,7 +115,6 @@ fn clear_transient_view_state(app: &mut App) {
         app.config.clear_overlay();
     }
     app.release_focus_target(crate::app::FocusTarget::Mention);
-    app.paste.burst.on_non_char_key(Instant::now());
 }
 
 #[cfg(test)]

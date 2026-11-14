@@ -1,63 +1,64 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
-use crate::agent::client::{AgentConnection, CommandReceiver};
 use crate::agent::events::ClientEvent;
 use crate::agent::settings::{
     SettingsApplication, SettingsPersistence, SettingsResult, SettingsScope, SettingsSnapshot,
 };
-use crate::agent::wire::BridgeCommand;
 use crate::app::footer::{FooterFieldId, FooterSide, SETTING_ID};
-use ratatui::{Terminal, backend::TestBackend};
+use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Color};
 use serde_json::{Value, json};
-use std::rc::Rc;
 
-fn snapshot(cwd: &str, value: Option<&Value>, revision: &str) -> SettingsSnapshot {
-    let fixture: Value =
-        serde_json::from_str(include_str!("../../../../tests/fixtures/settings-ui-catalog.json"))
-            .expect("fixture");
-    let descriptor = fixture["catalog"]
-        .as_array()
-        .expect("catalog")
-        .iter()
-        .find(|entry| entry["id"] == SETTING_ID)
-        .expect("footer descriptor");
-    serde_json::from_value(json!({
-        "cwd":cwd,"context":"footer-context","catalog":[descriptor],
-        "categories":[{"id":"general","label":"General","short_label":"General"}],
-        "sources":[{"scope":"user","path":"app-settings.json","status":"valid",
-            "values":[{"id":SETTING_ID,"revision":revision,"value":value}]},
-            {"scope":"project","path":"project-settings.json","status":"missing",
-            "values":[{"id":SETTING_ID,"revision":"unset"}]}],
-        "values":[{"id":SETTING_ID,"value":value,"contributors":["user"],"policy_restricted":false}],
-        "resolution_sources":[],"provenance":{},"diagnostics":[]
-    })).expect("snapshot")
+struct Fixture {
+    directory: tempfile::TempDir,
+    commands: crate::agent::client::CommandReceiver,
+}
+impl Fixture {
+    fn path(&self) -> &std::path::Path {
+        self.directory.path()
+    }
 }
 
-fn app() -> (App, CommandReceiver) {
+fn fixture(value: Option<Value>) -> (App, Fixture) {
+    let directory = tempfile::tempdir().expect("fixture directory");
+    let path = directory.path().join("settings.json");
+    let mut document =
+        json!({"presentation":{"copyFullResponse":true,"future":17},"updates":{"future":"keep"}});
+    if let Some(value) = value {
+        document["presentation"]["footer"] = value;
+    }
+    std::fs::write(&path, document.to_string()).expect("settings fixture");
     let mut app = App::test_default();
-    let (connection, commands) = AgentConnection::test_channel();
-    app.session_runtime.conn = Some(Rc::new(connection));
+    app.global_settings_path = Some(path);
+    let (connection, commands) = crate::agent::client::AgentConnection::test_channel();
+    app.session_runtime.conn = Some(std::rc::Rc::new(connection));
     app.session_runtime.session_id = Some("session-1".into());
+    app.config.load_footer(app.global_settings_path.as_deref());
     app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
-    app.config.snapshot = Some(snapshot(&app.cwd_raw, None, "r1"));
-    (app, commands)
+    app.config.settings.select(SETTING_ID.into());
+    (app, Fixture { directory, commands })
 }
-
+fn document(app: &App) -> Value {
+    serde_json::from_slice(
+        &std::fs::read(app.global_settings_path.as_ref().expect("path")).expect("read"),
+    )
+    .expect("JSON")
+}
 fn key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
-    let _ = crate::app::handle_terminal_event(
+    crate::app::handle_terminal_event(
         app,
         crossterm::event::Event::Key(KeyEvent::new(code, modifiers)),
     );
 }
-
+fn plain(app: &mut App, code: KeyCode) {
+    key(app, code, KeyModifiers::NONE);
+}
 fn editor(app: &App) -> &FooterOverlayState {
     let Some(ConfigOverlayState::Footer(editor)) = &app.config.overlay else {
-        panic!("footer editor")
+        panic!("footer editor");
     };
     editor
 }
-
 fn footer(app: &App) -> String {
     crate::ui::footer_rows::serialize_footer_rows(app, 160).rows[0]
         .spans
@@ -65,383 +66,259 @@ fn footer(app: &App) -> String {
         .map(|span| span.content.as_ref())
         .collect()
 }
-
-#[test]
-fn opening_navigation_and_read_only_scope_do_not_write_settings() {
-    let (mut app, mut commands) = app();
-    let before = footer(&app);
-    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-    key(&mut app, KeyCode::Down, KeyModifiers::NONE);
-    assert_eq!(footer(&app), before);
-    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-    assert!(app.config.overlay.is_none());
-    assert!(commands.try_recv().is_err());
-    assert_eq!(footer(&app), before);
-    app.config.selected_scope = SettingsScope::Project;
-    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-    assert_eq!(editor(&app).layout(), FooterLayout::default());
-    key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
-    key(&mut app, KeyCode::Right, KeyModifiers::NONE);
-    key(&mut app, KeyCode::Down, KeyModifiers::CONTROL);
-    key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
-    assert_eq!(editor(&app).layout(), FooterLayout::default());
-    assert!(commands.try_recv().is_err());
-    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-    assert!(app.config.overlay.is_none());
+async fn next_save(app: &mut App) -> ClientEvent {
+    let event = tokio::time::timeout(std::time::Duration::from_secs(5), app.event_rx.recv())
+        .await
+        .expect("save deadline")
+        .expect("save event");
+    assert!(matches!(event, ClientEvent::FooterSaved { .. }));
+    event
+}
+async fn finish_saves(app: &mut App) {
+    while app.config.footer.pending.is_some() {
+        let event = next_save(app).await;
+        crate::app::handle_client_event(app, event);
+    }
+}
+fn render(app: &mut App, width: u16, height: u16) -> Buffer {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+    terminal.draw(|frame| crate::ui::render_fullscreen_surface(frame, app)).expect("draw");
+    terminal.backend().buffer().clone()
+}
+fn row(buffer: &Buffer, y: u16) -> String {
+    (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect()
+}
+fn find_row(buffer: &Buffer, text: &str) -> u16 {
+    (0..buffer.area.height).find(|&y| row(buffer, y).contains(text)).unwrap_or_else(|| {
+        panic!(
+            "missing {text} in {:?}",
+            (0..buffer.area.height).map(|y| row(buffer, y)).collect::<Vec<_>>()
+        )
+    })
+}
+fn field(app: &App, id: FooterFieldId) -> crate::app::footer::FooterField {
+    *editor(app).layout().fields().iter().find(|field| field.id == id).expect("field")
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn rapid_edits_autosave_in_order_and_escape_waits_for_the_last_write() {
+async fn a_locked_file_keeps_the_active_value_and_draft_until_an_explicit_retry_or_discard() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            // Boxed: the fork's larger `App` would exceed clippy's future-size limit.
-            let (app, mut commands) = app();
-            let mut app = Box::new(app);
-            let original = footer(&app);
-            key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-            key(&mut app, KeyCode::Down, KeyModifiers::NONE);
-            key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
-            key(&mut app, KeyCode::Right, KeyModifiers::NONE);
-            assert_eq!(editor(&app).selected, 10);
-            key(&mut app, KeyCode::Up, KeyModifiers::CONTROL);
-            assert_eq!(editor(&app).selected, 9);
-            assert_eq!(editor(&app).layout().fields()[9].id, FooterFieldId::Model);
-            key(&mut app, KeyCode::Down, KeyModifiers::CONTROL);
-            key(&mut app, KeyCode::Left, KeyModifiers::NONE);
-            assert_eq!(editor(&app).selected, 5);
-            assert_eq!(editor(&app).layout().fields()[5].side, FooterSide::Left);
-            key(&mut app, KeyCode::Right, KeyModifiers::NONE);
-            let request = commands.recv_envelope().await.expect("save command");
-            let BridgeCommand::MutateSetting { mutation, .. } = request.command else {
-                panic!("mutation")
-            };
-            assert_eq!(mutation.id, SETTING_ID);
-            assert_eq!(mutation.scope, SettingsScope::User);
-            assert_eq!(mutation.expected_revision, "r1");
-            let value = mutation.value.expect("saved layout");
-            assert_eq!(value[1], json!({"id":"model","visible":false,"side":"left"}));
-            assert!(commands.try_recv().is_err(), "one write in flight");
-            assert_eq!(footer(&app), original);
-            assert!(app.config.overlay.is_some(), "wait for save acknowledgement");
-            let saved = snapshot(&app.cwd_raw, Some(&value), "r2");
-            crate::app::handle_client_event(
-                &mut app,
-                ClientEvent::SettingsResultReceived {
-                    session_id: "session-1".into(),
-                    request_id: request.request_id,
-                    result: SettingsResult {
-                        persistence: SettingsPersistence::Saved,
-                        application: SettingsApplication::Host,
-                        snapshot: Some(saved),
-                        error: None,
-                    },
-                },
-            );
-            assert!(app.config.overlay.is_some(), "autosave keeps the editor open");
-            assert!(!footer(&app).contains("test-model"));
-            let request = commands.recv_envelope().await.expect("queued save");
-            let BridgeCommand::MutateSetting { mutation, .. } = request.command else {
-                panic!("mutation")
-            };
-            assert_eq!(mutation.expected_revision, "r2");
-            let value = mutation.value.expect("latest layout");
-            assert_eq!(value[10], json!({"id":"model","visible":false,"side":"right"}));
-            key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
-            assert_eq!(editor(&app).layout(), FooterLayout::default());
-            key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-            assert!(app.config.overlay.is_some(), "wait for the last write before closing");
-            let saved = snapshot(&app.cwd_raw, Some(&value), "r3");
-            super::super::service::apply_settings_result(
-                &mut app,
-                request.request_id.as_deref(),
-                SettingsResult {
-                    persistence: SettingsPersistence::Saved,
-                    application: SettingsApplication::Host,
-                    snapshot: Some(saved),
-                    error: None,
-                },
-            );
-            assert!(app.config.overlay.is_some(), "queued reset must finish too");
-            let request = commands.recv_envelope().await.expect("queued reset");
-            let BridgeCommand::MutateSetting { mutation, .. } = request.command else {
-                panic!("mutation")
-            };
-            assert_eq!(mutation.operation, crate::agent::settings::SettingsOperation::Remove);
-            assert_eq!(mutation.expected_revision, "r3");
-            assert!(mutation.value.is_none());
-            let reset = snapshot(&app.cwd_raw, None, "r4");
-            super::super::service::apply_settings_result(
-                &mut app,
-                request.request_id.as_deref(),
-                SettingsResult {
-                    persistence: SettingsPersistence::Saved,
-                    application: SettingsApplication::Host,
-                    snapshot: Some(reset),
-                    error: None,
-                },
-            );
-            assert!(app.config.overlay.is_none());
-            assert!(app.config.saved_value(SETTING_ID).is_none());
-            assert!(commands.try_recv().is_err());
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn escape_waits_for_autosave_and_reset_removes_the_preference() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            // Boxed: the fork's larger `App` would exceed clippy's future-size limit.
-            let (app, mut commands) = app();
-            let mut app = Box::new(app);
-            let original = footer(&app);
-            key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-            key(&mut app, KeyCode::Down, KeyModifiers::NONE);
-            key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
-            key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-            let request = commands.recv_envelope().await.expect("automatic save");
-            let BridgeCommand::MutateSetting { mutation, .. } = request.command else {
-                panic!("mutation")
-            };
-            assert!(app.config.overlay.is_some());
-            let saved = snapshot(&app.cwd_raw, mutation.value.as_ref(), "r2");
-            super::super::service::apply_settings_result(
-                &mut app,
-                request.request_id.as_deref(),
-                SettingsResult {
-                    persistence: SettingsPersistence::Saved,
-                    application: SettingsApplication::Host,
-                    snapshot: Some(saved),
-                    error: None,
-                },
-            );
-            assert!(app.config.overlay.is_none());
-            assert!(!footer(&app).contains("test-model"));
-            key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-            key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
-            let request = commands.recv_envelope().await.expect("reset command");
-            let BridgeCommand::MutateSetting { mutation, .. } = request.command else {
-                panic!("mutation")
-            };
-            assert_eq!(mutation.operation, crate::agent::settings::SettingsOperation::Remove);
-            assert!(mutation.value.is_none());
-            let reset = snapshot(&app.cwd_raw, None, "r3");
-            crate::app::handle_client_event(
-                &mut app,
-                ClientEvent::SettingsResultReceived {
-                    session_id: "session-1".into(),
-                    request_id: request.request_id,
-                    result: SettingsResult {
-                        persistence: SettingsPersistence::Saved,
-                        application: SettingsApplication::Host,
-                        snapshot: Some(reset),
-                        error: None,
-                    },
-                },
-            );
-            assert!(app.config.overlay.is_some(), "reset keeps the editor open");
-            assert_eq!(footer(&app), original);
-            key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-            assert!(app.config.overlay.is_none());
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn failed_save_and_conflict_keep_the_draft_and_retry_uses_the_new_revision() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let (mut app, mut commands) = app();
-            key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-            key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
-            let draft = editor(&app).layout();
-            for (persistence, revision) in
-                [(SettingsPersistence::Failure, "r1"), (SettingsPersistence::Conflict, "r2")]
-            {
-                let request = commands.recv_envelope().await.expect("save");
-                let refreshed = snapshot(&app.cwd_raw, Some(&json!([])), revision);
-                super::super::service::apply_settings_result(
-                    &mut app,
-                    request.request_id.as_deref(),
-                    SettingsResult {
-                        persistence,
-                        application: SettingsApplication::Blocked,
-                        snapshot: Some(refreshed),
-                        error: Some("Cannot save yet".into()),
-                    },
-                );
-                assert_eq!(editor(&app).layout(), draft);
+            for retry in [false, true] {
+                let (mut app, _directory) = fixture(None);
+                let original = document(&app);
+                let active = footer(&app);
+                plain(&mut app, KeyCode::Enter);
+                let lock = crate::json_file::lock(app.global_settings_path.as_ref().expect("path"))
+                    .expect("other writer");
+                plain(&mut app, KeyCode::Down);
+                plain(&mut app, KeyCode::Char(' '));
+                finish_saves(&mut app).await;
+                assert_eq!(document(&app), original);
+                assert_eq!(footer(&app), active);
+                assert!(!field(&app, FooterFieldId::Model).visible);
+                assert!(editor(&app).can_retry());
                 assert!(app.config.overlay_message.is_some());
-                assert!(commands.try_recv().is_err(), "failed writes do not retry themselves");
-                key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+                assert!(app.config.footer.pending.is_none());
+                drop(lock);
+                if retry {
+                    plain(&mut app, KeyCode::Enter);
+                    finish_saves(&mut app).await;
+                    assert_eq!(document(&app)["presentation"]["footer"][1]["visible"], false);
+                    assert!(!footer(&app).contains("test-model"));
+                } else {
+                    plain(&mut app, KeyCode::Esc);
+                    assert!(app.config.overlay.is_none());
+                    assert!(
+                        app.config
+                            .last_error
+                            .as_ref()
+                            .expect("unsaved warning")
+                            .contains("not saved")
+                    );
+                    assert_eq!(document(&app), original);
+                }
             }
-            let request = commands.recv_envelope().await.expect("retry");
-            let BridgeCommand::MutateSetting { mutation, .. } = request.command else {
-                panic!("mutation")
-            };
-            assert_eq!(mutation.expected_revision, "r2");
-            assert_eq!(mutation.value, Some(serde_json::to_value(draft).expect("draft")));
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reset_queued_during_a_save_removes_only_the_footer_after_both_writes_finish() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (mut app, _directory) = fixture(None);
+            let original = document(&app);
+            plain(&mut app, KeyCode::Enter);
+            plain(&mut app, KeyCode::Down);
+            plain(&mut app, KeyCode::Char(' '));
+            key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+            plain(&mut app, KeyCode::Esc);
+            let first = next_save(&mut app).await;
+            assert!(document(&app)["presentation"].get("footer").is_some());
+            crate::app::handle_client_event(&mut app, first);
+            finish_saves(&mut app).await;
+            assert_eq!(document(&app), original);
+            assert!(app.config.footer.saved().is_none());
+            assert!(app.config.overlay.is_none());
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_row_reset_conflict_keeps_the_file_and_active_layout_until_delete_is_retried() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (mut app, _fixture) = fixture(Some(json!([
+                {"id":"model","visible":true,"side":"right","color":"cyan"}
+            ])));
+            let active = footer(&app);
+            let external = json!({"presentation":{"footer":[],"future":"outside"},"outside":true});
+            std::fs::write(app.global_settings_path.as_ref().expect("path"), external.to_string())
+                .expect("external edit");
+            plain(&mut app, KeyCode::Delete);
+            finish_saves(&mut app).await;
+            assert_eq!(document(&app), external);
+            assert_eq!(footer(&app), active);
+            assert!(app.config.overlay.is_none());
+            assert!(app.config.last_error.is_some());
+            assert!(app.config.footer.pending.is_none(), "no automatic conflict retry");
+            plain(&mut app, KeyCode::Delete);
+            finish_saves(&mut app).await;
+            assert_eq!(document(&app), json!({"presentation":{"future":"outside"},"outside":true}));
+            assert!(app.config.footer.saved().is_none());
+            assert!(app.config.last_error.is_none());
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_saves_survive_authentication_and_sdk_inspection_without_bridge_mutations() {
+    use crate::agent::client::AgentConnection;
+    use std::rc::Rc;
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (mut app, _directory) = fixture(None);
+            let (connection, mut commands) = AgentConnection::test_channel();
+            app.session_runtime.conn = Some(Rc::new(connection));
+            app.session_runtime.session_id = Some("old-session".into());
+            app.config.pending_settings_request =
+                Some(super::super::PendingSettingsRequest::Inspection("sdk-inspection".into()));
+            plain(&mut app, KeyCode::Enter);
+            plain(&mut app, KeyCode::Down);
+            plain(&mut app, KeyCode::Char(' '));
+            let request =
+                app.config.footer.pending.as_ref().expect("local write").request_id.clone();
+            let mut snapshot = SettingsSnapshot::test_value("language", json!("German"));
+            snapshot.cwd.clone_from(&app.cwd_raw);
+            crate::app::handle_client_event(
+                &mut app,
+                ClientEvent::SettingsResultReceived {
+                    session_id: "old-session".into(),
+                    request_id: Some("sdk-inspection".into()),
+                    result: SettingsResult {
+                        persistence: SettingsPersistence::NotRequested,
+                        application: SettingsApplication::Host,
+                        snapshot: Some(snapshot),
+                        error: None,
+                    },
+                },
+            );
+            assert_eq!(
+                app.config.footer.pending.as_ref().expect("unaffected local write").request_id,
+                request
+            );
+            crate::app::handle_client_event(
+                &mut app,
+                ClientEvent::AuthRequired {
+                    method_name: "login".into(),
+                    method_description: "Authenticate".into(),
+                },
+            );
+            assert_eq!(
+                app.config.footer.pending.as_ref().expect("survives auth").request_id,
+                request
+            );
+            assert!(app.session_runtime.session_id.is_none());
+            assert!(
+                app.config
+                    .snapshot
+                    .as_ref()
+                    .expect("offline catalog")
+                    .catalog
+                    .iter()
+                    .any(|entry| entry.id == SETTING_ID)
+            );
+            finish_saves(&mut app).await;
+            assert_eq!(document(&app)["presentation"]["footer"][1]["visible"], false);
+            assert!(!field(&app, FooterFieldId::Model).visible);
+            assert!(
+                commands.try_recv().is_err(),
+                "local preferences must not produce bridge commands"
+            );
         })
         .await;
 }
 
 #[test]
-fn settings_row_describes_the_active_footer_layout_across_scopes() {
-    for scope in [SettingsScope::User, SettingsScope::Project] {
-        for (value, expected) in [
-            (None, "Default layout"),
-            (Some(json!([])), "Custom layout"),
-            (Some(json!([{"id":"model","visible":true,"side":"middle"}])), "Invalid layout"),
-        ] {
-            let (mut app, _) = app();
-            app.config.selected_scope = scope;
-            app.config.snapshot = Some(snapshot(&app.cwd_raw, value.as_ref(), "r1"));
-            let mut terminal = Terminal::new(TestBackend::new(120, 30)).expect("terminal");
-            terminal
-                .draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app))
-                .expect("draw");
-            let buffer = terminal.backend().buffer();
-            let lines: Vec<String> = buffer
-                .content
-                .chunks(120)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
-                .collect();
-            let row = lines.iter().find(|line| line.contains("Footer")).expect("footer row");
-            assert!(row.contains(expected), "{scope:?}: {row}");
-            if value.is_none() {
-                assert!(lines.iter().any(|line| line.contains("Using default layout")));
-            }
-        }
+fn malformed_saved_layouts_report_errors_without_replacing_the_file_on_inspection() {
+    for value in [
+        json!([{"id":"model","visible":true,"side":"middle"}]),
+        json!([{"id":"fastMode","visible":true,"side":"left","color":"cyan"}]),
+    ] {
+        let (mut app, _directory) = fixture(Some(value));
+        let before = document(&app);
+        let buffer = render(&mut app, 120, 30);
+        let footer_row = find_row(&buffer, "Footer");
+        assert!(row(&buffer, footer_row).contains("Invalid layout"));
+        plain(&mut app, KeyCode::Enter);
+        assert!(app.config.overlay_message.is_some());
+        plain(&mut app, KeyCode::Esc);
+        assert_eq!(document(&app), before);
+        assert!(app.config.footer.pending.is_none());
     }
 }
 
-#[test]
-fn dialog_keeps_selected_field_controls_and_preview_in_their_regions() {
-    for (width, height, error) in
-        [(100, 30, false), (60, 20, false), (30, 12, false), (30, 12, true)]
-    {
-        let (mut app, _commands) = app();
-        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
-        key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
-        key(&mut app, KeyCode::Right, KeyModifiers::NONE);
-        if error {
-            app.config.set_overlay_error("This value changed since it was displayed. Review the refreshed saved value before retrying.");
-        }
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
-        terminal.draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app)).expect("draw");
-        let buffer = terminal.backend().buffer();
-        let lines: Vec<String> = buffer
-            .content
-            .chunks(usize::from(width))
-            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
-            .collect();
-        let selected = lines
-            .iter()
-            .position(|line| line.contains("Model") && line.contains("Right"))
-            .expect("selected model row");
-        assert!(lines[selected].contains("[ ]"));
-        assert!(lines[selected].contains('›'));
-        assert!(lines.iter().any(|line| line.contains("Space")), "toggle control");
-        assert!(!lines.iter().any(|line| line.contains("Ctrl+S")), "autosave needs no save key");
-        assert!(lines.iter().any(|line| line.contains("Esc")), "cancel control");
-        let title = lines.iter().find(|line| line.contains("Footer")).expect("dialog title");
-        let counter_column = title.find("11/11").expect("selected-field counter in title");
-        let right_border = title.rfind('┐').expect("dialog top-right corner");
-        assert_eq!(
-            title[counter_column..right_border].chars().count(),
-            6,
-            "counter beside the top-right corner"
-        );
-        if width >= 60 {
-            let preview =
-                lines.iter().position(|line| line.contains("Preview")).expect("preview label") + 1;
-            assert!(lines[preview].contains("FAST:OFF"));
-            assert!(!lines[preview].contains("test-model"));
-        }
-    }
-}
-
-#[test]
-fn failed_or_interrupted_autosaves_keep_edits_until_explicitly_closed() {
-    for interrupted in [false, true] {
-        let (mut app, mut commands) = app();
-        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
-        let draft = editor(&app).layout();
-        let request = commands.try_recv().expect("automatic save");
-        if interrupted {
-            app.config.invalidate_session();
-        } else {
-            super::super::service::apply_settings_result(
+#[tokio::test(flavor = "current_thread")]
+async fn config_can_edit_local_footer_preferences_after_auth_required_without_an_active_session() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (mut app, mut fixture) = fixture(None);
+            app.surface_mode = crate::app::SurfaceMode::Chat;
+            crate::app::handle_client_event(
                 &mut app,
-                request.request_id.as_deref(),
-                SettingsResult {
-                    persistence: SettingsPersistence::Failure,
-                    application: SettingsApplication::Blocked,
-                    snapshot: None,
-                    error: Some("Cannot write preferences".into()),
+                ClientEvent::AuthRequired {
+                    method_name: "login".into(),
+                    method_description: "Authenticate".into(),
                 },
             );
-        }
-        assert_eq!(editor(&app).layout(), draft);
-        assert!(editor(&app).can_retry());
-        assert!(app.config.overlay_message.is_some());
-        assert!(commands.try_recv().is_err());
-        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(app.config.overlay.is_none());
-        assert!(app.config.last_error.as_ref().expect("unsaved warning").contains("not saved"));
-        assert!(commands.try_recv().is_err(), "closing after an error does not retry");
-    }
+            assert_eq!(app.status, crate::app::AppStatus::Ready);
+            assert!(app.session_runtime.conn.is_some(), "the bridge exists");
+            assert!(
+                app.session_runtime.session_id.is_none(),
+                "authentication has no active agent session"
+            );
+            app.input.set_text("/config");
+            crate::app::input_submit::submit_input(&mut app);
+            assert_eq!(
+                app.surface_mode,
+                crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config)
+            );
+            assert!(app.input.is_empty());
+            let buffer = render(&mut app, 100, 30);
+            assert!(row(&buffer, find_row(&buffer, "Footer")).contains("Default layout"));
+            plain(&mut app, KeyCode::Enter);
+            plain(&mut app, KeyCode::Down);
+            plain(&mut app, KeyCode::Char(' '));
+            finish_saves(&mut app).await;
+            assert_eq!(document(&app)["presentation"]["footer"][1]["visible"], false);
+            assert!(
+                fixture.commands.try_recv().is_err(),
+                "no agent settings inspection or mutation is needed"
+            );
+        })
+        .await;
 }
 
-#[test]
-fn shrinking_below_the_minimum_keeps_edits_and_shows_a_close_hint() {
-    let (mut app, _commands) = app();
-    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-    key(&mut app, KeyCode::Down, KeyModifiers::NONE);
-    key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
-    key(&mut app, KeyCode::Right, KeyModifiers::NONE);
-    let edited = editor(&app).layout();
-    for (width, height) in [(20, 8), (60, 20)] {
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
-        terminal.draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app)).expect("draw");
-        let buffer = terminal.backend().buffer();
-        let lines: Vec<String> = buffer
-            .content
-            .chunks(usize::from(width))
-            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
-            .collect();
-        if width == 20 {
-            assert!(lines.iter().any(|line| line.contains("Esc close")));
-        } else {
-            let selected = lines
-                .iter()
-                .find(|line| line.contains("Model") && line.contains("Right"))
-                .expect("selected field after growing");
-            assert!(selected.contains("[ ]") && selected.contains('›'));
-        }
-        assert_eq!(editor(&app).layout(), edited);
-    }
-}
-
-#[test]
-fn invalid_layout_is_reported_and_location_changes_block_saving() {
-    let (mut app, mut commands) = app();
-    app.config.snapshot = Some(snapshot(
-        &app.cwd_raw,
-        Some(&json!([{"id":"model","visible":true,"side":"middle"}])),
-        "r1",
-    ));
-    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-    assert!(app.config.overlay_message.is_some());
-    assert_eq!(editor(&app).layout(), FooterLayout::default());
-    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-    assert!(commands.try_recv().is_err(), "inspecting invalid preferences does not replace them");
-    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-    app.cwd_raw = "/another-project".into();
-    key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
-    assert!(commands.try_recv().is_err());
-    assert!(app.config.overlay.is_some());
-    assert!(app.config.overlay_message.as_ref().expect("error").text.contains("location changed"));
-}
+#[path = "audit_tests.rs"]
+mod audit;

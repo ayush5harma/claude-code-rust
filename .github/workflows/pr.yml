@@ -58,7 +58,7 @@ jobs:
                 ;;
             esac
             case "$path" in
-              agent-sdk/*|.github/workflows/_agent-sdk.yml)
+              package.json|package-lock.json|agent-sdk/*|tests/fixtures/sdk-*|.github/workflows/_agent-sdk.yml)
                 agent_sdk=true
                 ;;
             esac
@@ -96,7 +96,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Run Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
@@ -106,7 +106,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Run tests
         run: cargo test --all-features
 
@@ -133,9 +133,16 @@ jobs:
         with:
           node-version: "24"
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Check fixture syntax
         run: node --check tests/fixtures/fake-bridge.js
+      - name: Run native macOS keymap and terminal mode regressions
+        if: runner.os == 'macOS'
+        run: |
+          cargo test --locked --all-features --lib app::keymap::tests:: -- --nocapture --test-threads=1
+          cargo test --locked --all-features --lib configured_undo_and_redo_restore_textarea_history -- --nocapture --test-threads=1
+          cargo test --locked --all-features --lib terminal_event_outcome_carries_runtime_command -- --nocapture --test-threads=1
+          cargo test --locked --all-features --lib app::terminal_runtime::lifecycle_audit_tests:: -- --nocapture --test-threads=1
       - name: Run real PTY regressions
         run: cargo test --locked --all-features --test terminal_resize -- --test-threads=1
       - name: Run system clipboard paste regression
@@ -197,15 +204,10 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            agent-sdk/package-lock.json
+          cache-dependency-path: package-lock.json
 
-      - name: Install root dependencies
+      - name: Install dependencies
         run: npm ci
-
-      - name: Install agent-sdk dependencies
-        run: npm ci --prefix agent-sdk
 
       - name: Build agent-sdk bridge
         run: npm --prefix agent-sdk run build
@@ -344,13 +346,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
         with:
           category: "/language:${{ matrix.language }}"
 

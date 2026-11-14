@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use crate::agent::client::AgentConnection;
 use crate::agent::model;
@@ -38,7 +37,8 @@ pub struct SessionRuntimeState {
     pub runtime_session_state: Option<model::RuntimeSessionState>,
     /// Latest prompt suggestion from the SDK, shown in the input hint band.
     pub prompt_suggestion: Option<String>,
-    /// Latest rate-limit telemetry from the SDK.
+    /// Latest rate-limit telemetry from the SDK; the footer's usage field reads it while no
+    /// usage snapshot has arrived.
     pub last_rate_limit_update: Option<model::RateLimitUpdate>,
     /// Account info from the bridge status snapshot (email, org, subscription).
     pub account_info: Option<model::AccountInfo>,
@@ -99,6 +99,7 @@ impl SessionRuntimeState {
             // The bridge sends a replacement session's own title after it connects.
             self.session_title = None;
             self.hook_runs.clear();
+            self.last_rate_limit_update = None;
         }
         self.last_resumable_session_id = Some(session_id.clone());
         self.session_id = Some(session_id);
@@ -116,6 +117,7 @@ impl SessionRuntimeState {
         self.ultracode = None;
         self.session_title = None;
         self.hook_runs.clear();
+        self.last_rate_limit_update = None;
         self.session_id = None;
         self.conversation_id = None;
         self.current_model = None;

@@ -2,7 +2,7 @@
 
 use crate::app::App;
 use crate::app::diff_view::{Comparison, DiffView, Loading, RenderedContent};
-use crate::ui::wrap::{StyledChunk, display_width, wrap_styled_chunks};
+use crate::ui::wrap::{display_width, split_line_at_width};
 use crate::ui::{diff, highlight, theme};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -292,16 +292,8 @@ fn full_file_lines(text: &str, path: &str, width: u16) -> Vec<Line<'static>> {
         .into_iter()
         .enumerate()
         .flat_map(|(index, line)| {
-            let chunks = line
-                .spans
+            split_line_at_width(line, content_width)
                 .into_iter()
-                .map(|span| StyledChunk { text: span.content.into_owned(), style: span.style })
-                .collect::<Vec<_>>();
-            let mut rows = wrap_styled_chunks(&chunks, content_width);
-            if rows.is_empty() {
-                rows.push(Line::default());
-            }
-            rows.into_iter()
                 .enumerate()
                 .map(move |(row, mut line)| {
                     let number = if row == 0 {
@@ -372,4 +364,40 @@ fn fit(text: &str, width: usize) -> String {
         result.push('…');
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn full_file_wrapping_preserves_source_whitespace_and_gutter_alignment() {
+        let source = "    let x = \"a  b\";\n\n  alpha_beta_gamma_delta_END\nlast";
+        for width in [14, 23, 60] {
+            let lines = full_file_lines(source, "src/lib.rs", width);
+            let rows = lines.iter().map(ToString::to_string).collect::<Vec<_>>();
+            let starts = rows
+                .iter()
+                .enumerate()
+                .filter_map(|(i, r)| {
+                    r.split_whitespace().next()?.parse::<usize>().ok().map(|n| (i, n))
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(starts.iter().map(|(_, n)| *n).collect::<Vec<_>>(), [1, 2, 3, 4]);
+            let gutter = rows[starts[3].0].find("last").unwrap();
+            for (index, expected) in source.lines().enumerate() {
+                let start = starts[index].0;
+                let end = starts.get(index + 1).map_or(rows.len(), |r| r.0);
+                let mut recovered = String::new();
+                for (offset, row) in rows[start..end].iter().enumerate() {
+                    if offset > 0 {
+                        assert!(row[..gutter].trim().is_empty());
+                    }
+                    recovered.push_str(&row[gutter..]);
+                }
+                assert_eq!(recovered, expected);
+            }
+            assert!(lines.iter().all(|l| l.width() <= usize::from(width)));
+        }
+    }
 }

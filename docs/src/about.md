@@ -1,12 +1,20 @@
 # About
 
-Claude Code Rust is a native Rust terminal interface for Claude Code. It replaces the stock Node.js and React Ink terminal UI with a Ratatui-based binary while keeping Claude Code functionality routed through Anthropic's Agent SDK.
+Claude Code Rust (`claude-rs`) is a keyboard-driven terminal interface for Claude Code. It uses Anthropic's Agent SDK for conversations, tools and session history, and provides its own interface for reading output, reviewing changes and managing sessions.
 
-The goal is a faster, lower-memory terminal experience with reliable scrollback, direct terminal rendering, native input handling, and a project-local configuration surface.
+Start with [Installation](installation.md) and [Your first session](usage.md). If you already use the app, go to [conversation tasks](conversations.md), [configuration](configure.md) or [troubleshooting](troubleshooting.md). Contributors should start with [Development](development.md).
+
+## How It Renders
+
+The normal conversation renders inline: completed output enters your terminal's scrollback, while the streaming reply, composer and footer stay in the live area. Terminal search, selection and copy behavior remain available according to your terminal's capabilities.
+
+Fullscreen views such as `/diff`, `/agents`, `/config` and `/help` use the alternate screen while open and return to the inline conversation when closed. App controls are keyboard-driven; see [Keyboard shortcuts](shortcuts.md).
+
+There are no speed or memory benchmarks against the stock Claude Code interface. The [architecture overview](architecture.md) explains the rendering boundary for contributors.
 
 ## Project Status
 
-The project is pre-1.0. The crate version in the root `Cargo.toml` and the [Changelog](changelog.md) are the source of truth for the current release.
+The project is pre-1.0 and under active development. Run `claude-rs --version` to identify your installed version and consult the [Changelog](changelog.md) for release changes. The website follows the repository's main branch, so it can describe changes newer than your installation.
 
 The project is useful today, but the runtime still depends on the upstream Claude Agent SDK bridge. Startup readiness, authentication behavior, billing, model availability, and service limits are controlled by Anthropic.
 
@@ -30,20 +38,21 @@ The Rust TUI implements its own interface and uses the SDK's session capabilitie
 | Feature | Availability | Details |
 | --- | --- | --- |
 | Conversations, tools, file edits, and permissions | Rust TUI and SDK | Core interactive workflow. |
-| Model, effort, permission mode, and agent selection | Rust TUI and SDK | Available through [startup flags](usage.md) and session controls. |
-| Resume, continue, compaction, and rewind | Rust TUI and SDK | Session startup and history controls; see [Usage](usage.md) and [Slash Commands](commands.md). |
+| Model, effort, permission mode, and agent selection | Rust TUI and SDK | Available through [startup flags](cli.md) and session controls. |
+| Resume, continue, compaction, and rewind | Rust TUI and SDK | Session startup and history controls; see [conversation tasks](conversations.md) and [Slash Commands](commands.md). |
 | Subagents and background tasks within a session | Rust TUI and SDK | SDK task activity and results are displayed in the conversation. This is distinct from detaching the entire session. |
 | Skills and SDK-advertised slash commands | SDK, when advertised | Use `/docs commands` for the current session's merged list. |
 | MCP status, authorization, and dynamic servers | Rust TUI and SDK | Persisted server removal additionally needs the CLI, as listed above. |
 | Inline edit diffs | Rust TUI | Tool output displays file changes. |
-| Shell completions and man pages | Native CLI | Generated from the CLI definitions; see [Usage](usage.md#shell-completions). |
+| Git change review | Rust TUI | `/diff` opens a fullscreen, read-only viewer; see [Reviewing Git changes](conversations.md#reviewing-git-changes). It does not open beside the conversation like the stock fullscreen diff panel. |
+| Shell completions and man pages | Native CLI | Generated from the CLI definitions; see [CLI reference](cli.md#shell-completions). |
 | Account login and logout | Installed Claude CLI | Invoked from `/login` and `/logout`. |
 | Plugin inventory and persistent management | Installed Claude CLI | Invoked from the plugin management interface. |
+| Session-only local plugin folders | Rust TUI and SDK | Load local folder in `/plugins`; no persistent installation. |
 | Usage information | SDK, OAuth, or installed Claude CLI | The CLI is conditional; see the dependency table above. |
 | Whole-session background detach/attach and stock agent view | Unavailable in the Rust TUI | SDK background tasks are supported, but the stock `/background` and `claude agents` interface is not provided. |
 | Remote Control and stock IDE integrations | Unavailable in the Rust TUI | No equivalent to the stock `/remote-control` or `/ide` integration. Running in an IDE terminal still works. |
 | Vim input mode | Unavailable in the Rust TUI | The settings surface does not offer an editor-mode preference; see [unavailable settings](settings.md#unavailable-settings). |
-| Dedicated `/diff` review panel | Unavailable in the Rust TUI | Inline edit diffs remain available. |
 | Stock `/tui` renderer switch | Unavailable in the Rust TUI | Rendering and fullscreen settings screens are owned by the Rust application. |
 | Mouse interaction with app controls | Unavailable in the Rust TUI | Use keyboard controls. Terminal text selection and native scrollback depend on your terminal. |
 
@@ -60,8 +69,4 @@ For official Claude documentation, use the Claude documentation:
 
 ## Billing Note
 
-Because Claude Code Rust uses the Agent SDK, usage should be treated as Agent SDK usage. Anthropic has paused the previously announced Agent SDK credit change. For now, Agent SDK usage, including `claude -p` and third-party apps like this one, still draws from normal Claude subscription limits.
-
-Check Anthropic's current support article before relying on billing assumptions:
-
-- [Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)
+Usage is handled through Anthropic's Agent SDK. Billing, subscription allowances, API credits and service limits depend on Anthropic's current policy and your account. Check [Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) before relying on a particular allowance. This project does not set those terms.

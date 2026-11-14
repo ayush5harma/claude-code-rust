@@ -19,7 +19,6 @@ pub(crate) struct AgentRow<'a> {
     pub requested_model: Option<&'a str>,
     pub definition_model: Option<&'a str>,
     pub raw_input: Option<&'a serde_json::Value>,
-    pub parent_id: Option<&'a str>,
     pub now: Cow<'a, str>,
     pub tools: Option<u64>,
     pub tokens: Option<u64>,
@@ -50,10 +49,10 @@ pub(crate) fn agent_row<'a>(app: &'a App, task: &'a TaskItem) -> AgentRow<'a> {
         .and_then(|agent| agent.model.as_deref());
     let resolved_model = text(metadata, "model_display");
     let model = resolved_model.or(requested_model).or(definition_model).unwrap_or("");
-    let parent_id = task.source_tool_call_id.as_deref();
     let status = subagent_status(app, task);
-    let now = parent_id
-        .and_then(|id| app.recent_child_tools(id).next())
+    let now = crate::app::agents::recent_child_tools(app, task)
+        .first()
+        .copied()
         .map(tool_activity)
         .or_else(|| text(metadata, "summary").map(Cow::Borrowed))
         .or_else(|| text(metadata, "last_tool_name").map(Cow::Borrowed))
@@ -61,7 +60,9 @@ pub(crate) fn agent_row<'a>(app: &'a App, task: &'a TaskItem) -> AgentRow<'a> {
             SubagentStatus::Failed => text(metadata, "error")
                 .or_else(|| text(metadata, "terminal_reason"))
                 .map_or(Cow::Borrowed("failed"), |reason| Cow::Owned(format!("failed: {reason}"))),
-            SubagentStatus::Completed | SubagentStatus::Stopped => Cow::Borrowed(status.label()),
+            SubagentStatus::Completed | SubagentStatus::Stopped | SubagentStatus::Interrupted => {
+                Cow::Borrowed(status.label())
+            }
             SubagentStatus::Pending | SubagentStatus::Running | SubagentStatus::Stopping => {
                 Cow::Borrowed("")
             }
@@ -100,7 +101,6 @@ pub(crate) fn agent_row<'a>(app: &'a App, task: &'a TaskItem) -> AgentRow<'a> {
         requested_model,
         definition_model,
         raw_input,
-        parent_id,
         now,
         tools: usage.and_then(|u| u.get("tool_uses")).and_then(serde_json::Value::as_u64),
         tokens: usage.and_then(|u| u.get("total_tokens")).and_then(serde_json::Value::as_u64),
@@ -162,7 +162,9 @@ pub(crate) fn status_glyph(row: &AgentRow<'_>) -> (&'static str, Color) {
         SubagentStatus::Stopping => ("●", theme::warning()),
         SubagentStatus::Completed => ("✓", theme::success()),
         SubagentStatus::Failed => ("✗", theme::danger()),
-        SubagentStatus::Pending | SubagentStatus::Stopped => ("○", theme::tertiary()),
+        SubagentStatus::Pending | SubagentStatus::Stopped | SubagentStatus::Interrupted => {
+            ("○", theme::tertiary())
+        }
     }
 }
 
@@ -352,13 +354,13 @@ mod tests {
                 Some("root"),
             );
         }
-        assert_eq!(app.recent_child_tools("root").count(), 8);
+        assert_eq!(crate::app::agents::recent_child_tools(&app, &task).len(), 8);
         assert_eq!(agent_row(&app, &task).now, "Read file-9.rs");
         let (mi, bi) = app.lookup_tool_call("child-8").expect("child");
         app.clear_tool_call_index();
         app.index_tool_call("child-8".into(), mi, bi);
         assert_eq!(agent_row(&app, &task).now, "Read file-8.rs");
-        app.clear_tool_scope_tracking();
+        app.clear_tool_call_index();
         assert_eq!(agent_row(&app, &task).now, "Reading source");
         task.metadata
             .as_mut()

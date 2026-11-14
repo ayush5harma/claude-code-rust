@@ -29,6 +29,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
                 PluginsViewTab::Installed => ordered_installed(&app.plugins, &app.cwd_raw).len(),
                 PluginsViewTab::Plugins => filtered_marketplace_plugins(&app.plugins).len(),
                 PluginsViewTab::Marketplace => visible_marketplaces(&app.plugins).len(),
+                PluginsViewTab::Session => app.plugins.session_plugins.len(),
             };
             format!("{} ({count})", tab.title())
         })
@@ -91,7 +92,14 @@ fn render_top_region(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     frame.render_widget(
-        Paragraph::new(Line::styled("Configured marketplaces", common::title_style())),
+        Paragraph::new(Line::styled(
+            if app.plugins.active_tab == PluginsViewTab::Session {
+                "Session attachments · l Load local folder"
+            } else {
+                "Configured marketplaces"
+            },
+            common::title_style(),
+        )),
         area,
     );
 }
@@ -118,7 +126,35 @@ fn list_content(app: &App) -> Vec<Vec<Line<'static>>> {
         PluginsViewTab::Installed => installed_content(app),
         PluginsViewTab::Plugins => plugins_content(app),
         PluginsViewTab::Marketplace => marketplace_content(app),
+        PluginsViewTab::Session => session_content(app),
     }
+}
+
+fn session_content(app: &App) -> Vec<Vec<Line<'static>>> {
+    let mut rows = app
+        .plugins
+        .session_plugins
+        .iter()
+        .map(|plugin| {
+            let mut lines = vec![
+                Line::styled(display_label(&plugin.name), common::title_style()),
+                common::detail_kv("Source", "Session", theme::label()),
+                common::detail_kv("Folder", &plugin.path, theme::label()),
+            ];
+            if let Some(source) = &plugin.source {
+                lines.push(common::detail_kv("SDK source", source, theme::label()));
+            }
+            if let Some(version) = &plugin.version {
+                lines.push(common::detail_kv("Version", version, theme::label()));
+            }
+            lines
+        })
+        .collect::<Vec<_>>();
+    rows.push(vec![
+        Line::styled("Load local folder", common::title_style()),
+        Line::from("Attach a plugin directory to this session."),
+    ]);
+    rows
 }
 
 fn installed_content(app: &App) -> Vec<Vec<Line<'static>>> {
@@ -234,31 +270,5 @@ fn installed_plugin_badge(entry: &InstalledPluginEntry) -> Span<'static> {
         common::badge_span("SKILL", theme::Tone::Neutral)
     } else {
         common::badge_span("MCP", theme::Tone::Info)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{search_field_line, top_region_height};
-    use crate::app::App;
-    use crate::app::plugins::PluginsViewTab;
-    use ratatui::widgets::{Paragraph, Wrap};
-
-    #[test]
-    fn top_region_height_grows_for_wrapped_search_query() {
-        let mut app = App::test_default();
-        app.plugins.active_tab = PluginsViewTab::Installed;
-        app.plugins.search_focused = true;
-        app.plugins.installed_search_query =
-            "search query that should wrap across multiple lines".to_owned();
-
-        let expected = Paragraph::new(search_field_line(&app))
-            .wrap(Wrap { trim: false })
-            .line_count(10)
-            .max(1)
-            .saturating_add(2);
-
-        assert_eq!(usize::from(top_region_height(&app, 12)), expected);
-        assert!(top_region_height(&app, 12) > 3);
     }
 }

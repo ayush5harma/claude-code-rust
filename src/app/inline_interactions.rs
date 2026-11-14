@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::{App, FocusTarget, InvalidationLevel, MessageBlock, ToolCallInfo};
 use crossterm::event::{KeyCode, KeyEvent};
@@ -22,25 +21,14 @@ fn interaction_id_is_valid(app: &App, tool_id: &str) -> bool {
 }
 
 pub(super) fn focused_interaction(app: &App) -> Option<&ToolCallInfo> {
-    let tool_id = focused_interaction_id(app)?;
-    let (mi, bi) = app.lookup_tool_call(tool_id)?;
-    let MessageBlock::ToolCall(tc) = app.transcript.messages.get(mi)?.blocks.get(bi)? else {
-        return None;
-    };
-    Some(tc.as_ref())
+    app.tool_call(focused_interaction_id(app)?)
 }
 
 pub(super) fn get_focused_interaction_tc(app: &mut App) -> Option<&mut ToolCallInfo> {
     let tool_id = focused_interaction_id(app)?;
     let (mi, bi) = app.lookup_tool_call(tool_id)?;
-    match app.transcript.messages.get_mut(mi)?.blocks.get_mut(bi)? {
-        MessageBlock::ToolCall(tc)
-            if tc.pending_permission.is_some() || tc.pending_question.is_some() =>
-        {
-            Some(tc.as_mut())
-        }
-        _ => None,
-    }
+    app.tool_call_at_mut(mi, bi)
+        .filter(|tc| tc.pending_permission.is_some() || tc.pending_question.is_some())
 }
 
 pub(super) fn focused_interaction_dirty_idx(app: &App) -> Option<(usize, usize)> {
@@ -52,10 +40,8 @@ pub(super) fn invalidate_if_changed(
     dirty_idx: Option<(usize, usize)>,
     changed: bool,
 ) {
-    if changed && let Some((mi, bi)) = dirty_idx {
-        app.sync_render_cache_slot(mi, bi);
-        app.recompute_message_retained_bytes(mi);
-        app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+    if changed && let Some((mi, _)) = dirty_idx {
+        app.sync_after_message_blocks_changed(mi);
     }
 }
 
@@ -83,7 +69,7 @@ pub(super) fn set_interaction_focused(app: &mut App, queue_index: usize, focused
                 {
                     question.focused = focused;
                     if focused {
-                        question.last_activity = std::time::Instant::now();
+                        question.last_activity = super::input_event_now();
                     }
                     tc.invalidate_render_cache();
                     invalidated = true;
@@ -98,7 +84,6 @@ pub(super) fn set_interaction_focused(app: &mut App, queue_index: usize, focused
         }
     }
     if invalidated {
-        app.sync_render_cache_slot(mi, bi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
         app.request_chat_mutable_rebuild();
     }
@@ -143,9 +128,7 @@ pub(crate) fn cancel_pending_interaction(app: &mut App, id: &str) {
         _ => return,
     }
     app.pending_interaction_ids.retain(|pending| pending != id);
-    app.sync_render_cache_slot(mi, bi);
-    app.recompute_message_retained_bytes(mi);
-    app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+    app.sync_after_message_blocks_changed(mi);
     app.request_chat_mutable_rebuild();
     focus_next_inline_interaction(app);
 }
@@ -203,9 +186,7 @@ pub(super) fn clear_inline_interaction_focus(app: &mut App) {
                 _ => {}
             }
             if interaction_changed {
-                app.sync_render_cache_slot(mi, bi);
-                app.recompute_message_retained_bytes(mi);
-                app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+                app.sync_after_message_blocks_changed(mi);
                 app.request_chat_mutable_rebuild();
                 changed = true;
             }

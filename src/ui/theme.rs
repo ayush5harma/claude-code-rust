@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use ratatui::style::{Color, Modifier, Style};
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -367,7 +366,7 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         "LS" => ("\u{2315}", "LS"),
         "Bash" => ("$ \u{27e9}", "Bash"),
         "PowerShell" => ("PS \u{27e9}", "PowerShell"),
-        "Task" | "Agent" => ("\u{25c7}", "Subagent"),
+        name if crate::agent::model::is_agent_tool_name(name) => ("\u{25c7}", "Subagent"),
         "TaskCreate" | "TaskUpdate" | "TaskGet" | "TaskList" | "TaskOutput" | "TaskStop" => {
             ("\u{25a1}", "Task")
         }

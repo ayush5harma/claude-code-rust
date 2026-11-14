@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use crate::agent::model;
 use serde::{Deserialize, Serialize};
@@ -123,14 +122,6 @@ pub struct MessageUsage {
     pub cache_write_tokens: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum UsageSourceMode {
-    #[default]
-    Auto,
-    Oauth,
-    Cli,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsageSourceKind {
     Sdk,
@@ -152,6 +143,7 @@ pub struct SessionUsageSummary {
 pub struct UsageActivityWindow {
     pub request_count: u64,
     pub session_count: u64,
+    pub recommendations: Option<Vec<crate::agent::types::StructuredUsageRecommendation>>,
     pub behaviors: Vec<UsageBehaviorAttribution>,
     pub agents: Vec<UsageNamedAttribution>,
     pub skills: Vec<UsageNamedAttribution>,
@@ -215,16 +207,13 @@ pub struct UsageState {
     pub snapshot: Option<UsageSnapshot>,
     pub in_flight: bool,
     pub last_error: Option<String>,
-    pub active_source: UsageSourceMode,
     pub last_attempted_source: Option<UsageSourceKind>,
 }
 
+// Keep the established context-usage names used by session consumers.
+#[allow(clippy::struct_field_names)]
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SessionUsageState {
-    pub last_compaction_trigger: Option<model::CompactionTrigger>,
-    pub last_compaction_pre_tokens: Option<u64>,
-    pub last_compaction_post_tokens: Option<u64>,
-    pub last_compaction_duration_ms: Option<u64>,
     pub context_usage_percent: Option<u8>,
     pub context_usage_in_flight: bool,
     pub context_usage_refresh_pending: bool,
@@ -241,7 +230,7 @@ pub struct McpState {
     pub removed_config_servers:
         std::collections::BTreeMap<RemovedMcpServerKey, RemovedMcpServerGuard>,
     pub pending_dynamic_config_removal: Option<String>,
-    pub pending_elicitation: Option<crate::agent::types::ElicitationRequest>,
+    pub elicitations: crate::app::config::ElicitationQueue,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -262,26 +251,7 @@ pub struct RemovedMcpServerGuard {
     pub expected_source: crate::agent::types::McpSnapshotSource,
 }
 
-pub const DEFAULT_RENDER_CACHE_BUDGET_BYTES: usize = 24 * 1024 * 1024;
 pub const DEFAULT_HISTORY_RETENTION_MAX_BYTES: usize = 64 * 1024 * 1024;
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RenderCacheBudget {
-    pub max_bytes: usize,
-    pub last_total_bytes: usize,
-    pub last_evicted_bytes: usize,
-    pub total_evictions: usize,
-}
-
-impl Default for RenderCacheBudget {
-    fn default() -> Self {
-        Self {
-            max_bytes: DEFAULT_RENDER_CACHE_BUDGET_BYTES,
-            last_total_bytes: 0,
-            last_evicted_bytes: 0,
-            total_evictions: 0,
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HistoryRetentionPolicy {
@@ -304,22 +274,12 @@ pub struct HistoryRetentionStats {
     pub total_dropped_bytes: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct CacheBudgetEnforceStats {
-    pub total_before_bytes: usize,
-    pub total_after_bytes: usize,
-    pub evicted_bytes: usize,
-    pub evicted_blocks: usize,
-    /// Bytes in protected (non-evictable) blocks excluded from the budget comparison.
-    pub protected_bytes: usize,
-}
-
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AppStatus {
     /// Waiting for bridge adapter connection. Draft editing remains available,
     /// but submission is disabled until a session is established.
     Connecting,
-    /// A slash command is in flight (input disabled, spinner shown).
+    /// A slash command is in flight (input disabled; its status shows only when labeled).
     CommandPending,
     Ready,
     Thinking,
@@ -386,6 +346,18 @@ pub enum ToolCallScope {
     MainAgent,
     SubagentRoot,
     SubagentChild { parent_tool_use_id: String },
+}
+
+impl ToolCallScope {
+    pub(crate) fn for_tool(tool_name: &str, parent: Option<&str>) -> Self {
+        if let Some(parent) = parent {
+            Self::SubagentChild { parent_tool_use_id: parent.to_owned() }
+        } else if crate::agent::model::is_agent_tool_name(tool_name) {
+            Self::SubagentRoot
+        } else {
+            Self::MainAgent
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

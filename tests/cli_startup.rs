@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use clap::Parser;
 use claude_code_rust::{Cli, StartupLaunch};
 use std::process::Command;
+
+#[path = "support/startup_audit.rs"]
+mod audit_tests;
 
 #[test]
 fn interactive_startup_flags_normalize_to_one_launch() {
@@ -50,10 +54,9 @@ fn interactive_startup_flags_normalize_to_one_launch() {
 
 #[test]
 fn session_options_support_existing_resume_syntax() {
-    let cli = Cli::parse_from_args([
-        "claude-rs",
-        "resume",
-        "session-1",
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("docs")).unwrap();
+    let options = [
         "--model",
         "opus",
         "--effort",
@@ -62,13 +65,40 @@ fn session_options_support_existing_resume_syntax() {
         "plan",
         "--agent",
         "reviewer",
-    ])
-    .expect("parse options");
-    cli.validate().expect("valid launch");
-    assert_eq!(cli.session_options.model.as_deref(), Some("opus"));
-    assert_eq!(cli.session_options.effort, Some(claude_code_rust::agent::model::EffortLevel::Max));
-    assert_eq!(cli.session_options.permission_mode.unwrap().as_stored(), "plan");
-    assert_eq!(cli.session_options.agent.as_deref(), Some("reviewer"));
+        "--add-dir",
+        "docs",
+        "--name",
+        "Experiment",
+    ];
+    for before in [true, false] {
+        let mut args = vec!["claude-rs", "--dir", project.path().to_str().unwrap()];
+        if before {
+            args.extend(options);
+        }
+        args.extend(["resume", "session-1", "review prompt"]);
+        if !before {
+            args.extend(options);
+        }
+        let cli = Cli::parse_from_args(args).unwrap();
+        cli.validate().unwrap();
+        assert_eq!(
+            cli.startup_launch(),
+            StartupLaunch::ResumeSession { session_id: "session-1".into() }
+        );
+        assert_eq!(cli.initial_prompt(), Some("review prompt"));
+        assert_eq!(cli.session_options.model.as_deref(), Some("opus"));
+        assert_eq!(
+            cli.session_options.effort,
+            Some(claude_code_rust::agent::model::EffortLevel::Max)
+        );
+        assert_eq!(cli.session_options.permission_mode.unwrap().as_stored(), "plan");
+        assert_eq!(cli.session_options.agent.as_deref(), Some("reviewer"));
+        assert_eq!(cli.session_options.name.as_deref(), Some("Experiment"));
+        assert_eq!(
+            cli.resolve_session_config().unwrap().additional_directories,
+            [project.path().join("docs").to_str().unwrap()]
+        );
+    }
 }
 
 #[test]
@@ -135,10 +165,14 @@ fn executable_rejects_startup_conflicts_before_resolving_the_bridge() {
 }
 
 #[test]
-fn executable_rejects_a_missing_added_directory_before_resolving_the_bridge() {
+fn executable_rejects_a_missing_added_directory_before_starting_the_bridge() {
     let project = tempfile::tempdir().expect("project");
+    let script = project.path().join("inert-bridge.js");
+    std::fs::write(&script, b"throw new Error('must never run');").expect("script");
     let output = Command::new(env!("CARGO_BIN_EXE_claude-rs"))
-        .args(["--bridge-script", "missing-bridge.js", "--add-dir", "not-there", "-C"])
+        .arg("--bridge-script")
+        .arg(&script)
+        .args(["--add-dir", "not-there", "-C"])
         .arg(project.path())
         .output()
         .expect("run with a missing directory");
@@ -149,7 +183,7 @@ fn executable_rejects_a_missing_added_directory_before_resolving_the_bridge() {
         error.contains(&format!("--add-dir: {} is not an existing directory", missing.display())),
         "{error}"
     );
-    assert!(!error.contains("missing-bridge.js"), "runtime resolved the bridge: {error}");
+    assert!(!error.contains("must never run"), "the bridge started: {error}");
 }
 
 #[test]
@@ -161,15 +195,18 @@ fn executable_rejects_a_bad_working_directory_or_bridge_script_as_usage_errors()
     let cases: [(&[&std::ffi::OsStr], String); 3] = [
         (
             &["-C".as_ref(), missing.as_os_str()],
-            format!("{} is not an existing directory", missing.display()),
+            format!("'--dir <DIR>': directory does not exist: {}", missing.display()),
         ),
         (
             &["-C".as_ref(), file.as_os_str()],
-            format!("{} is not an existing directory", file.display()),
+            format!("'--dir <DIR>': not a directory: {}", file.display()),
         ),
         (
             &["--bridge-script".as_ref(), missing.as_os_str()],
-            format!("--bridge-script: {} is not an existing file", missing.display()),
+            format!(
+                "'--bridge-script <BRIDGE_SCRIPT>': bridge script does not exist: {}",
+                missing.display()
+            ),
         ),
     ];
     for (args, expected) in cases {
@@ -270,7 +307,8 @@ fn piped_stdin_with_a_terminal_on_stdout_passes_the_terminal_check() {
 
     assert!(!output.contains("needs an interactive terminal"), "{output}");
     assert_eq!(status.exit_code(), 21, "{output}");
-    assert!(output.contains(&missing_bridge.display().to_string()), "{output}");
+    // The error report shortens the home directory, which is this test's HOME.
+    assert!(output.contains("~/missing-bridge.js"), "{output}");
 }
 
 #[test]
@@ -332,4 +370,268 @@ fn executable_generates_manuals_without_a_bridge() {
     assert!(output_dir.join("claude-rs-config-show.1").is_file());
     assert!(output_dir.join("claude-rs-completions.1").is_file());
     assert!(!output_dir.join("claude-rs-man.1").exists());
+}
+
+/// Runs the real binary with a scratch profile and returns it with its output.
+#[cfg(unix)]
+#[allow(clippy::expect_used)]
+fn run_with_scratch_profile(
+    args: &[&std::ffi::OsStr],
+    cwd: &std::path::Path,
+) -> (tempfile::TempDir, std::process::Output) {
+    let profile = tempfile::tempdir().expect("profile directory");
+    let output = Command::new(env!("CARGO_BIN_EXE_claude-rs"))
+        .args(args)
+        .current_dir(cwd)
+        .env("CLAUDE_CONFIG_DIR", profile.path())
+        .output()
+        .expect("run claude-rs");
+    (profile, output)
+}
+
+#[test]
+fn launch_paths_that_exist_are_accepted_for_every_interactive_launch() {
+    let scratch = tempfile::tempdir().expect("scratch directory");
+    let script = scratch.path().join("bridge.js");
+    std::fs::write(&script, "").expect("script");
+    let paths: [&std::ffi::OsStr; 4] =
+        ["-C".as_ref(), scratch.path().as_os_str(), "--bridge-script".as_ref(), script.as_os_str()];
+    for selection in [&[][..], &["--resume"][..], &["--continue"][..], &["resume", "session-1"][..]]
+    {
+        let mut args: Vec<&std::ffi::OsStr> = vec!["claude-rs".as_ref()];
+        if selection.first() == Some(&"resume") {
+            args.extend(paths);
+            args.extend(selection.iter().map(std::ffi::OsStr::new));
+        } else {
+            args.extend(selection.iter().map(std::ffi::OsStr::new));
+            args.extend(paths);
+        }
+        let cli = Cli::try_parse_from(&args).expect("parse");
+        cli.validate().unwrap_or_else(|error| panic!("{args:?}: {error}"));
+    }
+}
+/// Sets `path`'s mode for the length of a test and opens it again on drop, so a failed
+/// assertion still leaves the scratch directory removable.
+#[cfg(unix)]
+struct ModeGuard(std::path::PathBuf);
+
+#[cfg(unix)]
+impl ModeGuard {
+    #[allow(clippy::expect_used)]
+    fn set(path: &std::path::Path, mode: u32) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+        Self(path.to_path_buf())
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ModeGuard {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+    }
+}
+
+/// Root passes every permission check, which leaves nothing to refuse: such a run skips
+/// explicitly rather than passing without asserting.
+/// The probe opens `behind_lock`, a path the test locked away, rather than repeating the
+/// check under test, so a broken check fails instead of being skipped.
+#[cfg(unix)]
+fn permissions_enforced(behind_lock: &std::path::Path) -> bool {
+    let enforced = std::fs::File::open(behind_lock)
+        .is_err_and(|err| err.kind() == std::io::ErrorKind::PermissionDenied);
+    if !enforced {
+        eprintln!("skipped: permissions are not enforced for this user (root?)");
+    }
+    enforced
+}
+
+#[cfg(unix)]
+#[test]
+fn a_dir_needs_both_read_and_search_permission() {
+    let scratch = tempfile::tempdir().expect("scratch directory");
+    let make = |name: &str| {
+        let dir = scratch.path().join(name);
+        std::fs::create_dir(&dir).expect("dir");
+        std::fs::write(dir.join("inside.txt"), "").expect("file inside");
+        dir
+    };
+    // Read without search lists the names but cannot enter the directory or open
+    // anything in it; search without read enters it but cannot list it.
+    let no_search = make("read-only");
+    let no_read = make("search-only");
+    let both = make("read-and-search");
+    let _guards = [
+        ModeGuard::set(&no_search, 0o600),
+        ModeGuard::set(&no_read, 0o300),
+        ModeGuard::set(&both, 0o500),
+    ];
+    if !permissions_enforced(&no_search.join("inside.txt")) {
+        return;
+    }
+    for (dir, reason) in [(&no_search, "cannot be entered"), (&no_read, "cannot be read")] {
+        let (profile, output) =
+            run_with_scratch_profile(&["--dir".as_ref(), dir.as_os_str()], scratch.path());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{}: {error}", dir.display());
+        assert!(error.contains("--dir") && error.contains(reason), "{error}");
+        assert!(error.contains(&dir.display().to_string()), "{error}");
+        assert_eq!(std::fs::read_dir(profile.path()).expect("profile").count(), 0);
+    }
+    let cli = Cli::try_parse_from(["claude-rs".as_ref(), "-C".as_ref(), both.as_os_str()])
+        .expect("parse");
+    cli.validate().unwrap_or_else(|error| panic!("read and search: {error}"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_dir_behind_an_unsearchable_parent_is_reported_as_inaccessible_not_missing() {
+    let scratch = tempfile::tempdir().expect("scratch directory");
+    let parent = scratch.path().join("locked-parent");
+    std::fs::create_dir_all(parent.join("project")).expect("project");
+    let _guard = ModeGuard::set(&parent, 0o000);
+    if !permissions_enforced(&parent.join("project")) {
+        return;
+    }
+    let project = parent.join("project");
+    let error = Cli::try_parse_from(["claude-rs".as_ref(), "-C".as_ref(), project.as_os_str()])
+        .expect("parse")
+        .validate()
+        .expect_err("dir behind a locked parent")
+        .to_string();
+    assert!(error.contains("cannot be accessed"), "{error}");
+    assert!(!error.contains("does not exist"), "{error}");
+}
+
+/// Run under a pseudo-terminal: a launch without one stops at the terminal check (exit 25)
+/// before logging starts, so the logging failure is only reachable from a terminal.
+#[cfg(unix)]
+#[test]
+fn explicit_logging_failure_exits_one_before_bridge_startup_and_preserves_input() {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use std::io::Read as _;
+
+    let root = tempfile::tempdir().unwrap();
+    let script = root.path().join("inert bridge.js");
+    std::fs::write(&script, b"throw new Error('must never run');").unwrap();
+    let blocker = root.path().join("blocker");
+    std::fs::write(&blocker, b"keep blocker").unwrap();
+    let target = blocker.join("explicit.log");
+    let pair = native_pty_system()
+        .openpty(PtySize { rows: 24, cols: 200, pixel_width: 0, pixel_height: 0 })
+        .expect("open pty");
+    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_claude-rs"));
+    command.arg("--bridge-script");
+    command.arg(&script);
+    command.arg("--log-file");
+    command.arg(&target);
+    command.arg("--no-update-check");
+    command.cwd(root.path());
+    command.env_remove("RUST_LOG");
+    command.env("CLAUDE_CONFIG_DIR", root.path().join("profile"));
+    command.env("CLAUDE_RS_CONFIG_DIR", root.path().join("app-profile"));
+    let mut reader = pair.master.try_clone_reader().expect("pty reader");
+    let mut child = pair.slave.spawn_command(command).expect("spawn claude-rs");
+    drop(pair.slave);
+    let output = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        // macOS reports EIO rather than EOF once the last writer has closed.
+        let _ = reader.read_to_end(&mut output);
+        String::from_utf8_lossy(&output).into_owned()
+    });
+    let status = child.wait().expect("wait for claude-rs");
+    drop(pair.master);
+    let error = output.join().expect("pty output");
+
+    assert_eq!(status.exit_code(), 1, "{error}");
+    assert!(error.contains("failed to create log directory"), "{error}");
+    assert!(error.contains(blocker.to_str().unwrap()), "{error}");
+    assert!(!error.contains("claude-rs resume"), "{error}");
+    assert_eq!(std::fs::read(blocker).unwrap(), b"keep blocker");
+    assert_eq!(std::fs::read(script).unwrap(), b"throw new Error('must never run');");
+    assert!(!root.path().join("app-profile").exists());
+    assert!(!root.path().join("profile").exists());
+}
+
+// Default diagnostics lookup honors XDG_DATA_HOME on Linux. Other platforms must
+// use an independently verified native data-directory isolation mechanism.
+// The launch runs under a pseudo-terminal: without one it stops at the terminal check
+// (exit 25) before the startup error under test.
+#[cfg(all(target_os = "linux", debug_assertions))]
+#[test]
+fn wrapped_startup_errors_keep_their_typed_exit_and_report_without_starting_a_session() {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use std::io::Read as _;
+
+    for (missing_runtime, code, category) in
+        [(true, 20, "environment"), (false, 21, "bridge_spawn")]
+    {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let project = root.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let script = root.path().join("inert bridge.js");
+        std::fs::write(&script, b"throw new Error('must never run');").unwrap();
+        let missing =
+            root.path().join(if missing_runtime { "missing-runtime" } else { "missing-script.js" });
+        let selected = Command::new(env!("CARGO_BIN_EXE_claude-rs"))
+            .args(["logs", "--path"])
+            .current_dir(&project)
+            .env("XDG_DATA_HOME", &data)
+            .env("HOME", root.path().join("home"))
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert!(selected.status.success());
+        assert_eq!(
+            String::from_utf8(selected.stdout).unwrap(),
+            format!("{}\n", data.join("claude-code-rust/logs/runtime").display())
+        );
+        let pair = native_pty_system()
+            .openpty(PtySize { rows: 24, cols: 200, pixel_width: 0, pixel_height: 0 })
+            .expect("open pty");
+        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_claude-rs"));
+        command.cwd(&project);
+        command.arg("--no-update-check");
+        command.arg("--log-file");
+        command.arg(root.path().join("explicit.log"));
+        command.env("XDG_DATA_HOME", &data);
+        command.env("XDG_CACHE_HOME", root.path().join("cache"));
+        command.env("HOME", root.path().join("home"));
+        command.env("CLAUDE_CONFIG_DIR", root.path().join("profile"));
+        command.env("CLAUDE_RS_CONFIG_DIR", root.path().join("app-profile"));
+        command.env_remove("RUST_LOG");
+        command.env_remove("CLAUDE_RS_AGENT_BRIDGE");
+        command.env("CLAUDE_RS_AGENT_BRIDGE_RUNTIME", &missing);
+        if missing_runtime {
+            command.arg("--bridge-script");
+            command.arg(&script);
+        } else {
+            command.env("CLAUDE_RS_AGENT_BRIDGE", &missing);
+        }
+        let mut reader = pair.master.try_clone_reader().expect("pty reader");
+        let mut child = pair.slave.spawn_command(command).expect("spawn claude-rs");
+        drop(pair.slave);
+        let output = std::thread::spawn(move || {
+            let mut output = Vec::new();
+            let _ = reader.read_to_end(&mut output);
+            String::from_utf8_lossy(&output).into_owned()
+        });
+        let status = child.wait().expect("wait for claude-rs");
+        drop(pair.master);
+        let text = output.join().expect("pty output");
+        assert_eq!(status.exit_code(), code, "{text}");
+        let field = |name: &str| {
+            text.lines().find_map(|line| line.trim().strip_prefix(&format!("{name}: ")))
+        };
+        assert_eq!(field("category"), Some(category), "{text}");
+        assert_eq!(field("exit_code"), Some(code.to_string().as_str()));
+        assert_eq!(field("next_step"), Some("claude-rs doctor --strict"));
+        assert!(field("detail").unwrap().contains(missing.to_str().unwrap()));
+        assert!(!text.contains("claude-rs resume"));
+        assert!(!root.path().join("app-profile").exists());
+        assert!(!root.path().join("profile").exists());
+        assert_eq!(std::fs::read(script).unwrap(), b"throw new Error('must never run');");
+    }
 }

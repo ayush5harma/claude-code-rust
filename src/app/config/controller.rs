@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
+use super::SettingsBrowse;
 use super::prelude::*;
 
 pub fn open(app: &mut App) -> Result<(), String> {
-    open_category(app, "general")
+    open_category(app, "general")?;
+    *app.config.settings = SettingsBrowse::default();
+    Ok(())
 }
 
 pub(crate) fn open_category(app: &mut App, category: &str) -> Result<(), String> {
@@ -22,6 +24,7 @@ pub(crate) fn open_tab(app: &mut App, tab: ConfigTab) -> Result<(), String> {
     app.config.status_message = None;
     app.config.last_error = None;
     app.config.active_tab = tab;
+    app.config.read_only.reset();
     view::set_fullscreen_view(app, FullscreenView::Config);
     request_active_tab_side_effects(app);
     Ok(())
@@ -31,8 +34,9 @@ pub(crate) fn refresh_runtime_tabs_for_session_change(app: &mut App) {
     if app.surface_mode != SurfaceMode::Fullscreen(FullscreenView::Config) {
         return;
     }
-    request_status_snapshot_if_needed(app);
+    refresh_status_tab(app);
     if app.config.active_tab == ConfigTab::Usage {
+        app.config.read_only.reset();
         crate::app::usage::request_refresh_if_needed(app);
     }
     if app.config.active_tab == ConfigTab::Plugins {
@@ -41,11 +45,13 @@ pub(crate) fn refresh_runtime_tabs_for_session_change(app: &mut App) {
 }
 
 pub fn close(app: &mut App) {
+    *app.config.settings = SettingsBrowse::default();
     view::set_chat_surface(app);
 }
 
 pub(crate) fn activate_tab(app: &mut App, tab: ConfigTab) {
     app.config.active_tab = tab;
+    app.config.read_only.reset();
     app.config.status_message = None;
     app.config.last_error = None;
     request_active_tab_side_effects(app);
@@ -75,6 +81,16 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    if matches!(app.config.active_tab, ConfigTab::Status | ConfigTab::Usage)
+        && key.modifiers.is_empty()
+        && app.config.read_only.handle_key(key.code)
+    {
+        return;
+    }
+    handle_tab_action(app, key);
+}
+
+fn handle_tab_action(app: &mut App, key: KeyEvent) {
     match (key.code, key.modifiers) {
         (KeyCode::Char(ch), modifiers)
             if app.config.active_tab == ConfigTab::Status
@@ -194,7 +210,7 @@ fn handle_settings_key(app: &mut App, key: KeyEvent) -> bool {
             edit::step_setting(app, if key.code == KeyCode::Left { -1 } else { 1 });
         }
         KeyCode::Char('s') => app.config.selected_scope = app.config.selected_scope.next(),
-        KeyCode::Char('r') => super::service::request_settings(app),
+        KeyCode::Char('r') => super::service::refresh_settings(app),
         KeyCode::Delete => super::service::reset_selected(app),
         _ => return false,
     }
@@ -302,7 +318,7 @@ fn request_active_tab_side_effects(app: &mut App) {
     if app.config.active_tab == ConfigTab::Settings {
         super::service::request_settings(app);
     }
-    request_status_snapshot_if_needed(app);
+    refresh_status_tab(app);
     mcp::refresh_mcp_snapshot_if_needed(app);
     if app.config.active_tab == ConfigTab::Usage {
         crate::app::usage::request_refresh_if_needed(app);

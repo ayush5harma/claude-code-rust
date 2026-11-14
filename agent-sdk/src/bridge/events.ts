@@ -1,5 +1,6 @@
 import { flushPendingHookActivity } from "./hook_activity.js";
 import { emitSessionTitle } from "./session_title.js";
+import { emitSessionPluginInventory } from "./plugin_inventory.js";
 import {
   listSessions,
   type ListSessionsOptions,
@@ -10,6 +11,7 @@ import type {
   BridgeEventEnvelope,
   McpOperationError,
   SessionUpdate,
+  SystemNoticeSeverity,
 } from "../types.js";
 import { buildModeState } from "./commands.js";
 import { mapSdkSessions } from "./history.js";
@@ -22,7 +24,6 @@ import {
   type SessionState,
 } from "./session_lifecycle.js";
 
-const SESSION_LIST_LIMIT = 50;
 let sessionListingDir: string | undefined;
 type ProtocolEventWriter = (line: string) => void;
 
@@ -75,13 +76,15 @@ export function replaceProtocolEventWriter(
   };
 }
 
-export function buildSessionListOptions(
-  dir: string | undefined,
-  limit = SESSION_LIST_LIMIT,
-): ListSessionsOptions {
+// No limit: the picker searches what it is given, so a cap hid every older session from
+// /resume, and tag, delete, history and fork lookups failed for them. Stock Claude Code's
+// picker reaches every session of the project too (it pages them in as the list scrolls).
+// includeProgrammatic stays on because claude-rs's own sessions are saved with the SDK's
+// `sdk-ts` entrypoint, which the SDK otherwise filters out.
+export function buildSessionListOptions(dir: string | undefined): ListSessionsOptions {
   return dir
-    ? { dir, includeProgrammatic: true, includeWorktrees: true, limit }
-    : { includeProgrammatic: true, limit };
+    ? { dir, includeProgrammatic: true, includeWorktrees: true }
+    : { includeProgrammatic: true };
 }
 
 export function setSessionListingDir(dir: string | undefined): void {
@@ -153,9 +156,11 @@ export function emitSessionResumeFailed(
 export function emitRuntimeReloadCompleted(
   sessionId: string,
   requestId?: string,
+  errorCount = 0,
+  reconciliationError?: string,
 ): void {
   writeEvent(
-    { event: "runtime_reload_completed", session_id: sessionId },
+    { event: "runtime_reload_completed", session_id: sessionId, error_count: errorCount, ...(reconciliationError ? { reconciliation_error: reconciliationError } : {}) },
     requestId,
   );
 }
@@ -164,9 +169,10 @@ export function emitRuntimeReloadHeld(
   sessionId: string,
   cacheImpact: import("../types.js").RuntimeReloadCacheImpact,
   requestId?: string,
+  errorCount = 0,
 ): void {
   writeEvent(
-    { event: "runtime_reload_held", session_id: sessionId, cache_impact: cacheImpact },
+    { event: "runtime_reload_held", session_id: sessionId, cache_impact: cacheImpact, error_count: errorCount },
     requestId,
   );
 }
@@ -193,11 +199,28 @@ export function emitMcpOperationError(
   );
 }
 
+export function emitSystemNoticeUpdate(
+  session: SessionState,
+  severity: SystemNoticeSeverity,
+  message: string,
+): void {
+  const trimmed = message.trim();
+  if (!trimmed) {
+    return;
+  }
+  emitSessionUpdate(session.sessionId, {
+    type: "system_notice_update",
+    severity,
+    message: trimmed,
+  });
+}
+
 export function emitSessionUpdate(
   sessionId: string,
   update: SessionUpdate,
+  requestId?: string,
 ): void {
-  writeEvent({ event: "session_update", session_id: sessionId, update });
+  writeEvent({ event: "session_update", session_id: sessionId, update }, requestId);
 }
 
 export function emitPermissionRequestEvent(
@@ -355,7 +378,11 @@ function logConnectEventEmission(
   });
 }
 
-export function emitConnectEvent(session: SessionState): void {
+/**
+ * Writes the connect event and everything held until it. Returns the session-title
+ * read it starts in the background; callers do not wait for it.
+ */
+export function emitConnectEvent(session: SessionState): Promise<void> {
   const staleSessions = session.sessionsToCloseAfterConnect;
   if (staleSessions) {
     for (const stale of staleSessions) {
@@ -380,6 +407,7 @@ export function emitConnectEvent(session: SessionState): void {
   }
   session.connectRequestId = undefined;
   session.connected = true;
+  emitSessionPluginInventory(session);
   void import("./status_line.js").then(({ scheduleStatusLine }) => scheduleStatusLine(session));
   session.authHintSent = false;
   const deferredBridgeEvents = session.deferredBridgeEvents;
@@ -394,14 +422,14 @@ export function emitConnectEvent(session: SessionState): void {
   }
   emitAvailableAgentsSnapshot(session);
   flushPendingHookActivity(session);
-  void emitSessionTitle(session);
+  const titleRead = emitSessionTitle(session);
   session.resumeUpdates = undefined;
   session.restoredInput = undefined;
 
   session.sessionsToCloseAfterConnect = undefined;
   if (!staleSessions || staleSessions.length === 0) {
     refreshSessionsList();
-    return;
+    return titleRead;
   }
   const closeTask = (async () => {
     // Lazy import to break circular dependency at module-evaluation time.
@@ -415,6 +443,7 @@ export function emitConnectEvent(session: SessionState): void {
     refreshSessionsList();
   })();
   trackSessionCloseTask(closeTask);
+  return titleRead;
 }
 
 export function emitSessionReplacedEvent(
@@ -424,6 +453,7 @@ export function emitSessionReplacedEvent(
   const bridgeEvent = buildConnectBridgeEvent(session, "session_replaced");
   logConnectEventEmission(session, "session_replaced", requestId);
   writeEvent(bridgeEvent, requestId);
+  emitSessionPluginInventory(session);
   emitAvailableCommandsSnapshot(session);
   emitAvailableAgentsSnapshot(session);
   void emitSessionTitle(session);
@@ -446,14 +476,11 @@ export async function emitSessionsList(requestId?: string): Promise<void> {
     message: "sessions list requested",
     outcome: "start",
     ...(requestId ? { requestId } : {}),
-    fields: {
-      has_listing_dir: sessionListingDir !== undefined,
-      limit: SESSION_LIST_LIMIT,
-    },
+    fields: { has_listing_dir: sessionListingDir !== undefined },
   });
   try {
     const sdkSessions = await listSessions(currentSessionListOptions());
-    const sessions = mapSdkSessions(sdkSessions, SESSION_LIST_LIMIT);
+    const sessions = mapSdkSessions(sdkSessions);
     bridgeLogger.info({
       target: LOG_TARGETS.APP_SESSION,
       eventName: "sessions_list_completed",

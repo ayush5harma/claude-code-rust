@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::prelude::*;
 
@@ -55,6 +54,12 @@ impl PasteState {
     pub fn clear_pending_queue(&mut self) {
         self.pending_text.clear();
         self.pending_session = None;
+    }
+
+    /// Explicit composer discard also cancels held typing, retro-capture and Enter suppression.
+    pub fn discard_input(&mut self) {
+        self.clear_all_sessions();
+        self.burst = paste_burst::PasteBurstDetector::default();
     }
 
     pub fn clear_all_sessions(&mut self) {

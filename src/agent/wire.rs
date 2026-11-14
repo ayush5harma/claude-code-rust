@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use crate::agent::types;
 use serde::{Deserialize, Serialize};
@@ -38,24 +37,25 @@ impl SessionLaunchSettings {
     }
 }
 
-/// Launch configuration that applies to every session the process starts. Paths are
-/// absolute; the bridge maps each field to its Agent SDK option.
+/// Launch configuration kept for every session the process starts, unlike the initial-session
+/// fields above. The app has already resolved paths to absolute ones and checked that files
+/// were readable and JSON parsed; the bridge maps each field to its Agent SDK option.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_directories: Vec<String>,
-    /// Unparsed JSON text of a settings object; the bridge parses and merges it.
+    /// A settings object for the SDK's flag-settings layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub settings: Option<String>,
-    /// Unparsed JSON texts of MCP configs, in command-line order.
+    pub settings: Option<serde_json::Map<String, serde_json::Value>>,
+    /// The `mcpServers` object of each `--mcp-config`, in command-line order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub mcp_configs: Vec<String>,
+    pub mcp_configs: Vec<serde_json::Map<String, serde_json::Value>>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub strict_mcp_config: bool,
-    /// Replaces Claude Code's system prompt; the bridge keeps its runtime guard appended.
+    /// Replaces the default system prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
-    /// Appended after the bridge's runtime guard.
+    /// Appended to the system prompt, after the bridge's own instruction.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub append_system_prompt: Option<String>,
 }
@@ -229,6 +229,8 @@ pub enum BridgeCommand {
     StopSubagent {
         session_id: String,
         task_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expected_run_id: Option<String>,
     },
     GetRewindTargets {
         session_id: String,
@@ -247,6 +249,8 @@ pub enum BridgeCommand {
         session_id: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         force: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        add_plugins: Vec<String>,
     },
     ReloadSkillsAndStyles {
         session_id: String,
@@ -526,10 +530,9 @@ pub enum BridgeEvent {
         session_id: String,
         request: types::ElicitationRequest,
     },
-    ElicitationComplete {
+    ElicitationSettled {
         session_id: String,
-        elicitation_id: String,
-        server_name: Option<String>,
+        settlement: ElicitationSettlement,
     },
     McpAuthRedirect {
         session_id: String,
@@ -592,12 +595,22 @@ pub enum BridgeEvent {
     SessionsListFailed {
         message: String,
     },
+    PluginInventory {
+        session_id: String,
+        plugins: Vec<types::SessionPlugin>,
+    },
     RuntimeReloadCompleted {
         session_id: String,
+        #[serde(default)]
+        error_count: u32,
+        #[serde(default)]
+        reconciliation_error: Option<String>,
     },
     RuntimeReloadHeld {
         session_id: String,
         cache_impact: types::RuntimeReloadCacheImpact,
+        #[serde(default)]
+        error_count: u32,
     },
     RuntimeReloadFailed {
         session_id: String,
@@ -605,8 +618,12 @@ pub enum BridgeEvent {
     },
     SkillsAndStylesReloaded {
         session_id: String,
-        skills: Vec<String>,
-        output_styles: Vec<String>,
+        skills: types::ReloadOutcome,
+        output_styles: types::ReloadOutcome,
+    },
+    SkillsAndStylesReloadExpired {
+        session_id: String,
+        after_ms: u64,
     },
     SessionReplaced {
         session_id: String,
@@ -662,6 +679,7 @@ pub enum BridgeEvent {
     SubagentStopResult {
         session_id: String,
         task_id: String,
+        run_id: Option<String>,
         error: Option<String>,
     },
     RewindTargets {
@@ -714,7 +732,7 @@ impl BridgeEvent {
             Self::UserDialogRequest { .. } => "user_dialog_request",
             Self::InteractionCancelled { .. } => "interaction_cancelled",
             Self::ElicitationRequest { .. } => "elicitation_request",
-            Self::ElicitationComplete { .. } => "elicitation_complete",
+            Self::ElicitationSettled { .. } => "elicitation_settled",
             Self::McpAuthRedirect { .. } => "mcp_auth_redirect",
             Self::McpOperationError { .. } => "mcp_operation_error",
             Self::McpSetServersResult { .. } => "mcp_set_servers_result",
@@ -728,9 +746,11 @@ impl BridgeEvent {
             Self::SessionResumeFailed { .. } => "session_resume_failed",
             Self::SessionsListFailed { .. } => "sessions_list_failed",
             Self::RuntimeReloadCompleted { .. } => "runtime_reload_completed",
+            Self::PluginInventory { .. } => "plugin_inventory",
             Self::RuntimeReloadHeld { .. } => "runtime_reload_held",
             Self::RuntimeReloadFailed { .. } => "runtime_reload_failed",
             Self::SkillsAndStylesReloaded { .. } => "skills_and_styles_reloaded",
+            Self::SkillsAndStylesReloadExpired { .. } => "skills_and_styles_reload_expired",
             Self::SessionReplaced { .. } => "session_replaced",
             Self::Initialized { .. } => "initialized",
             Self::SessionsListed { .. } => "sessions_listed",
@@ -761,7 +781,7 @@ impl BridgeEvent {
             | Self::UserDialogRequest { session_id, .. }
             | Self::InteractionCancelled { session_id, .. }
             | Self::ElicitationRequest { session_id, .. }
-            | Self::ElicitationComplete { session_id, .. }
+            | Self::ElicitationSettled { session_id, .. }
             | Self::McpAuthRedirect { session_id, .. }
             | Self::McpOperationError { session_id, .. }
             | Self::McpSetServersResult { session_id, .. }
@@ -774,9 +794,11 @@ impl BridgeEvent {
             | Self::SlashError { session_id, .. }
             | Self::SessionResumeFailed { session_id, .. }
             | Self::RuntimeReloadCompleted { session_id, .. }
+            | Self::PluginInventory { session_id, .. }
             | Self::RuntimeReloadHeld { session_id, .. }
             | Self::RuntimeReloadFailed { session_id, .. }
             | Self::SkillsAndStylesReloaded { session_id, .. }
+            | Self::SkillsAndStylesReloadExpired { session_id, .. }
             | Self::SessionReplaced { session_id, .. }
             | Self::SettingsResult { session_id, .. }
             | Self::StatusSnapshot { session_id, .. }
@@ -814,7 +836,7 @@ impl BridgeEvent {
             | Self::UserDialogRequest { .. }
             | Self::InteractionCancelled { .. }
             | Self::ElicitationRequest { .. }
-            | Self::ElicitationComplete { .. }
+            | Self::ElicitationSettled { .. }
             | Self::McpAuthRedirect { .. }
             | Self::McpOperationError { .. }
             | Self::McpSetServersResult { .. }
@@ -828,9 +850,11 @@ impl BridgeEvent {
             | Self::SessionResumeFailed { .. }
             | Self::SessionsListFailed { .. }
             | Self::RuntimeReloadCompleted { .. }
+            | Self::PluginInventory { .. }
             | Self::RuntimeReloadHeld { .. }
             | Self::RuntimeReloadFailed { .. }
             | Self::SkillsAndStylesReloaded { .. }
+            | Self::SkillsAndStylesReloadExpired { .. }
             | Self::SessionReplaced { .. }
             | Self::Initialized { .. }
             | Self::SessionsListed { .. }
@@ -850,6 +874,14 @@ impl BridgeEvent {
     }
 }
 
+/// Correlates SDK callback settlement with its original host request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ElicitationSettlement {
+    pub request_id: String,
+    #[serde(default)]
+    pub session_closing: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -857,6 +889,56 @@ mod tests {
     };
     use crate::agent::types;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn bash_owner_wake_flag_survives_the_tool_update_wire() {
+        for value in [Some(true), Some(false), None] {
+            let mut bash = serde_json::json!({});
+            if let Some(value) = value {
+                bash["background_wakes_owner"] = serde_json::json!(value);
+            }
+            let envelope: EventEnvelope = serde_json::from_value(serde_json::json!({
+                "event":"session_update","session_id":"s1","update":{"type":"tool_call_update","tool_call_update":{"tool_call_id":"bash-1","fields":{"output_metadata":{"bash":bash}}}}
+            })).expect("wire event");
+            let BridgeEvent::SessionUpdate {
+                update: types::SessionUpdate::ToolCallUpdate { tool_call_update },
+                ..
+            } = envelope.event
+            else {
+                panic!("tool update")
+            };
+            let metadata =
+                tool_call_update.fields.output_metadata.expect("metadata").bash.expect("bash");
+            assert_eq!(metadata.background_wakes_owner, value);
+            assert_eq!(
+                serde_json::to_value(metadata).expect("encoded").get("background_wakes_owner"),
+                Some(&value.map_or(serde_json::Value::Null, serde_json::Value::Bool))
+            );
+        }
+    }
+
+    #[test]
+    fn saved_scheduler_and_queue_sections_survive_the_wire_without_losing_item_identity() {
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/tool-result-times.json"))
+                .expect("independent SDK result fixtures");
+        for fixture in fixtures.as_array().expect("fixtures") {
+            let event: EventEnvelope = serde_json::from_value(serde_json::json!({
+                "event": "session_update", "session_id": "times",
+                "update": {"type": "tool_call_update", "tool_call_update": {
+                    "tool_call_id": fixture["name"], "fields": {
+                        "output_metadata": {"presentation": fixture["presentation"]}
+                    }
+                }}
+            }))
+            .expect("typed result wire event");
+            let encoded = serde_json::to_value(event).expect("wire round trip");
+            assert_eq!(
+                encoded["update"]["tool_call_update"]["fields"]["output_metadata"]["presentation"],
+                fixture["presentation"]
+            );
+        }
+    }
 
     #[test]
     fn notification_payload_round_trips_original_sdk_metadata_and_replay_provenance() {
@@ -870,153 +952,6 @@ mod tests {
         let envelope: EventEnvelope =
             serde_json::from_value(payload.clone()).expect("notification event");
         assert_eq!(serde_json::to_value(envelope).expect("serialize notification"), payload);
-    }
-
-    #[test]
-    fn sdk_result_alignment_metadata_survives_the_wire() {
-        let event: EventEnvelope = serde_json::from_value(serde_json::json!({
-            "event": "session_update", "session_id": "s1",
-            "update": { "type": "tool_call_update", "tool_call_update": {
-                "tool_call_id": "tool-1", "fields": {
-                    "status": "detached", "output_metadata": { "structured_content_omitted": true }
-                }
-            }}
-        }))
-        .expect("SDK result update");
-        let BridgeEvent::SessionUpdate {
-            update: types::SessionUpdate::ToolCallUpdate { tool_call_update },
-            ..
-        } = event.event
-        else {
-            panic!("expected tool update")
-        };
-        assert_eq!(tool_call_update.fields.status.as_deref(), Some("detached"));
-        assert!(
-            tool_call_update.fields.output_metadata.expect("metadata").structured_content_omitted
-        );
-    }
-
-    #[test]
-    fn connection_failure_preserves_open_startup_reasons_and_older_messages() {
-        for reason in [
-            None,
-            Some("org_pin_api_key_conflict"),
-            Some("provider_not_allowed"),
-            Some("org_verify_failed"),
-            Some("org_pin_mismatch"),
-            Some("managed_settings_invalid"),
-            Some("remote_settings_required_unavailable"),
-            Some("gateway_signin_required"),
-            Some("gateway_access_denied"),
-            Some("proxy_invalid"),
-            Some("temp_dir_unusable"),
-            Some("cwd_unavailable"),
-            Some("shell_tool_missing"),
-            Some("session_held_by_background"),
-            Some("worktree_resume_refused"),
-            Some("worktree_unverified"),
-            Some("cli_version_too_old"),
-            Some("bypass_root"),
-            Some("future_reason"),
-        ] {
-            let mut json = serde_json::json!({
-                "event": "connection_failed", "message": "startup failed", "request_id": "connect-1",
-            });
-            if let Some(reason) = reason {
-                json["startup_failure"] =
-                    serde_json::json!({ "reason": reason, "errors": ["SDK guidance"] });
-            }
-            let envelope: EventEnvelope = serde_json::from_value(json).expect("connection failure");
-            assert_eq!(envelope.request_id.as_deref(), Some("connect-1"));
-            let BridgeEvent::ConnectionFailed { message, startup_failure } = &envelope.event else {
-                panic!("connection failure")
-            };
-            assert_eq!(message, "startup failed");
-            assert_eq!(startup_failure.as_ref().map(|failure| failure.reason.as_str()), reason);
-            if let Some(failure) = startup_failure {
-                assert_eq!(failure.errors, ["SDK guidance"]);
-            }
-            let round_trip: EventEnvelope =
-                serde_json::from_value(serde_json::to_value(&envelope).expect("serialize"))
-                    .expect("deserialize");
-            assert_eq!(round_trip, envelope);
-        }
-    }
-
-    #[test]
-    fn ultracode_wire_round_trips_and_invalid_snapshots_become_unknown() {
-        for enabled in [true, false] {
-            let command = CommandEnvelope {
-                request_id: Some("u1".to_owned()),
-                command: BridgeCommand::SetUltracode { session_id: "s1".to_owned(), enabled },
-            };
-            let json = serde_json::to_value(&command).expect("serialize");
-            assert_eq!(
-                json,
-                serde_json::json!({"request_id":"u1","command":"set_ultracode","session_id":"s1","enabled":enabled})
-            );
-            assert_eq!(
-                serde_json::from_value::<CommandEnvelope>(json).expect("deserialize"),
-                command
-            );
-        }
-        let refresh = CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::RefreshUltracode { session_id: "s1".to_owned() },
-        };
-        let json = serde_json::to_value(&refresh).expect("serialize");
-        assert_eq!(json, serde_json::json!({"command":"refresh_ultracode","session_id":"s1"}));
-        assert_eq!(serde_json::from_value::<CommandEnvelope>(json).expect("deserialize"), refresh);
-        for available in [false, true] {
-            for requested in [false, true] {
-                for effective in [false, true] {
-                    let event: EventEnvelope = serde_json::from_value(serde_json::json!({"event":"session_update","session_id":"s1","update":{"type":"ultracode_update","ultracode":{"available":available,"requested":requested,"effective":effective}}})).expect("event");
-                    let BridgeEvent::SessionUpdate {
-                        update: types::SessionUpdate::UltracodeUpdate { ultracode },
-                        ..
-                    } = &event.event
-                    else {
-                        panic!("update")
-                    };
-                    assert_eq!(ultracode.is_some(), effective == (available && requested));
-                    assert_eq!(
-                        serde_json::from_value::<EventEnvelope>(
-                            serde_json::to_value(&event).expect("serialize event")
-                        )
-                        .expect("round trip"),
-                        event
-                    );
-                }
-            }
-        }
-        for state in [
-            serde_json::Value::Null,
-            serde_json::json!({}),
-            serde_json::json!({"available":true,"requested":true,"effective":"true"}),
-        ] {
-            let event: EventEnvelope = serde_json::from_value(serde_json::json!({"event":"session_update","session_id":"s1","update":{"type":"ultracode_update","ultracode":state}})).expect("invalid state must not discard the event");
-            assert!(matches!(
-                event.event,
-                BridgeEvent::SessionUpdate {
-                    update: types::SessionUpdate::UltracodeUpdate { ultracode: None },
-                    ..
-                }
-            ));
-        }
-    }
-
-    #[test]
-    fn command_envelope_roundtrip_json() {
-        let env = CommandEnvelope {
-            request_id: Some("req-1".to_owned()),
-            command: BridgeCommand::SetMode {
-                session_id: "s1".to_owned(),
-                mode: "plan".to_owned(),
-            },
-        };
-        let json = serde_json::to_string(&env).expect("serialize");
-        let decoded: CommandEnvelope = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(decoded, env);
     }
 
     #[test]
@@ -1069,109 +1004,6 @@ mod tests {
     }
 
     #[test]
-    fn side_question_result_deserializes_with_correlation_and_metadata() {
-        let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
-            "event": "btw_result",
-            "session_id": "s1",
-            "btw_id": "btw-1",
-            "question": "Question?",
-            "answer": "Answer.",
-            "metadata": {
-                "synthetic": true,
-                "refusal_fallback": {
-                    "original_model": "opus",
-                    "fallback_model": "sonnet",
-                    "content": { "reason": "policy" }
-                }
-            }
-        }))
-        .expect("deserialize side-question result");
-
-        let BridgeEvent::BtwResult { btw_id, question, answer, metadata, .. } = decoded.event
-        else {
-            panic!("expected BTW result");
-        };
-        assert_eq!(btw_id, "btw-1");
-        assert_eq!(question, "Question?");
-        assert_eq!(answer, "Answer.");
-        assert!(metadata.synthetic);
-        assert!(metadata.refusal_fallback.is_some());
-    }
-
-    #[test]
-    fn queued_user_message_lifecycle_events_deserialize() {
-        let queued: EventEnvelope = serde_json::from_value(serde_json::json!({
-            "event": "user_message_queued",
-            "session_id": "s1",
-            "message_uuid": "message-1"
-        }))
-        .expect("deserialize queued receipt");
-        assert_eq!(
-            queued.event,
-            BridgeEvent::UserMessageQueued {
-                session_id: "s1".to_owned(),
-                message_uuid: "message-1".to_owned(),
-            }
-        );
-
-        let started: EventEnvelope = serde_json::from_value(serde_json::json!({
-            "event": "user_message_started",
-            "session_id": "s1",
-            "message_uuid": "message-1",
-            "source": "command_lifecycle"
-        }))
-        .expect("deserialize start receipt");
-        assert_eq!(
-            started.event,
-            BridgeEvent::UserMessageStarted {
-                session_id: "s1".to_owned(),
-                message_uuid: "message-1".to_owned(),
-                source: types::UserMessageStartSource::CommandLifecycle,
-            }
-        );
-
-        let interrupt: EventEnvelope = serde_json::from_value(serde_json::json!({
-            "event": "turn_interrupt_receipt",
-            "session_id": "s1",
-            "still_queued": ["message-1"]
-        }))
-        .expect("deserialize interrupt receipt");
-        assert_eq!(
-            interrupt.event,
-            BridgeEvent::TurnInterruptReceipt {
-                session_id: "s1".to_owned(),
-                still_queued: vec!["message-1".to_owned()],
-            }
-        );
-    }
-
-    #[test]
-    fn turn_result_events_deserialize_queued_turn_count() {
-        let complete: EventEnvelope = serde_json::from_value(serde_json::json!({
-            "event": "turn_complete",
-            "session_id": "s1",
-            "queued_turn_count": 2
-        }))
-        .expect("deserialize completion count");
-        let BridgeEvent::TurnComplete { queued_turn_count, .. } = complete.event else {
-            panic!("expected completion event");
-        };
-        assert_eq!(queued_turn_count, Some(2));
-
-        let error: EventEnvelope = serde_json::from_value(serde_json::json!({
-            "event": "turn_error",
-            "session_id": "s1",
-            "message": "failed",
-            "queued_turn_count": 1
-        }))
-        .expect("deserialize error count");
-        let BridgeEvent::TurnError { queued_turn_count, .. } = error.event else {
-            panic!("expected error event");
-        };
-        assert_eq!(queued_turn_count, Some(1));
-    }
-
-    #[test]
     fn session_resume_failed_event_deserializes_with_operation_identity() {
         let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
             "request_id": "resume-at-1",
@@ -1187,326 +1019,6 @@ mod tests {
             BridgeEvent::SessionResumeFailed {
                 session_id: "source-session".to_owned(),
                 message: "resume rejected".to_owned(),
-            }
-        );
-    }
-
-    #[test]
-    fn set_effort_command_serializes_snake_case() {
-        let env = CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::SetEffort {
-                session_id: "s1".to_owned(),
-                effort: Some("max".to_owned()),
-            },
-        };
-
-        let json = serde_json::to_value(&env).expect("serialize");
-
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "command": "set_effort",
-                "session_id": "s1",
-                "effort": "max"
-            })
-        );
-    }
-
-    #[test]
-    fn set_agent_command_serializes_snake_case() {
-        let env = CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::SetAgent {
-                session_id: "s1".to_owned(),
-                agent: Some("reviewer".to_owned()),
-            },
-        };
-
-        let json = serde_json::to_value(&env).expect("serialize");
-
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "command": "set_agent",
-                "session_id": "s1",
-                "agent": "reviewer"
-            })
-        );
-    }
-
-    #[test]
-    fn set_agent_reset_serializes_null_agent() {
-        let env = CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::SetAgent { session_id: "s1".to_owned(), agent: None },
-        };
-
-        let json = serde_json::to_value(&env).expect("serialize");
-
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "command": "set_agent",
-                "session_id": "s1",
-                "agent": null
-            })
-        );
-    }
-
-    #[test]
-    fn set_fast_mode_command_serializes_snake_case() {
-        let env = CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::SetFastMode { session_id: "s1".to_owned(), enabled: true },
-        };
-
-        let json = serde_json::to_value(&env).expect("serialize");
-
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "command": "set_fast_mode",
-                "session_id": "s1",
-                "enabled": true
-            })
-        );
-    }
-
-    #[test]
-    fn cancel_turn_command_serializes_snake_case() {
-        let env = CommandEnvelope {
-            request_id: Some("request-1".to_owned()),
-            command: BridgeCommand::CancelTurn { session_id: "s1".to_owned() },
-        };
-
-        let json = serde_json::to_value(&env).expect("serialize");
-
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "request_id": "request-1",
-                "command": "cancel_turn",
-                "session_id": "s1"
-            })
-        );
-    }
-
-    #[test]
-    fn get_rewind_targets_command_serializes_snake_case() {
-        let env = CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::GetRewindTargets { session_id: "s1".to_owned() },
-        };
-
-        let json = serde_json::to_value(&env).expect("serialize");
-
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "command": "get_rewind_targets",
-                "session_id": "s1"
-            })
-        );
-    }
-
-    #[test]
-    fn reload_skills_and_styles_command_serializes_snake_case() {
-        let env = CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::ReloadSkillsAndStyles { session_id: "s1".to_owned() },
-        };
-
-        let json = serde_json::to_value(&env).expect("serialize");
-
-        assert_eq!(
-            json,
-            serde_json::json!({ "command": "reload_skills_and_styles", "session_id": "s1" })
-        );
-        assert_eq!(env.command.session_id(), Some("s1"));
-    }
-
-    #[test]
-    fn skills_and_styles_reloaded_event_deserializes_bridge_payload() {
-        let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
-            "event": "skills_and_styles_reloaded",
-            "session_id": "s1",
-            "skills": ["deploy", "lint"],
-            "output_styles": ["default", "Explanatory", "mine"]
-        }))
-        .expect("deserialize reload result");
-
-        assert_eq!(
-            decoded.event,
-            BridgeEvent::SkillsAndStylesReloaded {
-                session_id: "s1".to_owned(),
-                skills: vec!["deploy".to_owned(), "lint".to_owned()],
-                output_styles: vec![
-                    "default".to_owned(),
-                    "Explanatory".to_owned(),
-                    "mine".to_owned()
-                ],
-            }
-        );
-        assert_eq!(decoded.event.session_id(), Some("s1"));
-    }
-
-    #[test]
-    fn export_session_history_command_serializes_with_its_request_id() {
-        let env = CommandEnvelope {
-            request_id: Some("export-1".to_owned()),
-            command: BridgeCommand::ExportSessionHistory { session_id: "s1".to_owned() },
-        };
-
-        assert_eq!(
-            serde_json::to_value(&env).expect("serialize"),
-            serde_json::json!({
-                "request_id": "export-1",
-                "command": "export_session_history",
-                "session_id": "s1"
-            })
-        );
-    }
-
-    #[test]
-    fn session_history_export_event_deserializes_chunk_and_failure() {
-        let chunk: EventEnvelope = serde_json::from_value(serde_json::json!({
-            "request_id": "export-1",
-            "event": "session_history_export",
-            "session_id": "s1",
-            "updates": [
-                { "type": "user_message_chunk",
-                  "content": { "type": "text", "text": "hello" },
-                  "source_message_uuid": "u1" }
-            ],
-            "last": false,
-            "omitted_updates": 0
-        }))
-        .expect("deserialize chunk");
-        assert_eq!(chunk.request_id.as_deref(), Some("export-1"));
-        let BridgeEvent::SessionHistoryExport { updates, last, omitted_updates, error, .. } =
-            chunk.event
-        else {
-            panic!("expected a history export chunk");
-        };
-        assert_eq!(updates.len(), 1);
-        assert!(!last);
-        assert_eq!(omitted_updates, 0);
-        assert_eq!(error, None);
-
-        // A failure omits the counters the bridge sends on success only.
-        let failure: EventEnvelope = serde_json::from_value(serde_json::json!({
-            "event": "session_history_export",
-            "session_id": "s1",
-            "updates": [],
-            "last": true,
-            "error": "failed to load session history: boom"
-        }))
-        .expect("deserialize failure");
-        let BridgeEvent::SessionHistoryExport { last, error, .. } = failure.event else {
-            panic!("expected a history export failure");
-        };
-        assert!(last);
-        assert_eq!(error.as_deref(), Some("failed to load session history: boom"));
-    }
-
-    #[test]
-    fn structured_usage_event_deserializes_tolerant_snapshot() {
-        let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
-            "event": "usage_snapshot",
-            "session_id": "session-1",
-            "snapshot": {
-                "rate_limits_available": true,
-                "five_hour": {
-                    "utilization": 42.0,
-                    "resets_at": "2026-08-12T10:00:00Z"
-                },
-                "session": {
-                    "total_cost_usd": 0.125,
-                    "total_lines_added": 12.0,
-                    "model_count": 2
-                },
-                "activity_day": {
-                    "request_count": 4,
-                    "session_count": 2
-                }
-            }
-        }))
-        .expect("deserialize structured usage");
-
-        let BridgeEvent::UsageSnapshot { session_id, snapshot: Some(snapshot), error } =
-            decoded.event
-        else {
-            panic!("expected usage snapshot event");
-        };
-        assert_eq!(session_id, "session-1");
-        assert!(error.is_none());
-        assert_eq!(snapshot.five_hour.map(|window| window.utilization), Some(42.0));
-        assert_eq!(snapshot.session.and_then(|session| session.model_count), Some(2));
-        assert_eq!(snapshot.activity_day.map(|window| window.request_count), Some(4));
-    }
-
-    #[test]
-    fn subagent_commands_and_results_match_the_bridge_contract() {
-        let commands = [
-            BridgeCommand::ListSubagents { session_id: "s1".to_owned() },
-            BridgeCommand::GetSubagentMessages {
-                session_id: "s1".to_owned(),
-                agent_id: "a1".to_owned(),
-            },
-            BridgeCommand::StopSubagent { session_id: "s1".to_owned(), task_id: "a1".to_owned() },
-        ];
-        let json: Vec<_> = commands
-            .into_iter()
-            .map(|command| serde_json::to_value(CommandEnvelope { request_id: None, command }))
-            .collect::<Result<_, _>>()
-            .expect("serialize");
-        assert_eq!(
-            json,
-            [
-                serde_json::json!({ "command": "list_subagents", "session_id": "s1" }),
-                serde_json::json!({ "command": "get_subagent_messages", "session_id": "s1", "agent_id": "a1" }),
-                serde_json::json!({ "command": "stop_subagent", "session_id": "s1", "task_id": "a1" }),
-            ]
-        );
-
-        let event = |value| serde_json::from_value::<EventEnvelope>(value).expect("event").event;
-        assert_eq!(
-            event(
-                serde_json::json!({ "event": "subagent_messages", "session_id": "s1", "agent_id": "a1",
-                "messages": [{ "role": "user", "text": "Go" }, { "role": "tool", "text": "ls" }, { "role": "assistant", "text": "Done" }] })
-            ),
-            BridgeEvent::SubagentMessages {
-                session_id: "s1".to_owned(),
-                agent_id: "a1".to_owned(),
-                messages: [
-                    (types::SubagentMessageRole::User, "Go"),
-                    (types::SubagentMessageRole::Tool, "ls"),
-                    (types::SubagentMessageRole::Assistant, "Done"),
-                ]
-                .map(|(role, text)| types::SubagentMessage { role, text: text.to_owned() })
-                .to_vec(),
-                error: None,
-            }
-        );
-        assert_eq!(
-            event(
-                serde_json::json!({ "event": "subagents_listed", "session_id": "s1", "agent_ids": [], "error": "unreadable" })
-            ),
-            BridgeEvent::SubagentsListed {
-                session_id: "s1".to_owned(),
-                agent_ids: Vec::new(),
-                error: Some("unreadable".to_owned()),
-            }
-        );
-        assert_eq!(
-            event(
-                serde_json::json!({ "event": "subagent_stop_result", "session_id": "s1", "task_id": "a1" })
-            ),
-            BridgeEvent::SubagentStopResult {
-                session_id: "s1".to_owned(),
-                task_id: "a1".to_owned(),
-                error: None,
             }
         );
     }
@@ -1644,21 +1156,6 @@ mod tests {
     }
 
     #[test]
-    fn event_envelope_roundtrip_json() {
-        let env = EventEnvelope {
-            request_id: None,
-            event: BridgeEvent::TurnComplete {
-                session_id: "session-1".to_owned(),
-                queued_turn_count: None,
-                terminal_reason: Some(types::TerminalReason::Completed),
-            },
-        };
-        let json = serde_json::to_string(&env).expect("serialize");
-        let decoded: EventEnvelope = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(decoded, env);
-    }
-
-    #[test]
     fn session_replaced_event_deserializes_restored_input() {
         let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
             "event": "session_replaced",
@@ -1730,60 +1227,6 @@ mod tests {
     }
 
     #[test]
-    fn mcp_snapshot_event_deserializes_source() {
-        let json = serde_json::json!({
-            "request_id": "req-mcp-snapshot",
-            "event": "mcp_snapshot",
-            "session_id": "session-1",
-            "source": "reload_plugins",
-            "servers": []
-        });
-
-        let decoded: EventEnvelope = serde_json::from_value(json).expect("deserialize");
-
-        assert_eq!(
-            decoded,
-            EventEnvelope {
-                request_id: Some("req-mcp-snapshot".to_owned()),
-                event: BridgeEvent::McpSnapshot {
-                    session_id: "session-1".to_owned(),
-                    servers: Vec::new(),
-                    auth_capabilities: types::McpAuthCapabilities::default(),
-                    source: Some(types::McpSnapshotSource::ReloadPlugins),
-                    error: None,
-                },
-            }
-        );
-    }
-
-    #[test]
-    fn mcp_snapshot_event_deserializes_auth_capabilities() {
-        let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
-            "event": "mcp_snapshot",
-            "session_id": "session-1",
-            "servers": [],
-            "auth_capabilities": {
-                "authenticate": true,
-                "clear_auth": false,
-                "submit_oauth_callback_url": true
-            }
-        }))
-        .expect("deserialize");
-
-        let BridgeEvent::McpSnapshot { auth_capabilities, .. } = decoded.event else {
-            panic!("expected mcp_snapshot");
-        };
-        assert_eq!(
-            auth_capabilities,
-            types::McpAuthCapabilities {
-                authenticate: true,
-                clear_auth: false,
-                submit_oauth_callback_url: true,
-            }
-        );
-    }
-
-    #[test]
     fn rewind_targets_event_deserializes() {
         let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
             "event": "rewind_targets",
@@ -1835,120 +1278,6 @@ mod tests {
     }
 
     #[test]
-    fn user_dialog_response_command_serializes_selected_outcome() {
-        let env = CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::UserDialogResponse {
-                session_id: "s1".to_owned(),
-                request_id: "req-9".to_owned(),
-                outcome: types::UserDialogOutcome::Selected {
-                    option_id: "retry_fallback".to_owned(),
-                },
-            },
-        };
-
-        let json = serde_json::to_value(&env).expect("serialize");
-
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "command": "user_dialog_response",
-                "session_id": "s1",
-                "request_id": "req-9",
-                "outcome": { "outcome": "selected", "option_id": "retry_fallback" }
-            })
-        );
-    }
-
-    #[test]
-    fn user_dialog_response_command_serializes_cancelled_outcome() {
-        let env = CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::UserDialogResponse {
-                session_id: "s1".to_owned(),
-                request_id: "req-9".to_owned(),
-                outcome: types::UserDialogOutcome::Cancelled,
-            },
-        };
-
-        let json = serde_json::to_value(&env).expect("serialize");
-
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "command": "user_dialog_response",
-                "session_id": "s1",
-                "request_id": "req-9",
-                "outcome": { "outcome": "cancelled" }
-            })
-        );
-    }
-
-    #[test]
-    fn user_dialog_request_event_deserializes_snake_case_payload() {
-        let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
-            "event": "user_dialog_request",
-            "session_id": "session-1",
-            "request": {
-                "request_id": "req-9",
-                "dialog_kind": "refusal_fallback_prompt",
-                "payload": {
-                    "original_model": "claude-opus-4-8",
-                    "fallback_model": "claude-sonnet-4-6",
-                    "guidance_text": "This request was declined."
-                },
-                "options": [
-                    { "option_id": "retry_fallback", "label": "Switch to claude-sonnet-4-6" },
-                    { "option_id": "edit_prompt", "label": "Edit prompt and retry with claude-opus-4-8" }
-                ]
-            }
-        }))
-        .expect("deserialize user_dialog_request");
-
-        let BridgeEvent::UserDialogRequest { session_id, request } = decoded.event else {
-            panic!("expected user_dialog_request event");
-        };
-        assert_eq!(session_id, "session-1");
-        assert_eq!(request.request_id, "req-9");
-        assert_eq!(request.dialog_kind, "refusal_fallback_prompt");
-        assert_eq!(request.payload.original_model, "claude-opus-4-8");
-        assert_eq!(request.payload.fallback_model, "claude-sonnet-4-6");
-        assert_eq!(request.payload.guidance_text.as_deref(), Some("This request was declined."));
-        assert_eq!(request.payload.api_refusal_category, None);
-        assert_eq!(request.options.len(), 2);
-        assert_eq!(request.options[0].option_id, "retry_fallback");
-    }
-
-    #[test]
-    fn turn_error_deserializes_target_api_error_status_shapes() {
-        for (raw_status, expected) in [
-            (Some(serde_json::json!(429)), Some(429)),
-            (Some(serde_json::json!(529)), Some(529)),
-            (Some(serde_json::Value::Null), None),
-            (None, None),
-        ] {
-            let mut event = serde_json::json!({
-                "event": "turn_error",
-                "session_id": "session-1",
-                "message": "service overloaded",
-                "error_kind": "transient_service"
-            });
-            if let Some(raw_status) = raw_status {
-                event["api_error_status"] = raw_status;
-            }
-            let decoded: EventEnvelope =
-                serde_json::from_value(event).expect("deserialize turn error");
-
-            let BridgeEvent::TurnError { api_error_status, error_kind, .. } = decoded.event else {
-                panic!("expected turn_error event");
-            };
-
-            assert_eq!(api_error_status, expected);
-            assert_eq!(error_kind.as_deref(), Some("transient_service"));
-        }
-    }
-
-    #[test]
     fn fast_mode_update_deserializes_open_disabled_reason() {
         let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
             "event": "session_update",
@@ -1984,8 +1313,9 @@ mod tests {
             fork_session: true,
             config: Box::new(super::SessionConfig {
                 additional_directories: vec!["/work/shared".to_owned()],
-                settings: Some(r#"{"model":"haiku"}"#.to_owned()),
-                mcp_configs: vec![r#"{"mcpServers":{}}"#.to_owned()],
+                settings: serde_json::from_str(r#"{"model":"haiku"}"#).ok(),
+                mcp_configs: serde_json::from_str(r#"[{"docs":{"command":"docs-mcp"}}]"#)
+                    .expect("MCP servers"),
                 strict_mcp_config: true,
                 system_prompt: Some("You are a release bot.".to_owned()),
                 append_system_prompt: Some("End with DONE.".to_owned()),
@@ -1998,7 +1328,8 @@ mod tests {
                 "model": "haiku", "permission_mode": "plan", "effort": "max", "agent": "reviewer",
                 "name": "Release prep", "fork_session": true,
                 "additional_directories": ["/work/shared"],
-                "settings": "{\"model\":\"haiku\"}", "mcp_configs": ["{\"mcpServers\":{}}"],
+                "settings": {"model": "haiku"},
+                "mcp_configs": [{"docs": {"command": "docs-mcp"}}],
                 "strict_mcp_config": true, "system_prompt": "You are a release bot.",
                 "append_system_prompt": "End with DONE."
             })
@@ -2010,75 +1341,62 @@ mod tests {
     }
 
     #[test]
-    fn live_response_start_roundtrips_without_fabricating_a_user_message() {
-        let raw = serde_json::json!({
-            "event": "session_update", "session_id": "background-session",
-            "update": {"type": "agent_response_started"}
-        });
-        let decoded: BridgeEvent =
-            serde_json::from_value(raw.clone()).expect("live response start");
-        assert!(matches!(decoded, BridgeEvent::SessionUpdate {
-            ref session_id, update: types::SessionUpdate::AgentResponseStarted,
-        } if session_id == "background-session"));
-        assert_eq!(serde_json::to_value(decoded).expect("encode response start"), raw);
-    }
-
-    #[test]
-    fn observed_activity_phase_roundtrips_without_thinking_content() {
-        for (name, expected) in [
-            ("working", super::super::model::AgentActivityPhase::Working),
-            ("thinking", super::super::model::AgentActivityPhase::Thinking),
-        ] {
-            let raw = serde_json::json!({"type":"agent_activity_update", "phase":name});
-            let decoded: types::SessionUpdate =
-                serde_json::from_value(raw.clone()).expect("activity update");
-            assert!(
-                matches!(decoded, types::SessionUpdate::AgentActivityUpdate { phase } if phase == expected)
-            );
-            assert_eq!(serde_json::to_value(decoded).expect("encode activity"), raw);
+    fn rate_limit_envelope_preserves_enabled_false_separately_from_unknown() {
+        for enabled in [Some(true), Some(false), None] {
+            let mut raw = serde_json::json!({
+                "event": "session_update", "session_id": "session",
+                "update": {"type": "rate_limit_update", "status": "allowed_warning", "is_using_overage": false}
+            });
+            if let Some(enabled) = enabled {
+                raw["update"]["overage_enabled"] = serde_json::json!(enabled);
+            }
+            let envelope: EventEnvelope = serde_json::from_value(raw).expect("rate limit envelope");
+            let BridgeEvent::SessionUpdate {
+                update:
+                    types::SessionUpdate::RateLimitUpdate { overage_enabled, is_using_overage, .. },
+                ..
+            } = envelope.event
+            else {
+                panic!("rate limit event")
+            };
+            assert_eq!(overage_enabled, enabled);
+            assert_eq!(is_using_overage, Some(false));
         }
     }
-
     #[test]
-    fn settings_categories_and_recursive_forms_cross_the_settings_result_wire() {
-        let mut snapshot: serde_json::Value =
-            serde_json::from_str(include_str!("../../tests/fixtures/settings-ui-catalog.json"))
-                .expect("catalog fixture");
-        snapshot["cwd"] = serde_json::json!("/project");
-        snapshot["context"] = serde_json::json!("context");
-        snapshot["sources"] = serde_json::json!([]);
-        snapshot["values"] = serde_json::json!([]);
-        snapshot["resolution_sources"] = serde_json::json!([]);
-        snapshot["provenance"] = serde_json::json!({});
-        snapshot["diagnostics"] = serde_json::json!([]);
-        let envelope: EventEnvelope = serde_json::from_value(serde_json::json!({
-            "event":"settings_result", "session_id":"session", "request_id":"inspect",
-            "result":{"persistence":"not_requested", "application":"blocked", "snapshot":snapshot}
-        }))
-        .expect("settings event");
-        let BridgeEvent::SettingsResult { result, .. } = envelope.event else {
-            panic!("settings result");
-        };
-        let snapshot = result.snapshot.expect("snapshot");
-        assert_eq!(snapshot.categories.len(), 6);
-        let hook = snapshot.catalog.iter().find(|setting| setting.id == "hooks").expect("hooks");
-        let encoded = serde_json::to_value(hook).expect("descriptor");
-        assert_eq!(encoded["category"], "hooks");
-        assert_eq!(
-            encoded["editor"]["item"]["item"]["fields"][1]["schema"]["item"]["variants"]["command"]
-                ["fields"][0]["key"],
-            "command"
-        );
-        assert_eq!(
-            encoded["editor"]["item"]["item"]["fields"][1]["schema"]["item"]["variants"]["command"]
-                ["fields"][0]["required"],
-            true
-        );
-        assert!(
-            encoded["editor"]["item"]["item"]["fields"][1]["schema"]["item"]["variants"]["command"]
-                ["fields"][0]["schema"]["description"]
-                .as_str()
-                .is_some()
-        );
+    fn usage_recommendations_preserve_optional_availability_and_sdk_fields() {
+        for recommendations in [
+            None,
+            Some(serde_json::json!([])),
+            Some(serde_json::json!([
+                {"key":"future_source", "pct":37.5, "title":"Review the source", "detail":"SDK explanation"}
+            ])),
+        ] {
+            let mut window = serde_json::json!({"request_count":4,"session_count":2});
+            if let Some(value) = &recommendations {
+                window["recommendations"] = value.clone();
+            }
+            let event: BridgeEvent = serde_json::from_value(serde_json::json!({
+                "event":"usage_snapshot", "session_id":"usage-session", "snapshot":{"activity_day":window}
+            })).expect("usage envelope");
+            let BridgeEvent::UsageSnapshot { snapshot: Some(snapshot), .. } = event else {
+                panic!("usage snapshot");
+            };
+            let day = snapshot.activity_day.expect("day");
+            let encoded = serde_json::to_value(day).expect("encoded day");
+            assert_eq!(encoded.get("recommendations"), recommendations.as_ref());
+        }
     }
 }
+
+#[cfg(test)]
+#[path = "command_wire_tests.rs"]
+mod command_wire_tests;
+
+#[cfg(test)]
+#[path = "event_wire_tests.rs"]
+mod event_wire_tests;
+
+#[cfg(test)]
+#[path = "settings_wire_tests.rs"]
+mod settings_wire_tests;

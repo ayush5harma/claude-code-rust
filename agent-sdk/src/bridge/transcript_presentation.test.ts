@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildRewindConversationPlan, rewindTargetsFromSessionMessages } from "../bridge.js";
-import { mapSessionMessagesToUpdates } from "./history.js";
+import { mapSessionMessagesToEntries, mapSessionMessagesToUpdates } from "./history.js";
 
 const rename = "<command-name>/rename</command-name>\n<command-message>rename</command-message>\n<command-args>review-444</command-args>";
 const color = "<command-name>/color</command-name>\n<command-message>color</command-message>\n<command-args>blue</command-args>";
@@ -45,6 +45,30 @@ test("resume shows complete command envelopes as commands while fork offers only
   assert.deepEqual(messages, original);
 });
 
+test("only a reminder the SDK marks as metadata is a system reminder, and the chat leaves it out", () => {
+  const assistant = (uuid: string, text: string) => ({ ...user(uuid, [{ type: "text", text }]), type: "assistant" as const, message: { role: "assistant", content: [{ type: "text", text }] } });
+  const messages = [
+    user("reminder", "<system-reminder>\nReport through SubagentHandback.\n</system-reminder>\n", { is_meta: true }),
+    user("typed", "<system-reminder>typed by the user</system-reminder>"),
+    user("quoted", "Quote <system-reminder>tags</system-reminder> as written."),
+    user("meta-with-more", "<system-reminder>first</system-reminder> and more", { is_meta: true }),
+    assistant("reply", "<system-reminder>an agent's own words</system-reminder>"),
+  ];
+  const text = (entry: ReturnType<typeof mapSessionMessagesToEntries>[number]) =>
+    entry.type === "system_reminder" ? ["reminder", entry.text]
+      : (entry.type === "user_message_chunk" || entry.type === "agent_message_chunk") && entry.content.type === "text" ? [entry.type, entry.content.text]
+      : undefined;
+  const literal = [
+    ["user_message_chunk", "<system-reminder>typed by the user</system-reminder>"],
+    ["user_message_chunk", "Quote <system-reminder>tags</system-reminder> as written."],
+    ["user_message_chunk", "<system-reminder>first</system-reminder> and more"],
+    ["agent_message_chunk", "<system-reminder>an agent's own words</system-reminder>"],
+  ];
+  assert.deepEqual(mapSessionMessagesToEntries(messages).map(text).filter(Boolean), [["reminder", "Report through SubagentHandback."], ...literal]);
+  assert.deepEqual(mapSessionMessagesToUpdates(messages).map(text).filter(Boolean), literal);
+  assert.ok(!rewindTargetsFromSessionMessages(messages).some(target => target.uuid === "reminder"), "a reminder is no fork point");
+});
+
 test("command output becomes a notice with literal content and never becomes a fork point", () => {
   const messages = [
     user("stdout", "<local-command-stdout>Saved <example>XML</example> & text\nSecond line</local-command-stdout>"),
@@ -84,19 +108,151 @@ test("XML examples, unknown tags and incomplete command records remain readable 
   assert.deepEqual(mapSessionMessagesToUpdates([assistant]).filter(update => update.type === "agent_message_chunk").map(update => (update.content.type === "text" ? update.content.text : update.content)), [rename]);
 });
 
-test("resume restores internal task outcomes while fork retains human, peer and scheduled messages", () => {
-  const notification = "<task-notification><task-id>task-1</task-id><status>completed</status><summary>Finished</summary></task-notification>";
+test("resume restores internal tasks while visible text, metadata and fork targets retain their own source identities", () => {
+  const notification =
+    "<task-notification><task-id>task-1</task-id><status>completed</status><summary>Finished</summary></task-notification>";
+  const completed =
+    "<task-notification>\n<task-id>task-1</task-id>\n<status>completed</status>\n<summary>Background command completed</summary>\n</task-notification>";
+  const stopped =
+    "<task-notification>\n<task-id>task-2</task-id>\n<status>stopped</status>\n<summary>Background shell command stopped</summary>\n</task-notification>";
+  const timestamp = "2026-10-06T11:10:22.531Z";
+  const assistant = (uuid: string, content: string) => ({
+    ...user(uuid, content),
+    type: "assistant" as const,
+    message: { role: "assistant", content },
+  });
   const messages = [
-    user("internal", notification, { origin: { kind: "task-notification", producer: "session-task" } }),
-    user("malformed-internal", "<task-notification>unfinished", { origin: { kind: "task-notification" } }),
+    user("before", "Before notification"),
+    user("internal", notification, {
+      origin: { kind: "task-notification", producer: "session-task" },
+    }),
+    user("stopped-internal", [{ type: "text", text: stopped }], {
+      origin: { kind: "task-notification" },
+    }),
+    user("malformed-internal", "<task-notification>unfinished", {
+      origin: { kind: "task-notification" },
+    }),
     user("summary", "Internal summary", { isCompactSummary: true }),
+    user("block-summary", [{ type: "text", text: "Internal block summary" }], {
+      isCompactSummary: true,
+    }),
+    user("after", "hello?", { origin: { kind: "human" } }),
     user("human", notification, { origin: { kind: "human" } }),
-    user("peer", "Peer request", { origin: { kind: "task-notification", subkind: "peer-send-message" } }),
-    user("scheduled", "Scheduled request", { origin: { kind: "task-notification", subkind: "scheduled-trigger" } }),
-  ];
+    user("user-xml", completed, { origin: { kind: "human" } }),
+    assistant("assistant-xml", "<example>XML output</example>"),
+    user("peer", "Peer message", {
+      origin: { kind: "task-notification", subkind: "peer-send-message" },
+    }),
+    user("scheduled", "Scheduled message", {
+      origin: { kind: "task-notification", subkind: "scheduled-trigger" },
+    }),
+    user("user", "User prompt"),
+    assistant("assistant", "Assistant response"),
+    user("xml-example", "<example>Keep this XML</example>"),
+  ].map((message) => ({ ...message, timestamp }));
+  const original = structuredClone(messages);
   const updates = mapSessionMessagesToUpdates(messages);
-  assert.deepEqual(updates.filter(update => update.type === "task_state_update").flatMap(update => update.tasks).map(task => [task.task_id, task.status, task.description]), [["task-1", "completed", "Finished"]]);
-  assert.deepEqual(rewindTargetsFromSessionMessages(messages).map(target => target.uuid), ["scheduled", "peer", "human"]);
+  assert.deepEqual(
+    updates
+      .filter(
+        (update) =>
+          update.type === "user_message_chunk" ||
+          update.type === "agent_message_chunk",
+      )
+      .map((update) => [
+        update.type,
+        update.source_message_uuid,
+        update.content,
+      ]),
+    [
+      [
+        "user_message_chunk",
+        "before",
+        { type: "text", text: "Before notification" },
+      ],
+      ["user_message_chunk", "after", { type: "text", text: "hello?" }],
+      ["user_message_chunk", "human", { type: "text", text: notification }],
+      ["user_message_chunk", "user-xml", { type: "text", text: completed }],
+      [
+        "agent_message_chunk",
+        "assistant-xml",
+        { type: "text", text: "<example>XML output</example>" },
+      ],
+      ["user_message_chunk", "peer", { type: "text", text: "Peer message" }],
+      [
+        "user_message_chunk",
+        "scheduled",
+        { type: "text", text: "Scheduled message" },
+      ],
+      ["user_message_chunk", "user", { type: "text", text: "User prompt" }],
+      [
+        "agent_message_chunk",
+        "assistant",
+        { type: "text", text: "Assistant response" },
+      ],
+      [
+        "user_message_chunk",
+        "xml-example",
+        { type: "text", text: "<example>Keep this XML</example>" },
+      ],
+    ],
+  );
+  // Hidden records have valid timestamps too: absence must follow provenance,
+  // rather than missing fixture metadata. Positive rows must still publish it.
+  assert.deepEqual(
+    updates
+      .filter((update) => update.type === "message_metadata")
+      .map((update) => [
+        update.source_message_uuid,
+        update.role,
+        update.timestamp,
+      ]),
+    [
+      ["before", "user", timestamp],
+      ["after", "user", timestamp],
+      ["human", "user", timestamp],
+      ["user-xml", "user", timestamp],
+      ["assistant-xml", "assistant", timestamp],
+      ["peer", "user", timestamp],
+      ["scheduled", "user", timestamp],
+      ["user", "user", timestamp],
+      ["assistant", "assistant", timestamp],
+      ["xml-example", "user", timestamp],
+    ],
+  );
+  const tasks = new Map(
+    updates
+      .filter((update) => update.type === "task_state_update")
+      .flatMap((update) => update.tasks)
+      .map((task) => [task.task_id, task]),
+  );
+  assert.deepEqual(
+    [...tasks.keys()].sort(),
+    ["task-1", "task-2"],
+    "only genuine internal outcomes restore tasks",
+  );
+  const task = tasks.get("task-1");
+  assert.deepEqual(
+    [task?.task_id, task?.status, task?.description],
+    ["task-1", "completed", "Finished"],
+  );
+  assert.deepEqual(
+    rewindTargetsFromSessionMessages(messages).map((target) => [
+      target.uuid,
+      target.input_text,
+    ]),
+    [
+      ["xml-example", "<example>Keep this XML</example>"],
+      ["user", "User prompt"],
+      ["scheduled", "Scheduled message"],
+      ["peer", "Peer message"],
+      ["user-xml", completed],
+      ["human", notification],
+      ["after", "hello?"],
+      ["before", "Before notification"],
+    ],
+  );
+  assert.deepEqual(messages, original);
 });
 
 test("script prompts round-trip through resume and fork without losing XML, whitespace or quoted SDK tags", () => {

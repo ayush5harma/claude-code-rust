@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
+use super::App;
 use super::inline_interactions::{
     focus_next_inline_interaction, focused_interaction, focused_interaction_dirty_idx,
     focused_interaction_is_active, get_focused_interaction_tc, invalidate_if_changed,
     normalize_pending_interaction_queue, pop_next_valid_interaction_id,
 };
-use super::{App, InvalidationLevel, MessageBlock};
 use crate::agent::model;
 use crate::app::keymap::InteractionAction;
 use crate::app::keys::KeyOutcome;
@@ -19,8 +18,7 @@ pub(super) fn record_activity(app: &mut App, now: Instant) {
         let Some((mi, bi)) = app.lookup_tool_call(&id) else {
             continue;
         };
-        if let Some(MessageBlock::ToolCall(tool)) =
-            app.transcript.messages.get_mut(mi).and_then(|message| message.blocks.get_mut(bi))
+        if let Some(tool) = app.tool_call_at_mut(mi, bi)
             && let Some(question) = tool.pending_question.as_mut()
         {
             question.last_activity = now;
@@ -38,7 +36,7 @@ pub(super) fn tick_idle_timeout(app: &mut App, now: Instant) {
             .idle_timeout
             .is_some_and(|timeout| now.saturating_duration_since(question.last_activity) >= timeout)
     }) {
-        respond_question_with_selection(app, true);
+        respond_question(app);
         app.request_active_surface_repaint();
     }
 }
@@ -68,7 +66,7 @@ pub(super) fn execute_question_action(
     if !has_focused_question(app) || !focused_interaction_is_active(app) {
         return KeyOutcome::Ignored;
     }
-    record_activity(app, Instant::now());
+    record_activity(app, super::input_event_now());
 
     if focused_question_is_editing_notes(app) {
         return execute_question_note_action(app, action, key);
@@ -116,9 +114,6 @@ pub(super) fn execute_question_action(
             KeyOutcome::Handled(true)
         }
         InteractionAction::Confirm => {
-            if option_count == 0 {
-                return KeyOutcome::Ignored;
-            }
             respond_question(app);
             KeyOutcome::Handled(true)
         }
@@ -412,23 +407,16 @@ fn toggle_question_selection(app: &mut App) {
                 question.selected_option_indices.remove(&idx);
             }
         } else {
+            let was_selected = question.selected_option_indices.contains(&idx);
             question.selected_option_indices.clear();
-            question.selected_option_indices.insert(idx);
+            if !was_selected {
+                question.selected_option_indices.insert(idx);
+            }
         }
         tc.invalidate_render_cache();
         changed = true;
     }
     invalidate_if_changed(app, dirty_idx, changed);
-}
-
-fn question_selected_indices(question: &crate::app::InlineQuestion) -> Vec<usize> {
-    if question.prompt.multi_select {
-        if question.selected_option_indices.is_empty() {
-            return vec![question.focused_option_index];
-        }
-        return question.selected_option_indices.iter().copied().collect();
-    }
-    vec![question.focused_option_index]
 }
 
 fn question_annotation(
@@ -456,30 +444,12 @@ fn question_annotation(
 }
 
 fn respond_question(app: &mut App) {
-    respond_question_with_selection(app, false);
-}
-
-fn respond_question_with_selection(app: &mut App, auto_continue: bool) {
     let Some(tool_id) = pop_next_valid_interaction_id(app) else {
         return;
     };
 
-    let Some((mi, bi)) = app.lookup_tool_call(&tool_id) else {
-        return;
-    };
-    let Some(MessageBlock::ToolCall(tc)) =
-        app.transcript.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
-    else {
-        return;
-    };
-    let tc = tc.as_mut();
-    let mut invalidated = false;
-    if let Some(pending) = tc.pending_question.take() {
-        let selected_indices = if auto_continue {
-            pending.selected_option_indices.iter().copied().collect()
-        } else {
-            question_selected_indices(&pending)
-        };
+    if let Some(pending) = app.mutate_tool_call(&tool_id, |tool| tool.pending_question.take()) {
+        let selected_indices = pending.selected_option_indices.iter().copied().collect::<Vec<_>>();
         let selected_option_ids = selected_indices
             .iter()
             .filter_map(|idx| pending.prompt.options.get(*idx))
@@ -487,19 +457,7 @@ fn respond_question_with_selection(app: &mut App, auto_continue: bool) {
             .collect::<Vec<_>>();
         let annotation = question_annotation(&pending, &selected_indices);
 
-        if selected_option_ids.is_empty() && !auto_continue {
-            tracing::warn!(
-                target: crate::logging::targets::APP_PERMISSION,
-                event_name = "question_response_rejected",
-                message = "question response rejected because no valid option IDs were resolved",
-                outcome = "failure",
-                tool_call_id = %tool_id,
-                selected_option_count = selected_indices.len(),
-            );
-            let _ = pending.response_tx.send(model::RequestQuestionResponse::new(
-                model::RequestQuestionOutcome::Cancelled,
-            ));
-        } else {
+        if selected_option_ids.len() == selected_indices.len() {
             tracing::debug!(
                 target: crate::logging::targets::APP_PERMISSION,
                 event_name = "question_response_applied",
@@ -514,14 +472,20 @@ fn respond_question_with_selection(app: &mut App, auto_continue: bool) {
                     model::AnsweredQuestionOutcome::new(selected_option_ids).annotation(annotation),
                 ),
             ));
+        } else {
+            tracing::warn!(
+                target: crate::logging::targets::APP_PERMISSION,
+                event_name = "question_response_rejected",
+                message = "question response rejected because selected option IDs were invalid",
+                outcome = "failure",
+                tool_call_id = %tool_id,
+                selected_option_count = selected_indices.len(),
+            );
+            let _ = pending.response_tx.send(model::RequestQuestionResponse::new(
+                model::RequestQuestionOutcome::Cancelled,
+            ));
         }
-        tc.invalidate_render_cache();
-        invalidated = true;
-    }
-    if invalidated {
-        app.sync_render_cache_slot(mi, bi);
-        app.recompute_message_retained_bytes(mi);
-        app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+
         app.request_chat_mutable_rebuild();
     }
 
@@ -533,23 +497,10 @@ fn respond_question_cancel(app: &mut App) {
         return;
     };
 
-    let Some((mi, bi)) = app.lookup_tool_call(&tool_id) else {
-        return;
-    };
-    let Some(MessageBlock::ToolCall(tc)) =
-        app.transcript.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
-    else {
-        return;
-    };
-    let tc = tc.as_mut();
-    if let Some(pending) = tc.pending_question.take() {
+    if let Some(pending) = app.mutate_tool_call(&tool_id, |tool| tool.pending_question.take()) {
         let _ = pending
             .response_tx
             .send(model::RequestQuestionResponse::new(model::RequestQuestionOutcome::Cancelled));
-        tc.invalidate_render_cache();
-        app.sync_render_cache_slot(mi, bi);
-        app.recompute_message_retained_bytes(mi);
-        app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
         app.request_chat_mutable_rebuild();
     }
 
@@ -559,35 +510,19 @@ fn respond_question_cancel(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{
-        App, BlockCache, ChatMessage, InlineQuestion, MessageBlock, MessageRole, ToolCallInfo,
-    };
+    use crate::app::{App, ChatMessage, InlineQuestion, MessageBlock, MessageRole, ToolCallInfo};
     use pretty_assertions::assert_eq;
     use std::collections::BTreeSet;
     use tokio::sync::oneshot;
 
     fn test_tool_call(id: &str) -> ToolCallInfo {
         ToolCallInfo {
-            id: id.to_owned(),
-            source_message_uuids: Vec::new(),
             title: format!("Tool {id}"),
-            sdk_tool_name: "AskUserQuestion".to_owned(),
-            raw_input: None,
-            raw_input_bytes: 0,
-            locations: Vec::new(),
-            output_metadata: None,
-            task_metadata: None,
-            status: model::ToolCallStatus::InProgress,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: None,
-            terminal_command: None,
-            terminal_output: None,
-            terminal_output_len: 0,
-            cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
-            history: crate::app::ToolCallHistory::Live,
+            ..crate::app::test_support::named_tool_call_info(
+                id,
+                "AskUserQuestion",
+                model::ToolCallStatus::InProgress,
+            )
         }
     }
 
@@ -626,140 +561,6 @@ mod tests {
         }
         app.pending_interaction_ids.push(tool_id.to_owned());
         rx
-    }
-
-    #[test]
-    fn question_prompt_enter_answers_focused_option_with_preview_annotation() {
-        let mut app = App::test_default();
-        let mut rx = add_question(
-            &mut app,
-            "question-1",
-            model::QuestionPrompt::new(
-                "Choose a target",
-                "Target",
-                false,
-                vec![
-                    model::QuestionOption::new("question_0", "Staging")
-                        .preview(Some("Deploy to staging first.".to_owned())),
-                    model::QuestionOption::new("question_1", "Production")
-                        .preview(Some("Deploy to production after approval.".to_owned())),
-                ],
-            ),
-            true,
-        );
-
-        let consumed_right = execute_question_action(
-            &mut app,
-            InteractionAction::MoveNext,
-            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
-        );
-        let consumed_enter = execute_question_action(
-            &mut app,
-            InteractionAction::Confirm,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-        );
-
-        assert_eq!(consumed_right, KeyOutcome::Handled(true));
-        assert_eq!(consumed_enter, KeyOutcome::Handled(true));
-        assert!(app.pending_interaction_ids.is_empty());
-
-        let resp = rx.try_recv().expect("question should be answered");
-        let model::RequestQuestionOutcome::Answered(answered) = resp.outcome else {
-            panic!("expected answered question response");
-        };
-        assert_eq!(answered.selected_option_ids, vec!["question_1"]);
-        assert_eq!(
-            answered.annotation.and_then(|annotation| annotation.preview),
-            Some("Deploy to production after approval.".to_owned())
-        );
-    }
-
-    #[test]
-    fn multi_select_question_collects_toggles_and_notes() {
-        let mut app = App::test_default();
-        let mut rx = add_question(
-            &mut app,
-            "question-2",
-            model::QuestionPrompt::new(
-                "Pick environments",
-                "Environments",
-                true,
-                vec![
-                    model::QuestionOption::new("question_0", "Staging")
-                        .preview(Some("Deploy to staging first.".to_owned())),
-                    model::QuestionOption::new("question_1", "Production")
-                        .preview(Some("Deploy to production after approval.".to_owned())),
-                ],
-            ),
-            true,
-        );
-
-        assert_eq!(
-            execute_question_action(
-                &mut app,
-                InteractionAction::ToggleSelection,
-                KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
-            ),
-            KeyOutcome::Handled(true)
-        );
-        assert_eq!(
-            execute_question_action(
-                &mut app,
-                InteractionAction::MoveNext,
-                KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
-            ),
-            KeyOutcome::Handled(true)
-        );
-        assert_eq!(
-            execute_question_action(
-                &mut app,
-                InteractionAction::ToggleSelection,
-                KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
-            ),
-            KeyOutcome::Handled(true)
-        );
-        assert_eq!(
-            execute_question_action(
-                &mut app,
-                InteractionAction::ToggleNotes,
-                KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
-            ),
-            KeyOutcome::Handled(true)
-        );
-        for ch in ['n', 'o', 't', 'e'] {
-            assert_eq!(
-                handle_question_note_key(
-                    &mut app,
-                    KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
-                ),
-                Some(KeyOutcome::Handled(true))
-            );
-        }
-        assert_eq!(
-            execute_question_action(
-                &mut app,
-                InteractionAction::Confirm,
-                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            ),
-            KeyOutcome::Handled(true)
-        );
-
-        let resp = rx.try_recv().expect("question should be answered");
-        let model::RequestQuestionOutcome::Answered(answered) = resp.outcome else {
-            panic!("expected answered question response");
-        };
-        assert_eq!(answered.selected_option_ids, vec!["question_0", "question_1"]);
-        assert_eq!(
-            answered.annotation,
-            Some(
-                model::QuestionAnnotation::new()
-                    .preview(Some(
-                        "Deploy to staging first.\n\nDeploy to production after approval."
-                            .to_owned(),
-                    ))
-                    .notes(Some("note".to_owned())),
-            )
-        );
     }
 
     #[test]
@@ -816,53 +617,359 @@ mod tests {
         }
     }
 
+    fn admitted_question(
+        app: &mut App,
+        id: &str,
+        multi: bool,
+        timeout: Option<u64>,
+        previews: bool,
+    ) -> oneshot::Receiver<model::RequestQuestionResponse> {
+        use crate::app::test_support::admit_tool;
+        admit_tool(
+            app,
+            model::ToolCall::new(id, format!("Question {id}"))
+                .status(model::ToolCallStatus::InProgress)
+                .meta(serde_json::json!({"claudeCode":{"toolName":"AskUserQuestion"}})),
+        );
+        let options = [
+            ("a", "Amber", "Preview A"),
+            ("b", "Blue", "Preview B"),
+            ("c", "Cyan", "Preview C"),
+            ("d", "Dark", "  "),
+        ]
+        .into_iter()
+        .map(|(suffix, label, preview)| {
+            model::QuestionOption::new(format!("{id}-{suffix}"), label)
+                .preview(previews.then(|| format!(" {preview} ")))
+        })
+        .collect();
+        let request = model::RequestQuestionRequest::new(
+            "session-1",
+            model::ToolCallUpdate::new(id, model::ToolCallUpdateFields::new()),
+            model::QuestionPrompt::new("Choose a deployment", "Deployment", multi, options),
+            0,
+            1,
+        )
+        .idle_timeout_ms(timeout);
+        let (response_tx, receiver) = oneshot::channel();
+        crate::app::handle_client_event(
+            app,
+            crate::agent::events::ClientEvent::QuestionRequest {
+                session_id: "session-1".into(),
+                request,
+                response_tx,
+            },
+        );
+        receiver
+    }
+
+    fn question_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+        crate::app::handle_terminal_event(
+            app,
+            crossterm::event::Event::Key(KeyEvent::new(code, modifiers)),
+        );
+        crate::app::finalize_deferred_submit(app);
+    }
+
+    fn answer(
+        receiver: &mut oneshot::Receiver<model::RequestQuestionResponse>,
+        ids: &[&str],
+        preview: Option<&str>,
+        notes: Option<&str>,
+    ) {
+        let annotation = if preview.is_none() && notes.is_none() {
+            None
+        } else {
+            Some(
+                model::QuestionAnnotation::new()
+                    .preview(preview.map(str::to_owned))
+                    .notes(notes.map(str::to_owned)),
+            )
+        };
+        assert_eq!(
+            receiver.try_recv().expect("answer delivered").outcome,
+            model::RequestQuestionOutcome::Answered(
+                model::AnsweredQuestionOutcome::new(
+                    ids.iter().map(|id| (*id).to_owned()).collect()
+                )
+                .annotation(annotation)
+            )
+        );
+    }
+
     #[test]
-    fn question_idle_workflow_preserves_notes_selection_and_waits_while_settings_are_open() {
-        use crate::app::{AppStatus, FocusTarget, FullscreenView, SurfaceMode};
-        use std::time::Duration;
-        let mut app = App::test_default();
-        app.status = AppStatus::Running;
-        let mut response = add_question(
-            &mut app,
-            "idle-notes",
-            model::QuestionPrompt::new(
-                "Choose targets",
-                "Targets",
+    fn physical_question_keys_deliver_only_selected_ids_previews_and_notes() {
+        use crate::app::test_support::{app_with_connection, assert_pending, press};
+        for (multi, navigation, expected, preview) in [
+            (false, vec![KeyCode::Right], vec!["target-b"], Some("Preview B")),
+            (true, vec![KeyCode::Char(' ')], vec!["target-a"], Some("Preview A")),
+            (
                 true,
                 vec![
-                    model::QuestionOption::new("a", "Staging"),
-                    model::QuestionOption::new("b", "Production"),
+                    KeyCode::Right,
+                    KeyCode::Home,
+                    KeyCode::Char(' '),
+                    KeyCode::Right,
+                    KeyCode::Char(' '),
+                    KeyCode::Char(' '),
+                    KeyCode::Right,
+                    KeyCode::Char(' '),
+                    KeyCode::Left,
                 ],
+                vec!["target-a", "target-c"],
+                Some("Preview A\n\nPreview C"),
             ),
-            true,
-        );
-        app.claim_focus_target(FocusTarget::Permission);
-        let question = get_focused_interaction_tc(&mut app)
-            .expect("tool")
-            .pending_question
-            .as_mut()
-            .expect("question");
-        question.idle_timeout = Some(Duration::from_secs(60));
-        for key in [KeyCode::Char(' '), KeyCode::Tab, KeyCode::Char('x')] {
-            crate::app::events::handle_terminal_event(
-                &mut app,
-                crossterm::event::Event::Key(KeyEvent::new(key, KeyModifiers::NONE)),
-            );
+        ] {
+            let (mut app, mut commands) = app_with_connection();
+            app.status = crate::app::AppStatus::Running;
+            let mut receiver = admitted_question(&mut app, "target", multi, None, true);
+            let mut peer = admitted_question(&mut app, "peer", false, None, false);
+            app.input.set_text("unrelated draft");
+            for key in navigation {
+                press(&mut app, key);
+            }
+            question_key(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT);
+            for ch in " note ".chars() {
+                press(&mut app, KeyCode::Char(ch));
+            }
+            press(&mut app, KeyCode::Tab);
+            press(&mut app, KeyCode::Tab);
+            press(&mut app, KeyCode::Enter);
+            answer(&mut receiver, &expected, preview, Some("note"));
+            assert_pending(&mut peer);
+            press(&mut app, KeyCode::Char(' '));
+            press(&mut app, KeyCode::Enter);
+            answer(&mut peer, &["peer-a"], None, None);
+            assert_eq!(app.input.text(), "unrelated draft");
+            assert!(commands.try_recv().is_err());
         }
-        let activity = focused_question(&app).expect("question").last_activity;
-        app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Config);
-        tick_idle_timeout(&mut app, activity + Duration::from_secs(90));
-        assert!(matches!(response.try_recv(), Err(oneshot::error::TryRecvError::Empty)));
-        app.surface_mode = SurfaceMode::Chat;
-        tick_idle_timeout(&mut app, activity + Duration::from_secs(149));
-        assert!(matches!(response.try_recv(), Err(oneshot::error::TryRecvError::Empty)));
-        tick_idle_timeout(&mut app, activity + Duration::from_secs(150));
-        let model::RequestQuestionOutcome::Answered(answer) =
-            response.try_recv().expect("continued").outcome
-        else {
-            panic!("answer");
-        };
-        assert_eq!(answer.selected_option_ids, vec!["a"]);
-        assert_eq!(answer.annotation.and_then(|annotation| annotation.notes), Some("x".to_owned()));
+        let (mut app, _commands) = app_with_connection();
+        app.status = crate::app::AppStatus::Running;
+        let mut receiver = admitted_question(&mut app, "blank", false, None, true);
+        press(&mut app, KeyCode::End);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Enter);
+        answer(&mut receiver, &["blank-d"], None, None);
+    }
+
+    #[test]
+    fn unicode_note_edits_follow_scalar_boundaries_and_reach_only_the_addressed_question() {
+        use crate::app::test_support::{app_with_connection, assert_pending, press};
+        let (mut app, mut commands) = app_with_connection();
+        app.status = crate::app::AppStatus::Running;
+        let mut receiver = admitted_question(&mut app, "edit", false, None, true);
+        let mut peer = admitted_question(&mut app, "neighbor", false, None, false);
+        app.input.set_text("draft unchanged");
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Tab);
+        for ch in "A\u{e9}\u{4e2d}\u{1f680}Z".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        for key in [
+            KeyCode::Left,
+            KeyCode::Left,
+            KeyCode::Backspace,
+            KeyCode::Delete,
+            KeyCode::Char('\u{754c}'),
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Home,
+            KeyCode::Backspace,
+        ] {
+            press(&mut app, key);
+        }
+        question_key(&mut app, KeyCode::Char('\u{3a9}'), KeyModifiers::CONTROL | KeyModifiers::ALT);
+        for key in [
+            KeyCode::End,
+            KeyCode::Delete,
+            KeyCode::Left,
+            KeyCode::Backspace,
+            KeyCode::Char('\u{1f680}'),
+            KeyCode::End,
+            KeyCode::Right,
+            KeyCode::Delete,
+            KeyCode::Home,
+            KeyCode::Left,
+            KeyCode::Delete,
+            KeyCode::Char('\u{4e2d}'),
+            KeyCode::Enter,
+        ] {
+            press(&mut app, key);
+        }
+        answer(&mut receiver, &["edit-b"], Some("Preview B"), Some("\u{4e2d}A\u{e9}\u{1f680}Z"));
+        assert_pending(&mut peer);
+        assert_eq!(app.input.text(), "draft unchanged");
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Enter);
+        answer(&mut peer, &["neighbor-a"], None, None);
+        assert!(commands.try_recv().is_err());
+    }
+
+    #[test]
+    fn typing_notes_renews_the_idle_deadline_but_timer_ticks_do_not() {
+        use crate::app::test_support::{EventClock, app_with_connection, assert_pending, press};
+        let clock = EventClock::new();
+        let (mut app, mut commands) = app_with_connection();
+        app.status = crate::app::AppStatus::Running;
+        let mut receiver = admitted_question(&mut app, "renew", false, Some(60_000), true);
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Tab);
+        tick_idle_timeout(&mut app, clock.at(30));
+        assert_pending(&mut receiver);
+        clock.at(55);
+        press(&mut app, KeyCode::Char('n'));
+        for seconds in [60, 114] {
+            tick_idle_timeout(&mut app, clock.at(seconds));
+            assert_pending(&mut receiver);
+        }
+        tick_idle_timeout(&mut app, clock.at(115));
+        answer(&mut receiver, &["renew-b"], Some("Preview B"), Some("n"));
+        tick_idle_timeout(&mut app, clock.at(116));
+        assert!(matches!(receiver.try_recv(), Err(oneshot::error::TryRecvError::Closed)));
+        assert!(commands.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn fullscreen_and_composer_focus_pause_idle_answers_until_a_full_resumed_interval() {
+        use crate::app::test_support::{EventClock, app_with_connection, assert_pending, press};
+        for fullscreen in [false, true] {
+            let clock = EventClock::new();
+            let (mut app, mut commands) = app_with_connection();
+            app.status = crate::app::AppStatus::Running;
+            let mut receiver = admitted_question(&mut app, "pause", false, Some(60_000), true);
+            press(&mut app, KeyCode::Right);
+            press(&mut app, KeyCode::Tab);
+            press(&mut app, KeyCode::Char('n'));
+            press(&mut app, KeyCode::Tab);
+            clock.at(50);
+            if fullscreen {
+                crate::app::config::open_tab(&mut app, crate::app::ConfigTab::Settings)
+                    .expect("open settings");
+                assert_eq!(
+                    app.surface_mode,
+                    crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config)
+                );
+            } else {
+                press(&mut app, KeyCode::Char('d'));
+                assert_eq!(app.focus_owner(), crate::app::FocusOwner::Input);
+            }
+            for seconds in [90, 150] {
+                tick_idle_timeout(&mut app, clock.at(seconds));
+                assert_pending(&mut receiver);
+            }
+            clock.at(160);
+            if fullscreen {
+                press(&mut app, KeyCode::Esc);
+            }
+            assert_eq!(app.surface_mode, crate::app::SurfaceMode::Chat);
+            if app.focus_owner() != crate::app::FocusOwner::Permission {
+                press(&mut app, KeyCode::Tab);
+            }
+            assert_eq!(app.focus_owner(), crate::app::FocusOwner::Permission);
+            tick_idle_timeout(&mut app, clock.at(219));
+            assert_pending(&mut receiver);
+            tick_idle_timeout(&mut app, clock.at(220));
+            answer(&mut receiver, &["pause-b"], Some("Preview B"), Some("n"));
+            assert_eq!(app.input.text(), if fullscreen { "" } else { "d" });
+            while let Ok(envelope) = commands.try_recv() {
+                assert!(!matches!(
+                    envelope.command,
+                    crate::agent::wire::BridgeCommand::Prompt { .. }
+                        | crate::agent::wire::BridgeCommand::CancelTurn { .. }
+                ));
+            }
+        }
+    }
+    #[test]
+    fn single_choice_can_submit_notes_without_selecting_initial_focus_or_a_deselected_option() {
+        for toggle_twice in [false, true] {
+            let mut app = App::test_default();
+            let mut rx = add_question(
+                &mut app,
+                "notes-only",
+                model::QuestionPrompt::new(
+                    "Where?",
+                    "Target",
+                    false,
+                    vec![
+                        model::QuestionOption::new("first", "Production")
+                            .preview(Some("Do not attach this".to_owned())),
+                        model::QuestionOption::new("second", "Staging"),
+                    ],
+                ),
+                true,
+            );
+            if toggle_twice {
+                for _ in 0..2 {
+                    execute_question_action(
+                        &mut app,
+                        InteractionAction::ToggleSelection,
+                        KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+                    );
+                }
+            }
+            execute_question_action(
+                &mut app,
+                InteractionAction::ToggleNotes,
+                KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            );
+            for ch in "Use canary instead".chars() {
+                handle_question_note_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                );
+            }
+            execute_question_action(
+                &mut app,
+                InteractionAction::Confirm,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            );
+            let model::RequestQuestionOutcome::Answered(answer) =
+                rx.try_recv().expect("submitted note").outcome
+            else {
+                panic!("answered")
+            };
+            assert!(answer.selected_option_ids.is_empty());
+            assert_eq!(
+                answer.annotation,
+                Some(model::QuestionAnnotation::new().notes(Some("Use canary instead".to_owned())))
+            );
+            assert!(app.pending_interaction_ids.is_empty());
+        }
+    }
+
+    #[test]
+    fn confirming_untouched_focus_submits_an_empty_answer_and_escape_cancels() {
+        for cancel in [false, true] {
+            let mut app = App::test_default();
+            let mut rx = add_question(
+                &mut app,
+                "blank",
+                model::QuestionPrompt::new(
+                    "Where?",
+                    "Target",
+                    false,
+                    vec![model::QuestionOption::new("first", "Production")],
+                ),
+                true,
+            );
+            execute_question_action(
+                &mut app,
+                if cancel { InteractionAction::Cancel } else { InteractionAction::Confirm },
+                KeyEvent::new(
+                    if cancel { KeyCode::Esc } else { KeyCode::Enter },
+                    KeyModifiers::NONE,
+                ),
+            );
+            match rx.try_recv().expect("response").outcome {
+                model::RequestQuestionOutcome::Cancelled => assert!(cancel),
+                model::RequestQuestionOutcome::Answered(answer) => {
+                    assert!(!cancel);
+                    assert!(answer.selected_option_ids.is_empty());
+                    assert!(answer.annotation.is_none());
+                }
+            }
+        }
     }
 }

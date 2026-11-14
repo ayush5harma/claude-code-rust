@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use ratatui::style::Style;
 use ratatui::{
@@ -58,20 +57,154 @@ pub(crate) fn wrap_lines_to_physical_rows(
     lines: &[Line<'static>],
     width: u16,
 ) -> Vec<Line<'static>> {
-    if lines.is_empty() {
-        return Vec::new();
+    wrap_lines_with_control(lines, width, &super::layout_control::LayoutControl::uninterrupted())
+}
+
+pub(super) fn wrap_lines_with_control(
+    lines: &[Line<'static>],
+    width: u16,
+    control: &super::layout_control::LayoutControl<'_>,
+) -> Vec<Line<'static>> {
+    let mut rows = Vec::new();
+    for line in lines {
+        if control.cancelled() {
+            return Vec::new();
+        }
+        let layout = WrappedLineLayout::new(line.clone(), width);
+        let height = layout.height();
+        rows.extend(layout.render(0..height, control));
+        if control.cancelled() {
+            return Vec::new();
+        }
     }
-    if width == 0 {
-        return vec![Line::default(); lines.len()];
+    rows
+}
+
+/// Measure wrapping without rasterizing hidden rows. Ratatui remains the owner of
+/// word boundaries, alignment and grapheme width for both full and windowed layout.
+pub(super) struct WrappedLineLayout {
+    paragraph: Paragraph<'static>,
+    width: u16,
+    height: u16,
+}
+
+impl WrappedLineLayout {
+    pub(super) fn new(line: Line<'static>, width: u16) -> Self {
+        #[cfg(test)]
+        test_work::record_layout();
+        let paragraph = Paragraph::new(Text::from(line)).wrap(Wrap { trim: false });
+        let height = u16::try_from(paragraph.line_count(width).max(1)).unwrap_or(u16::MAX);
+        Self { paragraph, width, height }
     }
 
-    let text = Text::from(lines.to_vec());
-    let height = Paragraph::new(text.clone()).wrap(Wrap { trim: false }).line_count(width).max(1);
-    let area = Rect::new(0, 0, width, u16::try_from(height).unwrap_or(u16::MAX));
-    let mut buffer = Buffer::empty(area);
-    Paragraph::new(text).wrap(Wrap { trim: false }).render(area, &mut buffer);
+    pub(super) fn height(&self) -> usize {
+        usize::from(self.height)
+    }
 
-    (0..area.height).map(|row| buffer_row_to_line(&buffer, area, row)).collect()
+    pub(super) fn render(
+        self,
+        rows: std::ops::Range<usize>,
+        control: &super::layout_control::LayoutControl<'_>,
+    ) -> Vec<Line<'static>> {
+        let start = rows.start.min(self.height());
+        let end = rows.end.min(self.height());
+        if start >= end || control.cancelled() {
+            return Vec::new();
+        }
+        if self.width == 0 {
+            return vec![Line::default(); end - start];
+        }
+        // Both bounds are limited to the measured u16 height above.
+        let height = u16::try_from(end - start).unwrap_or(self.height);
+        let offset = u16::try_from(start).unwrap_or(self.height);
+        let area = Rect::new(0, 0, self.width, height);
+        let mut buffer = Buffer::empty(area);
+        #[cfg(test)]
+        test_work::record_cells(buffer.content.len());
+        self.paragraph.scroll((offset, 0)).render(area, &mut buffer);
+        let mut rendered = Vec::with_capacity(usize::from(height));
+        for row in 0..height {
+            if control.cancelled() {
+                return Vec::new();
+            }
+            rendered.push(buffer_row_to_line(&buffer, area, row));
+        }
+        rendered
+    }
+}
+
+/// Per-thread observations of actual layout and rasterization work, independent
+/// of cancellation polling. Snapshot differences also allow nested measurements.
+#[cfg(test)]
+pub(super) mod test_work {
+    use std::cell::Cell;
+
+    #[derive(Clone, Copy, Debug, Default)]
+    pub(crate) struct Work {
+        pub layouts: usize,
+        pub cells: usize,
+    }
+
+    thread_local! {
+        static WORK: Cell<Work> = const { Cell::new(Work { layouts: 0, cells: 0 }) };
+    }
+
+    pub(super) fn record_layout() {
+        WORK.with(|counter| {
+            let work = counter.get();
+            counter.set(Work { layouts: work.layouts + 1, ..work });
+        });
+    }
+
+    pub(super) fn record_cells(cells: usize) {
+        WORK.with(|counter| {
+            let work = counter.get();
+            counter.set(Work { cells: work.cells + cells, ..work });
+        });
+    }
+
+    pub(super) fn snapshot() -> Work {
+        WORK.with(Cell::get)
+    }
+
+    pub(crate) fn measure<T>(run: impl FnOnce() -> T) -> (T, Work) {
+        let before = WORK.with(Cell::get);
+        let result = run();
+        let after = WORK.with(Cell::get);
+        (
+            result,
+            Work { layouts: after.layouts - before.layouts, cells: after.cells - before.cells },
+        )
+    }
+}
+
+/// Splits a line at grapheme boundaries into rows of at most `width` cells, keeping every
+/// character, including leading and trailing whitespace, without padding rows.
+#[must_use]
+pub(crate) fn split_line_at_width(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
+    if width == 0 || line_display_width(&line) <= width {
+        return vec![line];
+    }
+    let style = line.style;
+    let mut rows = Vec::new();
+    let mut spans = Vec::new();
+    let mut row_width = 0;
+    for span in line.spans {
+        let mut text = String::new();
+        for grapheme in span.content.graphemes(true) {
+            let grapheme_width = display_width(grapheme);
+            if row_width > 0 && row_width + grapheme_width > width {
+                push_styled_text(&mut spans, &std::mem::take(&mut text), span.style);
+                rows.push(Line::from(std::mem::take(&mut spans)).style(style));
+                row_width = 0;
+            }
+            text.push_str(grapheme);
+            row_width += grapheme_width;
+        }
+        push_styled_text(&mut spans, &text, span.style);
+    }
+    rows.push(Line::from(spans).style(style));
+    rows
 }
 
 #[must_use]
@@ -127,30 +260,6 @@ pub(crate) fn wrap_styled_chunks(chunks: &[StyledChunk], width: usize) -> Vec<Li
         lines.push(Line::default());
     }
     lines
-}
-
-/// Splits a line into rows of at most `width` cells at grapheme boundaries and keeps every
-/// character, spaces included: the wrap for preformatted text such as code.
-#[must_use]
-pub(crate) fn hard_wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
-    if line_display_width(&line) <= width {
-        return vec![line];
-    }
-    let mut rows = Vec::new();
-    let mut spans = Vec::new();
-    let mut row_width = 0usize;
-    for span in &line.spans {
-        for grapheme in UnicodeSegmentation::graphemes(span.content.as_ref(), true) {
-            let grapheme_width = display_width(grapheme);
-            if row_width > 0 && row_width + grapheme_width > width {
-                finish_wrapped_line(&mut rows, &mut spans, &mut row_width);
-            }
-            push_styled_text(&mut spans, grapheme, span.style);
-            row_width += grapheme_width;
-        }
-    }
-    finish_wrapped_line(&mut rows, &mut spans, &mut row_width);
-    rows
 }
 
 #[must_use]
@@ -409,18 +518,135 @@ mod tests {
     use ratatui::style::Modifier;
 
     #[test]
-    fn wrap_plain_preserves_explicit_newlines() {
-        assert_eq!(wrap_plain("alpha\nbeta", 16), vec!["alpha".to_owned(), "beta".to_owned()]);
+    fn windowed_rows_match_the_selected_paragraph_cells() {
+        let fixtures = [
+            Line::from("word boundaries  and trailing spaces   ".repeat(20)),
+            Line::from(vec![
+                Span::raw("  日本語👩‍💻e\u{301} ".repeat(20)),
+                Span::styled("colored tail", Style::new().fg(ratatui::style::Color::Red)),
+            ])
+            .style(Style::new().bg(ratatui::style::Color::Blue)),
+            Line::from("right aligned words ".repeat(20)).right_aligned(),
+            Line::from("centered words ".repeat(20)).centered(),
+            Line::from("unbroken".repeat(100)),
+            Line::default(),
+        ];
+        for line in fixtures {
+            for width in [1, 4, 13, 60] {
+                let paragraph = Paragraph::new(line.clone()).wrap(Wrap { trim: false });
+                let height = u16::try_from(paragraph.line_count(width).max(1)).unwrap();
+                let area = Rect::new(0, 0, width, height);
+                let mut expected = Buffer::empty(area);
+                paragraph.render(area, &mut expected);
+                for start in [0, height / 2, height.saturating_sub(3)] {
+                    let end = height.min(start + 3);
+                    let layout = WrappedLineLayout::new(line.clone(), width);
+                    let rows = layout.render(
+                        usize::from(start)..usize::from(end),
+                        &super::super::layout_control::LayoutControl::uninterrupted(),
+                    );
+                    let viewport = Rect::new(0, 0, width, end - start);
+                    let mut actual = Buffer::empty(viewport);
+                    Paragraph::new(rows).render(viewport, &mut actual);
+                    for y in 0..viewport.height {
+                        for x in 0..width {
+                            assert_eq!(
+                                actual.cell((x, y)),
+                                expected.cell((x, start + y)),
+                                "width={width}, start={start}, cell=({x}, {y})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
-    fn wrap_plain_handles_cjk_width() {
-        assert_eq!(wrap_plain("你好 世界", 4), vec!["你好".to_owned(), "世界".to_owned()]);
+    fn windowed_rows_handle_zero_width_and_empty_or_cancelled_windows() {
+        use super::super::layout_control::LayoutControl;
+        let control = LayoutControl::uninterrupted();
+        assert_eq!(
+            WrappedLineLayout::new(Line::from("text"), 0).render(0..1, &control),
+            vec![Line::default()]
+        );
+        assert!(WrappedLineLayout::new(Line::from("text"), 2).render(2..2, &control).is_empty());
+        control.cancel();
+        assert!(WrappedLineLayout::new(Line::from("text"), 2).render(0..2, &control).is_empty());
+        let before = test_work::snapshot();
+        let observe = || test_work::snapshot().cells > before.cells;
+        let interrupted = LayoutControl::new(&observe);
+        assert!(
+            WrappedLineLayout::new(Line::from("alpha beta gamma delta"), 6)
+                .render(0..4, &interrupted)
+                .is_empty()
+        );
+        assert!(interrupted.cancelled());
+        let lines = [Line::from("FIRST"), Line::from("SECOND"), Line::from("THIRD")];
+        let before = test_work::snapshot();
+        let observe = || test_work::snapshot().layouts > before.layouts + 1;
+        let interrupted = LayoutControl::new(&observe);
+        assert!(wrap_lines_with_control(&lines, 20, &interrupted).is_empty());
+        assert!(interrupted.cancelled());
+        let good = wrap_lines_with_control(&lines, 20, &LayoutControl::uninterrupted());
+        assert_eq!(
+            good.iter().map(|l| line_text(l).trim_end().to_owned()).collect::<Vec<_>>(),
+            ["FIRST", "SECOND", "THIRD"]
+        );
     }
 
     #[test]
-    fn wrap_plain_wraps_long_emoji_graphemes() {
-        assert_eq!(wrap_plain("👩‍💻👩‍💻👩‍💻", 4), vec!["👩‍💻👩‍💻".to_owned(), "👩‍💻".to_owned()]);
+    fn physical_rows_match_paragraph_cells_across_logical_lines() {
+        let lines = vec![
+            Line::from(vec![
+                Span::raw("  alpha "),
+                Span::styled("日本語👩‍💻beta", Style::new().add_modifier(Modifier::BOLD)),
+            ]),
+            Line::default(),
+            Line::from("right aligned words").right_aligned(),
+            Line::from(" trailing spaces  ").style(Style::new().bg(ratatui::style::Color::Blue)),
+        ];
+        for width in [1, 4, 13, 60] {
+            let paragraph = Paragraph::new(lines.clone()).wrap(Wrap { trim: false });
+            let height = u16::try_from(paragraph.line_count(width)).unwrap();
+            let area = Rect::new(0, 0, width, height);
+            let mut expected = Buffer::empty(area);
+            paragraph.render(area, &mut expected);
+            let mut actual = Buffer::empty(area);
+            Paragraph::new(wrap_lines_to_physical_rows(&lines, width)).render(area, &mut actual);
+            assert_eq!(actual, expected, "width={width}");
+        }
+    }
+
+    #[test]
+    fn split_line_at_width_keeps_whitespace_styles_and_wide_graphemes_unpadded() {
+        let bold = Style::default().add_modifier(Modifier::BOLD);
+        let line = Line::from(vec![Span::raw("  ab"), Span::styled("你好 x", bold)]);
+
+        let rows = split_line_at_width(line, 5);
+
+        assert_eq!(rows.iter().map(line_text).collect::<Vec<_>>(), ["  ab", "你好 ", "x"]);
+        assert_eq!(rows[1].spans[0].style, bold);
+        assert_eq!(rows[2].spans[0].style, bold);
+    }
+
+    #[test]
+    fn plain_wrapping_preserves_breaks_cell_width_and_grapheme_identity() {
+        for (source, width, expected) in [
+            ("alpha\nbeta", 16, vec!["alpha", "beta"]),
+            ("alpha\n\nbeta\n", 16, vec!["alpha", "", "beta", ""]),
+            ("\u{4f60}\u{597d} \u{4e16}\u{754c}", 4, vec!["\u{4f60}\u{597d}", "\u{4e16}\u{754c}"]),
+            (
+                "\u{1f469}\u{200d}\u{1f4bb}\u{1f469}\u{200d}\u{1f4bb}\u{1f469}\u{200d}\u{1f4bb}",
+                4,
+                vec![
+                    "\u{1f469}\u{200d}\u{1f4bb}\u{1f469}\u{200d}\u{1f4bb}",
+                    "\u{1f469}\u{200d}\u{1f4bb}",
+                ],
+            ),
+        ] {
+            assert_eq!(wrap_plain(source, width), expected);
+        }
     }
 
     #[test]
@@ -442,14 +668,28 @@ mod tests {
 
     #[test]
     fn wrap_styled_chunks_preserves_styles() {
+        let bold = Style::default().add_modifier(Modifier::BOLD);
         let lines = wrap_styled_chunks(
-            &[StyledChunk {
-                text: "bold text".to_owned(),
-                style: Style::default().add_modifier(Modifier::BOLD),
-            }],
-            32,
+            &[
+                StyledChunk { text: "plain ".into(), style: Style::default() },
+                StyledChunk { text: "BOLD WORDS".into(), style: bold },
+                StyledChunk { text: " reset".into(), style: Style::default() },
+            ],
+            8,
         );
-        assert!(lines[0].spans[0].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(
+            lines.iter().map(line_text).collect::<Vec<_>>(),
+            ["plain", "BOLD", "WORDS", "reset"]
+        );
+        for line in &lines {
+            let expected = line_text(line) == "BOLD" || line_text(line) == "WORDS";
+            for span in &line.spans {
+                assert_eq!(
+                    line.style.patch(span.style).add_modifier.contains(Modifier::BOLD),
+                    expected
+                );
+            }
+        }
     }
 
     #[test]
@@ -480,5 +720,36 @@ mod tests {
             rows.into_iter().map(|line| line_text(&line)).collect::<Vec<_>>(),
             vec!["XX one", "   two"]
         );
+    }
+    #[test]
+    fn exhausted_and_wide_prefixes_preserve_order_content_and_styles() {
+        use ratatui::style::Color;
+        for (prefix, width, expected) in [
+            ("", 5, vec!["alpha", "beta"]),
+            ("TAG:", 4, vec!["TAG:", "alph", "a", "beta"]),
+            ("PREFIX:", 4, vec!["PREF", "IX:", "alph", "a", "beta"]),
+            ("\u{754c}: ", 8, vec!["\u{754c}: alph", "    a", "    beta"]),
+            ("\u{754c}\u{754c}", 4, vec!["\u{754c}\u{754c}", "alph", "a", "beta"]),
+        ] {
+            let lines = wrap_styled_chunks_with_hanging_prefix(
+                &[StyledChunk { text: prefix.into(), style: Style::new().fg(Color::Cyan) }],
+                &[StyledChunk { text: "alpha beta".into(), style: Style::new().fg(Color::Yellow) }],
+                width,
+                Style::new().bg(Color::Blue),
+            );
+            assert_eq!(lines.iter().map(line_text).collect::<Vec<_>>(), expected);
+            for line in &lines {
+                assert!(line.width() <= width);
+                for span in &line.spans {
+                    let style = line.style.patch(span.style);
+                    assert_eq!(style.bg, Some(Color::Blue));
+                    if span.content.trim().is_empty() {
+                        continue;
+                    }
+                    let body = span.content.chars().any(char::is_lowercase);
+                    assert_eq!(style.fg, Some(if body { Color::Yellow } else { Color::Cyan }));
+                }
+            }
+        }
     }
 }

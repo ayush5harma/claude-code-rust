@@ -14,15 +14,14 @@ fn working_directory_must_be_an_existing_directory() {
     std::fs::write(&file, "").expect("file");
     let missing = project.path().join("missing");
     for dir in [&missing, &file] {
-        let error = Cli::parse_from_args(["claude-rs".as_ref(), "-C".as_ref(), dir.as_os_str()])
-            .expect_err("not a directory");
+        let cli = Cli::parse_from_args(["claude-rs".as_ref(), "-C".as_ref(), dir.as_os_str()])
+            .expect("parse");
+        let error = cli.validate().expect_err("not a directory");
         assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
         assert_eq!(error.exit_code(), 2);
         let message = error.to_string();
-        assert!(
-            message.contains(&format!("{} is not an existing directory", dir.display())),
-            "{message}"
-        );
+        assert!(message.contains("--dir"), "{message}");
+        assert!(message.contains(&dir.display().to_string()), "{message}");
     }
 }
 
@@ -30,24 +29,24 @@ fn working_directory_must_be_an_existing_directory() {
 fn a_missing_working_directory_is_blamed_before_added_directories() {
     let project = tempfile::tempdir().expect("project");
     let missing = project.path().join("missing");
-    let error = Cli::parse_from_args([
+    let cli = Cli::parse_from_args([
         "claude-rs".as_ref(),
         "-C".as_ref(),
         missing.as_os_str(),
         "--add-dir".as_ref(),
         "x".as_ref(),
     ])
-    .expect_err("missing working directory");
+    .expect("parse");
+    let error = cli.validate().expect_err("missing working directory");
     let message = error.to_string();
     assert!(message.contains("--dir"), "{message}");
     assert!(!message.contains(&missing.join("x").display().to_string()), "{message}");
 }
 
 #[test]
-fn relative_working_directory_is_made_absolute() {
+fn relative_working_directory_resolves_against_the_process_directory() {
     let cli = Cli::parse_from_args(["claude-rs", "-C", "src"]).expect("parse");
-    let expected = std::env::current_dir().expect("cwd").join("src");
-    assert_eq!(cli.dir.as_deref(), Some(expected.as_path()));
+    let expected = std::env::current_dir().expect("cwd").join("src").canonicalize().expect("src");
     assert_eq!(cli.startup_cwd(), expected);
 }
 
@@ -62,17 +61,11 @@ fn bridge_script_must_be_an_existing_file_for_an_interactive_launch() {
             script.as_os_str(),
         ])
         .expect("parse");
-        cli.validate().expect("valid arguments");
-        let error = cli.session_config().expect_err("missing bridge script");
+        let error = cli.validate().expect_err("missing bridge script");
         assert_eq!(error.exit_code(), 2);
         let message = error.to_string();
-        assert!(
-            message.contains(&format!(
-                "--bridge-script: {} is not an existing file",
-                script.display()
-            )),
-            "{message}"
-        );
+        assert!(message.contains("--bridge-script"), "{message}");
+        assert!(message.contains(&script.display().to_string()), "{message}");
     }
     std::fs::write(&missing, "").expect("bridge script");
     let cli = Cli::parse_from_args([
@@ -81,7 +74,7 @@ fn bridge_script_must_be_an_existing_file_for_an_interactive_launch() {
         missing.as_os_str(),
     ])
     .expect("parse");
-    cli.session_config().expect("existing bridge script");
+    cli.validate().expect("existing bridge script");
 }
 
 #[test]

@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use crate::agent::bridge::BridgeLauncher;
 use crate::agent::wire::{BridgeCommand, CommandEnvelope, EventEnvelope, SessionLaunchSettings};
@@ -9,7 +8,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt as _, AsyncWrite, AsyncWriteExt as _, BufReader, BufWriter};
-use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout};
+use tokio::process::{Child, ChildStderr, ChildStdout};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{Instrument as _, info_span};
@@ -72,10 +71,8 @@ impl BridgeClient {
 
         let stdin = child.stdin.take().context("bridge stdin not available")?;
         let stdout = child.stdout.take().context("bridge stdout not available")?;
-        if bridge_diagnostics_enabled {
-            let stderr = child.stderr.take().context("bridge stderr not available")?;
-            Self::spawn_stderr_logger(stderr);
-        }
+        let stderr = child.stderr.take().context("bridge stderr not available")?;
+        Self::spawn_stderr_logger(stderr);
 
         let (connection, command_rx) = command_channel();
         let command_tx = connection.command_tx;
@@ -299,8 +296,8 @@ impl Drop for BridgeClient {
     }
 }
 
-async fn run_command_writer(
-    mut stdin: BufWriter<ChildStdin>,
+async fn run_command_writer<W: AsyncWrite + Unpin>(
+    mut stdin: W,
     mut command_rx: CommandReceiver,
 ) -> anyhow::Result<()> {
     while let Some(command) = command_rx.recv().await {
@@ -485,7 +482,7 @@ fn log_bridge_event_received(envelope: &EventEnvelope, size_bytes: usize) {
         | "permission_request"
         | "question_request"
         | "elicitation_request"
-        | "elicitation_complete"
+        | "elicitation_settled"
         | "mcp_auth_redirect"
         | "turn_complete" => tracing::trace!(
             target: crate::logging::targets::BRIDGE_PROTOCOL,
@@ -717,13 +714,6 @@ impl AgentConnection {
         })
     }
 
-    pub fn reload_skills_and_styles(&self, session_id: String) -> anyhow::Result<()> {
-        self.send(CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::ReloadSkillsAndStyles { session_id },
-        })
-    }
-
     pub fn rename_session(&self, session_id: String, title: String) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: None,
@@ -747,6 +737,14 @@ impl AgentConnection {
         self.send(CommandEnvelope {
             request_id: Some(request_id),
             command: BridgeCommand::DeleteSession { session_id },
+        })
+    }
+
+    /// Ask the bridge for a fresh session listing; the answer carries `request_id`.
+    pub fn list_sessions(&self, request_id: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: Some(request_id),
+            command: BridgeCommand::ListSessions,
         })
     }
 
@@ -809,22 +807,36 @@ impl AgentConnection {
         })
     }
 
+    /// Request one subagent's saved transcript; the answer comes back under `request_id`.
     pub fn get_subagent_messages(
         &self,
         session_id: String,
         agent_id: String,
+        request_id: String,
     ) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
-            request_id: None,
+            request_id: Some(request_id),
             command: BridgeCommand::GetSubagentMessages { session_id, agent_id },
         })
     }
 
-    /// Ask the bridge for a fresh session listing; the answer carries `request_id`.
-    pub fn list_sessions(&self, request_id: String) -> anyhow::Result<()> {
+    pub fn stop_subagent(
+        &self,
+        session_id: String,
+        task_id: String,
+        expected_run_id: Option<String>,
+        request_id: String,
+    ) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: Some(request_id),
-            command: BridgeCommand::ListSessions,
+            command: BridgeCommand::StopSubagent { session_id, task_id, expected_run_id },
+        })
+    }
+
+    pub fn get_rewind_targets(&self, session_id: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::GetRewindTargets { session_id },
         })
     }
 
@@ -837,20 +849,6 @@ impl AgentConnection {
         self.send(CommandEnvelope {
             request_id: Some(request_id),
             command: BridgeCommand::ExportSessionHistory { session_id },
-        })
-    }
-
-    pub fn stop_subagent(&self, session_id: String, task_id: String) -> anyhow::Result<()> {
-        self.send(CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::StopSubagent { session_id, task_id },
-        })
-    }
-
-    pub fn get_rewind_targets(&self, session_id: String) -> anyhow::Result<()> {
-        self.send(CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::GetRewindTargets { session_id },
         })
     }
 
@@ -872,10 +870,23 @@ impl AgentConnection {
         })
     }
 
-    pub fn reload_plugins(&self, session_id: String, force: bool) -> anyhow::Result<()> {
+    pub fn reload_plugins(
+        &self,
+        session_id: String,
+        force: bool,
+        add_plugins: Vec<String>,
+        request_id: Option<String>,
+    ) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id,
+            command: BridgeCommand::ReloadPlugins { session_id, force, add_plugins },
+        })
+    }
+
+    pub fn reload_skills_and_styles(&self, session_id: String) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: None,
-            command: BridgeCommand::ReloadPlugins { session_id, force },
+            command: BridgeCommand::ReloadSkillsAndStyles { session_id },
         })
     }
 
@@ -1148,40 +1159,9 @@ fn is_control_command(command: &BridgeCommand) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        AgentConnection, CONTROL_COMMAND_QUEUE_CAPACITY, REGULAR_COMMAND_QUEUE_CAPACITY,
-        command_channel, write_command_line,
-    };
-    use crate::agent::types::ElicitationAction;
+    use super::command_channel;
     use crate::agent::wire::BridgeCommand;
-    use std::collections::BTreeMap;
     use std::time::Duration;
-    use tokio::io::AsyncReadExt as _;
-
-    #[tokio::test]
-    async fn control_commands_keep_reserved_capacity_when_regular_lane_is_full() {
-        let (connection, mut receiver) = command_channel();
-        for index in 0..REGULAR_COMMAND_QUEUE_CAPACITY {
-            connection
-                .set_model("session-1".to_owned(), format!("model-{index}"))
-                .expect("regular command should fit");
-        }
-        let error = connection
-            .set_model("session-1".to_owned(), "overflow".to_owned())
-            .expect_err("regular command lane should be bounded");
-        assert!(error.to_string().contains("regular command queue is full"));
-
-        connection.cancel("session-1".to_owned()).expect("control lane should remain available");
-        for index in 0..REGULAR_COMMAND_QUEUE_CAPACITY {
-            let command = receiver.recv_envelope().await.expect("regular command");
-            assert!(matches!(
-                command.command,
-                BridgeCommand::SetModel { model, .. } if model == format!("model-{index}")
-            ));
-        }
-        let command = receiver.recv_envelope().await.expect("control command");
-        assert!(matches!(command.command, BridgeCommand::CancelTurn { .. }));
-    }
 
     #[tokio::test]
     async fn cancel_does_not_overtake_the_prompt_it_targets() {
@@ -1196,394 +1176,90 @@ mod tests {
         assert!(matches!(cancel.command, BridgeCommand::CancelTurn { .. }));
     }
 
-    #[test]
-    fn control_command_lane_is_also_bounded() {
-        let (connection, _receiver) = command_channel();
-        for _ in 0..CONTROL_COMMAND_QUEUE_CAPACITY {
-            connection.cancel("session-1".to_owned()).expect("control command should fit");
-        }
-        let error = connection
-            .cancel("session-1".to_owned())
-            .expect_err("control command lane should be bounded");
-        assert!(error.to_string().contains("control command queue is full"));
-    }
-
     #[tokio::test]
-    async fn interactive_response_waits_for_control_capacity_instead_of_being_lost() {
-        let (connection, mut receiver) = command_channel();
-        for index in 0..CONTROL_COMMAND_QUEUE_CAPACITY {
-            connection.cancel(format!("session-{index}")).expect("control command should fit");
-        }
-
-        let response = connection.respond_to_elicitation(
-            "session-response".to_owned(),
-            "elicitation-1".to_owned(),
-            ElicitationAction::Decline,
-            None,
-        );
-        tokio::pin!(response);
-        assert!(
-            tokio::time::timeout(Duration::from_millis(10), &mut response).await.is_err(),
-            "response must wait while the reserved control budget is exhausted"
-        );
-
-        let first = receiver.recv_envelope().await.expect("first cancel");
-        assert!(matches!(
-            first.command,
-            BridgeCommand::CancelTurn { session_id } if session_id == "session-0"
-        ));
-        response.await.expect("response should enter the queue after capacity is released");
-
-        for index in 1..CONTROL_COMMAND_QUEUE_CAPACITY {
-            let queued = receiver.recv_envelope().await.expect("queued cancel");
-            assert!(matches!(
-                queued.command,
-                BridgeCommand::CancelTurn { session_id }
-                    if session_id == format!("session-{index}")
-            ));
-        }
-        let queued = receiver.recv_envelope().await.expect("elicitation response");
-        assert!(matches!(
-            queued.command,
-            BridgeCommand::ElicitationResponse {
-                session_id,
-                elicitation_request_id,
-                action: ElicitationAction::Decline,
-                content: None,
-            } if session_id == "session-response" && elicitation_request_id == "elicitation-1"
-        ));
-    }
-
-    #[test]
-    fn generate_session_title_sends_bridge_command() {
-        let (conn, mut rx) = AgentConnection::test_channel();
-
-        conn.generate_session_title("session-1".to_owned(), "Summarize work".to_owned())
-            .expect("generate");
-
-        let envelope = rx.try_recv().expect("command");
-        assert_eq!(
-            envelope.command,
-            BridgeCommand::GenerateSessionTitle {
-                session_id: "session-1".to_owned(),
-                description: "Summarize work".to_owned(),
-            }
-        );
-    }
-
-    #[test]
-    fn reload_skills_and_styles_sends_bridge_command() {
-        let (conn, mut rx) = AgentConnection::test_channel();
-
-        conn.reload_skills_and_styles("session-1".to_owned()).expect("reload");
-
-        let envelope = rx.try_recv().expect("command");
-        assert_eq!(
-            envelope.command,
-            BridgeCommand::ReloadSkillsAndStyles { session_id: "session-1".to_owned() }
-        );
-    }
-
-    #[tokio::test]
-    async fn write_command_line_appends_exactly_one_newline() {
-        let (mut writer, mut reader) = tokio::io::duplex(128);
-
-        write_command_line(&mut writer, r#"{"command":"cancel_turn","session_id":"s1"}"#)
+    async fn permission_write_failure_after_enqueue_is_reported_while_stdout_stays_open() {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let script = directory.path().join("open-stdout.cjs");
+        std::fs::write(&script, "setInterval(() => {}, 1000);\n").expect("write fixture");
+        let mut bridge = super::BridgeClient::spawn(&crate::agent::bridge::BridgeLauncher {
+            runtime_path: "node".into(),
+            script_path: script,
+        })
+        .expect("spawn fixture");
+        // Exercise the real writer and receive monitor with a controllable pipe.
+        // Closing fd 0 in a Node child is insufficient on Windows, where another
+        // inherited handle can keep the read end alive.
+        bridge.stop_writer().await;
+        let (connection, commands) = command_channel();
+        bridge.command_tx = connection.command_tx.clone();
+        let (writer, peer) = tokio::io::duplex(1024);
+        connection
+            .respond_to_permission(
+                "session-1".to_owned(),
+                "tool-1".to_owned(),
+                crate::agent::types::PermissionOutcome::Selected {
+                    option_id: "allow_once".to_owned(),
+                },
+            )
             .await
-            .expect("write command");
-        drop(writer);
-
-        let mut output = Vec::new();
-        reader.read_to_end(&mut output).await.expect("read command");
-
-        assert_eq!(
-            String::from_utf8(output).expect("utf8"),
-            "{\"command\":\"cancel_turn\",\"session_id\":\"s1\"}\n"
+            .expect("answer admitted before pipe failure");
+        drop(peer);
+        bridge.writer_task = Some(tokio::spawn(super::run_command_writer(
+            tokio::io::BufWriter::new(writer),
+            commands,
+        )));
+        let received = tokio::time::timeout(Duration::from_secs(5), bridge.recv()).await;
+        let child_still_running = bridge.child.try_wait().expect("child status").is_none();
+        let retry = connection
+            .respond_to_permission(
+                "session-1".to_owned(),
+                "tool-1".to_owned(),
+                crate::agent::types::PermissionOutcome::Cancelled,
+            )
+            .await;
+        bridge.shutdown_and_wait(Duration::from_millis(50)).await.expect("reap fixture");
+        let error = received
+            .expect("writer failure must surface without waiting for stdout EOF")
+            .expect_err("failed delivery must terminate the connection");
+        assert!(child_still_running, "the fixture must keep stdout open during the failed write");
+        assert!(error.to_string().contains("bridge stdin writer failed"), "{error:#}");
+        assert!(
+            error.chain().any(|cause| cause
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::BrokenPipe)),
+            "{error:#}"
         );
+        assert!(retry.is_err(), "a stopped writer must reject further answers before cleanup");
     }
 
-    #[test]
-    fn rename_session_sends_bridge_command() {
-        let (conn, mut rx) = AgentConnection::test_channel();
-
-        conn.rename_session("session-1".to_owned(), "Renamed".to_owned()).expect("rename");
-
-        let envelope = rx.try_recv().expect("command");
-        assert_eq!(
-            envelope.command,
-            BridgeCommand::RenameSession {
-                session_id: "session-1".to_owned(),
-                title: "Renamed".to_owned(),
-            }
-        );
-    }
-
-    #[test]
-    fn set_effort_sends_bridge_command() {
-        let (conn, mut rx) = AgentConnection::test_channel();
-
-        conn.set_effort("session-1".to_owned(), Some("max".to_owned())).expect("set effort");
-
-        let envelope = rx.try_recv().expect("command");
-        assert_eq!(
-            envelope.command,
-            BridgeCommand::SetEffort {
-                session_id: "session-1".to_owned(),
-                effort: Some("max".to_owned()),
-            }
-        );
-    }
-
-    #[test]
-    fn set_agent_sends_bridge_command() {
-        let (conn, mut rx) = AgentConnection::test_channel();
-
-        conn.set_agent("session-1".to_owned(), Some("reviewer".to_owned())).expect("set agent");
-
-        let envelope = rx.try_recv().expect("command");
-        assert_eq!(
-            envelope.command,
-            BridgeCommand::SetAgent {
-                session_id: "session-1".to_owned(),
-                agent: Some("reviewer".to_owned()),
-            }
-        );
-    }
-
-    #[test]
-    fn set_agent_reset_sends_bridge_command() {
-        let (conn, mut rx) = AgentConnection::test_channel();
-
-        conn.set_agent("session-1".to_owned(), None).expect("reset agent");
-
-        let envelope = rx.try_recv().expect("command");
-        assert_eq!(
-            envelope.command,
-            BridgeCommand::SetAgent { session_id: "session-1".to_owned(), agent: None }
-        );
-    }
-
-    #[test]
-    fn set_fast_mode_sends_bridge_command() {
-        let (conn, mut rx) = AgentConnection::test_channel();
-
-        conn.set_fast_mode("session-1".to_owned(), true).expect("set fast mode");
-
-        let envelope = rx.try_recv().expect("command");
-        assert_eq!(
-            envelope.command,
-            BridgeCommand::SetFastMode { session_id: "session-1".to_owned(), enabled: true }
-        );
-    }
-
-    #[test]
-    fn get_mcp_snapshot_sends_bridge_command() {
-        let (conn, mut rx) = AgentConnection::test_channel();
-
-        conn.get_mcp_snapshot("session-1".to_owned()).expect("mcp snapshot");
-
-        let envelope = rx.try_recv().expect("command");
-        assert_eq!(
-            envelope.command,
-            BridgeCommand::GetMcpSnapshot { session_id: "session-1".to_owned() }
-        );
-    }
-
-    #[test]
-    fn get_context_usage_sends_bridge_command() {
-        let (conn, mut rx) = AgentConnection::test_channel();
-
-        conn.get_context_usage("session-1".to_owned()).expect("context usage");
-
-        let envelope = rx.try_recv().expect("command");
-        assert_eq!(
-            envelope.command,
-            BridgeCommand::GetContextUsage { session_id: "session-1".to_owned() }
-        );
-    }
-
-    #[test]
-    fn get_usage_sends_bridge_command() {
-        let (conn, mut rx) = AgentConnection::test_channel();
-
-        conn.get_usage("session-1".to_owned()).expect("structured usage");
-
-        let envelope = rx.try_recv().expect("command");
-        assert_eq!(
-            envelope.command,
-            BridgeCommand::GetUsage { session_id: "session-1".to_owned() }
-        );
-    }
-
-    #[test]
-    fn reload_plugins_sends_bridge_command() {
-        let (conn, mut rx) = AgentConnection::test_channel();
-
-        conn.reload_plugins("session-1".to_owned(), false).expect("reload plugins");
-
-        let envelope = rx.try_recv().expect("command");
-        assert_eq!(
-            envelope.command,
-            BridgeCommand::ReloadPlugins { session_id: "session-1".to_owned(), force: false }
-        );
-    }
-
-    #[test]
-    fn export_session_history_sends_the_request_id_with_the_command() {
-        let (conn, mut rx) = AgentConnection::test_channel();
-
-        conn.export_session_history("session-1".to_owned(), "export-1".to_owned()).expect("export");
-
-        let envelope = rx.try_recv().expect("command");
-        assert_eq!(envelope.request_id.as_deref(), Some("export-1"));
-        assert_eq!(
-            envelope.command,
-            BridgeCommand::ExportSessionHistory { session_id: "session-1".to_owned() }
-        );
-    }
-
-    #[test]
-    fn get_rewind_targets_sends_bridge_command() {
-        let (conn, mut rx) = AgentConnection::test_channel();
-
-        conn.get_rewind_targets("session-1".to_owned()).expect("rewind targets");
-
-        let envelope = rx.try_recv().expect("command");
-        assert_eq!(
-            envelope.command,
-            BridgeCommand::GetRewindTargets { session_id: "session-1".to_owned() }
-        );
-    }
-
-    #[test]
-    fn resume_session_at_sends_request_correlated_bridge_command() {
-        let (conn, mut rx) = AgentConnection::test_channel();
-
-        conn.resume_session_at(
-            "session-1".to_owned(),
-            "user-2".to_owned(),
-            crate::agent::wire::SessionLaunchSettings::default(),
-            "resume-at-1".to_owned(),
-        )
-        .expect("resume-at command");
-
-        let envelope = rx.try_recv().expect("command");
-        assert_eq!(envelope.request_id.as_deref(), Some("resume-at-1"));
-        assert_eq!(
-            envelope.command,
-            BridgeCommand::ResumeSessionAt {
-                session_id: "session-1".to_owned(),
-                target_user_message_id: "user-2".to_owned(),
-                launch_settings: crate::agent::wire::SessionLaunchSettings::default(),
-            }
-        );
-    }
-
-    #[test]
-    fn rewind_sends_bridge_command() {
-        let (conn, mut rx) = AgentConnection::test_channel();
-
-        conn.rewind(
-            "session-1".to_owned(),
-            "user-1".to_owned(),
-            crate::agent::types::RewindRestoreMode::Code,
-            crate::agent::wire::SessionLaunchSettings::default(),
-        )
-        .expect("rewind");
-
-        let envelope = rx.try_recv().expect("command");
-        assert_eq!(
-            envelope.command,
-            BridgeCommand::Rewind {
-                session_id: "session-1".to_owned(),
-                target_user_message_id: "user-1".to_owned(),
-                restore_mode: crate::agent::types::RewindRestoreMode::Code,
-                launch_settings: crate::agent::wire::SessionLaunchSettings::default(),
-            }
-        );
-    }
-
-    #[test]
-    fn reconnect_mcp_server_sends_bridge_command() {
-        let (conn, mut rx) = AgentConnection::test_channel();
-
-        conn.reconnect_mcp_server("session-1".to_owned(), "notion".to_owned())
-            .expect("mcp reconnect");
-
-        let envelope = rx.try_recv().expect("command");
-        assert_eq!(
-            envelope.command,
-            BridgeCommand::McpReconnect {
-                session_id: "session-1".to_owned(),
-                server_name: "notion".to_owned(),
-            }
-        );
-    }
-
-    #[test]
-    fn toggle_mcp_server_sends_bridge_command() {
-        let (conn, mut rx) = AgentConnection::test_channel();
-
-        conn.toggle_mcp_server("session-1".to_owned(), "notion".to_owned(), false)
-            .expect("mcp toggle");
-
-        let envelope = rx.try_recv().expect("command");
-        assert_eq!(
-            envelope.command,
-            BridgeCommand::McpToggle {
-                session_id: "session-1".to_owned(),
-                server_name: "notion".to_owned(),
-                enabled: false,
-            }
-        );
-    }
-
-    #[test]
-    fn set_mcp_servers_sends_bridge_command() {
-        let (conn, mut rx) = AgentConnection::test_channel();
-        let servers = BTreeMap::from([(
-            "notion".to_owned(),
-            crate::agent::types::McpServerConfig::Http {
-                url: "https://mcp.notion.com/mcp".to_owned(),
-                headers: BTreeMap::new(),
-                tools: Vec::new(),
-                timeout: Some(5000),
-                request_timeout_ms: Some(30000),
-                always_load: Some(true),
-            },
-        )]);
-
-        conn.set_mcp_servers("session-1".to_owned(), servers.clone()).expect("mcp set servers");
-
-        let envelope = rx.try_recv().expect("command");
-        assert_eq!(
-            envelope.command,
-            BridgeCommand::McpSetServers { session_id: "session-1".to_owned(), servers }
-        );
-    }
-
+    // The bridge's stderr is always piped, so it must always be drained: an unread pipe
+    // fills at about 64 KiB and stalls the bridge on its next warning. With detailed
+    // diagnostics off (the state in a unit test) a reader gated on them would never run.
     #[tokio::test]
-    async fn respond_to_elicitation_sends_bridge_command() {
-        let (conn, mut rx) = AgentConnection::test_channel();
-
-        conn.respond_to_elicitation(
-            "session-1".to_owned(),
-            "elicitation-1".to_owned(),
-            ElicitationAction::Accept,
-            None,
+    async fn bridge_stderr_is_drained_even_when_detailed_diagnostics_are_off() {
+        assert!(!crate::logging::bridge_diagnostics_enabled());
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = dir.path().join("noisy-bridge.js");
+        std::fs::write(
+            &script,
+            "process.stderr.write('x'.repeat(1 << 20), () => process.exit(0));\n",
         )
-        .await
-        .expect("elicitation response");
+        .expect("write script");
+        let launcher = crate::agent::bridge::BridgeLauncher {
+            runtime_path: "node".into(),
+            script_path: script,
+        };
 
-        let envelope = rx.try_recv().expect("command");
-        assert_eq!(
-            envelope.command,
-            BridgeCommand::ElicitationResponse {
-                session_id: "session-1".to_owned(),
-                elicitation_request_id: "elicitation-1".to_owned(),
-                action: ElicitationAction::Accept,
-                content: None,
-            }
-        );
+        let client = super::BridgeClient::spawn(&launcher).expect("spawn noisy bridge");
+        let status = tokio::time::timeout(Duration::from_secs(20), client.wait())
+            .await
+            .expect("a bridge writing 1 MiB to stderr must not block on an undrained pipe")
+            .expect("wait for bridge");
+
+        assert!(status.success(), "{status:?}");
     }
 }
+
+#[cfg(test)]
+#[path = "command_delivery_tests.rs"]
+mod command_delivery_tests;

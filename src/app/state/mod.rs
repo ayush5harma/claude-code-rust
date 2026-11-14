@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 pub mod block_cache;
 mod btw;
@@ -7,7 +6,6 @@ pub mod cache_metrics;
 pub mod chat_render;
 mod history_retention;
 pub mod messages;
-mod render_budget;
 pub mod tool_call_info;
 pub mod types;
 
@@ -62,20 +60,19 @@ pub use session_runtime::SessionRuntimeState;
 pub use startup::StartupState;
 pub use startup_timeline::StartupTimeline;
 pub use tool_call_info::{
-    InlinePermission, InlineQuestion, SubagentPermissionContext, ToolCallInfo, is_execute_tool_name,
+    InlinePermission, InlineQuestion, SubagentPermissionContext, ToolCallInfo,
 };
 pub use transcript::Transcript;
 pub use turn::{ActiveCompaction, CompactionState, TurnState};
-pub use turn_notices::{NoticeStage, TurnNoticeLocation, TurnNoticeRef};
+pub use turn_notices::{TurnNoticeLocation, TurnNoticeRef};
 pub(crate) use types::ComposerBlockReason;
 pub use types::{
     AppStatus, ExtraUsage, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState,
     MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck, PostExitAction,
-    RecentSessionInfo, RenderCacheBudget, SelectionPoint, SessionPickerMutation,
-    SessionPickerState, SessionUsageState, SessionUsageSummary, ShutdownState, ToolCallScope,
-    UpdatePromptAction, UpdatePromptState, UsageActivitySummary, UsageActivityWindow,
-    UsageBehaviorAttribution, UsageNamedAttribution, UsageSnapshot, UsageSourceKind,
-    UsageSourceMode, UsageState, UsageWindow,
+    RecentSessionInfo, SelectionPoint, SessionPickerMutation, SessionPickerState,
+    SessionUsageState, SessionUsageSummary, ShutdownState, ToolCallScope, UpdatePromptAction,
+    UpdatePromptState, UsageActivitySummary, UsageActivityWindow, UsageBehaviorAttribution,
+    UsageNamedAttribution, UsageSnapshot, UsageSourceKind, UsageState, UsageWindow,
 };
 
 mod prelude {
@@ -98,8 +95,8 @@ mod prelude {
     pub(super) use super::types::{
         AppStatus, ComposerAccess, ComposerBlockReason, HistoryRetentionPolicy,
         HistoryRetentionStats, McpState, PasteSessionState, PendingCommandAck, RecentSessionInfo,
-        RenderCacheBudget, SelectionPoint, SessionPickerState, ShutdownState, ToolCallScope,
-        UpdatePromptState, UsageState,
+        SelectionPoint, SessionPickerState, ShutdownState, ToolCallScope, UpdatePromptState,
+        UsageState,
     };
     pub(super) use crate::agent::events::ClientEvent;
     pub(super) use crate::agent::model;
@@ -125,7 +122,7 @@ mod prelude {
     pub(super) use crate::app::{
         ChatPurgeReplayOptions, SurfaceDirtyState, TerminalLifecycleState,
     };
-    pub(super) use std::collections::{BTreeSet, HashMap, HashSet};
+    pub(super) use std::collections::BTreeSet;
     pub(super) use std::path::{Path, PathBuf};
     pub(super) use std::sync::mpsc as std_mpsc;
     pub(super) use std::time::Instant;

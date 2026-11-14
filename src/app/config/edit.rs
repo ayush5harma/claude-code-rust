@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 use super::{
-    AddMarketplaceOverlayState, ConfigOverlayState, ConfirmationAction,
-    PendingSessionTitleChangeKind, PendingSessionTitleChangeState, SessionRenameOverlayState,
+    ConfigOverlayState, ConfirmationAction, PendingSessionTitleChangeKind,
+    PendingSessionTitleChangeState, PluginSourceInputOverlayState, SessionRenameOverlayState,
     SettingOverlayState,
 };
 use crate::agent::settings::{SettingDescriptor, SettingKind, SettingsMutation, SettingsOperation};
@@ -9,6 +9,10 @@ use crate::app::App;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 pub(super) fn activate_setting(app: &mut App, setting: &SettingDescriptor) {
+    if setting.id == crate::app::footer::SETTING_ID {
+        super::footer::open(app, setting);
+        return;
+    }
     if !setting.allows_custom {
         step_setting(app, 1);
         return;
@@ -20,10 +24,7 @@ pub(super) fn activate_setting(app: &mut App, setting: &SettingDescriptor) {
         return;
     };
     let scope = app.config.selected_scope;
-    if !setting.writable_at(scope)
-        && setting.editor.is_none()
-        && setting.id != crate::app::footer::SETTING_ID
-    {
+    if !setting.writable_at(scope) && setting.editor.is_none() {
         app.config.last_error = Some(
             setting
                 .unavailable
@@ -35,19 +36,6 @@ pub(super) fn activate_setting(app: &mut App, setting: &SettingDescriptor) {
     let Some(value) = snapshot.scoped(&setting.id, scope) else {
         return;
     };
-    if setting.id == crate::app::footer::SETTING_ID {
-        let editor = SettingOverlayState {
-            setting: Box::new(setting.clone()),
-            scope,
-            context: snapshot.context.clone(),
-            revision: value.revision.clone(),
-            draft: String::new(),
-            cursor: 0,
-            structured: None,
-        };
-        super::footer::open(app, editor);
-        return;
-    }
     let initial = value
         .value
         .as_ref()
@@ -164,8 +152,8 @@ pub(super) fn handle_overlay_key(app: &mut App, key: KeyEvent) {
         Some(ConfigOverlayState::MarketplaceActions(_)) => {
             crate::app::plugins::handle_marketplace_overlay_key(app, key);
         }
-        Some(ConfigOverlayState::AddMarketplace(_)) => {
-            crate::app::plugins::handle_add_marketplace_overlay_key(app, key);
+        Some(ConfigOverlayState::AddMarketplace(_) | ConfigOverlayState::LocalPluginFolder(_)) => {
+            crate::app::plugins::handle_plugin_source_overlay_key(app, key);
         }
         Some(ConfigOverlayState::Confirmation(_)) => handle_confirmation_overlay_key(app, key),
         _ => {}
@@ -193,11 +181,16 @@ pub(super) fn handle_overlay_paste(app: &mut App, text: &str) -> bool {
             true
         }
         Some(ConfigOverlayState::SessionRename(_)) => {
-            insert_text_str(app.config.session_rename_overlay_mut(), text);
+            if !app.config.session_rename_in_flight() {
+                insert_text_str(app.config.session_rename_overlay_mut(), text);
+            }
             true
         }
-        Some(ConfigOverlayState::AddMarketplace(_)) => {
-            insert_text_str(app.config.add_marketplace_overlay_mut(), text);
+        Some(ConfigOverlayState::AddMarketplace(_) | ConfigOverlayState::LocalPluginFolder(_)) => {
+            if app.plugins.loading {
+                return true;
+            }
+            insert_text_str(app.config.plugin_source_input_overlay_mut(), text);
             true
         }
         _ => false,
@@ -466,9 +459,26 @@ pub(super) fn open_session_rename_overlay(app: &mut App) {
         SessionRenameOverlayState::from_text_input,
     )));
     app.config.last_error = None;
+    super::status::refresh_session_transcript(app);
 }
 
 pub(super) fn generate_session_title(app: &mut App) {
+    // One title change at a time: the session listing settles whichever is pending.
+    if let Some(pending) = app.config.pending_session_title_change.as_ref() {
+        app.config.last_error = None;
+        app.config.status_message = Some(
+            match pending.kind {
+                PendingSessionTitleChangeKind::Rename { .. } => {
+                    "The session is being renamed. Generate a title once it finishes."
+                }
+                PendingSessionTitleChangeKind::Generate => {
+                    "A session title is already being generated."
+                }
+            }
+            .to_owned(),
+        );
+        return;
+    }
     let Some(session_id) =
         app.session_runtime.session_id.as_ref().map(std::string::ToString::to_string)
     else {
@@ -503,9 +513,20 @@ pub(super) fn generate_session_title(app: &mut App) {
 }
 
 fn handle_session_rename_overlay_key(app: &mut App, key: KeyEvent) {
+    if key.code == KeyCode::Esc && key.modifiers == KeyModifiers::NONE {
+        app.config.clear_overlay();
+        return;
+    }
+    // The sent draft stays on screen until its result; a failure keeps it.
+    if app.config.session_rename_in_flight() {
+        return;
+    }
     match (key.code, key.modifiers) {
-        (KeyCode::Enter, KeyModifiers::NONE) => confirm_session_rename_overlay(app),
-        (KeyCode::Esc, KeyModifiers::NONE) => app.config.clear_overlay(),
+        (KeyCode::Enter, KeyModifiers::NONE) => {
+            if app.config.session_rename_confirmable() {
+                confirm_session_rename_overlay(app);
+            }
+        }
         (KeyCode::Left, KeyModifiers::NONE) => {
             move_text_cursor_left(app.config.session_rename_overlay_mut());
         }
@@ -556,7 +577,7 @@ fn confirm_session_rename_overlay(app: &mut App) {
                     requested_title: requested_title.clone(),
                 },
             });
-            app.config.clear_overlay();
+            app.config.overlay_message = None;
             app.config.last_error = None;
             app.config.status_message = Some(if requested_title.is_some() {
                 "Renaming session...".to_owned()
@@ -707,7 +728,7 @@ impl SessionRenameOverlayState {
     }
 }
 
-impl TextInputOverlay for AddMarketplaceOverlayState {
+impl TextInputOverlay for PluginSourceInputOverlayState {
     fn draft(&self) -> &str {
         &self.draft
     }
@@ -725,7 +746,7 @@ impl TextInputOverlay for AddMarketplaceOverlayState {
     }
 }
 
-impl AddMarketplaceOverlayState {
+impl PluginSourceInputOverlayState {
     pub(crate) fn from_text_input(draft: String, cursor: usize) -> Self {
         Self { draft, cursor }
     }

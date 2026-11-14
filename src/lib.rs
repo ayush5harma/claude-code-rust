@@ -1,20 +1,28 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
+
+// The test harness hands every test to its runner as one generated local array of references.
+// Past 2048 tests that array exceeds Clippy's 16 KiB `large_stack_arrays` limit, which it reports
+// without a span. Test builds only; production code keeps the lint.
+#![cfg_attr(test, allow(clippy::large_stack_arrays))]
 
 pub mod agent;
 pub mod app;
 pub mod appearance;
 mod claude_paths;
 pub mod cli;
+mod epoch_time;
 pub mod error;
 pub mod failure;
 pub mod install_method;
 mod json_file;
 pub mod logging;
+mod markdown;
 pub mod permission_mode;
+pub mod session_config;
 pub mod ui;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+pub use session_config::SessionConfigArgs;
 
 #[derive(Clone, Debug, ValueEnum, PartialEq, Eq)]
 pub enum DiagnosticsPreset {
@@ -115,11 +123,11 @@ pub struct Cli {
     pub no_update_check: bool,
 
     /// Working directory (defaults to cwd)
-    #[arg(long, short = 'C', value_parser = parse_existing_dir)]
+    #[arg(long, short = 'C')]
     pub dir: Option<std::path::PathBuf>,
 
     /// Path to the agent bridge script (defaults to agent-sdk/dist/bridge.js).
-    // Checked for interactive launches only (`Cli::session_config`): support commands
+    // Checked for interactive launches only (`Cli::validate`): support commands
     // never start the bridge, and `doctor` reports on a bad script instead of refusing it.
     // Hidden: a development override (as is CLAUDE_RS_AGENT_BRIDGE), and the default it
     // names is not where installed builds find their bridge.
@@ -136,6 +144,9 @@ pub struct Cli {
     // Each of these, and RUST_LOG, turns on detailed logging (`logging`'s
     // `detailed_diagnostics_requested`), so each help line says so.
     /// Turn on detailed logging: info-level diagnostics on top of the always-on warning and error baseline.
+    ///
+    /// The baseline log already records warnings and errors from the app, the bridge and the SDK.
+    /// Run `claude-rs logs` to find it.
     #[arg(long, help_heading = "Diagnostics Options")]
     pub enable_logs: bool,
 
@@ -230,74 +241,19 @@ pub struct SessionOptions {
     #[arg(long, value_name = "NAME", value_parser = clap::builder::NonEmptyStringValueParser::new())]
     pub agent: Option<String>,
 
-    /// Name the new or resumed session.
-    #[arg(long, short = 'n', value_name = "NAME", value_parser = parse_session_name)]
+    /// Name a new session, or rename the one being resumed.
+    #[arg(long, short = 'n', value_name = "TEXT", value_parser = parse_session_name)]
     pub name: Option<String>,
 
-    /// Resume into a new session ID, leaving the original session unchanged.
+    /// Resume under a new session ID, leaving the original unchanged.
     #[arg(long)]
     pub fork_session: bool,
 }
 
-/// `--dir` is made absolute once, here, so the session, relative `--add-dir` and file
-/// flags, and the config commands all see the same existing directory.
-fn parse_existing_dir(value: &str) -> Result<std::path::PathBuf, String> {
-    let path = std::path::absolute(value).map_err(|error| format!("cannot resolve it: {error}"))?;
-    if !path.is_dir() {
-        return Err(format!("{} is not an existing directory", path.display()));
-    }
-    Ok(path)
-}
-
-/// Session names are shown in the terminal, so control characters are dropped,
-/// as the title converter does for titles the SDK reports.
+/// Session names are shown in the terminal, so they go through the one title sanitiser.
 fn parse_session_name(value: &str) -> Result<String, String> {
-    let name: String = value.chars().filter(|ch| !ch.is_control()).collect();
-    let name = name.trim();
-    if name.is_empty() {
-        return Err("the session name must contain visible characters".to_owned());
-    }
-    Ok(name.to_owned())
-}
-
-// Session configuration for every session this process starts, including `/new` and
-// `/resume`, as Claude Code keeps these flags for its whole process. Relative paths
-// resolve against `--dir`, or the current directory without it. (A doc comment here
-// would replace the command's about text in `--help`.)
-#[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
-#[command(next_help_heading = "Session Options")]
-pub struct SessionConfigArgs {
-    /// Additional directory Claude may access (repeatable).
-    #[arg(long = "add-dir", value_name = "DIR")]
-    pub add_dirs: Vec<std::path::PathBuf>,
-
-    /// Settings JSON file, or inline JSON, applied as Claude Code's --settings layer.
-    #[arg(long, value_name = "FILE-OR-JSON")]
-    pub settings: Option<String>,
-
-    /// MCP server config file, or inline JSON, with an `mcpServers` object (repeatable).
-    #[arg(long = "mcp-config", value_name = "FILE-OR-JSON")]
-    pub mcp_configs: Vec<String>,
-
-    /// Use only the MCP servers from --mcp-config, ignoring all other MCP configuration.
-    #[arg(long)]
-    pub strict_mcp_config: bool,
-
-    /// Replace Claude Code's system prompt for new sessions.
-    #[arg(long, value_name = "TEXT", conflicts_with = "system_prompt_file", value_parser = clap::builder::NonEmptyStringValueParser::new())]
-    pub system_prompt: Option<String>,
-
-    /// Replace Claude Code's system prompt for new sessions with a file's text.
-    #[arg(long, value_name = "FILE")]
-    pub system_prompt_file: Option<std::path::PathBuf>,
-
-    /// Append text to the system prompt of new sessions.
-    #[arg(long, value_name = "TEXT", conflicts_with = "append_system_prompt_file", value_parser = clap::builder::NonEmptyStringValueParser::new())]
-    pub append_system_prompt: Option<String>,
-
-    /// Append a file's text to the system prompt of new sessions.
-    #[arg(long, value_name = "FILE")]
-    pub append_system_prompt_file: Option<std::path::PathBuf>,
+    session_config::sanitize_session_title(value)
+        .ok_or_else(|| "the session name must contain visible characters".to_owned())
 }
 
 /// A launch flag's parsed value, which clap leaves empty when the flag is absent.
@@ -438,99 +394,6 @@ impl SessionConfigArgs {
     }
 }
 
-impl SessionConfigArgs {
-    /// Resolve paths against `base` and check that they exist, so a typo stops the launch
-    /// with a CLI error instead of surfacing inside a running session.
-    pub fn resolve(&self, base: &std::path::Path) -> Result<agent::wire::SessionConfig, String> {
-        let additional_directories = self
-            .add_dirs
-            .iter()
-            .map(|dir| {
-                let path = absolute_path(base, dir, "--add-dir")?;
-                if !std::path::Path::new(&path).is_dir() {
-                    return Err(format!("--add-dir: {path} is not an existing directory"));
-                }
-                Ok(path)
-            })
-            .collect::<Result<_, String>>()?;
-        let settings = self
-            .settings
-            .as_deref()
-            .map(|value| json_or_file_text(base, value, "--settings"))
-            .transpose()?;
-        let mcp_configs = self
-            .mcp_configs
-            .iter()
-            .map(|value| json_or_file_text(base, value, "--mcp-config"))
-            .collect::<Result<_, String>>()?;
-        let system_prompt = text_or_file(
-            base,
-            self.system_prompt.as_deref(),
-            self.system_prompt_file.as_deref(),
-            "--system-prompt-file",
-        )?;
-        let append_system_prompt = text_or_file(
-            base,
-            self.append_system_prompt.as_deref(),
-            self.append_system_prompt_file.as_deref(),
-            "--append-system-prompt-file",
-        )?;
-        Ok(agent::wire::SessionConfig {
-            additional_directories,
-            settings,
-            mcp_configs,
-            strict_mcp_config: self.strict_mcp_config,
-            system_prompt,
-            append_system_prompt,
-        })
-    }
-}
-
-/// The text of a flag pair whose two spellings clap keeps mutually exclusive.
-fn text_or_file(
-    base: &std::path::Path,
-    text: Option<&str>,
-    file: Option<&std::path::Path>,
-    file_flag: &str,
-) -> Result<Option<String>, String> {
-    match (text, file) {
-        (Some(text), _) => Ok(Some(text.to_owned())),
-        (None, Some(file)) => read_text_file(base, file, file_flag).map(Some),
-        (None, None) => Ok(None),
-    }
-}
-
-fn read_text_file(
-    base: &std::path::Path,
-    file: &std::path::Path,
-    flag: &str,
-) -> Result<String, String> {
-    let path = absolute_path(base, file, flag)?;
-    std::fs::read_to_string(&path).map_err(|error| format!("{flag}: cannot read {path}: {error}"))
-}
-
-/// Inline JSON is passed through; anything else is a file whose text is read once here.
-/// The bridge owns parsing, so only the leading brace is inspected.
-fn json_or_file_text(base: &std::path::Path, value: &str, flag: &str) -> Result<String, String> {
-    if value.trim_start().starts_with('{') {
-        return Ok(value.to_owned());
-    }
-    read_text_file(base, std::path::Path::new(value), flag)
-}
-
-fn absolute_path(
-    base: &std::path::Path,
-    path: &std::path::Path,
-    flag: &str,
-) -> Result<String, String> {
-    let absolute = std::path::absolute(base.join(path))
-        .map_err(|error| format!("{flag}: cannot resolve {}: {error}", path.display()))?;
-    absolute
-        .into_os_string()
-        .into_string()
-        .map_err(|path| format!("{flag}: {} is not valid UTF-8", path.to_string_lossy()))
-}
-
 impl Cli {
     /// Parse a command line. Use this rather than clap's own parse: session options are
     /// accepted before `resume` and after it, and this moves the second spelling into
@@ -602,33 +465,58 @@ impl Cli {
                 "--fork-session requires --resume, --continue or the resume subcommand",
             ));
         }
+        if matches!(self.command, None | Some(Command::Resume { .. })) {
+            self.validate_launch_paths()?;
+        }
         Ok(())
     }
-    /// The session working directory: `--dir`, or the current directory without it.
+
+    /// The session working directory: [`Cli::working_dir`], or `.` when the process
+    /// directory cannot be read.
     #[must_use]
     pub fn startup_cwd(&self) -> std::path::PathBuf {
-        self.dir.clone().unwrap_or_else(|| {
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        self.working_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    }
+
+    /// Resolve the session configuration flags against the session working directory.
+    pub fn resolve_session_config(&self) -> Result<agent::wire::SessionConfig, clap::Error> {
+        use clap::CommandFactory;
+        self.session_config.resolve(&self.startup_cwd()).map_err(|message| {
+            Self::command().error(clap::error::ErrorKind::ValueValidation, message)
         })
     }
 
-    /// Resolve the session configuration flags against the session working directory, and
-    /// check the files an interactive launch needs, so a typo stops the launch with a CLI
-    /// error rather than a bridge failure report.
-    pub fn session_config(&self) -> Result<agent::wire::SessionConfig, clap::Error> {
+    /// Checks `--dir` and `--bridge-script` before the terminal, trust prompt or bridge
+    /// exist, so a bad path is a usage error instead of a failure further in. Only
+    /// interactive launches use them: `doctor` reports on a bad bridge script rather
+    /// than refusing it, and the other support commands never start the bridge.
+    fn validate_launch_paths(&self) -> Result<(), clap::Error> {
         use clap::CommandFactory;
-        let invalid =
-            |message| Self::command().error(clap::error::ErrorKind::ValueValidation, message);
-        let config = self.session_config.resolve(&self.startup_cwd()).map_err(invalid)?;
-        if let Some(script) = &self.bridge_script
-            && !script.is_file()
-        {
-            return Err(invalid(format!(
-                "--bridge-script: {} is not an existing file",
-                script.display()
-            )));
+        let usage_error = |id: &str, reason: String| {
+            let mut command = Self::command();
+            command.build();
+            // clap renders the label the way its own value errors do ("--dir <DIR>").
+            let flag = command
+                .get_arguments()
+                .find(|arg| arg.get_id() == id)
+                .map_or_else(|| id.to_owned(), ToString::to_string);
+            command.error(
+                clap::error::ErrorKind::ValueValidation,
+                format!("invalid value for '{flag}': {reason}"),
+            )
+        };
+        if let Some(reason) = self.dir.as_deref().and_then(working_dir_problem) {
+            return Err(usage_error("dir", reason));
         }
-        Ok(config)
+        // The same inspection `doctor` reports, so the two judge a script alike.
+        if let Some(reason) = self
+            .bridge_script
+            .as_deref()
+            .and_then(|script| agent::bridge::inspect_bridge_script(Some(script)).error)
+        {
+            return Err(usage_error("bridge_script", reason));
+        }
+        Ok(())
     }
 
     /// Normalize both resume spellings into one startup intent.
@@ -653,6 +541,72 @@ impl Cli {
             _ => self.prompt.as_deref(),
         }
     }
+
+    /// The directory `--dir` names, or the process directory without it. The one answer
+    /// for the session, `config` and `doctor`, so they never disagree about `--dir .`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the process directory is needed and cannot be read.
+    pub fn working_dir(&self) -> std::io::Result<std::path::PathBuf> {
+        resolve_working_dir(self.dir.as_deref(), std::env::current_dir)
+    }
+}
+
+/// An absolute `--dir` is used as given. A relative one is joined to the process directory
+/// and resolved the way the platform resolves its own working directory, so `--dir .`
+/// names the same directory as no `--dir` at all: physically on Unix, where the process
+/// directory is already physical, and lexically on Windows, which keeps a mapped drive
+/// letter and adds no `\\?\` prefix. A relative `--dir` that cannot be resolved (support
+/// commands do not validate it, and a launch's may vanish after validation) is kept
+/// joined, so the failure surfaces where the directory is used.
+fn resolve_working_dir(
+    dir: Option<&std::path::Path>,
+    process_cwd: impl FnOnce() -> std::io::Result<std::path::PathBuf>,
+) -> std::io::Result<std::path::PathBuf> {
+    let Some(dir) = dir else {
+        return process_cwd();
+    };
+    if dir.is_absolute() {
+        return Ok(dir.to_path_buf());
+    }
+    let joined = process_cwd()?.join(dir);
+    Ok(resolve_relative_dir(&joined).unwrap_or(joined))
+}
+
+#[cfg(windows)]
+fn resolve_relative_dir(joined: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    std::path::absolute(joined)
+}
+
+#[cfg(not(windows))]
+fn resolve_relative_dir(joined: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    joined.canonicalize()
+}
+
+/// Why `dir` cannot be the session's working directory, judged the way the session will
+/// use it: relative to the current directory, with no `~` expansion of its own. The
+/// session lists the directory (read permission) and enters it and opens files inside it
+/// (search permission), so both are required.
+fn working_dir_problem(dir: &std::path::Path) -> Option<String> {
+    let shown = dir.display();
+    match std::fs::metadata(dir) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Some(format!("directory does not exist: {shown}"));
+        }
+        Err(err) => return Some(format!("directory cannot be accessed: {shown}: {err}")),
+        Ok(metadata) if !metadata.is_dir() => return Some(format!("not a directory: {shown}")),
+        Ok(_) => {}
+    }
+    if let Err(err) = std::fs::read_dir(dir) {
+        return Some(format!("directory cannot be read: {shown}: {err}"));
+    }
+    // Looking up `.` inside the directory is a path lookup through it, which needs search
+    // permission and nothing else: a directory with read but no search permission lists
+    // but fails here, as entering it would. Windows has no search bit and passes.
+    std::fs::metadata(dir.join("."))
+        .err()
+        .map(|err| format!("directory cannot be entered: {shown}: {err}"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -849,199 +803,112 @@ pub enum ConfigFileSelector {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Cli, Command, ConfigArgs, ConfigCommand, ConfigExportArgs, ConfigFileSelector,
-        ConfigPathArgs, ConfigShowArgs, DoctorArgs, LogsArgs, SessionConfigArgs, SessionOptions,
-    };
-    use clap::CommandFactory;
+    use super::Cli;
+    use clap::Parser;
 
-    #[test]
-    fn cli_without_subcommand_starts_new_session() {
-        let cli = Cli::parse_from_args(["claude-rs"]).expect("parse");
-        assert!(cli.command.is_none());
+    /// The fixture root as the platform spells its own working directory: physical on Unix
+    /// (macOS temp dirs sit behind a symlink), as given on Windows.
+    fn platform_root(path: &std::path::Path) -> std::path::PathBuf {
+        if cfg!(windows) {
+            path.to_path_buf()
+        } else {
+            path.canonicalize().expect("canonical tempdir")
+        }
     }
 
     #[test]
-    fn cli_resume_without_id_requests_picker() {
-        let cli = Cli::parse_from_args(["claude-rs", "resume"]).expect("parse");
-        assert_eq!(
-            cli.command,
-            Some(Command::Resume {
-                session_id: None,
-                prompt: None,
-                session_options: SessionOptions::default(),
-                session_config: SessionConfigArgs::default(),
-            })
-        );
-    }
-
-    #[test]
-    fn cli_resume_with_id_resumes_directly() {
-        let cli = Cli::parse_from_args(["claude-rs", "resume", "abc-123"]).expect("parse");
-        assert_eq!(
-            cli.command,
-            Some(Command::Resume {
-                session_id: Some("abc-123".to_owned()),
-                prompt: None,
-                session_options: SessionOptions::default(),
-                session_config: SessionConfigArgs::default(),
-            })
-        );
-    }
-
-    #[test]
-    fn cli_resume_flag_selects_the_same_session_as_the_subcommand() {
-        let flag = Cli::parse_from_args(["claude-rs", "--resume", "abc-123"]).expect("flag");
-        let command = Cli::parse_from_args(["claude-rs", "resume", "abc-123"]).expect("command");
-        assert_eq!(flag.startup_launch(), command.startup_launch());
-    }
-
-    #[test]
-    fn cli_rejects_removed_perf_flags() {
-        let cases: &[&[&str]] = &[
-            &["claude-rs", "--enable-perf"],
-            &["claude-rs", "--perf-log", "perf.jsonl"],
-            &["claude-rs", "--perf-append"],
+    fn a_relative_dir_resolves_to_the_absolute_directory_it_names() {
+        let base = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(base.path().join("project").join("sub")).expect("project");
+        // Every expected child is spelled out by name under the fixture root.
+        let root = platform_root(base.path());
+        let cases = [
+            (".", root.clone()),
+            ("project", root.join("project")),
+            ("./project/./sub", root.join("project").join("sub")),
+            ("project/sub/..", root.join("project")),
         ];
-        for args in cases {
-            let error = Cli::parse_from_args(args.iter().copied()).expect_err("removed flag");
-            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        for (dir, expected) in cases {
+            let resolved = super::resolve_working_dir(Some(std::path::Path::new(dir)), || {
+                Ok(base.path().into())
+            })
+            .expect("resolve");
+            assert_eq!(resolved, expected, "--dir {dir}");
         }
     }
 
     #[test]
-    fn cli_help_omits_perf_flags_and_retains_runtime_logging() {
-        let help = Cli::command().render_long_help().to_string();
-        for flag in ["--enable-perf", "--perf-log", "--perf-append"] {
-            assert!(!help.contains(flag), "help still advertises {flag}");
+    fn an_absolute_dir_is_used_as_given_even_without_a_process_dir() {
+        let base = tempfile::tempdir().expect("tempdir");
+        let project = base.path().join("project");
+        std::fs::create_dir_all(&project).expect("project");
+
+        let resolved = super::resolve_working_dir(Some(&project), || {
+            Err(std::io::Error::other("process directory unavailable"))
+        })
+        .expect("absolute dir needs no process dir");
+
+        assert_eq!(resolved, project);
+    }
+
+    #[test]
+    fn session_names_lose_control_characters_and_must_keep_visible_text() {
+        let cli = Cli::try_parse_from(["claude-rs", "-n", "Release\u{7} prep "]).expect("name");
+        assert_eq!(cli.session_options.name.as_deref(), Some("Release prep"));
+        for name in ["", "\u{1b}\t "] {
+            assert!(Cli::try_parse_from(["claude-rs", "--name", name]).is_err(), "{name:?}");
         }
-        for flag in ["--enable-logs", "--log-file", "--log-append", "--diagnostics-preset"] {
-            assert!(help.contains(flag), "runtime logging flag {flag} missing");
+    }
+
+    #[test]
+    fn session_configuration_resolves_against_the_working_directory_option() {
+        let project = tempfile::tempdir().expect("project");
+        std::fs::create_dir(project.path().join("docs")).expect("docs");
+        let dir = project.path().to_str().expect("UTF-8 path");
+        let cli =
+            Cli::try_parse_from(["claude-rs", "-C", dir, "--add-dir", "docs"]).expect("parse");
+        let config = cli.resolve_session_config().expect("resolved");
+        assert_eq!(
+            config.additional_directories,
+            [project.path().join("docs").to_str().expect("UTF-8 path")]
+        );
+        let cli =
+            Cli::try_parse_from(["claude-rs", "-C", dir, "--add-dir", "absent"]).expect("parse");
+        let error = cli.resolve_session_config().expect_err("missing directory");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn logs_modes_reject_only_declared_conflicts_and_require_bundle_for_output() {
+        use clap::error::ErrorKind;
+        let modes: &[&[&str]] = &[&["--path"], &["--latest"], &["--tail", "2"], &["--bundle"]];
+        for (index, mode) in modes.iter().enumerate() {
+            let mut args = vec!["claude-rs", "logs"];
+            args.extend_from_slice(mode);
+            assert!(Cli::try_parse_from(&args).is_ok());
+            for other in &modes[index + 1..] {
+                let mut conflicting = args.clone();
+                conflicting.extend_from_slice(other);
+                assert_eq!(
+                    Cli::try_parse_from(conflicting).unwrap_err().kind(),
+                    ErrorKind::ArgumentConflict
+                );
+            }
         }
-    }
-
-    #[test]
-    fn cli_doctor_defaults_to_human_output() {
-        let cli = Cli::parse_from_args(["claude-rs", "doctor"]).expect("parse");
-        assert_eq!(cli.command, Some(Command::Doctor(DoctorArgs { json: false, strict: false })));
-    }
-
-    #[test]
-    fn cli_doctor_accepts_json_and_strict() {
-        let cli =
-            Cli::parse_from_args(["claude-rs", "doctor", "--json", "--strict"]).expect("parse");
-        assert_eq!(cli.command, Some(Command::Doctor(DoctorArgs { json: true, strict: true })));
-    }
-
-    #[test]
-    fn cli_logs_defaults_to_summary() {
-        let cli = Cli::parse_from_args(["claude-rs", "logs"]).expect("parse");
-        assert_eq!(
-            cli.command,
-            Some(Command::Logs(LogsArgs {
-                path: false,
-                latest: false,
-                tail: None,
-                bundle: false,
-                output: None,
-                yes: false,
-            }))
-        );
-    }
-
-    #[test]
-    fn cli_logs_accepts_modes() {
-        let cli = Cli::parse_from_args(["claude-rs", "logs", "--tail", "200"]).expect("parse");
-        assert_eq!(
-            cli.command,
-            Some(Command::Logs(LogsArgs {
-                path: false,
-                latest: false,
-                tail: Some(200),
-                bundle: false,
-                output: None,
-                yes: false,
-            }))
-        );
-
-        let cli =
-            Cli::parse_from_args(["claude-rs", "logs", "--bundle", "--yes", "--output", "out.zip"])
-                .expect("parse");
-        assert_eq!(
-            cli.command,
-            Some(Command::Logs(LogsArgs {
-                path: false,
-                latest: false,
-                tail: None,
-                bundle: true,
-                output: Some(std::path::PathBuf::from("out.zip")),
-                yes: true,
-            }))
-        );
-    }
-
-    #[test]
-    fn cli_logs_rejects_conflicting_modes() {
-        assert!(Cli::parse_from_args(["claude-rs", "logs", "--path", "--latest"]).is_err());
-        assert!(Cli::parse_from_args(["claude-rs", "logs", "--output", "out.zip"]).is_err());
-    }
-
-    #[test]
-    fn cli_config_accepts_path_modes() {
-        let cli = Cli::parse_from_args(["claude-rs", "config", "path"]).expect("parse");
-        assert_eq!(
-            cli.command,
-            Some(Command::Config(ConfigArgs {
-                command: Some(ConfigCommand::Path(ConfigPathArgs { json: false, which: None })),
-            }))
-        );
-
-        let cli = Cli::parse_from_args([
-            "claude-rs",
-            "config",
-            "path",
-            "--json",
-            "--which",
-            "local-settings",
-        ])
-        .expect("parse");
-        assert_eq!(
-            cli.command,
-            Some(Command::Config(ConfigArgs {
-                command: Some(ConfigCommand::Path(ConfigPathArgs {
-                    json: true,
-                    which: Some(ConfigFileSelector::LocalSettings),
-                })),
-            }))
-        );
-    }
-
-    #[test]
-    fn cli_config_defaults_to_summary() {
-        let cli = Cli::parse_from_args(["claude-rs", "config"]).expect("parse");
-        assert_eq!(cli.command, Some(Command::Config(ConfigArgs { command: None })));
-    }
-
-    #[test]
-    fn cli_config_accepts_show_and_export() {
-        let cli = Cli::parse_from_args(["claude-rs", "config", "show", "--json"]).expect("parse");
-        assert_eq!(
-            cli.command,
-            Some(Command::Config(ConfigArgs {
-                command: Some(ConfigCommand::Show(ConfigShowArgs { json: true })),
-            }))
-        );
-
-        let cli =
-            Cli::parse_from_args(["claude-rs", "config", "export", "--output", "config.json"])
-                .expect("parse");
-        assert_eq!(
-            cli.command,
-            Some(Command::Config(ConfigArgs {
-                command: Some(ConfigCommand::Export(ConfigExportArgs {
-                    output: Some(std::path::PathBuf::from("config.json")),
-                })),
-            }))
+        let error =
+            Cli::try_parse_from(["claude-rs", "logs", "--output", "selected.zip"]).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+        assert!(error.to_string().contains("--bundle"));
+        assert!(
+            Cli::try_parse_from([
+                "claude-rs",
+                "logs",
+                "--bundle",
+                "--yes",
+                "--output",
+                "selected.zip"
+            ])
+            .is_ok()
         );
     }
 
@@ -1087,9 +954,10 @@ mod tests {
             assert!(cli.session_options.fork_session, "{args:?}");
         }
     }
-
-    #[test]
-    fn cli_exposes_package_version() {
-        assert_eq!(Cli::command().get_version(), Some(env!("CARGO_PKG_VERSION")));
-    }
 }
+
+#[cfg(test)]
+mod cli_launch_audit_tests;
+
+#[cfg(test)]
+mod diagnostics_test_support;

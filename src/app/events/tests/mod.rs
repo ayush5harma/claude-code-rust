@@ -8,8 +8,7 @@ use crate::app::keymap::{
 };
 use crate::app::slash::{SlashCandidate, SlashContext, SlashState};
 use crate::app::{
-    ChatRebuildKind, ComposerRenderState, FocusOwner, FocusTarget, FullscreenView,
-    InlinePermission, InlineQuestion, LiveRegionRenderState, ReleaseReason, SurfaceMode,
+    FocusOwner, FocusTarget, FullscreenView, InlinePermission, InlineQuestion, SurfaceMode,
     TerminalLifecycleState, TextBlockSpacing, ToolCallInfo, ToolCallScope, UsageSnapshot,
     UsageSourceKind, mention,
 };
@@ -22,6 +21,8 @@ use tokio::sync::oneshot;
 mod assistant_lifecycle;
 mod client_events;
 mod clipboard_paste;
+mod notice_audit;
+mod session_controls;
 mod slash_input;
 
 fn session_update(update: model::SessionUpdate) -> ClientEvent {
@@ -122,6 +123,8 @@ fn installed_plugin_entry(id: &str) -> crate::app::plugins::InstalledPluginEntry
 
 fn task_item(id: &str, subject: &str, status: model::TaskStatus) -> model::TaskItem {
     model::TaskItem {
+        run_id: None,
+        parent_task_id: None,
         task_id: id.to_owned(),
         subject: subject.to_owned(),
         description: None,
@@ -132,6 +135,7 @@ fn task_item(id: &str, subject: &str, status: model::TaskStatus) -> model::TaskI
         blocked_by: Vec::new(),
         metadata: None,
         source_tool_call_id: None,
+        source_tool_call_run_id: None,
     }
 }
 
@@ -252,7 +256,7 @@ fn block_snapshot(block: &MessageBlock) -> BlockSnapshot {
                 id: tool_call.id.clone(),
                 title: tool_call.title.clone(),
                 status: tool_call.status,
-                hidden: tool_call.hidden,
+                hidden: tool_call.is_subagent_child(),
             }
         }
         MessageBlock::Welcome(block) => BlockSnapshot::Welcome {
@@ -269,53 +273,6 @@ fn block_snapshot(block: &MessageBlock) -> BlockSnapshot {
             BlockSnapshot::UserDialog { request_id: block.request_id.clone() }
         }
     }
-}
-
-fn seed_resize_measurements(app: &mut App) {
-    app.chat_render.terminal_width = 90;
-    app.chat_render.terminal_height = 30;
-    app.chat_render.composer = ComposerRenderState {
-        activity_rows: 0,
-        width: 90,
-        hint_rows: 1,
-        btw_rows: 0,
-        editor_rows: 2,
-        footer_rows: 1,
-        total_rows: 4,
-        caret_row: 1,
-        caret_col: 3,
-        last_rendered_rows: 4,
-    };
-    app.chat_render.live_region = LiveRegionRenderState {
-        anchor_valid: true,
-        total_rows: 12,
-        hidden_rows_above: 3,
-        viewport_height: 9,
-        last_rendered_rows: 7,
-    };
-}
-
-fn assert_resize_measurements_cleared(app: &App, width: u16, height: u16) {
-    assert_eq!(app.chat_render.terminal_width, width);
-    assert_eq!(app.chat_render.terminal_height, height);
-    assert_eq!(app.chat_render.composer, ComposerRenderState::default());
-    assert!(!app.chat_render.live_region.anchor_valid);
-    assert_eq!(app.chat_render.live_region.total_rows, 0);
-    assert_eq!(app.chat_render.live_region.hidden_rows_above, 0);
-    assert_eq!(app.chat_render.live_region.viewport_height, 0);
-    assert_eq!(app.chat_render.live_region.last_rendered_rows, 0);
-}
-
-fn assert_seed_resize_measurements_preserved(app: &App) {
-    assert_eq!(app.chat_render.terminal_width, 90);
-    assert_eq!(app.chat_render.terminal_height, 30);
-    assert_eq!(app.chat_render.composer.width, 90);
-    assert_eq!(app.chat_render.composer.total_rows, 4);
-    assert!(app.chat_render.live_region.anchor_valid);
-    assert_eq!(app.chat_render.live_region.total_rows, 12);
-    assert_eq!(app.chat_render.live_region.hidden_rows_above, 3);
-    assert_eq!(app.chat_render.live_region.viewport_height, 9);
-    assert_eq!(app.chat_render.live_region.last_rendered_rows, 7);
 }
 
 #[test]
@@ -349,6 +306,7 @@ fn transcript_retraction_removes_tool_blocks_and_rebuilds_indices() {
     let mut stale_tool = tool_call("tool-old", model::ToolCallStatus::Completed);
     stale_tool.source_message_uuids = vec!["assistant-tool".to_owned(), "user-result".to_owned()];
     stale_tool.sdk_tool_name = "Bash".to_owned();
+    stale_tool.kind = model::ToolKind::Execute;
     stale_tool.terminal_id = Some("term-old".to_owned());
     app.transcript.messages.push(assistant_msg(vec![
         MessageBlock::ToolCall(Box::new(stale_tool)),
@@ -424,47 +382,123 @@ fn first_block_text(msg: &ChatMessage) -> &str {
     }
 }
 
-// shorten_tool_title
-
 #[test]
-fn shorten_unix_path() {
-    let result =
-        tool_calls::shorten_tool_title("Read /home/user/project/src/main.rs", "/home/user/project");
-    assert_eq!(result, "Read src/main.rs");
+fn tool_metadata_updates_share_scope_with_live_and_historical_presentation() {
+    for name in ["Task", "Agent"] {
+        let mut app = make_test_app();
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::ToolCall(
+                model::ToolCall::new("tool", "Research")
+                    .kind(model::ToolKind::Think)
+                    .meta(serde_json::json!({"claudeCode": {"toolName": "Unknown"}})),
+            )),
+        );
+        assert_eq!(app.tool_call_scope("tool"), Some(ToolCallScope::MainAgent));
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::ToolCallUpdate(
+                model::ToolCallUpdate::new("tool", model::ToolCallUpdateFields::new())
+                    .meta(serde_json::json!({"claudeCode": {"toolName": name}})),
+            )),
+        );
+        assert_eq!(app.tool_call_scope("tool"), Some(ToolCallScope::SubagentRoot));
+        assert!(app.tool_call("tool").unwrap().is_subagent_root_tool());
+        for parent in ["parent-1", "parent-2"] {
+            handle_client_event(
+                &mut app,
+                session_update(model::SessionUpdate::ToolCallUpdate(
+                    model::ToolCallUpdate::new(
+                        "tool",
+                        model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Detached),
+                    )
+                    .meta(serde_json::json!({"claudeCode": {"parentToolUseId": parent}})),
+                )),
+            );
+            let tool = app.tool_call("tool").unwrap();
+            assert_eq!(
+                app.tool_call_scope("tool"),
+                Some(ToolCallScope::SubagentChild { parent_tool_use_id: parent.to_owned() })
+            );
+            assert!(!tool.is_subagent_root_tool());
+            assert!(tool.hidden_unless_focused_interaction());
+            assert_eq!(tool.display().parent_tool_use_id.as_deref(), Some("parent-1"));
+            assert_eq!(tool.display().sdk_tool_name, name);
+        }
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::ToolCallUpdate(model::ToolCallUpdate::new(
+                "tool",
+                model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed),
+            ))),
+        );
+        assert_eq!(app.tool_call("tool").unwrap().parent_tool_use_id.as_deref(), Some("parent-2"));
+        let result = app
+            .transcript
+            .messages
+            .iter()
+            .flat_map(|message| &message.blocks)
+            .find_map(|block| match block {
+                MessageBlock::ToolResult { tool, .. } if tool.id == "tool" => Some(tool),
+                _ => None,
+            })
+            .expect("detached completion in transcript");
+        assert_eq!(result.parent_tool_use_id.as_deref(), Some("parent-2"));
+        assert!(!result.is_subagent_root_tool());
+    }
 }
 
 #[test]
-fn register_tool_call_scope_treats_agent_as_subagent_root() {
-    let mut app = make_test_app();
-    let scope = tool_calls::register_tool_call_scope(&mut app, "tool-agent", "Agent", None);
-    assert_eq!(scope, ToolCallScope::SubagentRoot);
+fn execute_kind_owns_output_handling_across_initial_and_partial_events() {
+    for (name, kind, expected) in [
+        ("CustomExecutor", model::ToolKind::Execute, Some("initial")),
+        ("Bash", model::ToolKind::Other, None),
+        ("bash", model::ToolKind::Other, None),
+    ] {
+        let mut app = make_test_app();
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::ToolCall(
+                model::ToolCall::new("tool", "Command")
+                    .kind(kind)
+                    .raw_output(serde_json::json!("initial"))
+                    .meta(serde_json::json!({"claudeCode": {"toolName": name}})),
+            )),
+        );
+        assert_eq!(app.tool_call("tool").unwrap().terminal_output.as_deref(), expected);
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::ToolCallUpdate(model::ToolCallUpdate::new(
+                "tool",
+                model::ToolCallUpdateFields::new()
+                    .kind(model::ToolKind::Execute)
+                    .raw_output(serde_json::json!("updated")),
+            ))),
+        );
+        assert_eq!(app.tool_call("tool").unwrap().terminal_output.as_deref(), Some("updated"));
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::ToolCallUpdate(
+                model::ToolCallUpdate::new(
+                    "tool",
+                    model::ToolCallUpdateFields::new()
+                        .status(model::ToolCallStatus::Detached)
+                        .raw_output(serde_json::json!("final")),
+                )
+                .meta(serde_json::json!({"claudeCode": {"toolName": "RenamedExecutor"}})),
+            )),
+        );
+        let tool = app.tool_call("tool").unwrap();
+        assert_eq!(tool.terminal_output.as_deref(), Some("final"));
+        assert!(tool.is_execute_tool());
+        assert!(tool.display().is_execute_tool());
+        assert_eq!(tool.display().terminal_output.as_deref(), Some("final"));
+    }
 }
 
+/// A cancelled subagent must not change the scope of the next foreground tool.
 #[test]
-fn register_tool_call_scope_treats_task_as_subagent_root() {
-    let mut app = make_test_app();
-    let scope = tool_calls::register_tool_call_scope(&mut app, "tool-task", "Task", None);
-    assert_eq!(scope, ToolCallScope::SubagentRoot);
-}
-
-#[test]
-fn register_tool_call_scope_uses_explicit_parent_for_subagent_child() {
-    let mut app = make_test_app();
-    let scope =
-        tool_calls::register_tool_call_scope(&mut app, "tool-child", "Bash", Some("tool-parent"));
-    assert_eq!(
-        scope,
-        ToolCallScope::SubagentChild { parent_tool_use_id: "tool-parent".to_owned() }
-    );
-}
-
-/// Regression: when a Task was cancelled mid-turn, `active_task_ids` was never cleared
-/// because `finalize_in_progress_tool_calls` doesn't call `remove_active_task` and
-/// `clear_tool_scope_tracking` (called on `TurnComplete`) did not clear `active_task_ids`.
-/// The leaked ID caused main-agent tools on the next turn to be classified as Subagent,
-/// which eventually caused main-agent tools to inherit the wrong scope.
-#[test]
-fn turn_complete_after_cancelled_task_leaves_no_stale_active_task_ids() {
+fn turn_complete_after_cancelled_task_preserves_next_tool_scope() {
     let mut app = make_test_app();
 
     // Simulate a Task tool call arriving as InProgress (no Completed update will follow)
@@ -473,14 +507,10 @@ fn turn_complete_after_cancelled_task_leaves_no_stale_active_task_ids() {
         .status(model::ToolCallStatus::InProgress)
         .meta(serde_json::json!({"claudeCode": {"toolName": "Task"}}));
     handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(task_tc)));
-    assert!(app.turn.active_task_ids.contains("task-1"), "task must be tracked while InProgress");
 
     // User cancels then TurnComplete finalizes the turn
     handle_local_cancel_enqueued(&mut app);
     handle_client_event(&mut app, turn_complete(None));
-
-    // Stale task ID must be gone after turn boundary
-    assert!(app.turn.active_task_ids.is_empty(), "stale task id must not survive TurnComplete");
 
     // Next turn: a normal main-agent Glob must get MainAgent scope, not Subagent
     let glob_tc = model::ToolCall::new("glob-1", "Glob **/*.rs")
@@ -493,228 +523,6 @@ fn turn_complete_after_cancelled_task_leaves_no_stale_active_task_ids() {
         Some(ToolCallScope::MainAgent),
         "main-agent tool must not be misclassified as Subagent after stale task is cleared"
     );
-}
-
-#[test]
-fn shorten_windows_path() {
-    let result = tool_calls::shorten_tool_title(
-        "Read C:\\Users\\me\\project\\src\\main.rs",
-        "C:\\Users\\me\\project",
-    );
-    assert_eq!(result, "Read src/main.rs");
-}
-
-#[test]
-fn shorten_no_match_returns_original() {
-    let result = tool_calls::shorten_tool_title("Read /other/path/file.rs", "/home/user/project");
-    assert_eq!(result, "Read /other/path/file.rs");
-}
-
-// shorten_tool_title
-
-#[test]
-fn shorten_empty_cwd() {
-    let result = tool_calls::shorten_tool_title("Read /some/path/file.rs", "");
-    assert_eq!(result, "Read /some/path/file.rs");
-}
-
-#[test]
-fn shorten_cwd_with_trailing_slash() {
-    let result =
-        tool_calls::shorten_tool_title("Read /home/user/project/file.rs", "/home/user/project/");
-    assert_eq!(result, "Read file.rs");
-}
-
-#[test]
-fn shorten_title_is_just_path() {
-    let result = tool_calls::shorten_tool_title("/home/user/project/file.rs", "/home/user/project");
-    assert_eq!(result, "file.rs");
-}
-
-#[test]
-fn shorten_mixed_separators() {
-    let result = tool_calls::shorten_tool_title(
-        "Read C:/Users/me/project/src/lib.rs",
-        "C:\\Users\\me\\project",
-    );
-    assert_eq!(result, "Read src/lib.rs");
-}
-
-#[test]
-fn shorten_empty_title() {
-    assert_eq!(tool_calls::shorten_tool_title("", "/some/cwd"), "");
-}
-
-#[test]
-fn shorten_title_no_path_at_all() {
-    assert_eq!(tool_calls::shorten_tool_title("Read", "/home/user"), "Read");
-    assert_eq!(tool_calls::shorten_tool_title("Write something", "/proj"), "Write something");
-}
-
-#[test]
-fn shorten_title_equals_cwd_exactly() {
-    // Title IS the cwd path - after stripping, nothing left
-    let result = tool_calls::shorten_tool_title("/home/user/project", "/home/user/project");
-    // The cwd+/ won't match because title doesn't have trailing content after cwd
-    // cwd_norm = "/home/user/project/", title doesn't contain that
-    assert_eq!(result, "/home/user/project");
-}
-
-// shorten_tool_title
-
-#[test]
-fn shorten_partial_match_no_false_positive() {
-    let result = tool_calls::shorten_tool_title("Read /home/username/file.rs", "/home/user");
-    assert_eq!(result, "Read /home/username/file.rs");
-}
-
-#[test]
-fn shorten_deeply_nested_path() {
-    let cwd = "/a/b/c/d/e/f/g";
-    let title = "Read /a/b/c/d/e/f/g/h/i/j.rs";
-    let result = tool_calls::shorten_tool_title(title, cwd);
-    assert_eq!(result, "Read h/i/j.rs");
-}
-
-#[test]
-fn shorten_cwd_appears_multiple_times() {
-    let result = tool_calls::shorten_tool_title("Diff /proj/a.rs /proj/b.rs", "/proj");
-    assert_eq!(result, "Diff a.rs b.rs");
-}
-
-/// Spaces in path (real Windows path with spaces).
-#[test]
-fn shorten_spaces_in_path() {
-    let result = tool_calls::shorten_tool_title(
-        "Read C:\\Users\\Simon Peter Rothgang\\Desktop\\project\\src\\main.rs",
-        "C:\\Users\\Simon Peter Rothgang\\Desktop\\project",
-    );
-    assert_eq!(result, "Read src/main.rs");
-}
-
-/// Unicode characters in path components.
-#[test]
-fn shorten_unicode_in_path() {
-    let result = tool_calls::shorten_tool_title(
-        "Read /home/\u{00FC}ser/\u{30D7}\u{30ED}\u{30B8}\u{30A7}\u{30AF}\u{30C8}/src/lib.rs",
-        "/home/\u{00FC}ser/\u{30D7}\u{30ED}\u{30B8}\u{30A7}\u{30AF}\u{30C8}",
-    );
-    assert_eq!(result, "Read src/lib.rs");
-}
-
-/// Root as cwd (Unix).
-#[test]
-fn shorten_cwd_is_root_unix() {
-    // cwd = "/" => with_sep = "/", so "/foo/bar.rs".contains("/") => replaces
-    let result = tool_calls::shorten_tool_title("Read /foo/bar.rs", "/");
-    // "/" is first path component = "" (empty), heuristic check uses "" which is in everything
-    // After normalization: cwd = "/", with_sep = "/", title contains "/" => replaces ALL "/"
-    assert_eq!(result, "Read foobar.rs");
-}
-
-/// Root as cwd (Windows).
-#[test]
-fn shorten_cwd_is_drive_root_windows() {
-    let result = tool_calls::shorten_tool_title("Read C:\\src\\main.rs", "C:\\");
-    assert_eq!(result, "Read src/main.rs");
-}
-
-/// Very long path (stress test).
-#[test]
-fn shorten_very_long_path() {
-    let segments: String = (0..50).fold(String::new(), |mut s, i| {
-        use std::fmt::Write;
-        write!(s, "/seg{i}").unwrap();
-        s
-    });
-    let cwd = segments.clone();
-    let title = format!("Read {segments}/deep/file.rs");
-    let result = tool_calls::shorten_tool_title(&title, &cwd);
-    assert_eq!(result, "Read deep/file.rs");
-}
-
-/// Case sensitivity: paths are case-sensitive.
-#[test]
-fn shorten_case_sensitive() {
-    let result =
-        tool_calls::shorten_tool_title("Read /Home/User/Project/file.rs", "/home/user/project");
-    // Different case, so the first-component heuristic "home" matches "Home"?
-    // No: cwd_start = "home", title doesn't contain "home" (has "Home") => early return
-    assert_eq!(result, "Read /Home/User/Project/file.rs");
-}
-
-/// Cwd that is a prefix at directory boundary but not at cwd boundary.
-#[test]
-fn shorten_cwd_prefix_boundary() {
-    // cwd="/pro" should NOT strip from "/project/file.rs"
-    let result = tool_calls::shorten_tool_title("Read /project/file.rs", "/pro");
-    // cwd_start = "pro", title contains "pro" (in "project") => proceeds to normalize
-    // with_sep = "/pro/", title_norm = "Read /project/file.rs", doesn't contain "/pro/"
-    assert_eq!(result, "Read /project/file.rs");
-}
-
-#[test]
-fn split_index_prefers_double_newline() {
-    let text = "first\n\nsecond";
-    let split_at = streaming::find_text_block_split_index(text);
-    assert_eq!(split_at, Some("first\n\n".len()));
-}
-
-#[test]
-fn split_index_soft_limit_prefers_newline() {
-    use super::super::default_cache_split_policy;
-    let prefix = "a".repeat(default_cache_split_policy().soft_limit_bytes - 1);
-    let text = format!("{prefix}\n{}", "b".repeat(32));
-    let split_at = streaming::find_text_block_split_index(&text).expect("expected split index");
-    assert_eq!(&text[..split_at], format!("{prefix}\n"));
-}
-
-#[test]
-fn split_index_hard_limit_uses_sentence_when_needed() {
-    use super::super::default_cache_split_policy;
-    let prefix = "a".repeat(default_cache_split_policy().hard_limit_bytes + 32);
-    let text = format!("{prefix}. tail");
-    let split_at = streaming::find_text_block_split_index(&text).expect("expected split index");
-    assert_eq!(&text[..split_at], format!("{prefix}."));
-}
-
-#[test]
-fn split_index_ignores_double_newline_inside_code_fence() {
-    let text = "```\nline1\n\nline2\n```";
-    assert!(streaming::find_text_block_split_index(text).is_none());
-}
-
-#[test]
-fn agent_message_chunk_splits_into_frozen_text_blocks() {
-    let mut app = make_test_app();
-    handle_client_event(
-        &mut app,
-        session_update(model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
-            model::ContentBlock::Text(model::TextContent::new("p1\n\np2\n\np3")),
-        ))),
-    );
-
-    assert_eq!(app.transcript.messages.len(), 1);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("missing assistant message");
-    };
-    assert!(matches!(last.role, MessageRole::Assistant));
-    assert_eq!(last.blocks.len(), 3);
-    let Some(MessageBlock::Text(b1)) = last.blocks.first() else {
-        panic!("expected first text block");
-    };
-    let Some(MessageBlock::Text(b2)) = last.blocks.get(1) else {
-        panic!("expected second text block");
-    };
-    let Some(MessageBlock::Text(b3)) = last.blocks.get(2) else {
-        panic!("expected third text block");
-    };
-    assert_eq!(b1.text, "p1\n\n");
-    assert_eq!(b2.text, "p2\n\n");
-    assert_eq!(b3.text, "p3");
-    assert_eq!(b1.trailing_spacing, TextBlockSpacing::ParagraphBreak);
-    assert_eq!(b2.trailing_spacing, TextBlockSpacing::ParagraphBreak);
-    assert_eq!(b3.trailing_spacing, TextBlockSpacing::None);
 }
 
 #[test]
@@ -748,6 +556,7 @@ fn streaming_long_markdown_table_does_not_leave_raw_pipe_row_tail() {
         &mut app,
         180,
         &std::collections::BTreeSet::new(),
+        None,
     );
     let committed_ids = serialized
         .segments()
@@ -759,6 +568,7 @@ fn streaming_long_markdown_table_does_not_leave_raw_pipe_row_tail() {
         &mut app,
         180,
         &committed_ids,
+        None,
     );
     let remaining_text = remaining
         .rows()
@@ -808,19 +618,37 @@ fn live_rows_contain_text(app: &mut App, expected: &str) -> bool {
         app,
         120,
         &std::collections::BTreeSet::new(),
+        None,
     )
     .rows()
     .iter()
     .any(|row| row.spans.iter().any(|span| span.content.as_ref().contains(expected)))
 }
 
-fn session_overview_has_welcome(app: &App) -> bool {
-    app.show_session_overview
-        && app
-            .transcript
-            .messages
+fn assert_no_session_overview_rows(app: &mut App) {
+    let welcome_ids = app
+        .transcript
+        .messages
+        .iter()
+        .flat_map(|message| &message.blocks)
+        .filter_map(|block| match block {
+            MessageBlock::Welcome(welcome) => Some(crate::app::HistoryOutputId::Block(welcome.id)),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let rows = crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding(
+        app,
+        160,
+        &std::collections::BTreeSet::new(),
+        None,
+    );
+    assert!(
+        !rows
+            .segments()
             .iter()
-            .any(|message| matches!(message.role, MessageRole::Welcome))
+            .any(|segment| segment.ids.iter().any(|id| welcome_ids.contains(id))),
+        "suppressed overview must produce no rendered region"
+    );
 }
 
 fn connected_event(model_name: &str) -> ClientEvent {
@@ -926,15 +754,16 @@ fn powershell_raw_input_update_does_not_populate_terminal_command() {
 }
 
 #[test]
-fn late_tool_update_for_removed_tool_does_not_corrupt_active_task_set() {
+fn late_tool_update_for_removed_tool_does_not_restore_scope_or_transcript() {
     let mut app = make_test_app();
     app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
         "tool-stale",
         model::ToolCallStatus::Completed,
     )))]));
     app.index_tool_call("tool-stale".into(), 0, 0);
-    app.register_tool_call_scope(
-        "tool-stale".into(),
+    crate::app::test_support::set_tool_scope(
+        &mut app,
+        "tool-stale",
         ToolCallScope::SubagentChild { parent_tool_use_id: "task-1".to_owned() },
     );
 
@@ -945,10 +774,12 @@ fn late_tool_update_for_removed_tool_does_not_corrupt_active_task_set() {
     let update = model::ToolCallUpdate::new(
         "tool-stale",
         model::ToolCallUpdateFields::new().status(model::ToolCallStatus::InProgress),
-    );
+    )
+    .meta(serde_json::json!({"claudeCode": {"parentToolUseId": "task-1"}}));
     handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCallUpdate(update)));
-
-    assert!(app.turn.active_task_ids.is_empty());
+    assert!(app.tool_call_scope("tool-stale").is_none());
+    assert!(!app.has_tool_call("tool-stale"));
+    assert!(app.transcript.messages.is_empty());
 }
 
 #[test]
@@ -1009,145 +840,6 @@ fn todowrite_tool_call_does_not_mutate_task_state() {
     assert_eq!(app.sdk_inventory.tasks[0].status, model::TaskStatus::InProgress);
 }
 
-// make_test_app - verify defaults
-
-#[test]
-fn test_app_defaults() {
-    let app = App::test_default();
-    assert!(app.transcript.messages.is_empty());
-    assert_eq!(app.surface_mode, SurfaceMode::Chat);
-    assert_eq!(app.surface_mode, SurfaceMode::Chat);
-    assert_eq!(app.terminal_lifecycle, TerminalLifecycleState::Running(SurfaceMode::Chat));
-    assert!(!app.surface_dirty.fullscreen.redraw);
-    assert!(!app.surface_dirty.terminal_mode);
-    assert!(!app.shutdown_requested());
-    assert!(app.session_runtime.session_id.is_none());
-    assert_eq!(app.files_accessed, 0);
-    assert!(app.pending_interaction_ids.is_empty());
-    assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
-    assert!(app.sdk_inventory.tasks.is_empty());
-    assert!(app.mention.is_none());
-    assert!(!app.turn.cancel_requested);
-    assert!(matches!(app.status, AppStatus::Ready));
-}
-
-#[test]
-fn resize_marks_chat_surface_dirty_when_running_chat() {
-    let mut app = make_test_app();
-    app.surface_dirty = crate::app::SurfaceDirtyState::default();
-    app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
-    app.session_runtime.prompt_suggestion = Some("Write focused tests".to_owned());
-    seed_resize_measurements(&mut app);
-
-    handle_terminal_event(&mut app, Event::Resize(120, 40));
-
-    assert!(!app.surface_dirty.fullscreen.redraw);
-    assert_eq!(
-        app.surface_dirty.chat.rebuild,
-        ChatRebuildKind::PurgeReplay(crate::app::ChatPurgeReplayOptions::resize())
-    );
-    assert!(app.surface_dirty.chat.repaint);
-    assert_eq!(app.session_runtime.prompt_suggestion.as_deref(), Some("Write focused tests"));
-    assert_resize_measurements_cleared(&app, 120, 40);
-}
-
-#[test]
-fn same_size_resize_does_not_request_chat_purge() {
-    let mut app = make_test_app();
-    app.surface_dirty = crate::app::SurfaceDirtyState::default();
-    app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
-    seed_resize_measurements(&mut app);
-
-    handle_terminal_event(&mut app, Event::Resize(90, 30));
-
-    assert!(!app.surface_dirty.fullscreen.redraw);
-    assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
-    assert!(!app.surface_dirty.chat.repaint);
-    assert_seed_resize_measurements_preserved(&app);
-}
-
-#[test]
-fn reconciling_an_unreported_size_requests_the_same_chat_purge_as_a_resize_event() {
-    let mut app = make_test_app();
-    app.surface_dirty = crate::app::SurfaceDirtyState::default();
-    app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
-    seed_resize_measurements(&mut app);
-
-    reconcile_terminal_size(&mut app, 90, 55);
-
-    assert_eq!(
-        app.surface_dirty.chat.rebuild,
-        ChatRebuildKind::PurgeReplay(crate::app::ChatPurgeReplayOptions::resize())
-    );
-    assert!(app.surface_dirty.chat.repaint);
-    assert_resize_measurements_cleared(&app, 90, 55);
-}
-
-#[test]
-fn reconciling_the_recorded_size_changes_nothing() {
-    let mut app = make_test_app();
-    app.surface_dirty = crate::app::SurfaceDirtyState::default();
-    app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
-    seed_resize_measurements(&mut app);
-
-    reconcile_terminal_size(&mut app, 90, 30);
-
-    assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
-    assert!(!app.surface_dirty.chat.repaint);
-    assert_seed_resize_measurements_preserved(&app);
-}
-
-#[test]
-fn resize_marks_fullscreen_surface_dirty_when_running_fullscreen() {
-    let mut app = make_test_app();
-    app.surface_dirty = crate::app::SurfaceDirtyState::default();
-    app.terminal_lifecycle =
-        TerminalLifecycleState::Running(SurfaceMode::Fullscreen(FullscreenView::Config));
-    app.session_runtime.prompt_suggestion = Some("Write focused tests".to_owned());
-    seed_resize_measurements(&mut app);
-
-    handle_terminal_event(&mut app, Event::Resize(120, 40));
-
-    assert!(app.surface_dirty.fullscreen.redraw);
-    assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
-    assert!(!app.surface_dirty.chat.repaint);
-    assert!(app.chat_render.resize_purge_replay_on_chat_return);
-    assert_eq!(app.session_runtime.prompt_suggestion.as_deref(), Some("Write focused tests"));
-    assert_resize_measurements_cleared(&app, 120, 40);
-}
-
-#[test]
-fn same_size_resize_while_fullscreen_does_not_defer_chat_purge() {
-    let mut app = make_test_app();
-    app.surface_dirty = crate::app::SurfaceDirtyState::default();
-    app.terminal_lifecycle =
-        TerminalLifecycleState::Running(SurfaceMode::Fullscreen(FullscreenView::Config));
-    seed_resize_measurements(&mut app);
-
-    handle_terminal_event(&mut app, Event::Resize(90, 30));
-
-    assert!(!app.surface_dirty.fullscreen.redraw);
-    assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
-    assert!(!app.surface_dirty.chat.repaint);
-    assert!(!app.chat_render.resize_purge_replay_on_chat_return);
-    assert_seed_resize_measurements_preserved(&app);
-}
-
-#[test]
-fn resize_while_released_to_child_stores_size_without_drawing_hidden_chat() {
-    let mut app = make_test_app();
-    app.surface_dirty = crate::app::SurfaceDirtyState::default();
-    app.terminal_lifecycle = TerminalLifecycleState::ReleasedToChild(ReleaseReason::AuthFlow);
-    seed_resize_measurements(&mut app);
-
-    handle_terminal_event(&mut app, Event::Resize(120, 40));
-
-    assert!(!app.surface_dirty.fullscreen.redraw);
-    assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
-    assert!(!app.surface_dirty.chat.repaint);
-    assert_resize_measurements_cleared(&app, 120, 40);
-}
-
 #[test]
 fn resize_does_not_mutate_messages() {
     let mut app = make_test_app();
@@ -1180,38 +872,36 @@ fn resize_does_not_clear_active_assistant_ownership() {
 }
 
 #[test]
-fn resize_during_active_turn_marks_final_purge_replay_needed() {
-    let mut app = make_test_app();
-    app.surface_dirty = crate::app::SurfaceDirtyState::default();
-    app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
-    app.status = AppStatus::Running;
-    seed_resize_measurements(&mut app);
-
-    handle_terminal_event(&mut app, Event::Resize(120, 40));
-
-    assert_eq!(
-        app.surface_dirty.chat.rebuild,
-        ChatRebuildKind::PurgeReplay(crate::app::ChatPurgeReplayOptions::resize())
-    );
-    assert!(app.chat_render.resize_purge_replay_after_turn);
-}
-
-#[test]
 fn turn_complete_after_cancel_renders_interrupted_hint() {
-    let mut app = make_test_app();
+    for cancelled in [true, false] {
+        let mut app = make_test_app();
+        app.status = AppStatus::Running;
+        app.transcript.messages.push(user_msg("build the feature"));
+        app.transcript.messages.push(assistant_msg(vec![MessageBlock::Text(
+            TextBlock::from_complete("partial answer"),
+        )]));
+        app.bind_active_turn_assistant(1);
+        let history = message_snapshots(&app);
+        if cancelled {
+            handle_local_cancel_enqueued(&mut app);
+            assert!(app.turn.cancel_requested);
+        }
 
-    handle_local_cancel_enqueued(&mut app);
-    assert!(app.turn.cancel_requested);
+        handle_client_event(&mut app, turn_complete(None));
 
-    handle_client_event(&mut app, turn_complete(None));
-
-    assert!(!app.turn.cancel_requested);
-    let last = app.transcript.messages.last().expect("expected interruption hint message");
-    assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Info))));
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Conversation interrupted. Tell the model how to proceed.");
+        assert!(!app.turn.cancel_requested);
+        assert_eq!(&message_snapshots(&app)[..history.len()], history);
+        let appended = &app.transcript.messages[history.len()..];
+        if cancelled {
+            let [notice] = appended else {
+                panic!("cancelled response must append exactly one interruption notice");
+            };
+            assert!(matches!(notice.role, MessageRole::System(Some(SystemSeverity::Info))));
+            assert!(!first_block_text(notice).trim().is_empty());
+        } else {
+            assert!(appended.is_empty(), "normal completion must not append an interruption");
+        }
+    }
 }
 
 #[test]
@@ -1258,7 +948,7 @@ fn startup_resume_history_renders_from_canonical_messages() {
         panic!("expected restored user text");
     };
     assert_eq!(block.text, "startup user line\n\nsecond paragraph");
-    assert!(!session_overview_has_welcome(&app));
+    assert_no_session_overview_rows(&mut app);
     assert!(matches!(app.status, AppStatus::Ready));
     assert!(!app.turn.cancel_requested);
 
@@ -1277,7 +967,7 @@ fn startup_resume_history_renders_from_canonical_messages() {
         },
     );
 
-    assert!(!session_overview_has_welcome(&app));
+    assert_no_session_overview_rows(&mut app);
 }
 
 #[test]
@@ -1349,19 +1039,36 @@ fn resume_history_preserves_user_message_boundaries_and_joins_only_same_source_c
             &mut app,
             80,
             &std::collections::BTreeSet::new(),
+            None,
         );
-        let text = rows
-            .rows()
-            .iter()
-            .map(|line| line.to_string().trim_end().to_owned())
-            .collect::<Vec<_>>();
-        for message in
-            ["/rename review-444", "/color blue", "Explain <example>literal XML</example>"]
-        {
+        let expected =
+            ["/rename review-444", "/color blue", "Explain <example>literal XML</example>"];
+        for (message_idx, message) in app.transcript.messages.iter().enumerate() {
+            if !matches!(message.role, MessageRole::User) {
+                continue;
+            }
+            let message_text = first_block_text(message);
+            let regions = rows
+                .segments()
+                .iter()
+                .filter(|region| region.msg_idx == message_idx)
+                .collect::<Vec<_>>();
+            assert!(!regions.is_empty(), "user message must have its own rendered region");
+            let region_rows = regions
+                .iter()
+                .flat_map(|region| rows.segment_rows(region).expect("valid message region"))
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
             assert!(
-                text.iter().any(|row| row == &format!(" ❯ {message}")),
-                "separate user marker and text for {message}, startup={startup}"
+                region_rows.iter().any(|row| row.contains(message_text)),
+                "user text missing from its own region, startup={startup}"
             );
+            for other in expected.iter().filter(|other| **other != message_text) {
+                assert!(
+                    region_rows.iter().all(|row| !row.contains(other)),
+                    "distinct user messages must not share a rendered region"
+                );
+            }
         }
     }
 }
@@ -1551,7 +1258,6 @@ fn resume_history_clears_foreground_tracking_and_retains_tool_relationships() {
         },
     );
 
-    assert!(app.turn.active_task_ids.is_empty());
     assert_eq!(app.tool_call_scope("resume-task"), Some(ToolCallScope::SubagentRoot));
     let (mi, bi) = app.lookup_tool_call("resume-task").expect("resumed foreground tool");
     let MessageBlock::ToolCall(tool) = &app.transcript.messages[mi].blocks[bi] else {
@@ -1575,6 +1281,7 @@ fn explicit_manual_compaction_success_keeps_history_and_emits_once() {
     app.transcript
         .messages
         .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("compacted"))]));
+    let history = message_snapshots(&app);
     handle_client_event(
         &mut app,
         session_update(model::SessionUpdate::CompactionUpdate(model::CompactionUpdate::Boundary(
@@ -1600,16 +1307,12 @@ fn explicit_manual_compaction_success_keeps_history_and_emits_once() {
     handle_client_event(&mut app, turn_complete(None));
 
     assert!(!app.turn.compaction.is_active());
-    assert_eq!(app.transcript.messages.len(), 3);
-    let Some(ChatMessage { role: MessageRole::System(Some(SystemSeverity::Info)), blocks, .. }) =
-        app.transcript.messages.last()
-    else {
-        panic!("expected compaction success system message");
+    assert_eq!(&message_snapshots(&app)[..history.len()], history);
+    let [notice] = &app.transcript.messages[history.len()..] else {
+        panic!("manual compaction must append exactly one success notice");
     };
-    let Some(MessageBlock::Text(block)) = blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Session successfully compacted.");
+    assert!(matches!(notice.role, MessageRole::System(Some(SystemSeverity::Info))));
+    assert!(first_block_text(notice).to_lowercase().contains("compact"));
     assert_eq!(
         app.session_runtime.session_id.as_ref().map(ToString::to_string).as_deref(),
         Some("test-session")
@@ -1650,9 +1353,6 @@ fn late_boundary_after_explicit_success_does_not_reopen_or_duplicate_manual_noti
     );
 
     assert!(!app.turn.compaction.is_active());
-    assert_eq!(app.session_runtime.session_usage.last_compaction_pre_tokens, Some(47_024));
-    assert_eq!(app.session_runtime.session_usage.last_compaction_post_tokens, Some(8_049));
-    assert_eq!(app.session_runtime.session_usage.last_compaction_duration_ms, Some(92_408));
 
     handle_client_event(&mut app, turn_complete(None));
 
@@ -1734,11 +1434,60 @@ fn turn_error_clears_manual_compaction_without_success_message() {
     else {
         panic!("expected system error message");
     };
-    let Some(MessageBlock::Text(block)) = blocks.first() else {
-        panic!("expected text block");
+    let Some(MessageBlock::Notice(block)) = blocks.first() else {
+        panic!("expected failure notice");
     };
-    assert!(block.text.contains("Turn failed: adapter failed"));
-    assert!(block.text.contains("Press Ctrl+Q to quit and try again"));
+    assert!(block.text.text.contains("Turn failed: adapter failed"));
+    assert!(block.text.text.contains("Press Ctrl+Q to quit and try again"));
+}
+
+fn turn_error_log_levels(cancelled: bool) -> Vec<(String, String)> {
+    let mut app = make_test_app();
+    app.transcript.messages.push(user_msg("hello"));
+    if cancelled {
+        handle_local_cancel_enqueued(&mut app);
+    }
+    let records = crate::logging::test_capture::capture(|| {
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnError {
+                session_id: "test-session".to_owned(),
+                message: "turn failed".into(),
+                queued_turn_count: None,
+                api_error_status: None,
+                terminal_reason: None,
+            },
+        );
+    });
+    records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record["event_name"].as_str(),
+                Some("turn_error_suppressed" | "turn_error_received")
+            )
+        })
+        .map(|record| {
+            (
+                record["event_name"].as_str().unwrap_or_default().to_owned(),
+                record["level"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect()
+}
+
+// The default log keeps warnings and errors only, so an ordinary user cancellation must be
+// below warn while a real turn error stays an error.
+#[test]
+fn cancelled_turn_error_is_not_a_warning_but_a_real_one_is_an_error() {
+    assert_eq!(
+        turn_error_log_levels(true),
+        vec![("turn_error_suppressed".to_owned(), "DEBUG".to_owned())]
+    );
+    assert_eq!(
+        turn_error_log_levels(false),
+        vec![("turn_error_received".to_owned(), "ERROR".to_owned())]
+    );
 }
 
 #[test]
@@ -1792,7 +1541,7 @@ fn turn_error_plan_limit_shows_next_steps_guidance() {
         },
     );
 
-    assert!(matches!(app.status, AppStatus::Error));
+    assert!(matches!(app.status, AppStatus::Ready));
     let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) =
         app.transcript.messages.last()
     else {
@@ -1801,8 +1550,8 @@ fn turn_error_plan_limit_shows_next_steps_guidance() {
     assert!(matches!(blocks.first(), Some(MessageBlock::Notice(_))));
     let text = first_block_text(app.transcript.messages.last().expect("expected message"));
     assert!(text.contains("Turn blocked by account or plan limits"));
-    assert!(text.contains("Next steps:"));
-    assert!(text.contains("Check quota/billing"));
+    assert!(text.contains("retry here"));
+    assert!(!text.contains("Input disabled"));
 }
 
 #[test]
@@ -1821,7 +1570,7 @@ fn classified_turn_error_plan_limit_uses_guidance_without_text_matching() {
         },
     );
 
-    assert!(matches!(app.status, AppStatus::Error));
+    assert!(matches!(app.status, AppStatus::Ready));
     let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) =
         app.transcript.messages.last()
     else {
@@ -1830,7 +1579,8 @@ fn classified_turn_error_plan_limit_uses_guidance_without_text_matching() {
     assert!(matches!(blocks.first(), Some(MessageBlock::Notice(_))));
     let text = first_block_text(app.transcript.messages.last().expect("expected message"));
     assert!(text.contains("Turn blocked by account or plan limits"));
-    assert!(text.contains("Next steps:"));
+    assert!(text.contains("retry here"));
+    assert!(!text.contains("Input disabled"));
 }
 
 #[test]
@@ -1948,7 +1698,6 @@ fn turn_error_clears_foreground_tracking_without_misclassifying_the_next_tool() 
         },
     );
 
-    assert!(app.turn.active_task_ids.is_empty());
     assert_eq!(app.tool_call_scope("task-1"), Some(ToolCallScope::SubagentRoot));
     let (mi, bi) = app.lookup_tool_call("task-1").expect("failed foreground tool");
     let MessageBlock::ToolCall(tool) = &app.transcript.messages[mi].blocks[bi] else {
@@ -1964,7 +1713,6 @@ fn turn_error_clears_foreground_tracking_without_misclassifying_the_next_tool() 
         )),
     );
     assert_eq!(app.tool_call_scope("next-bash"), Some(ToolCallScope::MainAgent));
-    assert!(app.turn.active_task_ids.is_empty());
 }
 
 #[test]
@@ -1984,8 +1732,8 @@ fn auth_required_clears_active_turn_runtime_tracking() {
         model::ToolCallStatus::InProgress,
     )))]));
     app.bind_active_turn_assistant(0);
-    app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
-    app.insert_active_task("task-1".into());
+    app.index_tool_call("task-1".into(), 0, 0);
+    crate::app::test_support::set_tool_scope(&mut app, "task-1", ToolCallScope::SubagentRoot);
     app.pending_interaction_ids.push("task-1".into());
     app.claim_focus_target(FocusTarget::Permission);
 
@@ -1998,7 +1746,6 @@ fn auth_required_clears_active_turn_runtime_tracking() {
     );
 
     assert_eq!(app.active_turn_assistant_idx(), None);
-    assert!(app.turn.active_task_ids.is_empty());
     assert!(app.pending_interaction_ids.is_empty());
     assert_ne!(app.focus_owner(), FocusOwner::Permission);
     let Some(MessageBlock::ToolCall(tc)) = app.transcript.messages[0].blocks.first() else {
@@ -2046,112 +1793,67 @@ fn fatal_event_sets_exit_error_and_quits() {
 }
 
 #[test]
-fn connection_failed_clears_active_turn_runtime_tracking() {
-    let mut app = make_test_app();
-    app.status = AppStatus::Running;
-    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-        "task-1",
-        model::ToolCallStatus::InProgress,
-    )))]));
-    app.bind_active_turn_assistant(0);
-    app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
-    app.insert_active_task("task-1".into());
-
-    handle_client_event(&mut app, ClientEvent::ConnectionFailed("bridge down".into()));
-
-    assert_eq!(app.active_turn_assistant_idx(), None);
-    assert!(app.turn.active_task_ids.is_empty());
-    let Some(MessageBlock::ToolCall(tc)) = app.transcript.messages[0].blocks.first() else {
-        panic!("expected tool call block");
-    };
-    assert_eq!(tc.status, model::ToolCallStatus::Failed);
-}
-
-#[test]
-fn fatal_event_clears_active_turn_runtime_tracking() {
-    let mut app = make_test_app();
-    app.status = AppStatus::Running;
-    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-        "task-1",
-        model::ToolCallStatus::InProgress,
-    )))]));
-    app.bind_active_turn_assistant(0);
-    app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
-    app.insert_active_task("task-1".into());
-
-    handle_client_event(
-        &mut app,
+fn terminal_events_clear_active_turn_runtime_tracking() {
+    for event in [
+        ClientEvent::ConnectionFailed("bridge down".into()),
         ClientEvent::FatalError(crate::error::AppError::ConnectionFailed),
-    );
+    ] {
+        let mut app = make_test_app();
+        app.status = AppStatus::Running;
+        app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
+            tool_call("task-1", model::ToolCallStatus::InProgress),
+        ))]));
+        app.bind_active_turn_assistant(0);
+        app.index_tool_call("task-1".into(), 0, 0);
+        crate::app::test_support::set_tool_scope(&mut app, "task-1", ToolCallScope::SubagentRoot);
 
-    assert_eq!(app.active_turn_assistant_idx(), None);
-    assert!(app.turn.active_task_ids.is_empty());
-    let Some(MessageBlock::ToolCall(tc)) = app.transcript.messages[0].blocks.first() else {
-        panic!("expected tool call block");
-    };
-    assert_eq!(tc.status, model::ToolCallStatus::Failed);
+        handle_client_event(&mut app, event);
+
+        assert_eq!(app.active_turn_assistant_idx(), None);
+        let Some(MessageBlock::ToolCall(tc)) = app.transcript.messages[0].blocks.first() else {
+            panic!("expected tool call block");
+        };
+        assert_eq!(tc.status, model::ToolCallStatus::Failed);
+    }
 }
 
 #[test]
-fn manual_compaction_boundary_enriches_active_state_and_records_metrics() {
-    let mut app = make_test_app();
-    app.turn.compaction.begin_manual();
-
-    handle_client_event(
-        &mut app,
-        session_update(model::SessionUpdate::CompactionUpdate(model::CompactionUpdate::Boundary(
-            model::CompactionBoundary {
-                trigger: model::CompactionTrigger::Manual,
-                pre_tokens: 123_456,
-                post_tokens: Some(20_000),
-                duration_ms: Some(1_500),
-            },
-        ))),
-    );
-
-    assert!(app.turn.compaction.is_active());
-    assert_eq!(
-        app.session_runtime.session_usage.last_compaction_trigger,
-        Some(model::CompactionTrigger::Manual)
-    );
-    assert_eq!(app.session_runtime.session_usage.last_compaction_pre_tokens, Some(123_456));
-    assert_eq!(app.session_runtime.session_usage.last_compaction_post_tokens, Some(20_000));
-    assert_eq!(app.session_runtime.session_usage.last_compaction_duration_ms, Some(1_500));
-}
-
-#[test]
-fn auto_compaction_boundary_enriches_started_state_without_manual_success_pending() {
-    let mut app = make_test_app();
-    assert!(!app.turn.compaction.is_active());
-
-    handle_client_event(
-        &mut app,
-        session_update(model::SessionUpdate::CompactionUpdate(model::CompactionUpdate::Started)),
-    );
-
-    handle_client_event(
-        &mut app,
-        session_update(model::SessionUpdate::CompactionUpdate(model::CompactionUpdate::Boundary(
-            model::CompactionBoundary {
-                trigger: model::CompactionTrigger::Auto,
-                pre_tokens: 234_567,
-                post_tokens: None,
-                duration_ms: None,
-            },
-        ))),
-    );
-
-    assert!(app.turn.compaction.is_active());
-    assert_eq!(
-        app.session_runtime.session_usage.last_compaction_trigger,
-        Some(model::CompactionTrigger::Auto)
-    );
-    assert_eq!(app.session_runtime.session_usage.last_compaction_pre_tokens, Some(234_567));
+fn compaction_boundaries_keep_manual_and_auto_compaction_active() {
+    for trigger in [model::CompactionTrigger::Manual, model::CompactionTrigger::Auto] {
+        let mut app = make_test_app();
+        match trigger {
+            model::CompactionTrigger::Manual => app.turn.compaction.begin_manual(),
+            model::CompactionTrigger::Auto => handle_client_event(
+                &mut app,
+                session_update(model::SessionUpdate::CompactionUpdate(
+                    model::CompactionUpdate::Started,
+                )),
+            ),
+        }
+        assert!(app.turn.compaction.is_active());
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::CompactionUpdate(
+                model::CompactionUpdate::Boundary(model::CompactionBoundary {
+                    trigger,
+                    pre_tokens: 123_456,
+                    post_tokens: Some(20_000),
+                    duration_ms: Some(1_500),
+                }),
+            )),
+        );
+        assert!(
+            app.turn.compaction.is_active(),
+            "boundary must not admit a prompt mid-compaction: {trigger:?}"
+        );
+        assert!(app.transcript.messages.is_empty(), "boundary is not a completion notice");
+    }
 }
 
 #[test]
 fn duplicate_compaction_updates_share_one_idempotent_lifecycle() {
     let mut app = make_test_app();
+    app.status = AppStatus::Ready;
 
     for _ in 0..2 {
         handle_client_event(
@@ -2162,6 +1864,9 @@ fn duplicate_compaction_updates_share_one_idempotent_lifecycle() {
         );
     }
     assert!(app.turn.compaction.is_active());
+    assert_eq!(app.status, AppStatus::Ready);
+    assert_eq!(app.active_turn_assistant_idx(), None);
+    assert!(app.transcript.messages.is_empty());
 
     for _ in 0..2 {
         handle_client_event(
@@ -2178,6 +1883,9 @@ fn duplicate_compaction_updates_share_one_idempotent_lifecycle() {
 
     assert!(!app.turn.compaction.is_active());
     assert!(app.transcript.messages.is_empty());
+    assert_eq!(app.status, AppStatus::Ready);
+    assert_eq!(app.active_turn_assistant_idx(), None);
+    assert!(app.turn.activity.is_none());
 }
 
 #[test]
@@ -2222,26 +1930,8 @@ fn too_few_groups_compaction_failure_is_actionable() {
     else {
         panic!("expected compaction failure message");
     };
-    assert_eq!(
-        block.text,
-        "Context compaction cannot reduce a single oversized request because there are not enough earlier conversation turns to summarize. Start a new session and retry with a smaller request or a skill that loads less context."
-    );
-}
-
-#[test]
-fn fast_mode_update_sets_state() {
-    let mut app = make_test_app();
-    assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::Off);
-
-    handle_client_event(
-        &mut app,
-        session_update(model::SessionUpdate::FastModeUpdate {
-            state: model::FastModeState::Cooldown,
-            disabled_reason: None,
-        }),
-    );
-
-    assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::Cooldown);
+    assert!(!block.text.contains("too_few_groups"));
+    assert!(block.text.to_lowercase().contains("start a new session"));
 }
 
 #[test]
@@ -2311,7 +2001,7 @@ fn fast_mode_disabled_reason_does_not_warn_when_unrequested_or_cooling_down() {
 }
 
 #[test]
-fn rate_limit_notices_dedup_and_upgrade_in_place() {
+fn rate_limit_warnings_do_not_duplicate_or_turn_into_failures() {
     let mut app = make_test_app();
 
     let warning_update = model::RateLimitUpdate {
@@ -2321,7 +2011,8 @@ fn rate_limit_notices_dedup_and_upgrade_in_place() {
         utilization: Some(0.92),
         rate_limit_type: Some("five_hour".to_owned()),
         limit_scope: None,
-        overage_status: None,
+        overage_enabled: Some(true),
+        overage_status: Some(model::RateLimitStatus::Allowed),
         overage_resets_at: None,
         overage_disabled_reason: None,
         is_using_overage: None,
@@ -2346,8 +2037,15 @@ fn rate_limit_notices_dedup_and_upgrade_in_place() {
     ));
     assert!(matches!(app.transcript.messages[0].blocks.first(), Some(MessageBlock::Notice(_))));
 
-    let rejected_update =
-        model::RateLimitUpdate { status: model::RateLimitStatus::Rejected, ..warning_update };
+    let mut allowed = warning_update.clone();
+    allowed.status = model::RateLimitStatus::Allowed;
+    handle_client_event(&mut app, session_update(model::SessionUpdate::RateLimitUpdate(allowed)));
+
+    let rejected_update = model::RateLimitUpdate {
+        status: model::RateLimitStatus::Rejected,
+        overage_status: Some(model::RateLimitStatus::Rejected),
+        ..warning_update
+    };
     handle_client_event(
         &mut app,
         session_update(model::SessionUpdate::RateLimitUpdate(rejected_update.clone())),
@@ -2360,13 +2058,13 @@ fn rate_limit_notices_dedup_and_upgrade_in_place() {
     assert_eq!(app.transcript.messages.len(), 1);
     assert!(matches!(
         app.transcript.messages[0].role,
-        MessageRole::System(Some(SystemSeverity::Error))
+        MessageRole::System(Some(SystemSeverity::Warning))
     ));
-    assert!(first_block_text(&app.transcript.messages[0]).contains("Rate limit reached"));
+    assert!(first_block_text(&app.transcript.messages[0]).contains("Approaching rate limit"));
 }
 
 #[test]
-fn plan_limit_turn_error_upgrades_inline_notice_in_active_assistant() {
+fn plan_limit_failure_preserves_the_warning_and_reports_its_own_error() {
     let mut app = make_test_app();
     app.status = AppStatus::Thinking;
     app.transcript.messages.push(user_msg("hello"));
@@ -2384,6 +2082,7 @@ fn plan_limit_turn_error_upgrades_inline_notice_in_active_assistant() {
             utilization: Some(0.95),
             rate_limit_type: Some("five_hour".to_owned()),
             limit_scope: None,
+            overage_enabled: None,
             overage_status: None,
             overage_resets_at: None,
             overage_disabled_reason: None,
@@ -2410,28 +2109,33 @@ fn plan_limit_turn_error_upgrades_inline_notice_in_active_assistant() {
         },
     );
 
-    assert!(matches!(app.status, AppStatus::Error));
-    assert_eq!(app.transcript.messages.len(), 2);
-    assert_eq!(app.transcript.messages[1].blocks.len(), 2);
-    let Some(MessageBlock::Notice(block)) = app.transcript.messages[1].blocks.get(1) else {
-        panic!("expected inline notice block");
+    assert!(matches!(app.status, AppStatus::Ready));
+    let [MessageBlock::Text(partial), MessageBlock::Notice(warning), MessageBlock::Notice(failure)] =
+        app.transcript.messages[1].blocks.as_slice()
+    else {
+        panic!("partial reply, allowance warning, and terminal failure belong to this response");
     };
-    assert_eq!(block.severity, SystemSeverity::Warning);
-    assert!(block.text.text.contains("Approaching rate limit"));
-    assert!(block.text.text.contains("Turn blocked by account or plan limits"));
+    assert_eq!(partial.text, "partial response");
+    assert_eq!(warning.severity, SystemSeverity::Warning);
+    assert!(warning.text.text.contains("Approaching rate limit"));
+    assert_eq!(failure.severity, SystemSeverity::Error);
+    assert!(failure.text.text.contains("HTTP 429 Too Many Requests"));
+    assert!(!failure.text.text.contains("Approaching rate limit"));
+    assert!(!failure.text.text.contains("5-hour"), "the error must not inherit allowance context");
     assert!(app.turn.notice_refs.is_empty());
 }
 
 #[test]
-fn different_rate_limit_incident_in_later_turn_keeps_older_notice() {
+fn allowance_warnings_in_later_turns_keep_older_notices() {
     let mut app = make_test_app();
-    app.session_runtime.last_rate_limit_update = Some(model::RateLimitUpdate {
+    let warning = model::RateLimitUpdate {
         status: model::RateLimitStatus::AllowedWarning,
         error_code: None,
         resets_at: Some(1_741_280_000.0),
         utilization: Some(0.95),
         rate_limit_type: Some("five_hour".to_owned()),
         limit_scope: None,
+        overage_enabled: None,
         overage_status: None,
         overage_resets_at: None,
         overage_disabled_reason: None,
@@ -2439,23 +2143,14 @@ fn different_rate_limit_incident_in_later_turn_keeps_older_notice() {
         surpassed_threshold: None,
         can_user_purchase_credits: None,
         has_chargeable_saved_payment_method: None,
-    });
+    };
     app.status = AppStatus::Thinking;
     app.transcript.messages.push(user_msg("first"));
     app.transcript.messages.push(assistant_msg(vec![]));
     app.bind_active_turn_assistant(1);
 
-    handle_client_event(
-        &mut app,
-        ClientEvent::TurnErrorClassified {
-            session_id: "test-session".to_owned(),
-            message: "HTTP 429 Too Many Requests".to_owned(),
-            class: TurnErrorClass::PlanLimit,
-            queued_turn_count: None,
-            api_error_status: None,
-            terminal_reason: None,
-        },
-    );
+    handle_client_event(&mut app, session_update(model::SessionUpdate::RateLimitUpdate(warning)));
+    handle_client_event(&mut app, turn_complete(None));
     assert_eq!(app.transcript.messages.len(), 2);
     let first_notice_text = match app.transcript.messages[1].blocks.as_slice() {
         [MessageBlock::Notice(block)] => block.text.text.clone(),
@@ -2470,12 +2165,13 @@ fn different_rate_limit_incident_in_later_turn_keeps_older_notice() {
     handle_client_event(
         &mut app,
         session_update(model::SessionUpdate::RateLimitUpdate(model::RateLimitUpdate {
-            status: model::RateLimitStatus::Rejected,
+            status: model::RateLimitStatus::AllowedWarning,
             error_code: None,
             resets_at: Some(1_741_290_000.0),
             utilization: None,
             rate_limit_type: Some("daily".to_owned()),
             limit_scope: None,
+            overage_enabled: None,
             overage_status: None,
             overage_resets_at: None,
             overage_disabled_reason: None,
@@ -2500,75 +2196,97 @@ fn different_rate_limit_incident_in_later_turn_keeps_older_notice() {
 }
 
 #[test]
-fn turn_notice_tracking_clears_on_turn_complete_and_session_reset() {
-    let mut app = make_test_app();
-    app.status = AppStatus::Thinking;
-    app.transcript.messages.push(user_msg("hello"));
-    app.transcript.messages.push(assistant_msg(vec![]));
-    app.bind_active_turn_assistant(1);
-
-    handle_client_event(
-        &mut app,
-        session_update(model::SessionUpdate::RateLimitUpdate(model::RateLimitUpdate {
-            status: model::RateLimitStatus::AllowedWarning,
-            error_code: None,
-            resets_at: Some(123.0),
-            utilization: Some(0.91),
-            rate_limit_type: Some("five_hour".to_owned()),
-            limit_scope: None,
-            overage_status: None,
-            overage_resets_at: None,
-            overage_disabled_reason: None,
-            is_using_overage: None,
-            surpassed_threshold: None,
-            can_user_purchase_credits: None,
-            has_chargeable_saved_payment_method: None,
-        })),
-    );
-
-    assert_eq!(app.turn.notice_refs.len(), 1);
-    handle_client_event(&mut app, turn_complete(None));
-    assert!(app.turn.notice_refs.is_empty());
-
-    app.status = AppStatus::Thinking;
-    app.transcript.messages.push(user_msg("again"));
-    app.transcript.messages.push(assistant_msg(vec![]));
-    app.bind_active_turn_assistant(app.transcript.messages.len() - 1);
-    handle_client_event(
-        &mut app,
-        session_update(model::SessionUpdate::RateLimitUpdate(model::RateLimitUpdate {
-            status: model::RateLimitStatus::AllowedWarning,
-            error_code: None,
-            resets_at: Some(456.0),
-            utilization: Some(0.92),
-            rate_limit_type: Some("daily".to_owned()),
-            limit_scope: None,
-            overage_status: None,
-            overage_resets_at: None,
-            overage_disabled_reason: None,
-            is_using_overage: None,
-            surpassed_threshold: None,
-            can_user_purchase_credits: None,
-            has_chargeable_saved_payment_method: None,
-        })),
-    );
-    assert_eq!(app.turn.notice_refs.len(), 1);
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::Connected {
-            session_id: model::SessionId::new("new-session"),
-            cwd: "/test".into(),
-            current_model: test_current_model("claude"),
+fn notices_after_turn_completion_or_session_reset_append_distinct_blocks() {
+    for lifecycle in [
+        turn_complete(None),
+        connected_event("claude"),
+        ClientEvent::SessionReplaced {
+            session_id: model::SessionId::new("replacement"),
+            cwd: "/replacement".into(),
+            current_model: test_current_model("new-model"),
             available_models: Vec::new(),
             mode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
             ultracode: None,
             history_updates: Vec::new(),
+            restored_input: None,
         },
-    );
-    assert!(app.turn.notice_refs.is_empty());
+    ] {
+        let mut app = make_test_app();
+        app.status = AppStatus::Thinking;
+        app.transcript.messages.push(user_msg("hello"));
+        // Standalone notices can arrive before an assistant response starts.
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::RateLimitUpdate(model::RateLimitUpdate {
+                status: model::RateLimitStatus::AllowedWarning,
+                error_code: None,
+                resets_at: Some(123.0),
+                utilization: Some(0.91),
+                rate_limit_type: Some("five_hour".to_owned()),
+                limit_scope: None,
+                overage_enabled: None,
+                overage_status: None,
+                overage_resets_at: None,
+                overage_disabled_reason: None,
+                is_using_overage: None,
+                surpassed_threshold: None,
+                can_user_purchase_credits: None,
+                has_chargeable_saved_payment_method: None,
+            })),
+        );
+        let old_notice_id = app.transcript.messages.last().expect("first notice").id;
+        assert!(first_block_text(app.transcript.messages.last().unwrap()).contains("5-hour"));
+        let old_history = message_snapshots(&app);
+        let completing_turn = matches!(lifecycle, ClientEvent::TurnComplete { .. });
+        handle_client_event(&mut app, lifecycle);
+        if completing_turn {
+            assert_eq!(message_snapshots(&app), old_history);
+        } else {
+            assert!(app.transcript.messages.iter().all(|message| message.id != old_notice_id));
+        }
+        let prefix = message_snapshots(&app);
+        let active_session =
+            app.session_runtime.session_id.as_ref().expect("active session").to_string();
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate {
+                session_id: active_session,
+                update: model::SessionUpdate::RateLimitUpdate(model::RateLimitUpdate {
+                    status: model::RateLimitStatus::AllowedWarning,
+                    error_code: None,
+                    resets_at: Some(123.0),
+                    utilization: Some(0.92),
+                    rate_limit_type: Some("five_hour".to_owned()),
+                    limit_scope: None,
+                    overage_enabled: None,
+                    overage_status: None,
+                    overage_resets_at: None,
+                    overage_disabled_reason: None,
+                    is_using_overage: None,
+                    surpassed_threshold: None,
+                    can_user_purchase_credits: None,
+                    has_chargeable_saved_payment_method: None,
+                }),
+            },
+        );
+        assert_eq!(
+            &message_snapshots(&app)[..prefix.len()],
+            prefix,
+            "a later warning must not overwrite an older transcript block"
+        );
+        let [notice] = &app.transcript.messages[prefix.len()..] else {
+            panic!("the later lifecycle must append exactly one new notice");
+        };
+        assert_ne!(notice.id, old_notice_id);
+        let [MessageBlock::Notice(warning)] = notice.blocks.as_slice() else {
+            panic!("expected a distinct new warning block");
+        };
+        assert_eq!(warning.severity, SystemSeverity::Warning);
+        assert!(warning.text.text.contains("5-hour rate limit"));
+        assert!(warning.text.text.contains("92%"));
+    }
 }
 
 #[test]
@@ -2695,6 +2413,181 @@ fn altgr_at_inserts_char_and_activates_mention() {
     assert!(app.mention.is_some());
 }
 
+fn completion_key(app: &mut App, code: KeyCode) {
+    handle_terminal_event(app, Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+}
+
+fn assert_completion_menu(app: &App, candidates: &[&str], selected: Option<&str>) -> String {
+    let rows = crate::ui::input_rows::build_composer_hint_rows(app);
+    let mut visible = Vec::new();
+    let mut selected_names = Vec::new();
+    for row in &rows {
+        let text = row.to_string();
+        let matches = candidates.iter().filter(|name| text.contains(**name)).collect::<Vec<_>>();
+        let [name] = matches.as_slice() else {
+            panic!("menu candidate region must show exactly one expected identity: {text:?}");
+        };
+        visible.push(**name);
+        if row.spans.iter().any(|span| span.content.trim() == ">") {
+            selected_names.push(**name);
+        }
+    }
+    visible.sort_unstable();
+    let mut expected = candidates.to_vec();
+    expected.sort_unstable();
+    assert_eq!(visible, expected, "rendered completion candidates");
+    let [selected_name] = selected_names.as_slice() else {
+        panic!("exactly one visible candidate must carry the selection control");
+    };
+    if let Some(expected) = selected {
+        assert_eq!(*selected_name, expected, "selection belongs to the intended candidate row");
+    }
+    (*selected_name).to_owned()
+}
+
+fn await_file_completion(app: &mut App, query: &str, candidates: &[&str]) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut expected = candidates.to_vec();
+    expected.sort_unstable();
+    loop {
+        crate::app::file_index::drain_events(app);
+        if let Some(menu) = &app.mention {
+            let mut actual =
+                menu.candidates.iter().map(|item| item.rel_path.as_str()).collect::<Vec<_>>();
+            actual.sort_unstable();
+            if menu.query == query && actual == expected {
+                return;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no correlated file-search result for {query:?}: {expected:?}"
+        );
+        std::thread::yield_now();
+    }
+}
+
+#[test]
+fn file_completion_keys_follow_the_current_token_and_preserve_the_suffix() {
+    let mut app = make_test_app();
+    let fixture = tempfile::tempdir().expect("fixture index root");
+    app.cwd_raw = fixture.path().to_string_lossy().into_owned();
+    app.file_index.root = Some(fixture.path().to_path_buf());
+    app.file_index.respect_gitignore = app.config.respect_gitignore_effective();
+    app.file_index.status = crate::app::file_index::FileIndexStatus::Complete;
+    for path in ["review-a.rs", "review-b.rs", "refactor.rs", "other.txt"] {
+        app.file_index.entries.insert(
+            path.to_owned(),
+            crate::app::file_index::FileCandidate {
+                rel_path: path.to_owned(),
+                rel_path_lower: path.to_owned(),
+                basename_lower: path.to_owned(),
+                depth: 0,
+            },
+        );
+    }
+    app.input.set_text("open @re keep suffix");
+    app.input.set_cursor(0, 5);
+    assert!(crate::ui::input_rows::build_composer_hint_rows(&app).is_empty());
+
+    for _ in 0..3 {
+        completion_key(&mut app, KeyCode::Right);
+    }
+    await_file_completion(&mut app, "re", &["review-a.rs", "review-b.rs", "refactor.rs"]);
+    assert_completion_menu(&app, &["review-a.rs", "review-b.rs", "refactor.rs"], None);
+    completion_key(&mut app, KeyCode::Char('v'));
+    await_file_completion(&mut app, "rev", &["review-a.rs", "review-b.rs"]);
+    assert_completion_menu(&app, &["review-a.rs", "review-b.rs"], None);
+    assert_eq!(app.input.text(), "open @rev keep suffix");
+
+    completion_key(&mut app, KeyCode::End);
+    assert!(crate::ui::input_rows::build_composer_hint_rows(&app).is_empty());
+    completion_key(&mut app, KeyCode::Home);
+    for _ in 0..9 {
+        completion_key(&mut app, KeyCode::Right);
+    }
+    await_file_completion(&mut app, "rev", &["review-a.rs", "review-b.rs"]);
+    assert_completion_menu(&app, &["review-a.rs", "review-b.rs"], None);
+    completion_key(&mut app, KeyCode::Esc);
+    completion_key(&mut app, KeyCode::F(12));
+    assert!(crate::ui::input_rows::build_composer_hint_rows(&app).is_empty());
+    assert_eq!(app.input.text(), "open @rev keep suffix");
+
+    completion_key(&mut app, KeyCode::Left);
+    completion_key(&mut app, KeyCode::Right);
+    await_file_completion(&mut app, "rev", &["review-a.rs", "review-b.rs"]);
+    let initial = assert_completion_menu(&app, &["review-a.rs", "review-b.rs"], None);
+    let target = if initial == "review-a.rs" { "review-b.rs" } else { "review-a.rs" };
+    completion_key(&mut app, KeyCode::Down);
+    assert_completion_menu(&app, &["review-a.rs", "review-b.rs"], Some(target));
+    completion_key(&mut app, KeyCode::Enter);
+    assert_eq!(
+        app.input.text(),
+        if target == "review-b.rs" {
+            "open @'review-b.rs' keep suffix"
+        } else {
+            "open @'review-a.rs' keep suffix"
+        }
+    );
+    assert!(app.pending_submit.is_none(), "completion must not submit the draft");
+}
+
+#[test]
+fn agent_completion_keys_follow_the_current_token_and_preserve_the_suffix() {
+    let mut app = make_test_app();
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::AvailableAgentsUpdate(
+            model::AvailableAgentsUpdate::new(vec![
+                model::AvailableAgent::new("review-a", "Audit A"),
+                model::AvailableAgent::new("review-b", "Audit B"),
+                model::AvailableAgent::new("refactor", "Cleanup"),
+                model::AvailableAgent::new("other", "Misc"),
+            ]),
+        )),
+    );
+    app.input.set_text("ask &re keep suffix");
+    app.input.set_cursor(0, 4);
+    assert!(crate::ui::input_rows::build_composer_hint_rows(&app).is_empty());
+
+    for _ in 0..3 {
+        completion_key(&mut app, KeyCode::Right);
+    }
+    assert_completion_menu(&app, &["&review-a", "&review-b", "&refactor"], None);
+    completion_key(&mut app, KeyCode::Char('v'));
+    assert_completion_menu(&app, &["&review-a", "&review-b"], None);
+    assert_eq!(app.input.text(), "ask &rev keep suffix");
+
+    completion_key(&mut app, KeyCode::End);
+    assert!(crate::ui::input_rows::build_composer_hint_rows(&app).is_empty());
+    completion_key(&mut app, KeyCode::Home);
+    for _ in 0..8 {
+        completion_key(&mut app, KeyCode::Right);
+    }
+    assert_completion_menu(&app, &["&review-a", "&review-b"], None);
+    completion_key(&mut app, KeyCode::Esc);
+    completion_key(&mut app, KeyCode::F(12));
+    assert!(crate::ui::input_rows::build_composer_hint_rows(&app).is_empty());
+    assert_eq!(app.input.text(), "ask &rev keep suffix");
+
+    completion_key(&mut app, KeyCode::Left);
+    completion_key(&mut app, KeyCode::Right);
+    let initial = assert_completion_menu(&app, &["&review-a", "&review-b"], None);
+    let target = if initial == "&review-a" { "&review-b" } else { "&review-a" };
+    completion_key(&mut app, KeyCode::Down);
+    assert_completion_menu(&app, &["&review-a", "&review-b"], Some(target));
+    completion_key(&mut app, KeyCode::Enter);
+    assert_eq!(
+        app.input.text(),
+        if target == "&review-b" {
+            "ask &review-b keep suffix"
+        } else {
+            "ask &review-a keep suffix"
+        }
+    );
+    assert!(app.pending_submit.is_none(), "completion must not submit the draft");
+}
+
 #[test]
 fn ctrl_backspace_and_delete_use_word_operations() {
     let mut app = make_test_app();
@@ -2703,42 +2596,54 @@ fn ctrl_backspace_and_delete_use_word_operations() {
     handle_normal_key(&mut app, KeyEvent::new(KeyCode::Backspace, WORD_NAV_MOD));
     assert_eq!(app.input.text(), "hello ");
 
-    app.input.move_home();
+    app.input.textarea_move_home();
     handle_normal_key(&mut app, KeyEvent::new(KeyCode::Delete, WORD_NAV_MOD));
     assert_eq!(app.input.text(), " ");
 }
 
 #[test]
 fn configured_undo_and_redo_restore_textarea_history() {
-    let mut app = make_test_app();
-    app.input.set_text("hello world");
-
-    handle_normal_key(&mut app, KeyEvent::new(KeyCode::Backspace, WORD_NAV_MOD));
-    assert_eq!(app.input.text(), "hello ");
-
     #[cfg(target_os = "macos")]
-    handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('z'), CMD_MOD));
+    let aliases = [
+        ('z', KeyModifiers::SUPER, 'z', KeyModifiers::SUPER | KeyModifiers::SHIFT),
+        ('z', KeyModifiers::SUPER, 'y', KeyModifiers::SUPER),
+    ];
     #[cfg(target_os = "windows")]
-    handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+    let aliases = [('z', KeyModifiers::CONTROL, 'z', KeyModifiers::CONTROL | KeyModifiers::SHIFT)];
     #[cfg(all(unix, not(target_os = "macos")))]
-    handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('_'), KeyModifiers::CONTROL));
-    assert_eq!(app.input.text(), "hello world");
-
-    #[cfg(target_os = "macos")]
-    handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('z'), CMD_MOD | KeyModifiers::SHIFT));
-    #[cfg(not(target_os = "macos"))]
-    handle_normal_key(
-        &mut app,
-        KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
-    );
-    assert_eq!(app.input.text(), "hello ");
+    let aliases = [
+        ('_', KeyModifiers::CONTROL, 'z', KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+        ('/', KeyModifiers::CONTROL, 'z', KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+    ];
+    for (undo, undo_modifiers, redo, redo_modifiers) in aliases {
+        let mut app = make_test_app();
+        app.status = AppStatus::Ready;
+        app.input.set_text("hello world");
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Backspace, WORD_NAV_MOD)),
+        );
+        assert_eq!(app.input.text(), "hello ");
+        let outcome = handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char(undo), undo_modifiers)),
+        );
+        assert_eq!(app.input.text(), "hello world");
+        assert_eq!(outcome.runtime_command, None, "history keys must not suspend the process");
+        let outcome = handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char(redo), redo_modifiers)),
+        );
+        assert_eq!(app.input.text(), "hello ");
+        assert_eq!(outcome.runtime_command, None);
+    }
 }
 
 #[test]
 fn ctrl_y_yanks_the_last_killed_text() {
     let mut app = make_test_app();
     app.input.set_text("hello world");
-    app.input.move_home();
+    app.input.textarea_move_home();
 
     handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL));
     assert_eq!(app.input.text(), "");
@@ -2751,10 +2656,10 @@ fn ctrl_y_yanks_the_last_killed_text() {
 fn ctrl_left_right_move_by_word() {
     let mut app = make_test_app();
     app.input.set_text("hello world");
-    app.input.move_home();
+    app.input.textarea_move_home();
 
     handle_normal_key(&mut app, KeyEvent::new(KeyCode::Right, WORD_NAV_MOD));
-    assert!(app.input.cursor_col() > 0);
+    assert_eq!(app.input.cursor_col(), 6, "word-right lands at the start of world");
 
     handle_normal_key(&mut app, KeyEvent::new(KeyCode::Left, WORD_NAV_MOD));
     assert_eq!(app.input.cursor_col(), 0);
@@ -2786,21 +2691,6 @@ fn permission_owner_handles_up_down_for_pending_interactions() {
     handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
 
     assert_eq!(app.pending_interaction_ids, vec!["perm-b", "perm-a"]);
-}
-
-#[test]
-fn permission_focus_allows_typing_for_non_permission_keys() {
-    let mut app = make_test_app();
-    app.pending_interaction_ids.push("perm-1".into());
-    app.claim_focus_target(FocusTarget::Permission);
-
-    handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE)),
-    );
-
-    assert_eq!(app.input.text(), "h");
-    assert_eq!(app.focus_owner(), FocusOwner::Input);
 }
 
 #[test]
@@ -2914,8 +2804,22 @@ fn enter_submits_draft_when_permission_arrives_mid_compose() {
 
     assert!(app.pending_submit.is_none());
     assert!(app.pending_interaction_ids.is_empty());
-    assert!(bridge_rx.try_recv().is_ok());
-    assert!(response_rx.try_recv().is_err());
+    let crate::agent::wire::BridgeCommand::Prompt { session_id, chunks, .. } =
+        bridge_rx.try_recv().expect("draft prompt dispatched").command
+    else {
+        panic!("Enter must dispatch the draft as a prompt");
+    };
+    assert_eq!(session_id, "session-1");
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0].kind, "text");
+    assert_eq!(chunks[0].value, serde_json::json!("ship the fix"));
+    assert!(
+        matches!(response_rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Closed)),
+        "starting a fresh turn drops the old permission without answering it"
+    );
+    let tool = app.tool_call(tool_id).expect("original permission tool retained");
+    assert!(tool.pending_permission.is_none());
+    assert_eq!(tool.status, model::ToolCallStatus::Failed);
 }
 
 #[test]
@@ -3079,71 +2983,9 @@ fn stale_inline_interaction_queue_head_is_pruned_before_enter_response() {
 }
 
 #[test]
-fn permission_focus_tab_returns_focus_to_input() {
-    let mut app = make_test_app();
-    let _response_rx = attach_pending_permission(
-        &mut app,
-        "perm-1",
-        vec![
-            model::PermissionOption::new("allow", "Allow", model::PermissionOptionKind::AllowOnce),
-            model::PermissionOption::new("deny", "Deny", model::PermissionOptionKind::RejectOnce),
-        ],
-        true,
-    );
-
-    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
-
-    assert_eq!(app.focus_owner(), FocusOwner::Input);
-}
-
-#[test]
-fn update_result_persists_across_connected_session_reset_without_notice() {
-    let mut app = make_test_app();
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::UpdateCheckCompleted {
-            result: crate::app::settings::UpdateCheckResult {
-                latest_version: "0.11.2".into(),
-                current_version: "0.11.1".into(),
-                release_url: crate::app::settings::release_url_for_version("0.11.2")
-                    .expect("release URL"),
-                checked_at_unix_secs: 10,
-                source: "github_release".into(),
-            },
-        },
-    );
-    handle_client_event(&mut app, connected_event("claude-updated"));
-
-    assert!(matches!(
-        app.transcript.messages.first().map(|msg| &msg.role),
-        Some(MessageRole::Welcome)
-    ));
-    assert_eq!(app.transcript.messages.len(), 1);
-    let last_result = app.global_settings.updates.last_result.as_ref().expect("update result");
-    assert_eq!(last_result.current_version, "0.11.1");
-    assert_eq!(last_result.latest_version, "0.11.2");
-}
-
-#[test]
-fn update_result_persists_across_session_replaced_reset_without_notice() {
-    let mut app = make_test_app();
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::UpdateCheckCompleted {
-            result: crate::app::settings::UpdateCheckResult {
-                latest_version: "0.11.2".into(),
-                current_version: "0.11.1".into(),
-                release_url: crate::app::settings::release_url_for_version("0.11.2")
-                    .expect("release URL"),
-                checked_at_unix_secs: 10,
-                source: "github_release".into(),
-            },
-        },
-    );
-    handle_client_event(
-        &mut app,
+fn update_result_persists_across_session_resets_without_notice() {
+    for event in [
+        connected_event("claude-updated"),
         ClientEvent::SessionReplaced {
             session_id: model::SessionId::new("replacement"),
             cwd: "/replacement".into(),
@@ -3156,16 +2998,35 @@ fn update_result_persists_across_session_replaced_reset_without_notice() {
             history_updates: Vec::new(),
             restored_input: None,
         },
-    );
+    ] {
+        let mut app = make_test_app();
 
-    assert!(matches!(
-        app.transcript.messages.first().map(|msg| &msg.role),
-        Some(MessageRole::Welcome)
-    ));
-    assert_eq!(app.transcript.messages.len(), 1);
-    let last_result = app.global_settings.updates.last_result.as_ref().expect("update result");
-    assert_eq!(last_result.current_version, "0.11.1");
-    assert_eq!(last_result.latest_version, "0.11.2");
+        handle_client_event(
+            &mut app,
+            ClientEvent::UpdateCheckCompleted {
+                result: crate::app::settings::UpdateCheckResult {
+                    latest_version: "0.11.2".into(),
+                    current_version: "0.11.1".into(),
+                    release_url: crate::app::settings::release_url_for_version("0.11.2")
+                        .expect("release URL"),
+                    checked_at_unix_secs: 10,
+                    source: "github_release".into(),
+                },
+            },
+        );
+        handle_client_event(&mut app, event);
+
+        assert!(matches!(
+            app.transcript.messages.first().map(|msg| &msg.role),
+            Some(MessageRole::Welcome)
+        ));
+        assert_eq!(app.transcript.messages.len(), 1);
+        let last_result = app.global_settings.updates.last_result.as_ref().expect("update result");
+        assert_eq!(last_result.current_version, "0.11.1");
+        assert_eq!(last_result.latest_version, "0.11.2");
+        assert_eq!(last_result.checked_at_unix_secs, 10);
+        assert_eq!(last_result.source, "github_release");
+    }
 }
 
 fn attach_pending_permission(
@@ -3224,6 +3085,22 @@ fn attach_pending_question(
     response_rx
 }
 
+fn show_config_slash_menu(app: &mut App) {
+    app.slash.show(SlashState {
+        trigger_row: 0,
+        trigger_col: 0,
+        query: String::new(),
+        context: SlashContext::CommandName,
+        candidates: vec![SlashCandidate {
+            insert_value: "/config".into(),
+            primary: "/config".into(),
+            secondary: Some("Open settings".into()),
+        }],
+        placeholder: None,
+        dialog: crate::app::dialog::DialogState::default(),
+    });
+}
+
 fn permission_focus_state(app: &App, tool_id: &str) -> Option<bool> {
     let (mi, bi) = app.lookup_tool_call(tool_id)?;
     let MessageBlock::ToolCall(tc) = app.transcript.messages.get(mi)?.blocks.get(bi)? else {
@@ -3240,37 +3117,21 @@ fn question_focus_state(app: &App, tool_id: &str) -> Option<bool> {
     tc.pending_question.as_ref().map(|question| question.focused)
 }
 
-#[test]
-fn permission_ctrl_y_does_not_resolve_pending_permission() {
-    let mut app = make_test_app();
-    let mut response_rx = attach_pending_permission(
-        &mut app,
-        "perm-1",
+fn control_key_permission_options(plan: bool) -> Vec<model::PermissionOption> {
+    if plan {
         vec![
-            model::PermissionOption::new("allow", "Allow", model::PermissionOptionKind::AllowOnce),
-            model::PermissionOption::new("deny", "Deny", model::PermissionOptionKind::RejectOnce),
-        ],
-        true,
-    );
-
-    handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL)),
-    );
-
-    assert!(matches!(
-        response_rx.try_recv(),
-        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-    ));
-    assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
-}
-
-#[test]
-fn permission_ctrl_a_does_not_resolve_pending_permission() {
-    let mut app = make_test_app();
-    let mut response_rx = attach_pending_permission(
-        &mut app,
-        "perm-1",
+            model::PermissionOption::new(
+                "plan-approve",
+                "Approve",
+                model::PermissionOptionKind::PlanApprove,
+            ),
+            model::PermissionOption::new(
+                "plan-reject",
+                "Reject",
+                model::PermissionOptionKind::PlanReject,
+            ),
+        ]
+    } else {
         vec![
             model::PermissionOption::new(
                 "allow-once",
@@ -3283,20 +3144,85 @@ fn permission_ctrl_a_does_not_resolve_pending_permission() {
                 model::PermissionOptionKind::AllowAlways,
             ),
             model::PermissionOption::new("deny", "Deny", model::PermissionOptionKind::RejectOnce),
-        ],
-        true,
-    );
+        ]
+    }
+}
 
-    handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
-    );
-
-    assert!(matches!(
-        response_rx.try_recv(),
-        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-    ));
-    assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
+#[test]
+fn control_keys_do_not_answer_pending_permissions() {
+    for (key, plan) in [
+        (KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE), false),
+        (KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE), false),
+        (KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE), false),
+        (KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL), false),
+        (KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL), false),
+        (KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL), false),
+        (KeyEvent::new(KeyCode::Char('\u{19}'), KeyModifiers::NONE), true),
+    ] {
+        let mut app = make_test_app();
+        app.status = AppStatus::Running;
+        let (connection, mut commands) = crate::agent::client::AgentConnection::test_channel();
+        app.session_runtime.conn = Some(std::rc::Rc::new(connection));
+        let tool_id = "permission-control";
+        append_tool_call_block(&mut app, tool_id);
+        let options = control_key_permission_options(plan);
+        let (response_tx, mut response_rx) = oneshot::channel();
+        handle_client_event(
+            &mut app,
+            ClientEvent::PermissionRequest {
+                session_id: "test-session".into(),
+                request: model::RequestPermissionRequest::new(
+                    "test-session",
+                    model::ToolCallUpdate::new(tool_id, model::ToolCallUpdateFields::new()),
+                    options,
+                    None,
+                ),
+                response_tx,
+            },
+        );
+        assert_eq!(app.focus_owner(), FocusOwner::Permission);
+        // Keep the existing raw-control draft while the actual permission owns focus.
+        if plan {
+            app.input.set_text("seed");
+        }
+        let draft = app.input.text();
+        let (mi, bi) = app.lookup_tool_call(tool_id).expect("indexed permission tool");
+        handle_terminal_event(&mut app, Event::Key(key));
+        assert!(
+            matches!(response_rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)),
+            "{key:?} must leave the response channel pending"
+        );
+        assert_eq!(app.pending_interaction_ids, vec![tool_id]);
+        let MessageBlock::ToolCall(tool) = &app.transcript.messages[mi].blocks[bi] else {
+            panic!("permission must stay on its original tool");
+        };
+        assert_eq!(tool.id, tool_id);
+        assert!(tool.pending_permission.is_some());
+        assert_eq!(tool.status, model::ToolCallStatus::InProgress);
+        if plan {
+            assert_eq!(app.input.text(), draft);
+        }
+        // A real answer must still reach this request; a closed/dead channel cannot pass.
+        if app.focus_owner() != FocusOwner::Permission {
+            handle_terminal_event(
+                &mut app,
+                Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+            );
+        }
+        assert_eq!(permission_focus_state(&app, tool_id), Some(true));
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        );
+        let response = response_rx.try_recv().expect("Esc must reject the same live request");
+        let model::RequestPermissionOutcome::Selected(selected) = response.outcome else {
+            panic!("expected explicit rejection");
+        };
+        assert_eq!(selected.option_id, if plan { "plan-reject" } else { "deny" });
+        assert!(app.pending_interaction_ids.is_empty());
+        assert!(app.pending_submit.is_none());
+        assert!(commands.try_recv().is_err());
+    }
 }
 
 #[test]
@@ -3312,19 +3238,7 @@ fn permission_ctrl_n_does_not_bypass_mention_focus() {
         true,
     );
 
-    app.slash.show(SlashState {
-        trigger_row: 0,
-        trigger_col: 0,
-        query: String::new(),
-        context: SlashContext::CommandName,
-        candidates: vec![SlashCandidate {
-            insert_value: "/config".into(),
-            primary: "/config".into(),
-            secondary: Some("Open settings".into()),
-        }],
-        placeholder: None,
-        dialog: crate::app::dialog::DialogState::default(),
-    });
+    show_config_slash_menu(&mut app);
     app.claim_focus_target(FocusTarget::Mention);
     assert_eq!(app.focus_owner(), FocusOwner::Mention);
 
@@ -3338,41 +3252,18 @@ fn permission_ctrl_n_does_not_bypass_mention_focus() {
         Err(tokio::sync::oneshot::error::TryRecvError::Empty)
     ));
     assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
-}
 
-#[test]
-fn plan_approval_raw_ctrl_y_does_not_resolve_permission() {
-    let mut app = make_test_app();
-    app.input.set_text("seed");
-    let mut response_rx = attach_pending_permission(
-        &mut app,
-        "perm-1",
-        vec![
-            model::PermissionOption::new(
-                "plan-approve",
-                "Approve",
-                model::PermissionOptionKind::PlanApprove,
-            ),
-            model::PermissionOption::new(
-                "plan-reject",
-                "Reject",
-                model::PermissionOptionKind::PlanReject,
-            ),
-        ],
-        true,
+    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+    assert!(!app.slash.is_visible());
+    assert_eq!(app.focus_owner(), FocusOwner::Permission);
+    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)));
+    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+    let response =
+        response_rx.try_recv().expect("released menu returns input to the same permission");
+    assert_eq!(
+        response.outcome,
+        model::RequestPermissionOutcome::Selected(model::SelectedPermissionOutcome::new("deny"))
     );
-
-    handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Char('\u{19}'), KeyModifiers::NONE)),
-    );
-
-    assert!(matches!(
-        response_rx.try_recv(),
-        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-    ));
-    assert_eq!(app.input.text(), "seed");
-    assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
 }
 
 #[test]
@@ -3431,15 +3322,22 @@ fn connecting_state_allows_drafting_but_blocks_submission() {
 }
 
 #[test]
-fn ctrl_c_quits() {
-    let mut app = make_test_app();
-
-    handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
-    );
-
-    assert!(app.shutdown_requested());
+fn quit_keys_request_shutdown_in_supported_statuses() {
+    for (status, key) in [
+        (AppStatus::Ready, 'c'),
+        (AppStatus::Ready, 'q'),
+        (AppStatus::Connecting, 'q'),
+        (AppStatus::Error, 'q'),
+        (AppStatus::Error, 'c'),
+    ] {
+        let mut app = make_test_app();
+        app.status = status;
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::CONTROL)),
+        );
+        assert!(app.shutdown_requested(), "{status:?}, Ctrl+{key}");
+    }
 }
 
 #[test]
@@ -3482,7 +3380,7 @@ fn ctrl_c_clears_local_draft_before_quitting() {
     app.input.set_text("draft");
     app.pending_submit = Some(app.input.snapshot());
     app.paste.pending_text = "queued paste".to_owned();
-    app.pending_images.push(crate::app::clipboard_image::ImageAttachment {
+    app.input.image_payloads.push(crate::app::clipboard_image::ImageAttachment {
         data: "image-data".to_owned(),
         mime_type: "image/png".to_owned(),
     });
@@ -3496,23 +3394,11 @@ fn ctrl_c_clears_local_draft_before_quitting() {
     assert!(app.input.is_empty());
     assert!(app.pending_submit.is_none());
     assert!(app.paste.pending_text.is_empty());
-    assert!(app.pending_images.is_empty());
+    assert!(app.input.image_payloads.is_empty());
 
     handle_terminal_event(
         &mut app,
         Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
-    );
-
-    assert!(app.shutdown_requested());
-}
-
-#[test]
-fn ctrl_q_quits() {
-    let mut app = make_test_app();
-
-    handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)),
     );
 
     assert!(app.shutdown_requested());
@@ -3536,19 +3422,23 @@ fn terminal_event_outcome_carries_runtime_command() {
 
     assert!(outcome.changed);
     assert_eq!(outcome.runtime_command, Some(crate::app::keys::RuntimeCommand::SuspendProcess));
-}
-
-#[test]
-fn connecting_state_ctrl_q_quits() {
-    let mut app = make_test_app();
-    app.status = AppStatus::Connecting;
-
-    handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)),
-    );
-
-    assert!(app.shutdown_requested());
+    #[cfg(unix)]
+    {
+        let mut app = make_test_app();
+        app.status = AppStatus::Ready;
+        app.input.set_text("edited draft");
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)),
+        );
+        assert_eq!(app.input.text(), "edited draf");
+        let outcome = handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+        );
+        assert_eq!(outcome.runtime_command, Some(crate::app::keys::RuntimeCommand::SuspendProcess));
+        assert_eq!(app.input.text(), "edited draf");
+    }
 }
 
 #[test]
@@ -3574,58 +3464,32 @@ fn error_state_blocks_input_shortcuts() {
 }
 
 #[test]
-fn error_state_ctrl_q_quits() {
-    let mut app = make_test_app();
-    app.status = AppStatus::Error;
-
-    handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)),
-    );
-
-    assert!(app.shutdown_requested());
-}
-
-#[test]
-fn error_state_ctrl_c_quits() {
-    let mut app = make_test_app();
-    app.status = AppStatus::Error;
-
-    handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
-    );
-
-    assert!(app.shutdown_requested());
-}
-
-#[test]
-fn error_state_blocks_paste_events() {
-    let mut app = make_test_app();
-    app.status = AppStatus::Error;
-
-    handle_terminal_event(&mut app, Event::Paste("blocked".into()));
-
-    assert!(app.paste.pending_text.is_empty());
-    assert!(app.input.is_empty());
+fn blocked_surfaces_ignore_paste_without_changing_the_draft() {
+    for (status, surface, blocked) in [
+        (AppStatus::Error, SurfaceMode::Chat, true),
+        (AppStatus::Ready, SurfaceMode::Fullscreen(FullscreenView::Config), true),
+        (AppStatus::Ready, SurfaceMode::Fullscreen(FullscreenView::Trusted), true),
+        (AppStatus::Ready, SurfaceMode::Chat, false),
+    ] {
+        let mut app = make_test_app();
+        app.status = status;
+        app.surface_mode = surface;
+        app.input.set_text("unfinished draft");
+        handle_terminal_event(&mut app, Event::Paste("pasted payload".into()));
+        assert_eq!(app.input.text(), "unfinished draft");
+        assert_eq!(
+            app.paste.pending_text,
+            if blocked { "" } else { "pasted payload" },
+            "{status:?}, {surface:?}"
+        );
+        assert!(app.pending_submit.is_none());
+    }
 }
 
 #[test]
 fn mention_owner_releases_back_to_input() {
     let mut app = make_test_app();
-    app.slash.show(SlashState {
-        trigger_row: 0,
-        trigger_col: 0,
-        query: String::new(),
-        context: SlashContext::CommandName,
-        candidates: vec![SlashCandidate {
-            insert_value: "/config".into(),
-            primary: "/config".into(),
-            secondary: Some("Open settings".into()),
-        }],
-        placeholder: None,
-        dialog: crate::app::dialog::DialogState::default(),
-    });
+    show_config_slash_menu(&mut app);
     app.claim_focus_target(FocusTarget::Mention);
 
     handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
@@ -3635,12 +3499,13 @@ fn mention_owner_releases_back_to_input() {
 }
 
 #[test]
-fn settings_view_routes_enter_to_close_not_chat_submit() {
+fn config_status_routes_enter_to_close_not_chat_submit() {
     let mut app = make_test_app();
     let dir = tempfile::tempdir().expect("tempdir");
     app.settings_home_override = Some(dir.path().to_path_buf());
     app.cwd_raw = dir.path().to_string_lossy().to_string();
     crate::app::config::open(&mut app).expect("open settings");
+    app.config.active_tab = crate::app::config::ConfigTab::Status;
     app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Config);
     app.input.set_text("seed");
 
@@ -3649,17 +3514,6 @@ fn settings_view_routes_enter_to_close_not_chat_submit() {
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
     assert_eq!(app.input.text(), "seed");
     assert!(app.pending_submit.is_none());
-}
-
-#[test]
-fn settings_view_ignores_paste_events() {
-    let mut app = make_test_app();
-    app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Config);
-
-    handle_terminal_event(&mut app, Event::Paste("blocked".into()));
-
-    assert!(app.paste.pending_text.is_empty());
-    assert!(app.input.is_empty());
 }
 
 #[test]
@@ -3737,17 +3591,6 @@ fn trusted_view_accept_key_does_not_edit_chat_input() {
 }
 
 #[test]
-fn trusted_view_ignores_paste_events() {
-    let mut app = make_test_app();
-    app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Trusted);
-
-    handle_terminal_event(&mut app, Event::Paste("blocked".into()));
-
-    assert!(app.paste.pending_text.is_empty());
-    assert!(app.input.is_empty());
-}
-
-#[test]
 fn session_picker_paste_edits_search_without_changing_the_chat_draft() {
     let mut app = make_test_app();
     app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::SessionPicker);
@@ -3761,36 +3604,15 @@ fn session_picker_paste_edits_search_without_changing_the_chat_draft() {
 }
 
 #[test]
-fn buffered_paste_char_does_not_request_redraw() {
-    let mut app = make_test_app();
-    let now = Instant::now();
-
-    assert_eq!(
-        app.paste.burst.on_char('a', now),
-        super::super::paste_burst::CharAction::Passthrough('a')
-    );
-    assert_eq!(
-        app.paste.burst.on_char('b', now + Duration::from_millis(1)),
-        super::super::paste_burst::CharAction::Consumed
-    );
-    assert_eq!(
-        app.paste.burst.on_char('c', now + Duration::from_millis(2)),
-        super::super::paste_burst::CharAction::RetroCapture(1)
-    );
-
-    app.surface_dirty.chat.repaint = false;
-    handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE)),
-    );
-
-    assert!(!app.surface_dirty.chat.repaint);
-    assert!(app.input.is_empty());
-}
-
-#[test]
 fn api_retry_updates_single_warning_notice() {
-    let mut app = make_test_app();
+    let (mut app, mut commands) = app_with_bridge_connection();
+    app.push_message_tracked(ChatMessage::new(
+        MessageRole::System(Some(SystemSeverity::Info)),
+        vec![MessageBlock::Text(TextBlock::from_complete("unrelated history notice"))],
+        None,
+    ));
+    app.transcript.messages.push(user_msg("retry this request"));
+    let history = message_snapshots(&app);
     handle_client_event(
         &mut app,
         session_update(model::SessionUpdate::ApiRetryUpdate {
@@ -3801,6 +3623,8 @@ fn api_retry_updates_single_warning_notice() {
             error: model::ApiRetryError::Unknown,
         }),
     );
+    let notice_id = app.transcript.messages.last().expect("first retry notice").id;
+    assert!(first_block_text(app.transcript.messages.last().unwrap()).contains("1/4"));
     handle_client_event(
         &mut app,
         session_update(model::SessionUpdate::ApiRetryUpdate {
@@ -3812,13 +3636,53 @@ fn api_retry_updates_single_warning_notice() {
         }),
     );
 
-    assert_eq!(app.transcript.messages.len(), 1);
-    assert_eq!(app.turn.notice_refs.len(), 1);
-    let MessageBlock::Notice(notice) = &app.transcript.messages[0].blocks[0] else {
+    assert_eq!(&message_snapshots(&app)[..history.len()], history);
+    let [message] = &app.transcript.messages[history.len()..] else {
+        panic!("retries must share one transcript notice");
+    };
+    assert_eq!(message.id, notice_id, "retry warning must update in place");
+    let [MessageBlock::Notice(notice)] = message.blocks.as_slice() else {
         panic!("expected API retry notice");
     };
     assert_eq!(notice.severity, SystemSeverity::Warning);
-    assert_eq!(notice.text.text, "API retry 2/4 after server error HTTP 529, retrying in 1.5s",);
+    assert!(notice.text.text.contains("2/4"));
+    assert!(notice.text.text.contains("HTTP 529"));
+    assert!(notice.text.text.contains("1.5s"));
+    assert!(!notice.text.text.contains("1/4"));
+    for (error, label) in [
+        (model::ApiRetryError::ModelNotFound, "model unavailable"),
+        (model::ApiRetryError::OauthOrgNotAllowed, "account access not allowed"),
+        (model::ApiRetryError::AccountOnHold, "account on hold"),
+        (model::ApiRetryError::Overloaded, "service overloaded"),
+        (model::ApiRetryError::Unknown, "connection error"),
+    ] {
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::ApiRetryUpdate {
+                attempt: 3,
+                max_retries: 4,
+                retry_delay_ms: 250.0,
+                error_status: None,
+                error,
+            }),
+        );
+        assert_eq!(&message_snapshots(&app)[..history.len()], history);
+        let [message] = &app.transcript.messages[history.len()..] else {
+            panic!("one retry notice")
+        };
+        assert_eq!(message.id, notice_id);
+        let [MessageBlock::Notice(notice)] = message.blocks.as_slice() else {
+            panic!("retry notice")
+        };
+        assert_eq!(notice.severity, SystemSeverity::Warning);
+        assert!(notice.text.text.contains(label));
+        assert!(notice.text.text.contains("3/4"));
+        assert!(notice.text.text.contains("250ms"));
+        assert!(!notice.text.text.contains("HTTP"));
+        assert!(!notice.text.text.contains("2/4"));
+        assert_ne!(app.status, AppStatus::Error);
+        assert!(commands.try_recv().is_err(), "retry must not submit another prompt");
+    }
 }
 
 #[test]
@@ -4042,46 +3906,336 @@ fn settings_parse_error_surfaces_system_error_message() {
 }
 
 #[test]
-fn internal_error_detection_accepts_xml_payload() {
-    use crate::agent::error_handling::looks_like_internal_error;
-    let payload = "<error><code>-32603</code><message>Adapter process crashed</message></error>";
-    assert!(looks_like_internal_error(payload));
-}
+fn settings_parse_error_is_recorded_in_the_default_log() {
+    let mut app = make_test_app();
+    let records = crate::logging::test_capture::capture(|| {
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::SettingsParseError {
+                file: Some("settings.json".to_owned()),
+                path: "permissions.allow".to_owned(),
+                message: "Expected array".to_owned(),
+            }),
+        );
+    });
 
-#[test]
-fn internal_error_detection_rejects_plain_bash_failure() {
-    use crate::agent::error_handling::looks_like_internal_error;
-    let payload = "bash: unknown_command: command not found";
-    assert!(!looks_like_internal_error(payload));
-}
-
-#[test]
-fn summarize_internal_error_prefers_xml_message() {
-    use crate::agent::error_handling::summarize_internal_error;
-    let payload = "<error><code>-32603</code><message>Adapter process crashed</message></error>";
-    assert_eq!(summarize_internal_error(payload), "Adapter process crashed");
-}
-
-#[test]
-fn summarize_internal_error_reads_json_rpc_message() {
-    use crate::agent::error_handling::summarize_internal_error;
-    let payload = r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal rpc fault"}}"#;
-    assert_eq!(summarize_internal_error(payload), "internal rpc fault");
-}
-
-#[test]
-fn internal_error_detection_accepts_permission_zod_payload() {
-    use crate::agent::error_handling::looks_like_internal_error;
-    let payload = "Tool permission request failed: ZodError: [{\"message\":\"Invalid input\"}]";
-    assert!(looks_like_internal_error(payload));
-}
-
-#[test]
-fn summarize_internal_error_prefers_permission_failure_summary() {
-    use crate::agent::error_handling::summarize_internal_error;
-    let payload = "Tool permission request failed: ZodError: [{\"message\":\"Invalid input: expected record, received undefined\"}]";
+    let record = records
+        .iter()
+        .find(|record| record["event_name"] == "settings_parse_error")
+        .expect("settings parse error record");
+    assert_eq!(record["level"], "WARN");
     assert_eq!(
-        summarize_internal_error(payload),
-        "Tool permission request failed: Invalid input: expected record, received undefined"
+        record["error_message"],
+        "Settings parse error in settings.json at permissions.allow: Expected array"
     );
+}
+
+#[test]
+fn clearing_the_composer_discards_held_input_and_allows_a_fresh_prompt() {
+    use crate::agent::wire::BridgeCommand;
+    use crate::app::test_support::{EventClock, press};
+    for (prefix, typed) in [("old draft ", "ab"), ("old draft ", "abc"), ("", "ab"), ("", "abc")] {
+        let clock = EventClock::new();
+        let (mut app, mut commands) = app_with_bridge_connection();
+        app.status = AppStatus::Ready;
+        app.input.set_text(prefix);
+        for ch in typed.chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        );
+        assert!(!app.shutdown_requested());
+        assert!(app.input.is_empty());
+        if let Some(action) = app.paste.burst.tick(clock.at(1)) {
+            crate::app::apply_paste_burst_flush(&mut app, action);
+        }
+        crate::app::finalize_pending_paste_event(&mut app);
+        assert!(app.input.is_empty(), "cleared text must not return on the next tick");
+        assert!(commands.try_recv().is_err());
+        for (i, ch) in "fresh".chars().enumerate() {
+            clock.at_millis(1500 + u64::try_from(i).unwrap() * 300);
+            press(&mut app, KeyCode::Char(ch));
+        }
+        clock.at(4);
+        press(&mut app, KeyCode::Enter);
+        let BridgeCommand::Prompt { session_id, chunks, .. } =
+            commands.try_recv().expect("fresh Prompt").command
+        else {
+            panic!("expected Prompt")
+        };
+        assert_eq!(session_id, "test-session");
+        assert_eq!(
+            chunks.iter().filter(|c| c.kind == "text").map(|c| c.value.clone()).collect::<Vec<_>>(),
+            [serde_json::json!("fresh")]
+        );
+        while let Ok(envelope) = commands.try_recv() {
+            assert!(!matches!(envelope.command, BridgeCommand::Prompt { .. }));
+        }
+    }
+}
+
+fn select_slash_for_render(app: &mut App, target: &str) {
+    let limit = app.slash.visible().expect("slash menu").candidates.len();
+    for _ in 0..limit {
+        let menu = app.slash.visible().expect("slash menu");
+        if menu.candidates[menu.dialog.selected].insert_value == target {
+            return;
+        }
+        completion_key(app, KeyCode::Down);
+    }
+    panic!("missing slash target {target}");
+}
+
+fn assert_selected_slash_row(app: &App, target: &str) {
+    let rows = crate::ui::input_rows::build_composer_hint_rows(app);
+    let selected =
+        rows.iter().filter(|r| r.spans.iter().any(|s| s.content.trim() == ">")).collect::<Vec<_>>();
+    let [row] = selected.as_slice() else { panic!("one visible selected candidate required") };
+    assert!(row.to_string().contains(target), "selection must belong to {target}: {row:?}");
+}
+
+#[test]
+fn slash_completion_rows_follow_scrolling_and_deliberate_selection() {
+    for (source, target, expected) in
+        [("/help", "/a-help", "/a-help "), ("/effort high", "xhigh", "/effort xhigh ")]
+    {
+        let mut app = make_test_app();
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::AvailableCommandsUpdate(
+                model::AvailableCommandsUpdate::new(vec![model::AvailableCommand::new(
+                    "a-help",
+                    "Competing plugin",
+                )]),
+            )),
+        );
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::CurrentModelUpdate(
+                model::CurrentModelUpdate::new(
+                    model::CurrentModel::new("opus", "Opus", "Opus")
+                        .supports_effort(true)
+                        .supported_effort_levels(vec![
+                            model::EffortLevel::High,
+                            model::EffortLevel::XHigh,
+                        ]),
+                ),
+            )),
+        );
+        app.input.set_text(source);
+        app.input.set_cursor(0, 0);
+        completion_key(&mut app, KeyCode::End);
+        select_slash_for_render(&mut app, target);
+        assert_selected_slash_row(&app, target);
+        completion_key(&mut app, KeyCode::Enter);
+        assert_eq!(app.pending_submit.as_ref().expect("handoff").lines.join("\n"), expected);
+    }
+    for target in ["/aaa-74", "/new-session", "/docs"] {
+        let mut app = make_test_app();
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::AvailableCommandsUpdate(
+                model::AvailableCommandsUpdate::new(
+                    (0..75)
+                        .map(|i| {
+                            model::AvailableCommand::new(format!("aaa-{i:02}"), "Plugin command")
+                        })
+                        .collect(),
+                ),
+            )),
+        );
+        app.input.set_text("/");
+        app.input.set_cursor(0, 0);
+        completion_key(&mut app, KeyCode::Right);
+        assert!(
+            !crate::ui::input_rows::build_composer_hint_rows(&app)
+                .iter()
+                .any(|r| r.to_string().contains(target))
+        );
+        select_slash_for_render(&mut app, target);
+        assert_selected_slash_row(&app, target);
+        assert!(
+            !crate::ui::input_rows::build_composer_hint_rows(&app)
+                .iter()
+                .any(|r| r.to_string().contains("/aaa-00"))
+        );
+        completion_key(&mut app, if target == "/docs" { KeyCode::Enter } else { KeyCode::Tab });
+        assert_eq!(app.input.text(), format!("{target} "));
+        assert!(app.pending_submit.is_none());
+        if target == "/docs" {
+            assert!(
+                crate::ui::input_rows::build_composer_hint_rows(&app)
+                    .iter()
+                    .any(|r| r.to_string().contains("commands"))
+            );
+        }
+    }
+}
+
+#[test]
+fn opaque_sdk_argument_help_renders_the_active_commands_hint() {
+    for (input, expected, other) in [
+        ("/clear ", "[conversation label]", "<deployment target>"),
+        ("/reset ", "[conversation label]", "<deployment target>"),
+        ("/ship staging", "<deployment target>", "[conversation label]"),
+    ] {
+        let mut app = make_test_app();
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::AvailableCommandsUpdate(
+                model::AvailableCommandsUpdate::new(vec![
+                    model::AvailableCommand::new("clear", "Clear")
+                        .aliases(vec!["reset".into()])
+                        .input_hint("[conversation label]"),
+                    model::AvailableCommand::new("deploy", "Deploy")
+                        .aliases(vec!["ship".into()])
+                        .input_hint("<deployment target>"),
+                ]),
+            )),
+        );
+        app.input.set_text(input);
+        app.input.set_cursor(0, 0);
+        completion_key(&mut app, KeyCode::End);
+        assert!(crate::ui::input_rows::build_composer_hint_rows(&app).is_empty());
+        for _ in 0..2 {
+            completion_key(&mut app, KeyCode::Tab);
+            let rows = crate::ui::input_rows::build_composer_hint_rows(&app);
+            assert!(rows.iter().any(|r| r.to_string().contains(expected)));
+            assert!(rows.iter().all(|r| !r.to_string().contains(other)));
+            assert!(
+                rows.iter().all(|r| r.spans.iter().all(|s| s.content.trim() != ">")),
+                "opaque hint is not a selectable value"
+            );
+            assert_eq!(app.input.text(), input);
+            assert!(app.pending_submit.is_none());
+        }
+        completion_key(&mut app, KeyCode::Enter);
+        assert_eq!(app.pending_submit.as_ref().expect("handoff").lines.join("\n"), input);
+    }
+}
+
+fn await_correlated_file_search(app: &mut App, query: &str, expected: &[&str]) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let event = app
+            .file_index_event_rx
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("correlated matcher result");
+        let crate::app::file_index::FileIndexEvent::MatchResult(result) = event else {
+            panic!("the completed fixture index only emits matcher results");
+        };
+        // A matcher can answer before loading its initial index. The normal
+        // result consumer schedules a follow-up for that incomplete answer.
+        let settled = result.query == query
+            && result.generation == app.file_index.generation
+            && result.index_version == app.file_index.index_version
+            && result.status == crate::app::file_index::FileIndexStatus::Complete;
+        // Use the same consumer as file_index::drain_events, including its
+        // sequence check. Requeueing could drain a newer result unseen here.
+        if mention::apply_match_result(app, result) && settled {
+            break;
+        }
+    }
+    let menu = app.mention.as_ref().expect("active mention");
+    assert_eq!(menu.query, query);
+    let actual = menu
+        .candidates
+        .iter()
+        .map(|c| c.rel_path.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(actual, expected.iter().copied().collect());
+}
+
+#[test]
+fn spaced_file_completion_distinguishes_literal_paths_from_selected_matches() {
+    for matching in [false, true] {
+        let clock = crate::app::test_support::EventClock::new();
+        let (mut app, mut commands) = app_with_bridge_connection();
+        let fixture = tempfile::tempdir().expect("fixture root");
+        app.cwd_raw = fixture.path().to_string_lossy().into_owned();
+        app.file_index.root = Some(fixture.path().to_path_buf());
+        app.file_index.respect_gitignore = app.config.respect_gitignore_effective();
+        app.file_index.status = crate::app::file_index::FileIndexStatus::Complete;
+        for path in ["docs/manual path.md", "docs/manual peer.md", "other.txt"] {
+            app.file_index.entries.insert(
+                path.into(),
+                crate::app::file_index::FileCandidate {
+                    rel_path: path.into(),
+                    rel_path_lower: path.into(),
+                    basename_lower: path.rsplit('/').next().unwrap().into(),
+                    depth: usize::from(path.contains('/')),
+                },
+            );
+        }
+        app.input.set_text("@");
+        app.input.set_cursor(0, 0);
+        completion_key(&mut app, KeyCode::Right);
+        completion_key(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.input.text(), "@ ");
+        assert!(app.pending_submit.is_none());
+        assert!(commands.try_recv().is_err());
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        );
+        app.input.set_text("open @docs/manual keep suffix");
+        app.input.set_cursor(0, 16);
+        completion_key(&mut app, KeyCode::Right);
+        await_correlated_file_search(
+            &mut app,
+            "docs/manual",
+            &["docs/manual path.md", "docs/manual peer.md"],
+        );
+        clock.at(1);
+        completion_key(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.input.text(), "open @docs/manual  keep suffix");
+        assert!(app.pending_submit.is_none());
+        for (i, ch) in (if matching { "p" } else { "missing" }).chars().enumerate() {
+            clock.at_millis(1500 + u64::try_from(i).unwrap() * 300);
+            completion_key(&mut app, KeyCode::Char(ch));
+        }
+        let (query, expected) = if matching {
+            ("docs/manual p", &["docs/manual path.md", "docs/manual peer.md"][..])
+        } else {
+            ("docs/manual missing", &[][..])
+        };
+        await_correlated_file_search(&mut app, query, expected);
+        if matching {
+            for _ in 0..2 {
+                let menu = app.mention.as_ref().unwrap();
+                if menu.candidates[menu.dialog.selected].rel_path == "docs/manual peer.md" {
+                    break;
+                }
+                completion_key(&mut app, KeyCode::Down);
+            }
+            assert_completion_menu(&app, expected, Some("docs/manual peer.md"));
+        }
+        completion_key(&mut app, KeyCode::Tab);
+        assert_eq!(
+            app.input.text(),
+            if matching {
+                "open @'docs/manual peer.md' keep suffix"
+            } else {
+                "open @'docs/manual missing' keep suffix"
+            }
+        );
+        assert_eq!(app.input.cursor(), (0, 27));
+        assert!(app.pending_submit.is_none());
+        assert!(commands.try_recv().is_err());
+        clock.at(5);
+        completion_key(&mut app, KeyCode::Right);
+        completion_key(&mut app, KeyCode::Char('!'));
+        assert_eq!(
+            app.input.text(),
+            if matching {
+                "open @'docs/manual peer.md' !keep suffix"
+            } else {
+                "open @'docs/manual missing' !keep suffix"
+            }
+        );
+        assert!(app.pending_submit.is_none());
+        assert!(commands.try_recv().is_err());
+    }
 }
