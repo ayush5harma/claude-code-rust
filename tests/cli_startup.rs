@@ -2,7 +2,6 @@
 
 use clap::Parser;
 use claude_code_rust::{Cli, StartupLaunch};
-#[cfg(unix)]
 use std::process::Command;
 
 #[path = "support/startup_audit.rs"]
@@ -557,9 +556,14 @@ fn explicit_logging_failure_exits_one_before_bridge_startup_and_preserves_input(
 
 // Default diagnostics lookup honors XDG_DATA_HOME on Linux. Other platforms must
 // use an independently verified native data-directory isolation mechanism.
+// The launch runs under a pseudo-terminal: without one it stops at the terminal check
+// (exit 25) before the startup error under test.
 #[cfg(all(target_os = "linux", debug_assertions))]
-#[tokio::test]
-async fn wrapped_startup_errors_keep_their_typed_exit_and_report_without_starting_a_session() {
+#[test]
+fn wrapped_startup_errors_keep_their_typed_exit_and_report_without_starting_a_session() {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use std::io::Read as _;
+
     for (missing_runtime, code, category) in
         [(true, 20, "environment"), (false, 21, "bridge_spawn")]
     {
@@ -571,54 +575,57 @@ async fn wrapped_startup_errors_keep_their_typed_exit_and_report_without_startin
         std::fs::write(&script, b"throw new Error('must never run');").unwrap();
         let missing =
             root.path().join(if missing_runtime { "missing-runtime" } else { "missing-script.js" });
-        let mut probe = tokio::process::Command::new(env!("CARGO_BIN_EXE_claude-rs"));
-        probe
+        let selected = Command::new(env!("CARGO_BIN_EXE_claude-rs"))
             .args(["logs", "--path"])
             .current_dir(&project)
             .env("XDG_DATA_HOME", &data)
             .env("HOME", root.path().join("home"))
             .stdin(std::process::Stdio::null())
-            .kill_on_drop(true);
-        let selected = tokio::time::timeout(std::time::Duration::from_secs(20), probe.output())
-            .await
-            .unwrap()
+            .output()
             .unwrap();
         assert!(selected.status.success());
         assert_eq!(
             String::from_utf8(selected.stdout).unwrap(),
             format!("{}\n", data.join("claude-code-rust/logs/runtime").display())
         );
-        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_claude-rs"));
-        command
-            .current_dir(&project)
-            .args(["--no-update-check", "--log-file"])
-            .arg(root.path().join("explicit.log"))
-            .env("XDG_DATA_HOME", &data)
-            .env("XDG_CACHE_HOME", root.path().join("cache"))
-            .env("HOME", root.path().join("home"))
-            .env("CLAUDE_CONFIG_DIR", root.path().join("profile"))
-            .env("CLAUDE_RS_CONFIG_DIR", root.path().join("app-profile"))
-            .env_remove("RUST_LOG")
-            .env_remove("CLAUDE_RS_AGENT_BRIDGE")
-            .env("CLAUDE_RS_AGENT_BRIDGE_RUNTIME", &missing)
-            .stdin(std::process::Stdio::null())
-            .kill_on_drop(true);
+        let pair = native_pty_system()
+            .openpty(PtySize { rows: 24, cols: 200, pixel_width: 0, pixel_height: 0 })
+            .expect("open pty");
+        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_claude-rs"));
+        command.cwd(&project);
+        command.arg("--no-update-check");
+        command.arg("--log-file");
+        command.arg(root.path().join("explicit.log"));
+        command.env("XDG_DATA_HOME", &data);
+        command.env("XDG_CACHE_HOME", root.path().join("cache"));
+        command.env("HOME", root.path().join("home"));
+        command.env("CLAUDE_CONFIG_DIR", root.path().join("profile"));
+        command.env("CLAUDE_RS_CONFIG_DIR", root.path().join("app-profile"));
+        command.env_remove("RUST_LOG");
+        command.env_remove("CLAUDE_RS_AGENT_BRIDGE");
+        command.env("CLAUDE_RS_AGENT_BRIDGE_RUNTIME", &missing);
         if missing_runtime {
-            command.arg("--bridge-script").arg(&script);
+            command.arg("--bridge-script");
+            command.arg(&script);
         } else {
             command.env("CLAUDE_RS_AGENT_BRIDGE", &missing);
         }
-        let output = tokio::time::timeout(std::time::Duration::from_secs(20), command.output())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(code));
-        assert!(output.stdout.is_empty());
-        let text = String::from_utf8(output.stderr).unwrap();
+        let mut reader = pair.master.try_clone_reader().expect("pty reader");
+        let mut child = pair.slave.spawn_command(command).expect("spawn claude-rs");
+        drop(pair.slave);
+        let output = std::thread::spawn(move || {
+            let mut output = Vec::new();
+            let _ = reader.read_to_end(&mut output);
+            String::from_utf8_lossy(&output).into_owned()
+        });
+        let status = child.wait().expect("wait for claude-rs");
+        drop(pair.master);
+        let text = output.join().expect("pty output");
+        assert_eq!(status.exit_code(), code, "{text}");
         let field = |name: &str| {
             text.lines().find_map(|line| line.trim().strip_prefix(&format!("{name}: ")))
         };
-        assert_eq!(field("category"), Some(category));
+        assert_eq!(field("category"), Some(category), "{text}");
         assert_eq!(field("exit_code"), Some(code.to_string().as_str()));
         assert_eq!(field("next_step"), Some("claude-rs doctor --strict"));
         assert!(field("detail").unwrap().contains(missing.to_str().unwrap()));
