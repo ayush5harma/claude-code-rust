@@ -297,7 +297,7 @@ async fn validation_connection_retry_and_admission_preserve_the_exact_response()
 
 #[tokio::test(flavor = "current_thread")]
 async fn unsupported_accept_is_refused_and_decline_waits_for_matching_sdk_settlement() {
-    tokio::task::LocalSet::new().run_until(async {
+    tokio::task::LocalSet::new().run_until(Box::pin(async {
         let mut app = app();
         let mut commands = connect(&mut app);
         let mut unsupported = request("declined-request");
@@ -320,7 +320,7 @@ async fn unsupported_accept_is_refused_and_decline_waits_for_matching_sdk_settle
         press(&mut app, KeyCode::Down, KeyModifiers::NONE);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         response(&mut app, &mut commands, "session-1", "cancelled-unsupported", Cancel, None).await;
-    }).await;
+    })).await;
 }
 
 fn url_request(id: &str, url: Option<&str>) -> types::ElicitationRequest {
@@ -509,7 +509,7 @@ async fn optional_answers_omit_restore_and_reinclude_without_losing_the_draft() 
 #[tokio::test(flavor = "current_thread")]
 async fn url_actions_target_the_host_request_and_never_include_form_content() {
     tokio::task::LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             let calls = Rc::new(RefCell::new(Vec::new()));
             let journal = calls.clone();
             let _browser = super::super::super::auth::browser_test_support::install(move |url| {
@@ -544,7 +544,7 @@ async fn url_actions_target_the_host_request_and_never_include_form_content() {
                     "https://forms.example/manual"
                 ]
             );
-        })
+        }))
         .await;
 }
 

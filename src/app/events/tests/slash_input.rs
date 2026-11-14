@@ -325,7 +325,7 @@ fn btw_name_waits_for_free_text_and_one_enter_sends_the_complete_question() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn invalid_arguments_reach_usage_feedback_without_dispatch_or_input_capture() {
-    tokio::task::LocalSet::new().run_until(async {
+    tokio::task::LocalSet::new().run_until(Box::pin(async {
         for (input, guidance, correction) in [
             ("/effort impossible", "/effort", "/effort high"), ("/effort high extra", "/effort", "/effort high"),
             ("/docs invalid-topic", "/docs", "/docs commands"), ("/btw ", "/btw", "/btw corrected question"),
@@ -353,7 +353,7 @@ async fn invalid_arguments_reach_usage_feedback_without_dispatch_or_input_captur
                 }
             }
         }
-    }).await;
+    })).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
