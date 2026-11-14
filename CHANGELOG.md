@@ -4,8 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.16.3-fork.1] - 2026-11-15
+
 ### Upstream sync
 
+- Upstream main at `62deb8b` (0.16.0-0.16.3, #484-#547). Upstream merged this fork's #487-#494 (`/reload`, rename after save, `--dir` validation, trust prompt directory, `/export`, launch flags, `/agents`, logging); the fork's later work on them (the `/agents` inspector, export naming, CLI fixes, picker tags, delete, refresh and compact-first) is rebuilt on upstream's versions. Upstream's incremental replay, consolidated SDK types, tui-markdown lists and tables, Oniguruma highlighting and Read output metadata replace the fork's equivalents. The bridge no longer posts hook notices; the app's hook activity owns them.
 - Upstream main at `1c25754`: the live session name in Status (#445), the top-level bridge test glob (#471), issue triage CI (#474), the fullscreen Git diff viewer (#476), unified session picking with normalized saved history (#477), the unified chat layout and Markdown lists (#478), the composer prompt glyph on sent messages (#480) and the configurable single-row footer (#481). The welcome crab keeps this fork's pixel art and clock; #479's review fixes to its scheduling are kept.
 - `/diff` is upstream's Git viewer (HEAD, staged and unstaged comparisons). The fork's `/diff`, which also listed the session's Edit and Write diffs, is removed.
 - The session picker is upstream's searchable picker. Printable keys now search, so compact-first resume moved to Tab, tagging to Ctrl+T and deletion to Ctrl+D; `/resume` takes no argument (resume by exact title stays available as `claude-rs resume <title>`). Rows show upstream's title fallback (name, first prompt, summary).
@@ -15,6 +18,10 @@ All notable changes to this project will be documented in this file.
 ### Fixes
 
 - `/resume` lists every saved session of the project, as Claude Code's own picker does, so a conversation renamed long ago is found by its name. The bridge asked the Agent SDK for the newest 50 sessions only, which also made tagging, deleting, reading or forking an older session fail with "no longer in this project" or "unknown session".
+
+### Dependencies
+
+- Agent SDK 0.3.325, Biome 2.6.7, knip 6.45.1, jscpd 5.4.3, every Cargo dependency at its latest compatible version, and refreshed `nixpkgs` and `rust-overlay` flake inputs.
 
 ## [0.16.3] - 2026-11-13 [Changes][v0.16.3]
 

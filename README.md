@@ -50,6 +50,14 @@ The stock interface runs on Node.js with React Ink, which redraws whole frames o
 
 The additions below are measured against upstream commit `26f9b12` (v0.15.2); ordinary upstream features are not listed. The [changelog](CHANGELOG.md) has the details of each release.
 
+### v0.16.3-fork.1
+
+| Change | What it does |
+| --- | --- |
+| Every session in `/resume` ([#44](https://github.com/ayush5harma/claude-code-rust/issues/44)) | The picker lists and searches every saved session of the project, as Claude Code's own picker does, so a conversation renamed long ago is found by its name. Tagging, deleting, reading and forking older sessions work again. |
+| Upstream 0.16.3 | Upstream's releases 0.16.0-0.16.3 are merged; this fork's earlier pull requests to upstream now ship in their upstream form. |
+| Dependencies | Agent SDK 0.3.325 and refreshed Cargo, npm and Nix locks. |
+
 ### v0.15.2-fork.7
 
 | Change | What it does |
