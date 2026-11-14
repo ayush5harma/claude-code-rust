@@ -6,6 +6,9 @@ import type { SessionState } from "./session_lifecycle.js";
 
 const observations = new SessionObservations();
 const pending = new WeakMap<SessionState, { timer?: NodeJS.Timeout; abort?: AbortController }>();
+// Sessions whose footer row currently shows status-line text. A clear is sent only to take
+// text down, so a session without a configured command stays silent on the wire.
+const showing = new WeakSet<SessionState>();
 const MAX_OUTPUT = 4096;
 const TIMEOUT_MS = 2000;
 type Config = { command: string; refreshInterval?: number };
@@ -22,6 +25,12 @@ const defaultServices: StatusLineServices = {
   readConfig: readConfiguredStatusLine,
   run: executeStatusLine,
 };
+
+function publish(session: SessionState, text: string | null): void {
+  if (text === null && !showing.delete(session)) return;
+  if (text !== null) showing.add(session);
+  emitSessionUpdate(session.sessionId, { type: "status_line_update", text });
+}
 
 export function stopStatusLine(session: SessionState): void {
   const current = pending.get(session);
@@ -73,7 +82,7 @@ async function refresh(session: SessionState, current: () => boolean, abort: Abo
     const config = await services.readConfig(session.cwd);
     if (!current() || !session.connected) return;
     if (!config?.command) {
-      emitSessionUpdate(sessionId, { type: "status_line_update", text: null });
+      publish(session, null);
       return;
     }
     let context: Awaited<ReturnType<SessionState["query"]["getContextUsage"]>> | undefined;
@@ -89,7 +98,7 @@ async function refresh(session: SessionState, current: () => boolean, abort: Abo
     };
     const result = await services.run(config.command, session.cwd, input, abort.signal);
     if (current() && session.connected) {
-      emitSessionUpdate(sessionId, { type: "status_line_update", text: result });
+      publish(session, result);
       if (config.refreshInterval !== undefined && Number.isFinite(config.refreshInterval)) {
         const interval = Math.min(3600, Math.max(1, config.refreshInterval));
         const state = pending.get(session);
@@ -97,7 +106,7 @@ async function refresh(session: SessionState, current: () => boolean, abort: Abo
       }
     }
   } catch {
-    if (current() && session.connected) emitSessionUpdate(sessionId, { type: "status_line_update", text: null });
+    if (current() && session.connected) publish(session, null);
   }
 }
 

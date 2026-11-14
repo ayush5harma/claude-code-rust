@@ -5,6 +5,7 @@ import {
   renameSession,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { BridgeCommand } from "../types.js";
+import { sessionPluginFolders } from "./plugin_inventory.js";
 import {
   currentSessionListOptions,
   emitSessionResumeFailed,
@@ -15,7 +16,6 @@ import {
   writeEvent,
 } from "./events.js";
 import { getSessionTranscriptMessages, mapSdkSessionInfo, mapSessionMessagesToUpdates } from "./history.js";
-import { parseLaunchConfig } from "./launch_config.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import {
   awaitSessionInitialization,
@@ -25,7 +25,9 @@ import {
   createSession,
   detachSessionForClose,
   sessions,
+  type SessionState,
 } from "./session_lifecycle.js";
+import { emitSessionTitle } from "./session_title.js";
 import type { RewindConversationPlan } from "../bridge.js";
 
 type LifecycleCommand = Extract<
@@ -124,12 +126,15 @@ async function resumeAt(
     }
 
     const staleSessions = Array.from(sessions.values());
+    const previous = sessions.get(command.session_id);
+    const pluginPaths = previous ? sessionPluginFolders(previous) : [];
     const connectEvent =
       staleSessions.length > 0 ? "session_replaced" : "connected";
     candidate = plan.resumeSessionAtUuid
       ? await createSession({
           cwd,
           resume: command.session_id,
+          pluginPaths,
           resumeSessionAt: plan.resumeSessionAtUuid,
           resumeDropsTurn: plan.resumeDropsTurnId,
           forkSession: true,
@@ -143,6 +148,7 @@ async function resumeAt(
       : await createSession({
           cwd,
           launchSettings: command.launch_settings,
+          pluginPaths,
           connectEvent,
           requestId,
           deferConnect: true,
@@ -246,7 +252,7 @@ async function create(
   await createSession({
     cwd: command.cwd,
     resume: command.resume,
-    ...(command.launch_settings.fork_session ? { forkSession: true } : {}),
+    ...(command.resume && command.launch_settings.fork_session ? { forkSession: true } : {}),
     launchSettings: command.launch_settings,
     connectEvent: "connected",
     requestId,
@@ -300,8 +306,6 @@ async function resume(
     }
     setSessionListingDir(matched.cwd ?? process.cwd());
     const resolvedCommand = { ...command, session_id: matched.sessionId };
-    const launchConfig = parseLaunchConfig(command.launch_settings);
-    const renameError = await renameResumedSession(resolvedCommand, matched.cwd, requestId);
     const historyMessages = await getSessionTranscriptMessages(
       matched.sessionId,
       matched.cwd
@@ -329,7 +333,6 @@ async function resume(
       resume: matched.sessionId,
       ...(command.launch_settings.fork_session ? { forkSession: true } : {}),
       launchSettings: command.launch_settings,
-      launchConfig,
       ...(matched.customTitle ? { resumedTitle: matched.customTitle } : {}),
       ...(resumeUpdates.length > 0 ? { resumeUpdates } : {}),
       connectEvent: hadActiveSession ? "session_replaced" : "connected",
@@ -338,21 +341,7 @@ async function resume(
         ? { sessionsToCloseAfterConnect: staleSessions }
         : {}),
     });
-    if (renameError !== undefined) {
-      // A slash error ends the app's pending resume, so it is sent once the session connects.
-      session.deferredBridgeEvents = [
-        ...(session.deferredBridgeEvents ?? []),
-        {
-          event: {
-            event: "slash_error",
-            session_id: session.sessionId,
-            message: `failed to rename session: ${renameError}`,
-          },
-          ...(requestId ? { requestId } : {}),
-        },
-      ];
-    }
-    await awaitSessionInitialization(session);
+    await renameResumedSession(resolvedCommand, matched.cwd, requestId, session);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     bridgeLogger.error({
@@ -373,24 +362,39 @@ async function resume(
 }
 
 /**
- * Apply a launch-time name to the session being resumed, before it connects, so the
- * connect-time title read already reports it. A fork is new and takes the SDK title option
- * instead (buildQueryOptions), leaving the original's title alone. A rename failure does
- * not block the resume, because the conversation matters more than its label; its message
- * is returned for reporting after connect.
+ * Apply a launch name to the session being resumed and report the new title. A fork is a new
+ * conversation and takes the SDK `title` option instead (buildLaunchQueryOptions), leaving the
+ * original's title alone.
+ *
+ * The rename waits for initialization to succeed: the SDK validates MCP servers and settings
+ * while the session starts, so a resume that fails there leaves the saved title untouched, and
+ * the startup tasks have already reported why. A signed-out user initializes successfully, but
+ * the startup tasks then ask for sign-in and the app starts a new session after /login, so the
+ * resumed one is not renamed either. Otherwise the connect event has been sent, so a rename
+ * failure, an SDK or disk failure since the app validated the flags, is reported on the
+ * connected session like any other error. It does not end the resume: the conversation matters
+ * more than its label.
  */
 async function renameResumedSession(
   command: Extract<LifecycleCommand, { command: "resume_session" }>,
   cwd: string | undefined,
   requestId: string | undefined,
-): Promise<string | undefined> {
+  session: SessionState,
+): Promise<void> {
   const name = command.launch_settings.name;
   if (name === undefined || command.launch_settings.fork_session) {
-    return undefined;
+    return;
+  }
+  try {
+    await awaitSessionInitialization(session);
+  } catch {
+    return;
+  }
+  if (session.authHintSent) {
+    return;
   }
   try {
     await renameSession(command.session_id, name, cwd ? { dir: cwd } : undefined);
-    return undefined;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     bridgeLogger.warn({
@@ -402,8 +406,10 @@ async function renameResumedSession(
       sessionId: command.session_id,
       fields: { error_message: message },
     });
-    return message;
+    slashError(session.sessionId, `failed to rename session: ${message}`, requestId);
+    return;
   }
+  await emitSessionTitle(session);
 }
 
 async function replace(

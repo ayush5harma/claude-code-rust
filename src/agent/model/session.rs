@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use serde::{Deserialize, Serialize};
 
@@ -116,6 +115,7 @@ pub enum RateLimitStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ApiRetryError {
     AuthenticationFailed,
     AccountOnHold,
@@ -129,6 +129,7 @@ pub enum ApiRetryError {
     VerificationRequired,
     CloudCredentialError,
     MaxOutputTokens,
+    #[serde(other)]
     Unknown,
 }
 
@@ -166,6 +167,7 @@ pub struct HookActivity {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RuntimeSessionState {
     Idle,
     Running,
@@ -173,6 +175,7 @@ pub enum RuntimeSessionState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SystemNoticeSeverity {
     Info,
     Warning,
@@ -187,6 +190,7 @@ pub struct RateLimitUpdate {
     pub utilization: Option<f64>,
     pub rate_limit_type: Option<String>,
     pub limit_scope: Option<String>,
+    pub overage_enabled: Option<bool>,
     pub overage_status: Option<RateLimitStatus>,
     pub overage_resets_at: Option<f64>,
     pub overage_disabled_reason: Option<String>,
@@ -226,8 +230,10 @@ pub enum CompactionResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CompactionFailureCode {
     TooFewGroups,
+    #[serde(other)]
     Unknown,
 }
 

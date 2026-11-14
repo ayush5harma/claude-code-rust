@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use crate::app::{
     BtwExchangeBlock, ChatMessage, MessageBlock, MessageRole, SystemSeverity, TextBlock,
@@ -44,6 +43,8 @@ pub(crate) fn build_user_system_message_rows(
     msg: &mut ChatMessage,
     render_context: MessageRenderContext<'_>,
 ) -> MessageRows {
+    let uninterrupted = super::layout_control::LayoutControl::uninterrupted();
+    let control = render_context.tool_render_context.control.unwrap_or(&uninterrupted);
     let mut rows = MessageRows::new();
     if !matches!(msg.role, MessageRole::User | MessageRole::System(_)) {
         return rows;
@@ -58,15 +59,16 @@ pub(crate) fn build_user_system_message_rows(
     match msg.role {
         MessageRole::User => {
             let width = render_context.width;
-            append_user_blocks(msg, MessageLayout::new(width).content_width, &mut rows);
+            append_user_blocks(msg, MessageLayout::new(width).content_width, &mut rows, control);
             let mut physical = Vec::new();
             for segment in rows.segments {
                 match segment {
                     MessageRowSegment::Blank => physical.push(Line::default()),
                     MessageRowSegment::Lines { lines } => {
-                        physical.extend(super::wrap::wrap_lines_to_physical_rows(
+                        physical.extend(super::wrap::wrap_lines_with_control(
                             &lines,
                             MessageLayout::new(width).content_width,
+                            control,
                         ));
                     }
                 }
@@ -84,19 +86,29 @@ pub(crate) fn build_user_system_message_rows(
                 }],
             };
         }
-        MessageRole::System(_) => append_system_blocks(msg, render_context.width, &mut rows),
+        MessageRole::System(_) => {
+            append_system_blocks(msg, render_context.width, &mut rows, control);
+        }
         MessageRole::Assistant | MessageRole::Welcome => {}
     }
 
     rows
 }
 
-fn append_user_blocks(msg: &mut ChatMessage, width: u16, rows: &mut MessageRows) {
+fn append_user_blocks(
+    msg: &mut ChatMessage,
+    width: u16,
+    rows: &mut MessageRows,
+    control: &super::layout_control::LayoutControl<'_>,
+) {
     for block in &mut msg.blocks {
+        if control.cancelled() {
+            return;
+        }
         match block {
             MessageBlock::Text(block) => {
                 let trailing_gap = block.trailing_blank_lines();
-                rows.push_lines(text_block_lines(block, width, Some(theme::fill()), true));
+                rows.push_lines(text_block_lines(block, width, Some(theme::fill()), true, control));
                 for _ in 0..trailing_gap {
                     rows.push_blank();
                 }
@@ -117,13 +129,21 @@ fn append_user_blocks(msg: &mut ChatMessage, width: u16, rows: &mut MessageRows)
     }
 }
 
-fn append_system_blocks(msg: &mut ChatMessage, width: u16, rows: &mut MessageRows) {
+fn append_system_blocks(
+    msg: &mut ChatMessage,
+    width: u16,
+    rows: &mut MessageRows,
+    control: &super::layout_control::LayoutControl<'_>,
+) {
     let color = system_severity_color(system_severity_from_role(&msg.role));
     for block in &mut msg.blocks {
+        if control.cancelled() {
+            return;
+        }
         match block {
             MessageBlock::Text(block) => {
                 let trailing_gap = block.trailing_blank_lines();
-                let mut lines = text_block_lines(block, width, None, false);
+                let mut lines = text_block_lines(block, width, None, false, control);
                 tint_lines(&mut lines, color);
                 rows.push_lines(lines);
                 for _ in 0..trailing_gap {
@@ -132,13 +152,13 @@ fn append_system_blocks(msg: &mut ChatMessage, width: u16, rows: &mut MessageRow
             }
             MessageBlock::Notice(notice) => {
                 let trailing_gap = notice.trailing_blank_lines();
-                rows.push_lines(notice_block_lines(notice, width, notice.severity));
+                rows.push_lines(notice_block_lines(notice, width, notice.severity, control));
                 for _ in 0..trailing_gap {
                     rows.push_blank();
                 }
             }
             MessageBlock::BtwExchange(exchange) => {
-                rows.push_lines(render_btw_exchange_lines(exchange, width));
+                rows.push_lines(render_btw_exchange_with_control(exchange, width, control));
             }
             MessageBlock::UserDialog(dialog) => {
                 rows.push_lines(render_user_dialog_lines(dialog));
@@ -152,9 +172,10 @@ fn append_system_blocks(msg: &mut ChatMessage, width: u16, rows: &mut MessageRow
     }
 }
 
-pub(super) fn render_btw_exchange_lines(
+pub(super) fn render_btw_exchange_with_control(
     block: &mut BtwExchangeBlock,
     width: u16,
+    control: &super::layout_control::LayoutControl<'_>,
 ) -> Vec<Line<'static>> {
     if block.cache.height_at(width).is_some()
         && let Some(lines) = block.cache.get()
@@ -174,13 +195,13 @@ pub(super) fn render_btw_exchange_lines(
         &[Line::from(Span::styled("Question:", label))],
         inner_width,
     );
-    content.extend(render_btw_markdown(&block.question, inner_width));
+    content.extend(render_btw_markdown(&block.question, inner_width, control));
     content.push(Line::default());
     content.extend(crate::ui::wrap::wrap_lines_to_physical_rows(
         &[Line::from(Span::styled("Answer:", label))],
         inner_width,
     ));
-    content.extend(render_btw_markdown(&block.answer, inner_width));
+    content.extend(render_btw_markdown(&block.answer, inner_width, control));
 
     let title = " Claude · BTW ";
     let top_inner_width = usize::from(card_width.saturating_sub(2));
@@ -196,6 +217,9 @@ pub(super) fn render_btw_exchange_lines(
         accent,
     ))];
     for line in content {
+        if control.cancelled() {
+            return Vec::new();
+        }
         let used = line.width().min(usize::from(inner_width));
         let mut spans = Vec::with_capacity(line.spans.len() + 3);
         spans.push(Span::styled("│ ", accent));
@@ -211,15 +235,22 @@ pub(super) fn render_btw_exchange_lines(
 
     // Normalize the completed physical rows here so inline and standalone cards
     // share identical spans, styles, and terminal-cell layout.
-    let rows = crate::ui::wrap::wrap_lines_to_physical_rows(&rows, width);
+    let rows = crate::ui::wrap::wrap_lines_with_control(&rows, width, control);
+    if control.cancelled() {
+        return Vec::new();
+    }
     block.cache.store(rows.clone());
     block.cache.set_height(rows.len(), width);
     rows
 }
 
-fn render_btw_markdown(text: &str, width: u16) -> Vec<Line<'static>> {
-    let logical = super::document_table::render_markdown_with_tables(text, width, None, false);
-    let mut physical = crate::ui::wrap::wrap_lines_to_physical_rows(&logical, width);
+fn render_btw_markdown(
+    text: &str,
+    width: u16,
+    control: &super::layout_control::LayoutControl<'_>,
+) -> Vec<Line<'static>> {
+    let logical = super::markdown::render_markdown_with_control(text, width, None, false, control);
+    let mut physical = crate::ui::wrap::wrap_lines_with_control(&logical, width, control);
     for line in &mut physical {
         for span in &mut line.spans {
             if span.style.bg.is_none_or(|color| color == Color::Reset) {
@@ -299,9 +330,10 @@ fn text_block_lines(
     width: u16,
     bg: Option<Color>,
     preserve_newlines: bool,
+    control: &super::layout_control::LayoutControl<'_>,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    render_text_block_cached(block, width, bg, preserve_newlines, &mut lines);
+    render_text_block_cached(block, width, bg, preserve_newlines, &mut lines, control);
     lines
 }
 
@@ -309,8 +341,9 @@ fn notice_block_lines(
     block: &mut crate::app::NoticeBlock,
     width: u16,
     severity: SystemSeverity,
+    control: &super::layout_control::LayoutControl<'_>,
 ) -> Vec<Line<'static>> {
-    let mut lines = text_block_lines(&mut block.text, width, None, false);
+    let mut lines = text_block_lines(&mut block.text, width, None, false, control);
     tint_lines(&mut lines, system_severity_color(severity));
     lines
 }
@@ -383,119 +416,153 @@ mod tests {
     }
 
     #[test]
-    fn system_notice_blocks_serialize_as_text_like_with_tint() {
-        let mut msg = system_message(
-            vec![MessageBlock::Notice(NoticeBlock::new(
-                SystemSeverity::Warning,
-                "Warning inline".to_owned(),
-            ))],
-            SystemSeverity::Warning,
-        );
-
-        let rows = build_user_system_message_rows(&mut msg, render_context());
-        let texts = segment_texts(&rows);
-        assert_eq!(texts.first().expect("header"), "Warning");
-
-        let warning_line = rows
-            .segments
-            .iter()
-            .find_map(|segment| match segment {
-                super::MessageRowSegment::Lines { lines } => lines.iter().find(|line| {
-                    line.spans.iter().any(|span| span.content.as_ref().contains("Warning inline"))
-                }),
-                super::MessageRowSegment::Blank => None,
-            })
-            .expect("warning line");
-
+    fn system_regions_associate_owner_and_notice_severity_independently() {
+        let mut owner_styles = Vec::new();
+        let mut notice_styles = Vec::new();
+        for (severity, label, body) in [
+            (SystemSeverity::Info, "Info", "STATUS_INFO"),
+            (SystemSeverity::Warning, "Warning", "STATUS_WARNING"),
+            (SystemSeverity::Error, "Error", "STATUS_ERROR"),
+        ] {
+            let mut message = system_message(
+                vec![
+                    MessageBlock::Text(TextBlock::from_complete(body)),
+                    MessageBlock::Notice(NoticeBlock::new(
+                        SystemSeverity::Warning,
+                        "LOCAL_WARNING".into(),
+                    )),
+                    MessageBlock::Notice(NoticeBlock::new(
+                        SystemSeverity::Error,
+                        "LOCAL_ERROR".into(),
+                    )),
+                ],
+                severity,
+            );
+            let rows = build_user_system_message_rows(&mut message, render_context());
+            let texts = segment_texts(&rows);
+            assert_eq!(texts[0], label);
+            let at = |needle: &str| {
+                texts.iter().position(|s| s == needle).expect("complete system content")
+            };
+            assert!(at(body) < at("LOCAL_WARNING") && at("LOCAL_WARNING") < at("LOCAL_ERROR"));
+            let style = |needle: &str| {
+                rows.segments
+                    .iter()
+                    .find_map(|segment| match segment {
+                        super::MessageRowSegment::Lines { lines } => lines
+                            .iter()
+                            .flat_map(|l| &l.spans)
+                            .find(|s| s.content == needle)
+                            .map(|s| s.style),
+                        super::MessageRowSegment::Blank => None,
+                    })
+                    .expect("own content style")
+            };
+            owner_styles.push(style(body));
+            notice_styles.push((style("LOCAL_WARNING"), style("LOCAL_ERROR")));
+        }
+        assert_ne!(owner_styles[0], owner_styles[1]);
+        assert_ne!(owner_styles[1], owner_styles[2], "warning and error must be distinguishable");
+        for pair in &notice_styles {
+            assert_ne!(pair.0, pair.1);
+        }
         assert!(
-            warning_line
-                .spans
-                .iter()
-                .filter(|span| !span.content.is_empty())
-                .all(|span| span.style.fg == Some(crate::ui::theme::warning()))
+            notice_styles.windows(2).all(|w| w[0] == w[1]),
+            "notice severity belongs to its content, independent of the owner"
         );
     }
 
     #[test]
-    fn completed_btw_exchange_renders_as_a_bounded_card_without_a_system_heading() {
-        let mut msg = ChatMessage::new(
-            MessageRole::System(None),
-            vec![MessageBlock::BtwExchange(BtwExchangeBlock::new(
-                "Which test covers **this**?".to_owned(),
-                "The `workflow` test covers it.\n\n- including Markdown".to_owned(),
-            ))],
-            None,
+    fn btw_card_preserves_distinct_question_answer_code_and_cells_through_width_reuse() {
+        let question = "QUESTION_ORCHID";
+        let answer = "ANSWER_JASMINE 日本語😀\n\n```text\n    CODE  SPACES\n```\n\n| KEY | VALUE |\n| --- | --- |\n| CELL_IRIS | CELL_ROSE |";
+        let mut message = system_message(
+            vec![MessageBlock::BtwExchange(BtwExchangeBlock::new(question.into(), answer.into()))],
+            SystemSeverity::Error,
         );
-
-        let rows = build_user_system_message_rows(&mut msg, MessageRenderContext::new(None, 42));
-        let texts = segment_texts(&rows);
-
-        assert!(texts.first().is_some_and(|line| line.starts_with('╭')));
-        assert!(texts.first().is_some_and(|line| line.contains("Claude · BTW")));
-        assert!(texts.iter().any(|line| line.contains("Question:")));
-        assert!(texts.iter().any(|line| line.contains("Answer:")));
-        assert!(texts.iter().any(|line| line.contains("workflow")));
-        assert!(!texts.iter().any(|line| line == "Info"));
-        assert!(
-            texts.iter().all(|line| unicode_width::UnicodeWidthStr::width(line.as_str()) == 42)
-        );
-        assert!(texts.last().is_some_and(|line| line.starts_with('╰')));
-        assert!(
-            rows.segments.iter().any(|segment| {
-                let super::MessageRowSegment::Lines { lines } = segment else { return false };
-                lines.iter().flat_map(|line| &line.spans).any(|span| {
-                    span.content.contains("Which test covers")
-                        && span.style.add_modifier.contains(ratatui::style::Modifier::ITALIC)
-                })
-            }),
-            "question prose must retain italics through physical-row normalization"
-        );
-    }
-
-    #[test]
-    fn completed_btw_exchange_does_not_overflow_a_narrow_supported_width() {
-        let mut msg = ChatMessage::new(
-            MessageRole::System(None),
-            vec![MessageBlock::BtwExchange(BtwExchangeBlock::new(
-                "question".to_owned(),
-                "answer".to_owned(),
-            ))],
-            None,
-        );
-
-        let rows = build_user_system_message_rows(&mut msg, MessageRenderContext::new(None, 8));
-
-        assert!(
-            segment_texts(&rows)
-                .iter()
-                .all(|line| unicode_width::UnicodeWidthStr::width(line.as_str()) == 8)
-        );
-    }
-
-    #[test]
-    fn completed_btw_exchange_wraps_unicode_code_and_tables_across_width_changes() {
-        let mut msg = ChatMessage::new(
-            MessageRole::System(None),
-            vec![MessageBlock::BtwExchange(BtwExchangeBlock::new(
-                "Why 日本語 and emoji 😀?".to_owned(),
-                "Prose with **emphasis** and `inline code`.\n\n```rust\nlet value = \"日本語\";\n```\n\n| Name | Value |\n| --- | --- |\n| 日本語 | long table value |".to_owned(),
-            ))], None,
-        );
-        for width in [60, 20, 42, 8, 5, 4, 0, 60] {
-            let rows =
-                build_user_system_message_rows(&mut msg, MessageRenderContext::new(None, width));
+        for width in [60, 60, 30, 60, 8, 5, 4, 0, 60] {
+            let rows = build_user_system_message_rows(
+                &mut message,
+                MessageRenderContext::new(None, width),
+            );
             let texts = segment_texts(&rows);
             assert!(
-                texts.iter().all(|line| unicode_width::UnicodeWidthStr::width(line.as_str())
-                    <= usize::from(width)),
+                texts.iter().all(
+                    |s| unicode_width::UnicodeWidthStr::width(s.as_str()) <= usize::from(width)
+                ),
                 "width {width}: {texts:?}"
             );
-            if width >= 20 {
-                assert!(texts.iter().any(|line| line.contains("日本語")));
-                assert!(texts.iter().any(|line| line.contains("Question:")));
-                assert!(texts.iter().any(|line| line.contains("Answer:")));
+            if width >= 5 {
+                assert!(!texts.is_empty(), "supported width must show content");
+                assert!(!texts.iter().any(|s| s == "Error" || s == "Warning" || s == "Info"));
+                // Read only the card body, independent of its decorative border. At tiny widths
+                // words split across rows; their source order still survives.
+                let body: Vec<_> = texts
+                    .iter()
+                    .skip(1)
+                    .take(texts.len().saturating_sub(2))
+                    .map(|s| {
+                        let chars: Vec<_> = s.chars().collect();
+                        chars[2..chars.len().saturating_sub(2)].iter().collect::<String>()
+                    })
+                    .collect();
+                // A narrow card repeats the code block's rail on every wrapped row.
+                let compact: String =
+                    body.join("").chars().filter(|c| !c.is_whitespace() && *c != '▎').collect();
+                let q = compact.find(question).expect("question content");
+                let a = compact.find("ANSWER_JASMINE").expect("independent answer prose");
+                let code = compact.find("CODESPACES").expect("independent code content");
+                let table = compact.find('┌').expect("table region");
+                assert!(q < a && a < code && code < table);
+                // Locate the data region and read each column down its wrapped rows. Reading
+                // whole rows interleaves neighboring cells when the card is only five cells wide.
+                let data = compact
+                    .split_once('┤')
+                    .expect("header/data boundary")
+                    .1
+                    .split_once('└')
+                    .expect("end of data")
+                    .0;
+                let mut cells = [String::new(), String::new()];
+                for row in data.trim_matches('│').split("││") {
+                    let (left, right) = row.split_once('│').expect("two data columns");
+                    cells[0].push_str(left);
+                    cells[1].push_str(right);
+                }
+                assert_eq!(
+                    cells,
+                    ["CELL_IRIS", "CELL_ROSE"],
+                    "width {width}: independently associated cell contents"
+                );
+                if width >= 30 {
+                    let question_row = body.iter().position(|s| s.contains(question)).unwrap();
+                    let answer_label = body.iter().position(|s| s.contains("Answer:")).unwrap();
+                    let prose = body
+                        .iter()
+                        .position(|s| s.contains("ANSWER_JASMINE 日本語😀"))
+                        .expect("answer Unicode, not question Unicode");
+                    assert!(question_row < answer_label && answer_label < prose);
+                    assert!(
+                        // The rail and one cell of padding precede the code's own four-space indent.
+                        body.iter().any(|s| s.contains("▎     CODE  SPACES")),
+                        "significant code spaces: {body:?}"
+                    );
+                    let cells = body.iter().find(|s| s.contains("CELL_IRIS")).unwrap();
+                    assert!(
+                        cells.find("CELL_IRIS").unwrap() < cells.find("CELL_ROSE").unwrap(),
+                        "cells remain in the same associated row"
+                    );
+                }
+                let warm = build_user_system_message_rows(
+                    &mut message,
+                    MessageRenderContext::new(None, width),
+                );
+                assert_eq!(segment_texts(&warm), texts, "secondary cache reuse");
             }
         }
+        let MessageBlock::BtwExchange(exchange) = &message.blocks[0] else { panic!("BTW source") };
+        assert_eq!(exchange.question, question);
+        assert_eq!(exchange.answer, answer);
     }
 
     #[test]
@@ -537,21 +604,5 @@ mod tests {
             };
             assert!(texts.iter().any(|line| line.contains(expected)), "{texts:?}");
         }
-    }
-
-    #[test]
-    fn assistant_and_welcome_messages_render_no_rows_here() {
-        let mut assistant = ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::Text(TextBlock::from_complete("body"))],
-            None,
-        );
-        let mut welcome = ChatMessage::welcome("1.2.3", "Pro", "/cwd", "session");
-
-        let assistant_rows = build_user_system_message_rows(&mut assistant, render_context());
-        let welcome_rows = build_user_system_message_rows(&mut welcome, render_context());
-
-        assert!(assistant_rows.segments.is_empty());
-        assert!(welcome_rows.segments.is_empty());
     }
 }

@@ -11,7 +11,7 @@ const LINES = Number(process.env.FAKE_BRIDGE_LINES ?? 1500);
 const FOLLOW_UP_LINES = Number(process.env.FAKE_BRIDGE_FOLLOW_UP_LINES ?? 3);
 const INTERVAL_MS = Number(process.env.FAKE_BRIDGE_INTERVAL_MS ?? 15);
 // Held turns are released after tests exercise input or rendering, rather than
-// racing a fixed reply duration. The resize-code scenario holds the second turn.
+// racing a fixed reply duration. The unfinished-code audit holds the second turn.
 const SCENARIO = process.env.FAKE_BRIDGE_SCENARIO ?? 'stream';
 let managedTag = null;
 let managedDeleted = false;
@@ -25,8 +25,9 @@ const RESUME_FAILURES = {
   'Shared title': 'ambiguous session title: Shared title; use a session ID (first-id, second-id)',
   'Missing title': 'unknown session: Missing title',
 };
-const resizeCodeScenario = SCENARIO === 'resize-code';
+const replayCodeScenario = SCENARIO === 'replay-code-audit';
 const activityScenario = SCENARIO.startsWith('hold-activity');
+const titleScenario = SCENARIO.startsWith('hold-title');
 const RELEASE_FILE = process.env.FAKE_BRIDGE_RELEASE_FILE;
 const JOURNAL = process.env.FAKE_BRIDGE_JOURNAL;
 let replyNumber = 0;
@@ -37,6 +38,12 @@ const pending = [];
 const record = entry => {
   if (JOURNAL) fs.appendFileSync(JOURNAL, `${JSON.stringify(entry)}\n`);
 };
+if (SCENARIO.startsWith('trust-gate')) {
+  record({ type: 'bridge_entry', cwd });
+  const file = path.join(process.env.CLAUDE_CONFIG_DIR, '.claude.json');
+  record({ type: 'trust_at_entry', preferences: fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null });
+}
+let nativeActions;
 const send = event => {
   record({ type: 'event', ...event });
   process.stdout.write(`${JSON.stringify(event)}\n`);
@@ -76,6 +83,25 @@ const renderCorpusScenario = SCENARIO === 'render-corpus';
 const renderCorpus = renderCorpusScenario ? JSON.parse(fs.readFileSync(path.join(__dirname, 'render-corpus.json'), 'utf8')) : null;
 // The bridge's replay of a saved session with two background subagents (see resumed-agents.json).
 const resumedAgents = SCENARIO === 'agents-resumed' ? JSON.parse(fs.readFileSync(path.join(__dirname, 'resumed-agents.json'), 'utf8')) : null;
+if (titleScenario) {
+  Object.assign(preferences, { prefersReducedMotion: false, 'presentation.showStatusInTerminalTab': true });
+  fs.writeFileSync(path.join(process.env.CLAUDE_CONFIG_DIR, 'settings.json'), JSON.stringify(preferences));
+  settingDefinitions.push(['prefersReducedMotion', 'Reduce motion', 'Reduce title animation', 'boolean', ['prefersReducedMotion']], ['presentation.showStatusInTerminalTab', 'Show terminal status', 'Show activity in the terminal title', 'boolean', ['presentation', 'showStatusInTerminalTab']]);
+}
+let sideQuestionNumber = 0;
+function sideQuestion(message) {
+  const number = ++sideQuestionNumber;
+  const answer = () => send({ event: 'btw_result', session_id: SESSION, btw_id: message.btw_id, question: message.question, answer: `ANSWER_${message.question}`, metadata: { synthetic: false } });
+  if (number <= 2) {
+    const timer = setInterval(() => {
+      const expected = number === 1 ? 'fail' : 'answer';
+      if (!fs.existsSync(RELEASE_FILE) || fs.readFileSync(RELEASE_FILE, 'utf8') !== expected) return;
+      clearInterval(timer);
+      if (number === 1) send({ event: 'btw_failed', session_id: SESSION, btw_id: message.btw_id, question: message.question, error: 'EXPIRING_CAUSE' });
+      else answer();
+    }, INTERVAL_MS);
+  } else answer();
+}
 const hooksScenario = SCENARIO === 'hold-hooks';
 if (hooksScenario) {
   preferences.hooks = { Stop: [{ hooks: [{ type: 'command', command: 'keep-original', future: 'keep' }] }] };
@@ -107,7 +133,7 @@ function settingsSnapshot() {
       category: id === 'hooks' ? 'hooks' : id.startsWith('permissions.') ? 'permissions' : 'general', id, label, description, kind, key_path, options: kind === 'boolean' ? [true, false] : id === 'preferredNotifChannel' ? ['auto', 'iterm2', 'terminal_bell', 'iterm2_with_bell', 'kitty', 'ghostty', 'notifications_disabled'] : [],
       ...(settingsUiFixture.catalog.find(setting => setting.id === id)?.editor ? { editor: settingsUiFixture.catalog.find(setting => setting.id === id).editor } : {}),
       allows_custom: kind !== 'boolean' && id !== 'preferredNotifChannel', writable_scopes: ['user'],
-      reset: 'Reset removes the saved value here', application: presentationScenario || notificationScenario || activityScenario ? 'host' : 'next_session',
+      reset: 'Reset removes the saved value here', application: presentationScenario || notificationScenario || activityScenario || titleScenario ? 'host' : 'next_session',
     })).sort((a, b) => a.label.localeCompare(b.label)),
     sources: [{ scope: 'user', path: path.join(process.env.CLAUDE_CONFIG_DIR, 'settings.json'), status: 'valid',
       values: Object.entries(preferences).map(([id, value]) => ({ id, value, revision: String(settingsRevision) })) }],
@@ -149,6 +175,17 @@ function streamReply(messageUuid) {
       if (update) send({ event: 'session_update', session_id: SESSION, update });
       else finish({ event: 'turn_complete', session_id: SESSION });
     }, INTERVAL_MS) };
+    return;
+  }
+  if (SCENARIO === 'tool-body-wire') {
+    active = { timer: require('./tool-body-audit.cjs')({
+      send, record, session: SESSION, messageUuid, releaseFile: RELEASE_FILE, finish,
+    }) };
+    return;
+  }
+  if (SCENARIO === 'input-audit') {
+    send({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'completed', queued_turn_count: 0 });
+    record({ type: 'barrier', name: 'input-acknowledged', message_uuid: messageUuid });
     return;
   }
   if (SCENARIO === 'background-replies') {
@@ -253,7 +290,7 @@ function streamReply(messageUuid) {
     },
   });
   if (presentationScenario) {
-    for (const [role, uuid] of [['user', messageUuid], ['assistant', undefined]]) send({ event: 'session_update', session_id: SESSION, update: { type: 'message_metadata', role, timestamp: '2026-10-03T15:02:01Z', source_message_uuid: uuid } });
+    for (const [role, uuid] of [['user', messageUuid], ['assistant', undefined]]) send({ event: 'session_update', session_id: SESSION, update: { type: 'message_metadata', role, timestamp: SCENARIO === 'presentation' && role === 'user' ? '2026-10-03T15:01:01Z' : '2026-10-03T15:02:01Z', source_message_uuid: uuid } });
     if (SCENARIO === 'presentation') send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text: '\n```rust\nlet answer = 42;\n```\n' }, source_message_uuid: null } });
   }
   if (notificationScenario) {
@@ -275,16 +312,57 @@ function streamReply(messageUuid) {
     send({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'completed', queued_turn_count: 0 });
     return;
   }
+  if (SCENARIO === 'tool-times-presentation') {
+    const fixtures = JSON.parse(fs.readFileSync(path.join(__dirname, 'tool-result-times.json'), 'utf8'));
+    for (const item of [fixtures[0], fixtures[2]]) send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call', tool_call: {
+      tool_call_id: item.name, title: item.tool, kind: 'other', status: 'completed', content: [],
+      raw_input: item.input, locations: [], output_metadata: { presentation: item.presentation },
+      meta: { claudeCode: { toolName: item.tool } },
+    } } });
+    send({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'completed', queued_turn_count: 0 });
+    return;
+  }
+  if (SCENARIO === 'native-surfaces' || (['permission-after-history', 'replay-code-audit'].includes(SCENARIO) && replyNumber === 1)) {
+    const body = replyNumber === 1
+      ? Array.from({ length: 48 }, (_, i) => {
+          const id = String(i + 1).padStart(3, '0');
+          return `${i + 1}. NATIVE_ROW_${id} NATIVE_copper_${id} NATIVE_river_${id} NATIVE_END_${id}\n`;
+        }).join('')
+      : 'NATIVE_SUBMISSION_APPLIED';
+    send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text: body }, source_message_uuid: null } });
+    send({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'completed', queued_turn_count: 0 });
+    return;
+  }
   if (SCENARIO === 'resize-replay') {
     const text = Array.from({ length: LINES }, (_, index) => `${index + 1}. streamed line ${index + 1}\n`).join('');
     send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text }, source_message_uuid: null } });
     send({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'completed', queued_turn_count: 0 });
     return;
   }
+  if (SCENARIO === 'resize-read') {
+    if (replyNumber > 1) {
+      send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text: 'READ_DRAFT_ACCEPTED' }, source_message_uuid: null } });
+      send({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'completed', queued_turn_count: 0 });
+      return;
+    }
+    for (const count of [7, 8, 9, 10, 107, 207, LINES]) {
+      const file = `read-${count}.rs`;
+      const text = Array.from({ length: count }, (_, index) => `let READ_${count}_${index + 1} = ${index + 1};\n`).join('');
+      send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call', tool_call: {
+        tool_call_id: `read-${count}`, title: `Read ${file}`, kind: 'read', status: 'completed',
+        content: [{ type: 'content', content: { type: 'text', text } }],
+        raw_input: { file_path: file }, locations: [{ path: file }],
+        output_metadata: { read: { file_path: file, start_line: 1 } },
+        meta: { claudeCode: { toolName: 'Read' } },
+      } } });
+    }
+    send({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'completed', queued_turn_count: 0 });
+    return;
+  }
   // Follow-up replies stay short so their start marker remains on screen.
-  const lines = replyNumber === 1 || resizeCodeScenario ? LINES : FOLLOW_UP_LINES;
-  const gated = (replyNumber === 1 && SCENARIO.startsWith('hold-') && SCENARIO !== 'hold-presentation') || (resizeCodeScenario && replyNumber === 2);
-  if (resizeCodeScenario && replyNumber === 2) send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text: '\n```rust\n' }, source_message_uuid: null } });
+  const lines = replyNumber === 1 || replayCodeScenario ? LINES : FOLLOW_UP_LINES;
+  const gated = (replyNumber === 1 && SCENARIO.startsWith('hold-') && SCENARIO !== 'hold-reading-presentation') || (replayCodeScenario && replyNumber === 2);
+  if (replayCodeScenario && replyNumber === 2) send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text: '\n```rust\n' }, source_message_uuid: null } });
   // Hold the first activity turn before any assistant content arrives.
   let line = activityScenario && replyNumber === 1 ? lines : 0;
   if (activityScenario && replyNumber === 1) record({ type: 'barrier', name: 'reply-held' });
@@ -299,7 +377,10 @@ function streamReply(messageUuid) {
       else if (step === 'requires_action' || step === 'running') send({ event: 'session_update', session_id: SESSION, update: { type: 'runtime_session_state_update', state: step } });
       return;
     }
-    if (replyNumber === 1 && SCENARIO === 'hold-presentation' && line === 20 && !fs.existsSync(RELEASE_FILE)) return;
+    if (replyNumber === 1 && SCENARIO === 'hold-reading-presentation' && [80, 120, 160].includes(line)) {
+      const step = fs.existsSync(RELEASE_FILE) ? fs.readFileSync(RELEASE_FILE, 'utf8') : '';
+      if (step !== ({ 80: 'continue', 120: 'second', 160: 'third' })[line]) return;
+    }
     if (gated && line >= lines) {
       if (!fs.existsSync(RELEASE_FILE)) return;
       if (SCENARIO === 'hold-eof') {
@@ -312,9 +393,9 @@ function streamReply(messageUuid) {
         process.stdout.write('{broken event\n');
         return;
       }
-      if (resizeCodeScenario && replyNumber === 2) send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text: '```\n' }, source_message_uuid: null } });
-      finish(SCENARIO === 'hold-error'
-        ? { event: 'turn_error', session_id: SESSION, message: 'Fixture service unavailable', error_kind: 'transient_service' }
+      if (replayCodeScenario && replyNumber === 2) send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text: '```\n' }, source_message_uuid: null } });
+      finish((['hold-error', 'hold-title-error', 'hold-limit-error'].includes(SCENARIO))
+        ? { event: 'turn_error', session_id: SESSION, message: SCENARIO === 'hold-limit-error' ? 'Fixture usage limit reached' : 'Fixture service unavailable', error_kind: SCENARIO === 'hold-limit-error' ? 'plan_limit' : 'transient_service' }
         : { event: 'turn_complete', session_id: SESSION });
       return;
     }
@@ -324,49 +405,70 @@ function streamReply(messageUuid) {
       session_id: SESSION,
       update: {
         type: 'agent_message_chunk',
-        content: { type: 'text', text: resizeCodeScenario && replyNumber === 2 ? `code line ${line}\n` : `${line}. streamed line ${line}\n` },
+        content: { type: 'text', text: replayCodeScenario && replyNumber === 2 ? `code line ${line}\n` : `${line}. streamed line ${line}\n` },
         source_message_uuid: null,
       },
     });
-    if (SCENARIO === 'hold-presentation' && line === 20) record({ type: 'barrier', name: 'reading-barrier' });
+    if (SCENARIO === 'hold-reading-presentation' && [80, 120, 160, 200].includes(line)) {
+      send({ event: 'session_update', session_id: SESSION, update: { type: 'current_model_update', current_model: { ...model, resolved_id: `burst-${line}`, display_name_short: `Burst${line}`, display_name_long: `Burst ${line}` } } });
+      record({ type: 'barrier', name: `reading-barrier-${line}`, message_uuid: messageUuid, session_id: SESSION });
+    }
     if (line >= lines) {
-      if (gated) record({ type: 'barrier', name: 'reply-held' });
+      if (gated) record({ type: 'barrier', name: 'reply-held', session_id: SESSION, message_uuid: messageUuid });
       else finish({ event: 'turn_complete', session_id: SESSION });
     }
   }, INTERVAL_MS);
   active = { timer };
-  if (replyNumber === 1 && ['permission', 'question'].includes(SCENARIO)) {
+  if ((replyNumber === 1 && ['permission', 'question'].includes(SCENARIO)) || (replyNumber === 2 && SCENARIO === 'permission-after-history')) {
     clearInterval(timer);
-    const tool_call = {
-      tool_call_id: 'fixture-tool', title: 'Fixture action', kind: 'other',
-      status: 'pending', source_message_uuid: null, content: [],
-      raw_input: null, raw_output: null, locations: [], meta: null,
+    const requestInteraction = () => {
+      const tool_call = {
+        tool_call_id: 'fixture-tool', title: 'Fixture action', kind: 'other',
+        status: 'pending', source_message_uuid: null, content: [],
+        raw_input: null, raw_output: null, locations: [], meta: null,
+      };
+      send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call', tool_call } });
+      send(SCENARIO.startsWith('permission') ? {
+        event: 'permission_request', session_id: SESSION,
+        request: { tool_call, options: [
+          { option_id: 'allow-once', name: 'Allow once', kind: 'allow_once', description: null },
+          { option_id: 'deny-once', name: 'Deny once', kind: 'reject_once', description: null },
+        ], display: null, mcp_server: null },
+      } : {
+        event: 'question_request', session_id: SESSION,
+        request: { tool_call, question_index: 0, total_questions: 1, prompt: {
+          question: 'Choose fixture destination', header: 'Destination', multi_select: false,
+          options: [
+            { option_id: 'alpha', label: 'Alpha', description: null, preview: null },
+            { option_id: 'beta', label: 'Beta', description: null, preview: null },
+          ],
+        } },
+      });
     };
-    send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call', tool_call } });
-    send(SCENARIO === 'permission' ? {
-      event: 'permission_request', session_id: SESSION,
-      request: { tool_call, options: [
-        { option_id: 'allow-once', name: 'Allow once', kind: 'allow_once', description: null },
-        { option_id: 'deny-once', name: 'Deny once', kind: 'reject_once', description: null },
-      ], display: null, mcp_server: null },
-    } : {
-      event: 'question_request', session_id: SESSION,
-      request: { tool_call, question_index: 0, total_questions: 1, prompt: {
-        question: 'Choose fixture destination', header: 'Destination', multi_select: false,
-        options: [
-          { option_id: 'alpha', label: 'Alpha', description: null, preview: null },
-          { option_id: 'beta', label: 'Beta', description: null, preview: null },
-        ],
-      } },
-    });
+    if (SCENARIO === 'permission-after-history') {
+      record({ type: 'barrier', name: 'permission-held' });
+      active.timer = setInterval(() => {
+        if (!fs.existsSync(RELEASE_FILE)) return;
+        clearInterval(active.timer);
+        requestInteraction();
+      }, INTERVAL_MS);
+    } else requestInteraction();
   }
 }
+
+let subagentReads = 0;
 
 // Subagent rows as the bridge normalizes SDK task lifecycle messages.
 // The rows the bridge reports for the `agents` scenario, kept so a later
 // outcome carries the same subject and metadata as the bridge's merged row.
+// The fifth argument is the Agent call's id (a string) or, in the
+// `agents-saved` scenario, extra metadata (an object).
 const agentRows = new Map();
 function agentTask(task_id, subject, status, terminal_status, source_tool_call_id, metadata = {}) {
+  if (source_tool_call_id && typeof source_tool_call_id === 'object') {
+    metadata = source_tool_call_id;
+    source_tool_call_id = undefined;
+  }
   const row = { task_id, subject, status, blocks: [], blocked_by: [], ...(source_tool_call_id ? { source_tool_call_id } : {}), metadata: {
     task_type: 'local_agent', subagent_type: 'general-purpose', ...metadata, ...(terminal_status ? { terminal_status } : {}),
   } };
@@ -418,6 +520,49 @@ function hookActivityReply(message) {
   send({ event: 'turn_complete', session_id: SESSION });
 }
 
+// The Status rename's prerequisite: Claude Code saves a session's transcript
+// once it runs a command or a message, at the path the Agent SDK derives from
+// the resolved working directory. The SDK resolves it with the native realpath,
+// which on Windows also expands 8.3 short names such as RUNNER~1 in temp paths.
+function transcriptPath() {
+  const project = fs.realpathSync.native(cwd).replace(/[^a-zA-Z0-9]/g, '-');
+  return path.join(process.env.CLAUDE_CONFIG_DIR, 'projects', project, `${SESSION}.jsonl`);
+}
+
+const listedSession = fields => ({
+  session_id: SESSION, summary: '', last_modified_ms: 1, file_size_bytes: 1, cwd,
+  git_branch: null, custom_title: null, first_prompt: null, ...fields,
+});
+
+// A message saves the session; `/clear` starts an unsaved session whose
+// listing names it after the command, as Claude Code's does.
+function statusRenameReply(message) {
+  const text = message.chunks.map(chunk => chunk.value).join('').trim();
+  send({ event: 'user_message_started', session_id: SESSION, message_uuid: message.message_uuid, source: 'command_lifecycle' });
+  if (text === '/clear') {
+    SESSION = 'fake-session-cleared';
+    send({ event: 'session_replaced', session_id: SESSION, cwd, current_model: model, available_models: [], mode: null, fast_mode_state: 'off', fast_mode_disabled_reason: null, history_updates: null, restored_input: null });
+    send({ event: 'sessions_listed', sessions: [listedSession({ summary: '/clear', first_prompt: '/clear' })] });
+  } else {
+    fs.mkdirSync(path.dirname(transcriptPath()), { recursive: true });
+    fs.appendFileSync(transcriptPath(), `${JSON.stringify({ type: 'user', text })}\n`);
+    send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text: 'Saved reply' } } });
+  }
+  send({ event: 'turn_complete', session_id: SESSION });
+}
+
+// renameSession() appends to the saved transcript and fails without one;
+// the title `fail-me` injects an SDK failure.
+function renameSession(message) {
+  if (message.title === 'fail-me' || !fs.existsSync(transcriptPath())) {
+    send({ event: 'slash_error', session_id: SESSION, message: `failed to rename session: Session ${SESSION} not found` });
+    return;
+  }
+  fs.appendFileSync(transcriptPath(), `${JSON.stringify({ type: 'custom-title', customTitle: message.title, sessionId: SESSION })}\n`);
+  send({ event: 'session_update', session_id: SESSION, update: { type: 'session_title_update', title: message.title } });
+  send({ event: 'sessions_listed', sessions: [listedSession({ custom_title: message.title })] });
+}
+
 readline
   .createInterface({ input: process.stdin })
   .on('line', raw => {
@@ -455,6 +600,43 @@ readline
           send({ event: 'session_resume_failed', session_id: message.session_id, request_id: message.request_id, message: RESUME_FAILURES[message.session_id] });
           break;
         }
+        if (SCENARIO === 'auth-audit') {
+          if (message.command === 'new_session' && !fs.existsSync(path.join(process.env.CLAUDE_CONFIG_DIR, '.credentials.json'))) {
+            send({ event: 'auth_required', method_name: 'fixture-login', method_description: 'Fixture credentials required' });
+            break;
+          }
+          if (!nativeActions) {
+            let previous = '';
+            nativeActions = setInterval(() => {
+              const action = fs.existsSync(RELEASE_FILE) ? fs.readFileSync(RELEASE_FILE, 'utf8') : '';
+              if (!action || action === previous) return;
+              previous = action;
+              send({ event: 'session_update', session_id: SESSION, update: { type: 'system_notice_update', severity: 'warning', message: `AUTH_REDRAW_${action}` } });
+              send({ event: 'sessions_listed', sessions: [] });
+            }, INTERVAL_MS);
+          }
+        }
+        if (SCENARIO === 'session-handoff') {
+          let previous = '';
+          record({ type: 'barrier', name: 'connection-waiting' });
+          nativeActions = setInterval(() => {
+            const action = fs.existsSync(RELEASE_FILE) ? fs.readFileSync(RELEASE_FILE, 'utf8') : '';
+            if (!action || action === previous) return;
+            previous = action;
+            if (action !== 'connect' && action !== 'replace') return;
+            const replacement = action === 'replace';
+            if (replacement) SESSION = 'replacement-session';
+            send({ event: replacement ? 'session_replaced' : 'connected', session_id: SESSION,
+              cwd: message.cwd ?? cwd, current_model: model, available_models: [], mode: null,
+              fast_mode_state: 'off', fast_mode_disabled_reason: null,
+              history_updates: replacement ? [
+                { type: 'user_message_chunk', content: { type: 'text', text: 'NEW_HISTORY_USER' }, source_message_uuid: 'replacement-user' },
+                { type: 'agent_message_chunk', content: { type: 'text', text: 'NEW_HISTORY_ANSWER' }, source_message_uuid: 'replacement-answer' },
+              ] : [], restored_input: replacement ? 'Restored replacement draft' : null });
+            record({ type: 'barrier', name: `handoff-${action}` });
+          }, INTERVAL_MS);
+          break;
+        }
         if (message.command === 'new_session') SESSION = 'fake-session-after-login';
         // Like the SDK's forkSession, a forked resume continues under a new session ID.
         if (message.command === 'resume_session') SESSION = message.launch_settings?.fork_session ? `${message.session_id}-fork` : message.session_id;
@@ -478,6 +660,7 @@ readline
           ] : null,
           restored_input: null,
         });
+        if (SCENARIO.startsWith('resize-') || SCENARIO.startsWith('background-') || ['native-surfaces', 'permission-after-history', 'replay-code-audit', 'hold-reading-presentation', 'hold-activity-audit'].includes(SCENARIO)) send({ event: 'status_snapshot', session_id: SESSION, account: { subscription_type: 'Fixture subscription' } });
         if (SCENARIO.startsWith('resume-large') && message.command === 'create_session') {
           send({ event: 'sessions_listed', sessions: [{
             session_id: 'saved-large', summary: 'Large saved conversation',
@@ -488,10 +671,15 @@ readline
         // The listing sent around connect predates the active session's transcript.
         if (SCENARIO === 'session-refresh') send({ event: 'sessions_listed', sessions: managedSessions().filter(session => session.session_id !== SESSION) });
         if (SCENARIO === 'session-management') send({ event: 'sessions_listed', sessions: managedSessions() });
-        if (SCENARIO.startsWith('resize-') || SCENARIO.startsWith('background-')) send({ event: 'status_snapshot', session_id: SESSION, account: { subscription_type: 'Fixture subscription' } });
         if (SCENARIO === 'session-accent') {
           send({ event: 'session_update', session_id: SESSION, update: { type: 'available_commands_update', commands: [
             { name: 'color', description: 'Set the session color', input_hint: '<color>' },
+          ] } });
+        }
+        if (SCENARIO.startsWith('compact-audit')) send({ event: 'session_update', session_id: SESSION, update: { type: 'system_notice_update', severity: 'info', message: 'Fixture help: /compact summarizes earlier context' } });
+        if (SCENARIO === 'status-rename') {
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'available_commands_update', commands: [
+            { name: 'clear', description: 'Clear conversation history', input_hint: null },
           ] } });
         }
         if (SCENARIO === 'session-name') {
@@ -508,12 +696,12 @@ readline
           send({ event: 'session_update', session_id: SESSION, update: { type: 'status_line_update', text: 'FIXTURE_STATUS_ROW [READY]' } });
         }
         if (SCENARIO === 'read-result') {
-          // What the bridge sends for a successful text Read: the file's own lines and the
-          // number of the first, never the numbered text the model sees.
+          // What the bridge sends for a successful text Read: the file's own lines as content
+          // and the number of the first in output_metadata.read, never the numbered text.
           send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call', tool_call: {
             tool_call_id: 'read-notes', title: 'Read NOTES.md', kind: 'read', status: 'completed',
-            content: [{ type: 'file_text', path: '/fixture/NOTES.md', start_line: 1, text: '# Fixture heading\n\n- first item\n1. numbered item' }],
-            raw_input: { file_path: '/fixture/NOTES.md' }, locations: [], meta: { claudeCode: { toolName: 'Read' } },
+            content: [{ type: 'content', content: { type: 'text', text: '# Fixture heading\n\n- first item\n1. numbered item' } }],
+            raw_input: { file_path: '/fixture/NOTES.md' }, locations: [], output_metadata: { read: { file_path: '/fixture/NOTES.md', start_line: 1 } }, meta: { claudeCode: { toolName: 'Read' } },
           } } });
         }
         if (SCENARIO === 'bash-colour') {
@@ -540,6 +728,28 @@ readline
             { task_id: 'shell-1', subject: 'Watch logs', status: 'in_progress', blocks: [], blocked_by: [], metadata: { task_type: 'local_bash' } },
           ]);
           update({ type: 'tool_call', tool_call: { tool_call_id: 'inspector-read', title: 'Read agents.rs', kind: 'read', status: 'completed', content: [], locations: [], raw_input: { file_path: '/fixture/src/ui/agents.rs' }, meta: { claudeCode: { toolName: 'Read', parentToolUseId: 'parent-agent-second' } } } });
+        }
+        if (SCENARIO === 'auth-audit') send({ event: 'session_update', session_id: SESSION, update: { type: 'available_commands_update', commands: [
+          { name: 'login', description: 'Advertised login collision', input_hint: null },
+        ] } });
+        if (SCENARIO === 'native-surfaces' && !nativeActions) {
+          let previous = '';
+          nativeActions = setInterval(() => {
+            const action = fs.existsSync(RELEASE_FILE) ? fs.readFileSync(RELEASE_FILE, 'utf8') : '';
+            if (!action || action === previous) return;
+            previous = action;
+            if (action.startsWith('form-')) send({ event: 'elicitation_request', session_id: SESSION,
+              request: { request_id: action, server_name: 'native-surface-peer', message: `NATIVE FORM ${action}`, mode: 'form',
+                requested_schema: { type: 'object', properties: { destination: { type: 'string' } }, required: ['destination'] }, field_order: ['destination'] } });
+            record({ type: 'barrier', name: action, session_id: SESSION });
+          }, INTERVAL_MS);
+        }
+        if (SCENARIO === 'agents-saved') {
+          sendTasks([
+            agentTask('agent-running', 'Review parser', 'in_progress', null, { prompt: 'Check the parser for edge cases' }),
+            agentTask('agent-done', 'Inspect docs', 'completed', 'completed'),
+            { task_id: 'shell-1', subject: 'Watch logs', status: 'in_progress', blocks: [], blocked_by: [], metadata: { task_type: 'local_bash' } },
+          ]);
         }
         if (SCENARIO === 'disconnect-during-auth' && message.command === 'create_session') {
           const timer = setInterval(() => {
@@ -569,6 +779,10 @@ readline
         break;
       }
       case 'get_mcp_snapshot':
+        if (SCENARIO.startsWith('mcp-remove-')) {
+          sendMcpRemovalSnapshot('mcp_status');
+          break;
+        }
         // Neutral demo servers, one per connection state, for README screenshots
         // (recordings/showcase.tape); other scenarios leave the MCP tab empty.
         if (SCENARIO !== 'showcase') break;
@@ -586,22 +800,41 @@ readline
             { name: 'playwright', status: 'disabled', scope: 'user', config: { type: 'stdio', command: 'npx', args: ['@playwright/mcp'] }, tools: [] },
           ] });
         break;
+      case 'elicitation_response':
+        send({ event: 'elicitation_settled', session_id: SESSION, settlement: { request_id: message.elicitation_request_id } });
+        if (message.elicitation_request_id === 'form-a') {
+          send({ event: 'elicitation_settled', session_id: SESSION, settlement: { request_id: 'form-a' } });
+        }
+        break;
       case 'list_subagents':
         send({ event: 'subagents_listed', session_id: SESSION, agent_ids: resumedAgents
           ? resumedAgents.history_updates.flatMap(update => update.type === 'task_state_update' ? update.tasks.map(task => task.task_id) : []).filter((id, index, ids) => ids.indexOf(id) === index)
           : ['agent-done'] });
         break;
-      case 'get_subagent_messages':
-        send({ event: 'subagent_messages', session_id: SESSION, agent_id: message.agent_id, messages: [
+      case 'get_subagent_messages': {
+        const messages = [
           { role: 'user', text: 'Inspect the docs' },
           { role: 'tool', text: 'ls docs' },
           { role: 'assistant', text: 'Docs path checked' },
-        ] });
+        ];
+        if (SCENARIO === 'agents-saved') {
+          subagentReads += 1;
+          // A reminder the SDK added, and one more step per read, as a transcript that is still being written grows.
+          messages.splice(1, 0, { role: 'system_reminder', text: 'Hand the report back when done.' });
+          for (let index = 0; index < subagentReads; index++) messages.push({ role: 'tool', text: `step ${index + 1}` });
+        }
+        send({ event: 'subagent_messages', session_id: SESSION, request_id: message.request_id, agent_id: message.agent_id, messages });
         break;
+      }
       case 'stop_subagent': {
-        // The acknowledgement first. The lifecycle reports the outcome only after
-        // the test's release, so the row is seen stopping in between.
-        send({ event: 'subagent_stop_result', session_id: SESSION, task_id: message.task_id });
+        // The acknowledgement first. In `agents` the lifecycle reports the outcome only
+        // after the test's release, so the row is seen stopping in between;
+        // `agents-saved` reports it at once.
+        send({ event: 'subagent_stop_result', session_id: SESSION, task_id: message.task_id, run_id: message.expected_run_id, request_id: message.request_id });
+        if (SCENARIO === 'agents-saved') {
+          sendTasks([agentTask(message.task_id, 'Review parser', 'completed', 'killed')]);
+          break;
+        }
         const timer = setInterval(() => {
           if (!fs.existsSync(RELEASE_FILE)) return;
           clearInterval(timer);
@@ -611,6 +844,10 @@ readline
         }, INTERVAL_MS);
         break;
       }
+      case 'side_question':
+        if (SCENARIO !== 'btw-quiet-expiry') throw new Error('Unexpected side question');
+        sideQuestion(message);
+        break;
       case 'prompt':
         if (SCENARIO === 'footer-agents') {
           const update = update => send({ event: 'session_update', session_id: SESSION, update });
@@ -646,6 +883,23 @@ readline
           hookActivityReply(message);
           break;
         }
+        if (SCENARIO.startsWith('compact-audit') && message.chunks.map(chunk => chunk.value).join('').trim() === '/compact') {
+          send({ event: 'user_message_started', session_id: SESSION, message_uuid: message.message_uuid, source: 'command_lifecycle' });
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'compaction_update', phase: 'started' } });
+          const failed = SCENARIO.endsWith('failure');
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'compaction_update', phase: 'finished', result: failed ? 'failed' : 'success', ...(failed ? { error_code: 'unknown', error: 'FIXTURE_COMPACT_DENIED' } : {}) } });
+          send({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'completed', queued_turn_count: 0 });
+          break;
+        }
+        if (SCENARIO === 'elicitation') {
+          send({ event: 'user_message_queued', session_id: SESSION, message_uuid: message.message_uuid });
+          send({ event: 'user_message_started', session_id: SESSION, message_uuid: message.message_uuid, source: 'command_lifecycle' });
+          const form = (id, message, properties, required, field_order) => send({ event: 'elicitation_request', session_id: SESSION,
+            request: { request_id: id, server_name: 'fixture-forms', message, mode: 'form', requested_schema: { type: 'object', properties, required }, field_order } });
+          form('form-a', 'FIRST-FORM', { amount: { type: 'integer', minimum: 0 }, confirm: { type: 'boolean' }, note: { type: 'string' }, tags: { type: 'array', items: { type: 'string', enum: ['red', 'blue'] } } }, ['amount', 'confirm', 'tags'], ['amount', 'confirm', 'note', 'tags']);
+          form('form-b', 'SECOND-FORM', { label: { type: 'string', minLength: 2 } }, ['label'], ['label']);
+          break;
+        }
         if (SCENARIO === 'session-name') {
           sessionNameReply(message);
           break;
@@ -659,6 +913,10 @@ readline
             send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text: `Session color set to: ${color}` } } });
           }
           send({ event: 'turn_complete', session_id: SESSION });
+          break;
+        }
+        if (SCENARIO === 'status-rename') {
+          statusRenameReply(message);
           break;
         }
         if (active) {
@@ -679,36 +937,49 @@ readline
         send({ event: 'session_mutation_result', request_id: message.request_id, session_id: message.session_id, operation, sessions: managedSessions() });
         break;
       }
-      case 'export_session_history': {
-        // The bridge's resume translation of a saved session, split into two chunks.
-        const tool = { tool_call_id: 'bash-1', title: 'ls', kind: 'execute', status: 'in_progress', content: [], raw_input: { command: 'ls -la' }, locations: [], meta: { claudeCode: { toolName: 'Bash' } } };
-        const edit = { tool_call_id: 'edit-1', title: 'Edit', kind: 'edit', status: 'in_progress', content: [{ type: 'diff', old_path: 'notes.txt', new_path: 'notes.txt', old: 'keep\nold\n', new: 'keep\nnew\n' }], raw_input: { file_path: 'notes.txt' }, locations: [], meta: { claudeCode: { toolName: 'Edit' } } };
-        const chunks = [
-          [
-            { type: 'user_message_chunk', content: { type: 'text', text: 'List the files' }, source_message_uuid: 'u1' },
-            { type: 'agent_message_chunk', content: { type: 'text', text: 'Listing now.' }, source_message_uuid: 'a1' },
-            { type: 'tool_call', tool_call: tool },
-            { type: 'tool_call_update', tool_call_update: { tool_call_id: 'bash-1', fields: { status: 'completed', raw_output: '\u001b[32mREADME.md\u001b[0m\nsrc', content: [{ type: 'content', content: { type: 'text', text: '\u001b[32mREADME.md\u001b[0m\nsrc' } }] } } },
-          ],
-          [
-            { type: 'agent_message_chunk', content: { type: 'text', text: 'Fixing the note.' }, source_message_uuid: 'a2' },
-            { type: 'tool_call', tool_call: edit },
-            { type: 'tool_call_update', tool_call_update: { tool_call_id: 'edit-1', fields: { status: 'completed' } } },
-          ],
-        ];
-        chunks.forEach((updates, index) => send({ event: 'session_history_export', session_id: SESSION, request_id: message.request_id, updates, last: index === chunks.length - 1, omitted_updates: 0 }));
+      case 'reload_plugins': {
+        if (SCENARIO.startsWith('mcp-remove-')) {
+          const confirmation = setInterval(() => {
+            if (!fs.existsSync(RELEASE_FILE) || fs.readFileSync(RELEASE_FILE, 'utf8') !== 'mcp-confirm') return;
+            clearInterval(confirmation);
+            sendMcpRemovalSnapshot('reload_plugins');
+            send({ event: 'runtime_reload_completed', session_id: SESSION, request_id: message.request_id, error_count: 0 });
+          }, 20);
+          break;
+        }
+
+        if (SCENARIO === 'hold-local-plugin' && !message.force) {
+          send({ event: 'runtime_reload_held', session_id: SESSION, request_id: message.request_id, error_count: 0,
+            cache_impact: { mcp_servers_added: ['plugin:local-fixture:inspect'], mcp_servers_removed: [], invalid_server_name_count: 0 } });
+        } else {
+          send({ event: 'plugin_inventory', session_id: SESSION, plugins: (message.add_plugins ?? []).map(folder => ({
+            name: 'local-fixture', path: path.resolve(cwd, folder), source: 'local-fixture@inline', version: '1.2.3',
+          })) });
+          send({ event: 'runtime_reload_completed', session_id: SESSION, request_id: message.request_id, error_count: 0 });
+        }
         break;
       }
       case 'reload_skills_and_styles':
-        // First reload succeeds; the second fails the way the bridge reports an SDK error.
+        if (SCENARIO === 'reload-expired') {
+          // The bridge's answer when an earlier request for the session held the reload too long.
+          send({ event: 'skills_and_styles_reload_expired', session_id: SESSION, after_ms: 10000 });
+          break;
+        }
+        // First reload succeeds; the second reloads skills and fails the output styles half.
         reloads++;
-        send(reloads === 1
-          ? { event: 'skills_and_styles_reloaded', session_id: SESSION, skills: ['deploy', 'lint'], output_styles: ['default', 'Explanatory', 'mine'] }
-          : { event: 'slash_error', session_id: SESSION, message: 'failed to reload skills and output styles: style directory unreadable' });
+        send({
+          event: 'skills_and_styles_reloaded',
+          session_id: SESSION,
+          skills: { status: 'reloaded', names: reloads === 1 ? ['deploy', 'lint'] : ['deploy', 'lint', 'check'] },
+          output_styles: reloads === 1
+            ? { status: 'reloaded', names: ['default', 'Explanatory', 'mine'] }
+            : { status: 'failed', message: 'style directory unreadable' },
+        });
         break;
       case 'inspect_settings':
         if (notificationScenario) {
-          notificationAppPath = path.join(process.env.CLAUDE_CONFIG_DIR, 'app-settings.json');
+          notificationAppPath = message.app_settings_path;
+          if (!notificationAppPath) throw new Error('App settings path was not supplied');
           if (!fs.existsSync(notificationAppPath)) fs.writeFileSync(notificationAppPath, JSON.stringify({ notifications: { actionsRequired: true, modelDirected: true, turnComplete: false } }));
         }
         send({ event: 'settings_result', session_id: SESSION, request_id: message.request_id, result: {
@@ -734,10 +1005,33 @@ readline
         fs.writeFileSync(file, JSON.stringify(document));
         settingsRevision++;
         send({ event: 'settings_result', session_id: SESSION, request_id: message.request_id, result: {
-          persistence: 'saved', application: presentationScenario || notificationScenario || activityScenario ? 'host' : 'next_session', snapshot: settingsSnapshot(),
+          persistence: 'saved', application: presentationScenario || notificationScenario || activityScenario || titleScenario ? 'host' : 'next_session', snapshot: settingsSnapshot(),
         } });
         break;
       }
+      case 'export_session_history': {
+        // The bridge's resume translation of a saved session, split into two chunks.
+        const tool = { tool_call_id: 'bash-1', title: 'ls', kind: 'execute', status: 'in_progress', content: [], raw_input: { command: 'ls -la' }, locations: [], meta: { claudeCode: { toolName: 'Bash' } } };
+        const edit = { tool_call_id: 'edit-1', title: 'Edit', kind: 'edit', status: 'in_progress', content: [{ type: 'diff', old_path: 'notes.txt', new_path: 'notes.txt', old: 'keep\nold\n', new: 'keep\nnew\n' }], raw_input: { file_path: 'notes.txt' }, locations: [], meta: { claudeCode: { toolName: 'Edit' } } };
+        const chunks = [
+          [
+            { type: 'user_message_chunk', content: { type: 'text', text: 'List the files' }, source_message_uuid: 'u1' },
+            { type: 'agent_message_chunk', content: { type: 'text', text: 'Listing now.' }, source_message_uuid: 'a1' },
+            { type: 'tool_call', tool_call: tool },
+            { type: 'tool_call_update', tool_call_update: { tool_call_id: 'bash-1', fields: { status: 'completed', raw_output: '\u001b[32mREADME.md\u001b[0m\nsrc', content: [{ type: 'content', content: { type: 'text', text: '\u001b[32mREADME.md\u001b[0m\nsrc' } }] } } },
+          ],
+          [
+            { type: 'agent_message_chunk', content: { type: 'text', text: 'Fixing the note.' }, source_message_uuid: 'a2' },
+            { type: 'tool_call', tool_call: edit },
+            { type: 'tool_call_update', tool_call_update: { tool_call_id: 'edit-1', fields: { status: 'completed' } } },
+          ],
+        ];
+        chunks.forEach((updates, index) => send({ event: 'session_history_export', session_id: SESSION, request_id: message.request_id, updates, last: index === chunks.length - 1, omitted_updates: 0 }));
+        break;
+      }
+      case 'rename_session':
+        renameSession(message);
+        break;
       case 'cancel_turn':
         send({ event: 'turn_interrupt_receipt', session_id: SESSION, still_queued: pending.slice(), request_id: message.request_id });
         if (active) finish({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'aborted_streaming', queued_turn_count: pending.length });
@@ -764,3 +1058,15 @@ readline
     }
   })
   .on('close', () => process.exit(0));
+
+// Each scope has an independent document, so a wrong CLI scope cannot pass by
+// mutating the only fixture. Conflicting legacy scope exercises source precedence.
+function sendMcpRemovalSnapshot(source) {
+  const scope = SCENARIO.split('-')[2];
+  const file = scope === 'user' ? path.join(process.env.CLAUDE_CONFIG_DIR, 'user-mcp.json')
+    : path.join(cwd, scope === 'project' ? '.mcp.json' : 'local-mcp.json');
+  const document = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const servers = Object.keys(document.mcpServers).map(name => ({ name, status: source === 'reload_plugins' ? 'disabled' : 'connected', source: scope,
+    scope: scope === 'user' ? 'project' : 'user', config: { type: 'stdio', command: document.mcpServers[name].command }, tools: [] }));
+  send({ event: 'mcp_snapshot', session_id: SESSION, source, servers, auth_capabilities: { authenticate: false, clear_auth: false, submit_oauth_callback_url: false } });
+}

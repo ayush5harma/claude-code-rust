@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::prelude::*;
 
@@ -13,9 +12,9 @@ pub struct App {
     pub surface_mode: SurfaceMode,
     pub(crate) copy_picker: Option<crate::app::copy::CopyPicker>,
     pub(crate) search: Option<Box<crate::app::search::SearchState>>,
-    pub(crate) diff_view: Option<Box<crate::app::diff_view::DiffView>>,
     /// The `/export` waiting for its history from the bridge.
-    pub(crate) history_export: Option<crate::app::export::PendingExport>,
+    pub(crate) history_export: Option<Box<crate::app::export::PendingExport>>,
+    pub(crate) diff_view: Option<Box<crate::app::diff_view::DiffView>>,
     /// `/agents` view state; subagent status itself stays in `sdk_inventory.tasks`.
     /// Boxed so `App` stays within the future-size bound of the async tests that own it.
     pub(crate) agents: Box<crate::app::agents::AgentsView>,
@@ -42,7 +41,6 @@ pub struct App {
     pub exit_error: Option<crate::error::AppError>,
     pub(crate) cwd: String,
     pub cwd_raw: String,
-    pub files_accessed: usize,
     /// State scoped to the currently active turn (command spinner, cancel
     /// bookkeeping, turn-local notices).
     pub turn: TurnState,
@@ -52,10 +50,6 @@ pub struct App {
     pub(crate) file_index_event_rx: std_mpsc::Receiver<file_index::FileIndexEvent>,
     pub spinner_frame: usize,
     pub(crate) spinner_last_advance_at: Option<Instant>,
-    /// Tool scope keyed by tool call ID; used to distinguish main-agent, subagent roots,
-    /// and explicitly owned subagent child tools.
-    pub(crate) tool_call_scopes: HashMap<String, ToolCallScope>,
-    pub(crate) recent_child_tool_ids: HashMap<String, std::collections::VecDeque<String>>,
     pub(crate) agent_shelf_last_redraw: Option<Instant>,
     /// Session-scoped tool interaction IDs, ordered by arrival; the first receives input.
     /// Background controls survive foreground turn exits and clear on session reset.
@@ -93,10 +87,8 @@ pub struct App {
     pub(crate) last_cancel_at: Option<Instant>,
     /// Paste ingestion state: burst detection, queued chunks, session tracking.
     pub paste: PasteState,
-    /// Pending image attachments accumulated via Ctrl+V clipboard reads and
-    /// consumed on submit. No cap on count — this is a developer tool, so
-    /// users are trusted to attach as many images as they need.
-    pub(crate) pending_images: Vec<crate::app::clipboard_image::ImageAttachment>,
+    /// Locally killed content, including the payload owned by each atom.
+    pub(crate) input_yank: Vec<crate::app::input::InputYankPart>,
     /// Trigger key event and pixel source for Ctrl+V image paste.
     pub(crate) clipboard_paste: crate::app::clipboard_image::ClipboardImagePaste,
     /// Session-scoped projection of user messages accepted locally while an agent turn is active.
@@ -118,8 +110,6 @@ pub struct App {
 
     /// Central notification manager (bell + desktop toast when unfocused).
     pub(crate) notifications: notify::NotificationManager,
-    /// Global in-memory budget for rendered block and message caches.
-    pub(crate) render_cache_budget: RenderCacheBudget,
     /// Byte budget for source conversation history retained in memory.
     pub(crate) history_retention: HistoryRetentionPolicy,
     /// Last history-retention enforcement statistics.
@@ -145,6 +135,28 @@ impl App {
             }
             AppStatus::Error => ComposerAccess::Blocked(ComposerBlockReason::Error),
             AppStatus::Ready | AppStatus::Thinking | AppStatus::Running => ComposerAccess::Active,
+        }
+    }
+
+    /// Label of the in-flight command shown to the user. Silent commands (no label) keep
+    /// the internal `CommandPending` state without displaying it.
+    #[must_use]
+    pub(crate) fn displayed_pending_command_label(&self) -> Option<&str> {
+        if self.status == AppStatus::CommandPending {
+            self.turn.pending_command_label.as_deref()
+        } else {
+            None
+        }
+    }
+
+    /// Status as presented to the user; a silent pending command presents as `Ready`.
+    #[must_use]
+    pub(crate) fn displayed_status(&self) -> AppStatus {
+        match self.status {
+            AppStatus::CommandPending if self.displayed_pending_command_label().is_none() => {
+                AppStatus::Ready
+            }
+            status => status,
         }
     }
 
@@ -253,15 +265,12 @@ impl App {
             exit_error: None,
             cwd: "/test".into(),
             cwd_raw: "/test".into(),
-            files_accessed: 0,
             event_tx: tx,
             event_rx: rx,
             file_index_event_tx: file_index_tx,
             file_index_event_rx: file_index_rx,
             spinner_frame: 0,
             spinner_last_advance_at: None,
-            tool_call_scopes: HashMap::default(),
-            recent_child_tool_ids: HashMap::default(),
             agent_shelf_last_redraw: None,
             pending_interaction_ids: Vec::new(),
             focus: FocusManager::default(),
@@ -274,8 +283,8 @@ impl App {
             chat_render: ChatRenderState::default(),
             copy_picker: None,
             search: None,
-            diff_view: None,
             history_export: None,
+            diff_view: None,
             agents: Box::default(),
             mention: None,
             committed_mentions: Vec::new(),
@@ -285,7 +294,7 @@ impl App {
             pending_submit: None,
             last_cancel_at: None,
             paste: PasteState::default(),
-            pending_images: Vec::new(),
+            input_yank: Vec::new(),
             // Tests never reach the system clipboard unless they install a reader.
             clipboard_paste: crate::app::clipboard_image::ClipboardImagePaste {
                 read: || crate::app::clipboard_image::ClipboardRead::NoImage,
@@ -300,7 +309,6 @@ impl App {
             usage: UsageState::default(),
             mcp: McpState::default(),
             notifications: notify::NotificationManager::new(),
-            render_cache_budget: RenderCacheBudget::default(),
             history_retention: HistoryRetentionPolicy::default(),
             history_retention_stats: HistoryRetentionStats::default(),
             cache_metrics: CacheMetrics::default(),

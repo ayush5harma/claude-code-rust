@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -91,7 +90,20 @@ pub fn save_global_settings(path: &Path, settings: &AppSettings) -> Result<(), S
 }
 
 pub fn global_settings_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|dir| dir.join(SETTINGS_DIR_NAME).join(SETTINGS_FILE))
+    settings_path_from(
+        std::env::var_os("CLAUDE_RS_CONFIG_DIR").as_deref(),
+        dirs::config_dir().as_deref(),
+    )
+}
+
+fn settings_path_from(
+    app_config_dir: Option<&std::ffi::OsStr>,
+    system_config_dir: Option<&Path>,
+) -> Option<PathBuf> {
+    if let Some(directory) = app_config_dir.filter(|directory| !directory.is_empty()) {
+        return Some(PathBuf::from(directory).join(SETTINGS_FILE));
+    }
+    system_config_dir.map(|directory| directory.join(SETTINGS_DIR_NAME).join(SETTINGS_FILE))
 }
 
 pub fn update_prompt_candidate(
@@ -195,48 +207,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prompt_candidate_requires_newer_version() {
-        let mut settings = AppSettings::default();
-        record_update_check_result(
-            &mut settings,
-            "0.13.4",
-            "0.14.0",
-            "https://example.invalid/v0.14.0",
-            10,
-        );
-
-        assert!(update_prompt_candidate(&settings, "0.13.4", 20).is_some());
-        assert!(update_prompt_candidate(&settings, "0.14.0", 20).is_none());
-    }
-
-    #[test]
-    fn prompt_candidate_respects_skip_until() {
-        let mut settings = AppSettings::default();
-        record_update_check_result(&mut settings, "0.13.4", "0.14.0", "url", 10);
-        record_skip_now(&mut settings, 20);
-
-        assert!(update_prompt_candidate(&settings, "0.13.4", 30).is_none());
-        assert!(update_prompt_candidate(&settings, "0.13.4", 22_000).is_some());
-    }
-
-    #[test]
-    fn prompt_candidate_respects_skipped_version() {
-        let mut settings = AppSettings::default();
-        record_update_check_result(&mut settings, "0.13.4", "0.14.0", "url", 10);
-        record_skip_version(&mut settings, "0.14.0");
-
-        assert!(update_prompt_candidate(&settings, "0.13.4", 20).is_none());
-    }
-
-    #[test]
-    fn release_url_is_derived_from_version() {
-        assert_eq!(
-            release_url_for_version("0.14.0").as_deref(),
-            Some("https://github.com/srothgan/claude-code-rust/releases/tag/v0.14.0")
-        );
-    }
-
-    #[test]
     fn automatic_install_failure_requires_opt_in_a_recorded_error_and_a_pending_update() {
         let mut settings = AppSettings::default();
         record_update_check_result(&mut settings, "0.13.4", "0.14.0", "url", 10);
@@ -253,41 +223,8 @@ mod tests {
         settings.updates.auto_install = false;
         assert_eq!(automatic_install_failure(&settings, "0.13.4"), None, "update window owns it");
     }
-
-    #[test]
-    fn updater_save_preserves_personal_preferences_and_unknown_update_fields() {
-        let fixture = tempfile::tempdir().expect("tempdir");
-        let path = fixture.path().join("settings.json");
-        std::fs::write(
-            &path,
-            r#"{"presentation":{"copyFullResponse":true,"showStatusInTerminalTab":false},"updates":{"autoInstall":true,"future":42,"skipped_version":"old"}}"#,
-        )
-        .expect("fixture");
-        save_global_settings(&path, &AppSettings::default()).expect("save");
-        let saved: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(path).expect("read")).expect("JSON");
-        assert_eq!(saved["presentation"]["copyFullResponse"], true);
-        assert_eq!(saved["presentation"]["showStatusInTerminalTab"], false);
-        assert_eq!(saved["updates"]["future"], 42);
-        assert_eq!(saved["updates"]["autoInstall"], true);
-        assert!(saved["updates"].get("skipped_version").is_none());
-    }
-
-    #[test]
-    fn updater_save_serializes_with_presentation_edits() {
-        let fixture = tempfile::tempdir().expect("tempdir");
-        let path = fixture.path().join("settings.json");
-        let editor_lock = crate::json_file::lock(&path).expect("editor owns document");
-        assert!(save_global_settings(&path, &AppSettings::default()).is_err());
-        std::fs::write(&path, r#"{"presentation":{"copyFullResponse":true}}"#)
-            .expect("editor saves");
-        drop(editor_lock);
-        let mut settings = AppSettings::default();
-        record_skip_version(&mut settings, "0.15.0");
-        save_global_settings(&path, &settings).expect("updater saves after editor");
-        let saved: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("JSON");
-        assert_eq!(saved["presentation"]["copyFullResponse"], true);
-        assert_eq!(saved["updates"]["skipped_version"], "0.15.0");
-    }
 }
+
+#[cfg(test)]
+#[path = "settings_audit_tests.rs"]
+mod audit_tests;

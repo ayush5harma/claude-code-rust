@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::prelude::*;
 
@@ -75,6 +74,10 @@ pub(crate) fn present_mcp_auth_redirect(
 }
 
 pub(crate) fn open_url_in_browser(url: &str) -> Result<(), String> {
+    #[cfg(test)]
+    if let Some(result) = browser_test_support::open(url) {
+        return result;
+    }
     #[cfg(target_os = "windows")]
     let mut command = {
         let mut cmd = std::process::Command::new("rundll32.exe");
@@ -98,4 +101,29 @@ pub(crate) fn open_url_in_browser(url: &str) -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|error| format!("Failed to open browser automatically: {error}"))
+}
+
+#[cfg(test)]
+pub(super) mod browser_test_support {
+    use std::cell::RefCell;
+    type Opener = Box<dyn FnMut(&str) -> Result<(), String>>;
+    thread_local! {
+        static OPENER: RefCell<Option<Opener>> = RefCell::new(None);
+    }
+    pub struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OPENER.with(|opener| *opener.borrow_mut() = None);
+        }
+    }
+    pub fn install(opener: impl FnMut(&str) -> Result<(), String> + 'static) -> Guard {
+        OPENER.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Box::new(opener));
+        });
+        Guard
+    }
+    pub(super) fn open(url: &str) -> Option<Result<(), String>> {
+        OPENER.with(|opener| opener.borrow_mut().as_mut().map(|open| open(url)))
+    }
 }

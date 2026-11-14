@@ -93,6 +93,7 @@ Keep cleanup scoped to code made obsolete by the requested change unless broader
 - Add regression coverage for changed behavior when appropriate.
 - Prefer tests of the authoritative behavior and real workflow over tests that only exercise isolated helpers.
 - Define each test by the intended user or domain guarantee and the concrete defect it must catch. A passing test must distinguish the required behavior from a plausible broken implementation.
+- Test functional guarantees and observable outcomes. Never create tests that merely reaffirm the current implementation or freeze incidental counts, positions, or ordering; assert those only when they are themselves the intended feature or behavioral guarantee.
 - Derive expected results from requirements or independent fixtures, not from the production helper or calculation being tested.
 - Assert observable outcomes at the relevant boundary: persisted data, emitted commands, delivered notifications, interaction responses, or the relevant rendered region. Check the actual target and seed the state named by the test.
 - Use exact string assertions when the string itself is required output, such as copied content, time formatting, protocol bytes, or explicitly required UI wording. Do not lock down incidental prose, punctuation, or complete footer text.
@@ -129,7 +130,7 @@ Project-specific restrictions may tighten these defaults.
 ### Toolchain
 
 - Rust crate `claude-code-rust` (binary `claude-rs`, edition 2024) built with Cargo. `rust-toolchain.toml` pins channel `1.98`; the MSRV in `Cargo.toml` is `1.88.0`.
-- TypeScript bridge in `agent-sdk/` and the root npm package both use npm with Node `>=24`. Each has its own `package-lock.json`; install with `npm ci` (root) and `npm ci --prefix agent-sdk`.
+- TypeScript bridge in `agent-sdk/` and the root npm package both use npm with Node `>=24`. `agent-sdk/` is an npm workspace of the root package with a single root `package-lock.json`; install both with `npm ci` from the repository root.
 - Bun is only the bundled bridge runtime for source runs and release packaging. It is not the package manager.
 
 ### Validation commands
@@ -139,7 +140,7 @@ Run the Rust checks after Rust changes. They match the core jobs in `.github/wor
 ```bash
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
+cargo test --all-features -- --test-threads=1
 cargo fetch --locked
 ```
 
@@ -166,7 +167,7 @@ Run these only when the change touches the matching area:
 - Clippy denies `unwrap_used`, `expect_used`, `panic`, and `exit` in production code (`Cargo.toml` `[lints.clippy]`; tests are exempted through `clippy.toml`). Use `thiserror` for library errors and `anyhow` in main/app code.
 - When outdated, dead, or currently unused production code must remain temporarily during a change, mark it with `#[allow(dead_code)]` and a short removal note. Never hide dead or unused production code behind `#[cfg(test)]`; remove it before finalizing when possible.
 - The Rust side and the bridge talk NDJSON over stdio. A change to the wire contract must update both `src/agent/wire.rs` and `agent-sdk/src/types.ts` in the same change.
-- The `@anthropic-ai/claude-agent-sdk` version is pinned identically in the root `package.json` and `agent-sdk/package.json`; bump both together with their lockfiles.
+- The `@anthropic-ai/claude-agent-sdk` version is pinned identically in the root `package.json` and `agent-sdk/package.json`; bump both together with the root lockfile.
 - PR titles are linted by `.github/workflows/pr-title.yml`. Allowed types, also used for commit messages: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `ci`, `revert`. Scope is optional.
 
 ### Generated artifacts

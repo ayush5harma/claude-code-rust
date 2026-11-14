@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use crate::agent::model;
 use crate::app::agents::SubagentStatus;
-use crate::app::footer::{FooterFieldId, FooterLayout, FooterSide, SETTING_ID};
+use crate::app::footer::{FooterFieldId, FooterLayout, FooterSide};
 use crate::app::{App, MessageBlock, MessageRole};
 use crate::ui::theme;
 use ratatui::buffer::Buffer;
@@ -31,7 +30,7 @@ pub(crate) struct SerializedFooterRows {
 }
 
 pub(crate) fn serialize_footer_rows(app: &App, total_width: u16) -> SerializedFooterRows {
-    let layout = FooterLayout::from_saved(app.config.saved_value(SETTING_ID)).unwrap_or_default();
+    let layout = app.config.footer.layout();
     let mut rows = Vec::new();
     if let Some(plan) = build_plan_line(app, total_width) {
         rows.push(plan);
@@ -110,7 +109,7 @@ fn build_agent_shelf(app: &App, width: u16) -> Vec<Line<'static>> {
     rows
 }
 
-/// The dialog preview and chat use exactly the same formatter and width policy.
+/// Format the configured fields and notices within the chat footer's single row.
 pub(crate) fn serialize_footer(app: &App, layout: &FooterLayout, width: u16) -> Line<'static> {
     let width = usize::from(width);
     let notice = footer_notice(app)
@@ -125,7 +124,7 @@ pub(crate) fn serialize_footer(app: &App, layout: &FooterLayout, width: u16) -> 
                 id: field.id,
                 side: field.side,
                 text,
-                color,
+                color: field.color.map_or(color, crate::app::footer::FooterColor::color),
             })
         })
         .collect();
@@ -230,6 +229,10 @@ fn format_field(app: &App, id: FooterFieldId) -> FooterItem {
         FooterFieldId::FastMode => {
             let (text, color) = fast_mode_badge(app.session_runtime.fast_mode_state);
             Some((format!("[{text}]"), color))
+        }
+        FooterFieldId::RunningSubagents => {
+            let running = crate::app::agents::running_subagent_count(app);
+            (running > 0).then(|| (format!("[AGENTS:{running}]"), theme::warning()))
         }
         FooterFieldId::Directory => Some((format!("Loc: {}", app.cwd), gray)),
         FooterFieldId::GitBranch => app
@@ -491,7 +494,7 @@ fn fast_mode_badge(state: model::FastModeState) -> (&'static str, Color) {
 }
 
 fn startup_status_badge(app: &App) -> Option<(&'static str, Color)> {
-    match app.status {
+    match app.displayed_status() {
         crate::app::AppStatus::Connecting => None,
         crate::app::AppStatus::Ready => Some(("READY", theme::tertiary())),
         crate::app::AppStatus::CommandPending
@@ -663,11 +666,7 @@ fn buffer_row_to_line(buf: &Buffer, area: Rect, row: u16) -> Line<'static> {
 mod tests {
     use super::*;
     use crate::agent::model::{McpServerConnectionStatus, McpServerStatus};
-    use crate::app::{
-        AppStatus, BlockCache, ChatMessage, InlinePermission, MessageBlock, MessageRole, ModeState,
-        ToolCallInfo,
-    };
-    use tokio::sync::oneshot;
+    use crate::app::ModeState;
 
     fn line_text(line: &Line<'_>) -> String {
         line.spans.iter().map(|span| span.content.as_ref()).collect()
@@ -681,186 +680,6 @@ mod tests {
             available_modes: Vec::new(),
         });
         app
-    }
-
-    #[test]
-    fn fit_footer_right_text_truncates_when_needed() {
-        let text = "Update available: v9.9.9 (current v0.2.0)";
-        let fitted = fit_footer_right_text(text, 12).expect("fitted text");
-        assert!(fitted.ends_with("..."));
-        assert!(UnicodeWidthStr::width(fitted.as_str()) <= 12);
-    }
-
-    #[test]
-    fn fit_footer_suffix_text_keeps_path_tail() {
-        let text = "~/work/company/claude_rust";
-        let fitted = fit_footer_suffix_text(text, 14).expect("fitted text");
-        assert!(fitted.starts_with("..."));
-        assert!(fitted.ends_with("claude_rust"));
-        assert!(UnicodeWidthStr::width(fitted.as_str()) <= 14);
-    }
-
-    #[test]
-    fn serialize_footer_rows_produces_exactly_one_row() {
-        let app = App::test_default();
-        let serialized = serialize_footer_rows(&app, 80);
-
-        assert_eq!(serialized.rows.len(), 1);
-    }
-
-    #[test]
-    fn first_row_preserves_mode_and_fast_mode_badges() {
-        let app = app_with_mode();
-        let serialized = serialize_footer_rows(&app, 80);
-        let text = line_text(&serialized.rows[0]);
-
-        assert!(text.contains("[default]"));
-        assert!(text.contains("[FAST:OFF]"));
-    }
-
-    #[test]
-    fn reported_session_effort_updates_the_independent_effort_field() {
-        let mut app = app_with_mode();
-        app.session_runtime.session_id = Some("sess-1".into());
-        app.session_runtime.current_model =
-            Some(model::CurrentModel::new("opus", "Opus", "Opus").supports_effort(true));
-        for (value, label) in [
-            ("low", "Low"),
-            ("medium", "Med"),
-            ("high", "High"),
-            ("xhigh", "XHigh"),
-            ("max", "Max"),
-        ] {
-            crate::app::handle_client_event(
-                &mut app,
-                crate::agent::events::ClientEvent::SessionUpdate {
-                    session_id: "sess-1".to_owned(),
-                    update: model::SessionUpdate::ConfigOptionUpdate(model::ConfigOptionUpdate {
-                        option_id: "effortLevel".to_owned(),
-                        value: serde_json::json!(value),
-                    }),
-                },
-            );
-            let footer = serialize_footer_rows(&app, 120);
-            assert!(line_text(&footer.rows[0]).contains(&format!("[{label}]")));
-            assert!(line_text(&footer.rows[0]).contains("[Opus]"));
-        }
-        crate::app::handle_client_event(
-            &mut app,
-            crate::agent::events::ClientEvent::SessionUpdate {
-                session_id: "sess-1".to_owned(),
-                update: model::SessionUpdate::ConfigOptionUpdate(model::ConfigOptionUpdate {
-                    option_id: "effortLevel".to_owned(),
-                    value: serde_json::Value::Null,
-                }),
-            },
-        );
-        assert!(line_text(&serialize_footer_rows(&app, 120).rows[0]).contains("[Opus]"));
-    }
-
-    #[test]
-    fn ultracode_badge_appears_only_for_verified_effective_state() {
-        for state in [
-            None,
-            model::UltracodeState::new(true, false, false),
-            model::UltracodeState::new(false, true, false),
-            model::UltracodeState::new(false, false, false),
-            model::UltracodeState::new(true, true, true),
-        ] {
-            let mut app = app_with_mode();
-            app.session_runtime.ultracode = state;
-            let footer = serialize_footer_rows(&app, 120);
-            assert_eq!(
-                line_text(&footer.rows[0]).contains("Ultracode"),
-                state.is_some_and(model::UltracodeState::effective)
-            );
-            if state.is_some_and(model::UltracodeState::effective) {
-                let label = footer.rows[0]
-                    .spans
-                    .iter()
-                    .find(|span| span.content == "[Ultracode]")
-                    .expect("Ultracode label");
-                assert_eq!(label.style.fg, Some(theme::ultracode_accent()));
-                assert!(
-                    footer.rows[0].spans.iter().any(|span| span.content.contains("test-model")
-                        && span.style.fg == Some(footer_context_value()))
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn first_row_omits_connecting_badge_when_mode_is_unset() {
-        let mut app = App::test_default();
-        app.status = AppStatus::Connecting;
-
-        let serialized = serialize_footer_rows(&app, 80);
-        let text = line_text(&serialized.rows[0]);
-
-        assert!(!text.contains("[CONNECTING]"));
-        assert!(text.contains("[FAST:OFF]"));
-    }
-
-    #[test]
-    fn footer_preserves_directory_when_space_allows() {
-        let app = App::test_default();
-        let serialized = serialize_footer_rows(&app, 160);
-        let text = line_text(&serialized.rows[0]);
-
-        assert!(text.contains("Loc:"));
-    }
-
-    #[test]
-    fn pending_permission_hint_wins_on_first_row() {
-        let mut app = App::test_default();
-        let (response_tx, _response_rx) = oneshot::channel();
-        app.transcript.messages.push(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
-                id: "perm-1".into(),
-                source_message_uuids: Vec::new(),
-                title: "Read".into(),
-                sdk_tool_name: "Read".into(),
-                raw_input: None,
-                raw_input_bytes: 0,
-                locations: Vec::new(),
-                output_metadata: None,
-                task_metadata: None,
-                status: model::ToolCallStatus::Pending,
-                content: vec![],
-                hidden: false,
-                terminal_id: None,
-                terminal_command: None,
-                terminal_output: None,
-                terminal_output_len: 0,
-                cache: BlockCache::default(),
-                pending_permission: Some(InlinePermission {
-                    options: vec![],
-                    display: None,
-                    subagent_context: None,
-                    response_tx,
-                    selected_index: 0,
-                    focused: true,
-                }),
-                pending_question: None,
-                history: crate::app::ToolCallHistory::Live,
-            }))],
-            None,
-        ));
-        app.index_tool_call("perm-1".into(), 0, 0);
-        app.pending_interaction_ids.push("perm-1".into());
-
-        let serialized = serialize_footer_rows(&app, 80);
-        let text = line_text(&serialized.rows[0]);
-        assert!(text.ends_with("1 PEND. PERM."));
-        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
-            SETTING_ID,
-            serde_json::json!([]),
-        ));
-        let text = line_text(&serialize_footer_rows(&app, 80).rows[0]);
-        assert!(text.ends_with("1 PEND. PERM."));
-        assert!(!text.contains("FAST:"));
-        assert!(!text.contains("Loc:"));
     }
 
     #[test]
@@ -882,34 +701,6 @@ mod tests {
         let text = line_text(&serialized.rows[0]);
         assert!(text.contains("1 MCP NEEDS AUTH"));
         assert!(text.contains("Context: 38%"));
-    }
-
-    #[test]
-    fn narrow_width_preserves_notice_before_configured_fields() {
-        let mut app = App::test_default();
-        app.mcp.servers.push(McpServerStatus {
-            name: "filesystem".to_owned(),
-            status: McpServerConnectionStatus::NeedsAuth,
-            server_info: None,
-            error: None,
-            config: None,
-            scope: None,
-            source: None,
-            tools: Vec::new(),
-        });
-
-        let serialized = serialize_footer_rows(&app, 36);
-        let text = line_text(&serialized.rows[0]);
-        assert!(text.ends_with("1 MCP NEEDS AUTH"));
-        assert!(text.width() <= 36);
-        let layout = FooterLayout::from_saved(Some(&serde_json::json!([
-            {"id":"fastMode","visible":true,"side":"left"}
-        ])))
-        .expect("layout");
-        let exact_fit = line_text(&serialize_footer(&app, &layout, 27));
-        assert!(exact_fit.starts_with("[FAST:OFF]"));
-        assert!(exact_fit.ends_with("1 MCP NEEDS AUTH"));
-        assert_eq!(exact_fit.width(), 27);
     }
 
     #[test]
@@ -950,51 +741,6 @@ mod tests {
         app.session_runtime.current_model.as_mut().expect("model").supports_effort = false;
         assert!(!line_text(&serialize_footer(&app, &layout, 80)).contains("High"));
     }
-
-    #[test]
-    fn configured_groups_preserve_order_and_anchor_to_opposite_edges() {
-        let mut app = app_with_mode();
-        app.set_git_branch_for_test(Some("main"));
-        app.session_runtime.session_usage.context_usage_percent = Some(28);
-        let layout = FooterLayout::from_saved(Some(&serde_json::json!([
-            {"id":"fastMode","visible":true,"side":"left"},
-            {"id":"permissionMode","visible":true,"side":"left"},
-            {"id":"contextRemaining","visible":true,"side":"right"},
-            {"id":"gitBranch","visible":true,"side":"right"}
-        ])))
-        .expect("layout");
-        let text = line_text(&serialize_footer(&app, &layout, 100));
-        assert!(text.starts_with("[FAST:OFF] · [default]"));
-        assert!(text.ends_with("Context: 72% · Branch: main"));
-        assert_eq!(text.width(), 100);
-    }
-
-    #[test]
-    fn unicode_values_never_overlap_or_exceed_the_single_row() {
-        let mut app = app_with_mode();
-        app.cwd = "~/工作/项目/claude_rust".into();
-        app.set_git_branch_for_test(Some("feature/日本語の長いブランチ"));
-        let layout = FooterLayout::default();
-        for width in 0..=160 {
-            let line = serialize_footer(&app, &layout, width);
-            assert!(line.width() <= usize::from(width), "width {width}: {}", line_text(&line));
-        }
-    }
-
-    #[test]
-    fn shortened_branch_retains_part_of_its_name_or_is_omitted() {
-        let mut app = app_with_mode();
-        app.set_git_branch_for_test(Some("feature/configurable-footer"));
-        let layout = FooterLayout::from_saved(Some(&serde_json::json!([
-            {"id":"gitBranch","visible":true,"side":"left"}
-        ])))
-        .expect("layout");
-        assert!(line_text(&serialize_footer(&app, &layout, 11)).is_empty());
-        let shortened = line_text(&serialize_footer(&app, &layout, 12));
-        assert!(shortened.contains("f..."));
-        assert_eq!(shortened.width(), 12);
-    }
-
     fn fixture() -> App {
         let mut app = App::test_default();
         app.cwd = "~/Github/system-config".to_owned();
@@ -1196,3 +942,7 @@ mod tests {
         assert_eq!(context.and_then(|span| span.style.fg), Some(theme::danger()));
     }
 }
+
+#[cfg(test)]
+#[path = "footer_audit_tests.rs"]
+mod audit_tests;

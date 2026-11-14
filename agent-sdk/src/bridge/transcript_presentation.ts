@@ -3,6 +3,7 @@ import { asRecordOrNull } from "./shared.js";
 type TranscriptPresentation =
   | { kind: "conversation" }
   | { kind: "hidden" }
+  | { kind: "system_reminder"; text: string }
   | { kind: "task_notification"; notification?: Record<string, unknown> }
   | { kind: "command"; text: string }
   | { kind: "command_output"; text: string; severity: "info" | "error" };
@@ -89,7 +90,8 @@ export function transcriptPresentation(raw: unknown): TranscriptPresentation {
   const origin = asRecordOrNull(record.origin);
   if (origin?.kind === "task-notification" && origin.subkind === undefined &&
       (origin.producer === undefined || origin.producer === "session-task")) {
-    return { kind: "task_notification", notification: taskNotification(record.message) };
+    const notification = taskNotification(record.message);
+    return { kind: "task_notification", notification: notification ? { ...notification, run_id: origin.runId } : undefined };
   }
   // Explicitly authored and external messages retain their literal content,
   // including examples that happen to use Claude's internal tag names.
@@ -97,6 +99,11 @@ export function transcriptPresentation(raw: unknown): TranscriptPresentation {
   for (const message of messageCandidates(record.message)) {
     if (Array.isArray(message.content) && message.content.some(block => asRecordOrNull(block)?.type !== "text")) continue;
     const text = messageText(message).trim();
+    // The SDK marks a reminder it adds to the context as metadata, which a
+    // SessionMessage carries as `is_meta` (getSubagentMessages keeps such
+    // records). A prompt is never marked, so a user who writes these tags keeps them.
+    const reminder = tagAt(text, 0, "system-reminder");
+    if (record.is_meta === true && reminder?.end === text.length) return { kind: "system_reminder", text: reminder.body.trim() };
     const caveat = tagAt(text, 0, "local-command-caveat");
     if (record.isMeta === true && caveat?.end === text.length) return { kind: "hidden" };
     const command = commandText(text);

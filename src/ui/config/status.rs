@@ -1,18 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::common::{detail_kv, section_heading};
 use crate::app::App;
 use crate::app::format_elapsed;
 use crate::ui::theme;
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Widget, Wrap};
 
-pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
+pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
+    if area.is_empty() {
+        return;
+    }
     let lines = status_lines(app);
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+    let height = super::common::wrapped_height(lines.clone(), area.width);
+    let mut content = Buffer::empty(Rect::new(0, 0, area.width, height));
+    Paragraph::new(lines).wrap(Wrap { trim: false }).render(content.area, &mut content);
+    super::viewport::present(frame, area, &content, &mut app.config);
 }
 
 pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
@@ -146,24 +152,10 @@ fn hook_lines(app: &App) -> Vec<Line<'static>> {
     lines
 }
 
+/// The session's title, never its summary or first prompt: after `/clear`
+/// both of those are the `/clear` command itself.
 fn derive_session_name(app: &App) -> String {
-    if let Some(title) = app.active_session_custom_title() {
-        return title.to_owned();
-    }
-    if let Some(sid) = app.session_runtime.session_id.as_ref()
-        && let Some(session) = app.recent_sessions.iter().find(|s| s.session_id == sid.as_str())
-        && let Some(summary) = [Some(session.summary.as_str()), session.first_prompt.as_deref()]
-            .into_iter()
-            .flatten()
-            .find(|text| !text.trim().is_empty())
-    {
-        return if summary.chars().count() > 60 {
-            format!("{}...", summary.chars().take(57).collect::<String>())
-        } else {
-            summary.to_owned()
-        };
-    }
-    "(unnamed session)".to_owned()
+    app.active_session_custom_title().unwrap_or("(unnamed session)").to_owned()
 }
 
 fn model_display(app: &App) -> String {
@@ -178,12 +170,9 @@ pub(crate) fn login_method_label(account: &crate::agent::model::AccountInfo) -> 
 }
 
 fn resolve_memory_path(app: &App) -> String {
-    let Some(paths) =
-        crate::claude_paths::ClaudePaths::resolve(app.settings_home_override.as_deref())
-    else {
+    let Some(memory_md) = app.config.memory_file.as_ref() else {
         return "(unable to resolve Claude configuration directory)".to_owned();
     };
-    let memory_md = paths.default_memory_file(&app.cwd_raw);
 
     if memory_md.exists() {
         format!("auto memory ({})", memory_md.display())
@@ -196,6 +185,9 @@ fn setting_sources(app: &App) -> String {
     app.config.snapshot.as_ref().map_or_else(
         || "(not inspected)".to_owned(),
         |snapshot| {
+            if snapshot.sources.is_empty() {
+                return "(no sources reported)".to_owned();
+            }
             snapshot
                 .sources
                 .iter()
@@ -209,39 +201,6 @@ fn setting_sources(app: &App) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn status_lines_contains_version() {
-        let app = App::test_default();
-        let text = lines_to_string(&status_lines(&app));
-        assert!(text.contains(env!("CARGO_PKG_VERSION")));
-    }
-
-    #[test]
-    fn status_lines_shows_cwd() {
-        let mut app = App::test_default();
-        app.cwd = "/test/project".to_owned();
-        let text = lines_to_string(&status_lines(&app));
-        assert!(text.contains("/test/project"));
-    }
-
-    #[test]
-    fn status_lines_shows_model() {
-        let mut app = App::test_default();
-        app.session_runtime.current_model = Some(
-            crate::agent::model::CurrentModel::new("claude-sonnet-4-7", "Sonnet", "Sonnet 4.7")
-                .authoritative(true),
-        );
-        let text = lines_to_string(&status_lines(&app));
-        assert!(text.contains("Sonnet 4.7"));
-    }
-
-    #[test]
-    fn status_lines_unnamed_session_fallback() {
-        let app = App::test_default();
-        let text = lines_to_string(&status_lines(&app));
-        assert!(text.contains("(unnamed session)"));
-    }
 
     #[test]
     fn status_lines_name_the_session_by_its_live_title() {
@@ -271,19 +230,21 @@ mod tests {
     }
 
     #[test]
-    fn status_name_fallback_preserves_unicode_and_uses_only_the_active_session() {
+    fn status_name_shows_only_a_title_of_the_active_session() {
         let mut app = App::test_default();
         app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("active"));
-        let unicode = "\u{1f980}".repeat(20);
+        let unicode = "\u{1f980}".repeat(61);
+        // What the listing reports for the session `/clear` starts: no title,
+        // and the command itself as summary and first prompt.
         app.recent_sessions = vec![crate::app::RecentSessionInfo {
             session_id: "active".to_owned(),
-            summary: unicode.clone(),
+            summary: "/clear".to_owned(),
             last_modified_ms: 0,
             file_size_bytes: 0,
             cwd: None,
             git_branch: None,
-            custom_title: Some(unicode.clone()),
-            first_prompt: None,
+            custom_title: None,
+            first_prompt: Some("/clear".to_owned()),
             tag: None,
         }];
         let name_row = |app: &App| {
@@ -293,23 +254,11 @@ mod tests {
                 .find(|line| line.starts_with("Session name:"))
                 .expect("name row")
         };
+        assert_eq!(name_row(&app), "Session name: (unnamed session)");
+        app.recent_sessions[0].custom_title = Some(unicode.clone());
         assert_eq!(name_row(&app), format!("Session name: {unicode}"));
-        app.recent_sessions[0].custom_title = None;
-        assert_eq!(name_row(&app), format!("Session name: {unicode}"));
-        app.recent_sessions[0].summary.clear();
-        app.recent_sessions[0].first_prompt = Some("\u{1f980}".repeat(61));
-        assert_eq!(name_row(&app), format!("Session name: {}...", "\u{1f980}".repeat(57)));
         app.recent_sessions[0].session_id = "other".to_owned();
         assert_eq!(name_row(&app), "Session name: (unnamed session)");
-    }
-
-    #[test]
-    fn section_headers_present() {
-        let app = App::test_default();
-        let text = lines_to_string(&status_lines(&app));
-        assert!(text.contains("Session"));
-        assert!(text.contains("Model"));
-        assert!(text.contains("Settings"));
     }
 
     fn kv_rows(app: &App) -> Vec<String> {
@@ -384,53 +333,6 @@ mod tests {
         assert_eq!(row("Slowest 2"), Some("Slowest 2: Stop:* 900 ms"));
         assert_eq!(row("Slowest 3"), Some("Slowest 3: PreToolUse:Bash 300 ms"));
         assert_eq!(row("Slowest 4"), None);
-    }
-
-    #[test]
-    fn login_method_maps_oauth() {
-        let account = crate::agent::model::AccountInfo {
-            api_key_source: Some("oauth".to_owned()),
-            ..Default::default()
-        };
-        assert_eq!(login_method_label(&account), "Claude Max Account");
-    }
-
-    #[test]
-    fn login_method_maps_user_key() {
-        let account = crate::agent::model::AccountInfo {
-            api_key_source: Some("user".to_owned()),
-            ..Default::default()
-        };
-        assert_eq!(login_method_label(&account), "User API key");
-    }
-
-    #[test]
-    fn login_method_maps_external_provider() {
-        let account = crate::agent::model::AccountInfo {
-            api_provider: Some(crate::agent::model::AccountApiProvider::Bedrock),
-            ..Default::default()
-        };
-        assert_eq!(login_method_label(&account), "External provider");
-    }
-
-    #[test]
-    fn status_lines_render_api_provider() {
-        let mut app = App::test_default();
-        app.session_runtime.account_info = Some(crate::agent::model::AccountInfo {
-            api_provider: Some(crate::agent::model::AccountApiProvider::Gateway),
-            ..Default::default()
-        });
-
-        let text = lines_to_string(&status_lines(&app));
-
-        assert!(text.contains("API provider"));
-        assert!(text.contains("Gateway"));
-    }
-
-    #[test]
-    fn login_method_falls_back_to_unknown() {
-        let account = crate::agent::model::AccountInfo::default();
-        assert_eq!(login_method_label(&account), "Unknown");
     }
 
     fn lines_to_string(lines: &[Line<'_>]) -> String {

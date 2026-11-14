@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::prelude::*;
 
@@ -17,12 +16,7 @@ pub struct McpCallbackUrlOverlayState {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct McpElicitationOverlayState {
-    pub request: crate::agent::types::ElicitationRequest,
-    pub selected_index: usize,
-    pub browser_opened: bool,
-    pub browser_open_error: Option<String>,
-}
+pub struct McpElicitationOverlayState;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpAuthRedirectOverlayState {
@@ -70,14 +64,6 @@ impl ConfigState {
     #[must_use]
     pub fn mcp_elicitation_overlay(&self) -> Option<&McpElicitationOverlayState> {
         if let Some(ConfigOverlayState::McpElicitation(overlay)) = &self.overlay {
-            Some(overlay)
-        } else {
-            None
-        }
-    }
-
-    pub fn mcp_elicitation_overlay_mut(&mut self) -> Option<&mut McpElicitationOverlayState> {
-        if let Some(ConfigOverlayState::McpElicitation(overlay)) = &mut self.overlay {
             Some(overlay)
         } else {
             None

@@ -6,14 +6,21 @@ use ratatui::layout::{Constraint, Direction, Layout, Margin};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::theme;
 
 const QUESTION: &str = "Trust this project directory?";
-const INTRO: &str = "Trusting this directory starts a session here and loads its project settings.";
-const DEFAULT_MESSAGE: &str = "Yes continues; No closes claude-rs.";
+const WAIT_NOTE: &str =
+    "Claude Rust will wait here until you choose whether to trust this workspace.";
+const REVIEW_NOTE: &str = "Review the project before continuing if you are unsure.";
+const CHOICE_HINT: &str = "Choose Yes to continue or No to close Claude Rust.";
+const PATH_LABEL: &str = "Path: ";
 const ELLIPSIS: char = '\u{2026}';
+
+#[cfg(test)]
+#[path = "trust_audit_tests.rs"]
+mod audit_tests;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -25,65 +32,93 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     frame.render_widget(outer, area);
 
     let inner = area.inner(Margin { vertical: 1, horizontal: 2 });
+    let width = inner.width;
     let question = Line::from(Span::styled(
         QUESTION,
         Style::default().fg(theme::accent()).add_modifier(Modifier::BOLD),
     ));
-    let intro = vec![Line::default(), Line::from(INTRO)];
-    let message = app.trust.last_error.clone().unwrap_or_else(|| DEFAULT_MESSAGE.to_owned());
-    let message_style = if app.trust.last_error.is_some() {
-        Style::default().fg(theme::danger())
-    } else {
-        Style::default().fg(theme::tertiary())
+    let error_style = Style::default().fg(theme::danger());
+    let message = match &app.trust.last_error {
+        Some(error) => Line::from(Span::styled(error.clone(), error_style)),
+        None => Line::from(Span::styled(CHOICE_HINT, Style::default().fg(theme::tertiary()))),
     };
-    let message_lines = vec![Line::from(Span::styled(message, message_style))];
+    let actions = action_lines(app);
+    // Error data may contain meaningful spaces in a directory or filename.
+    // Use the same column layout to measure and render it, without word trimming.
+    let message_height = app.trust.last_error.as_ref().map_or_else(
+        || wrapped_line_count(Text::from(message.clone()), width),
+        |error| {
+            u16::try_from(chunk_columns(error.chars(), usize::from(width)).len())
+                .unwrap_or(u16::MAX)
+                .max(1)
+        },
+    );
 
-    let question_height = wrapped_line_count(Text::from(question.clone()), inner.width);
-    let actions_height = wrapped_line_count(Text::from(action_lines(app)), inner.width);
-    let intro_height = wrapped_line_count(Text::from(intro.clone()), inner.width);
-    let message_height = wrapped_line_count(Text::from(message_lines.clone()), inner.width);
-
-    // Rows are handed out in priority order: question and actions, then the
-    // directory (the tail of a long path is what tells projects apart), then
-    // the message, and the intro sentence last. The path is cut into rows here
-    // rather than by Paragraph wrapping so that a path too long for the space
-    // left can show its tail behind an ellipsis.
-    let question_rows = question_height.min(inner.height);
-    let action_rows = actions_height.min(inner.height - question_rows);
-    let mut free = inner.height - question_rows - action_rows;
-    let directory = directory_rows(&shown_directory(app), inner.width, usize::from(free));
-    let directory_rows_used = u16::try_from(directory.len()).unwrap_or(u16::MAX);
-    free -= directory_rows_used;
-    let message_rows = message_height.min(free);
-    free -= message_rows;
-    let intro_rows = if free >= intro_height { intro_height } else { 0 };
+    // Rows are handed out by priority, not in screen order: the choices, then
+    // an error, then the path with what is left (cut behind a leading ellipsis
+    // when that is not enough, and gone only when no row is left). The
+    // question, the hint and the explanation lines follow in that order, each
+    // only if all of its rows still fit, and the blank rows around the path
+    // come last, both or neither.
+    let mut free = inner.height;
+    let action_rows = wrapped_line_count(Text::from(actions.clone()), width).min(free);
+    free -= action_rows;
+    let mut message_rows = 0;
+    if app.trust.last_error.is_some() {
+        message_rows = message_height.min(free);
+        free -= message_rows;
+    }
+    let path = path_rows(&shown_directory(app), width, usize::from(free));
+    let path_height = u16::try_from(path.len()).unwrap_or(u16::MAX);
+    free -= path_height;
+    let mut fit = |height: u16| {
+        if height > free {
+            return 0;
+        }
+        free -= height;
+        height
+    };
+    let question_rows = fit(wrapped_line_count(Text::from(question.clone()), width));
+    if app.trust.last_error.is_none() {
+        message_rows = fit(message_height);
+    }
+    let wait_rows = fit(wrapped_line_count(Text::from(WAIT_NOTE), width));
+    let review_rows = fit(wrapped_line_count(Text::from(REVIEW_NOTE), width));
+    // One blank row above the path and one below it, or neither.
+    let gap_rows = fit(2) / 2;
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(question_rows),
-            Constraint::Length(directory_rows_used),
-            Constraint::Length(intro_rows),
+            Constraint::Length(wait_rows),
+            Constraint::Length(gap_rows),
+            Constraint::Length(path_height),
+            Constraint::Length(gap_rows),
+            Constraint::Length(review_rows),
             Constraint::Length(message_rows),
             Constraint::Length(action_rows),
             Constraint::Min(0),
         ])
         .split(inner);
 
-    frame.render_widget(Paragraph::new(question).wrap(Wrap { trim: false }), chunks[0]);
-    let bold = Style::default().add_modifier(Modifier::BOLD);
-    frame.render_widget(
-        Paragraph::new(
-            directory
+    let wrap = Wrap { trim: false };
+    // Preserve error data exactly, with a trailing ellipsis when it cannot fit.
+    let message = match &app.trust.last_error {
+        Some(error) => Paragraph::new(
+            fit_chunks(error, usize::from(width), usize::from(message_rows), Keep::Start)
                 .into_iter()
-                .map(|row| Line::from(Span::styled(row, bold)))
+                .map(|row| Line::from(Span::styled(row, error_style)))
                 .collect::<Vec<_>>(),
         ),
-        chunks[1],
-    );
-    frame.render_widget(Paragraph::new(intro).wrap(Wrap { trim: false }), chunks[2]);
-    frame.render_widget(Paragraph::new(message_lines).wrap(Wrap { trim: false }), chunks[3]);
-    frame.render_widget(Paragraph::new(action_lines(app)).wrap(Wrap { trim: false }), chunks[4]);
+        _ => Paragraph::new(message).wrap(wrap),
+    };
+    frame.render_widget(Paragraph::new(question).wrap(wrap), chunks[0]);
+    frame.render_widget(Paragraph::new(WAIT_NOTE).wrap(wrap), chunks[1]);
+    frame.render_widget(Paragraph::new(path), chunks[3]);
+    frame.render_widget(Paragraph::new(REVIEW_NOTE).wrap(wrap), chunks[5]);
+    frame.render_widget(message, chunks[6]);
+    frame.render_widget(Paragraph::new(actions).wrap(wrap), chunks[7]);
 }
 
 /// The directory the answer applies to: the key the trust store reads and
@@ -98,35 +133,75 @@ fn shown_directory(app: &App) -> String {
     }
 }
 
-/// Cuts `path` into rows of at most `width` columns. When it needs more than
-/// `max_rows`, keeps the tail behind a leading ellipsis in at most `max_rows`.
-fn directory_rows(path: &str, width: u16, max_rows: usize) -> Vec<String> {
+/// The path in rows of at most `width` columns, the first behind the label
+/// and the rest indented to start under the path. Without room beside the
+/// label for the ellipsis and one double-width character, the path is drawn
+/// unlabelled.
+fn path_rows(path: &str, width: u16, max_rows: usize) -> Vec<Line<'static>> {
     let width = usize::from(width);
-    if width == 0 || max_rows == 0 {
+    let label_width = PATH_LABEL.width();
+    let (label, path_width) =
+        if width >= label_width + 3 { (PATH_LABEL, width - label_width) } else { ("", width) };
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    // The end of a path is what tells projects apart.
+    fit_chunks(path, path_width, max_rows, Keep::End)
+        .into_iter()
+        .enumerate()
+        .map(|(index, chunk)| {
+            let lead = if index == 0 { label.to_owned() } else { " ".repeat(label.width()) };
+            Line::from(vec![Span::raw(lead), Span::styled(chunk, bold)])
+        })
+        .collect()
+}
+
+/// The end of a text that survives a cut.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Keep {
+    Start,
+    End,
+}
+
+/// Cuts `text` into chunks of at most `width` columns. When it needs more than
+/// `max_rows`, keeps the `keep` end and puts an ellipsis where it was cut.
+fn fit_chunks(text: &str, width: usize, max_rows: usize, keep: Keep) -> Vec<String> {
+    if text.is_empty() || width == 0 || max_rows == 0 {
         return Vec::new();
     }
-    let rows = chunk_columns(path.chars(), width);
+    let rows = chunk_columns(text.chars(), width);
     if rows.len() <= max_rows {
         return rows;
     }
 
-    // Keep the last `max_rows * width - 1` columns of the path.
-    let budget = max_rows * width - 1;
-    let mut tail: Vec<char> = Vec::new();
-    let mut used = 0usize;
-    for ch in path.chars().rev() {
-        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used + w > budget {
-            break;
+    // Collected from the kept end, so the cut is always at the back.
+    let from_kept_end: Vec<char> = match keep {
+        Keep::Start => text.chars().collect(),
+        Keep::End => text.chars().rev().collect(),
+    };
+    // Double-width characters can leave a column unused at the end of a row, so
+    // the first budget may need more rows than it has columns for; shrink it
+    // until the kept part, ellipsis included, fits in `max_rows`.
+    let mut budget = max_rows * width - 1;
+    loop {
+        let mut kept: Vec<char> = Vec::new();
+        let mut used = 0usize;
+        for &ch in &from_kept_end {
+            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if used + ch_width > budget {
+                break;
+            }
+            kept.push(ch);
+            used += ch_width;
         }
-        tail.push(ch);
-        used += w;
+        kept.push(ELLIPSIS);
+        if keep == Keep::End {
+            kept.reverse();
+        }
+        let rows = chunk_columns(kept.into_iter(), width);
+        if rows.len() <= max_rows || budget == 0 {
+            return rows;
+        }
+        budget -= 1;
     }
-    tail.push(ELLIPSIS);
-    tail.reverse();
-    let mut rows = chunk_columns(tail.into_iter(), width);
-    rows.truncate(max_rows);
-    rows
 }
 
 fn chunk_columns(chars: impl Iterator<Item = char>, width: usize) -> Vec<String> {
@@ -134,13 +209,13 @@ fn chunk_columns(chars: impl Iterator<Item = char>, width: usize) -> Vec<String>
     let mut current = String::new();
     let mut used = 0usize;
     for ch in chars {
-        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used + w > width && !current.is_empty() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + ch_width > width && !current.is_empty() {
             rows.push(std::mem::take(&mut current));
             used = 0;
         }
         current.push(ch);
-        used += w;
+        used += ch_width;
     }
     if !current.is_empty() {
         rows.push(current);
@@ -176,9 +251,7 @@ fn action_line(label: &str, selected: bool) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::App;
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
+    use ratatui::{Terminal, backend::TestBackend};
 
     fn draw_rows(app: &mut App, width: u16, height: u16) -> Vec<String> {
         let backend = TestBackend::new(width, height);
@@ -189,12 +262,64 @@ mod tests {
             .buffer()
             .content
             .chunks(usize::from(width))
-            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+            .map(|row| {
+                let mut text = String::new();
+                let mut skip = 0usize;
+                for cell in row {
+                    if skip > 0 {
+                        skip -= 1;
+                        continue;
+                    }
+                    text.push_str(cell.symbol());
+                    skip = unicode_width::UnicodeWidthStr::width(cell.symbol()).saturating_sub(1);
+                }
+                text
+            })
             .collect()
     }
 
-    fn draw_text(app: &mut App) -> String {
-        draw_rows(app, 70, 14).join("\n")
+    fn content(row: &str) -> String {
+        let inside = row.trim_start_matches('\u{2502}').trim_end_matches('\u{2502}');
+        inside.strip_prefix(' ').unwrap_or(inside).trim_end().to_owned()
+    }
+
+    fn inner_rows(app: &mut App, width: u16, height: u16) -> Vec<String> {
+        let rows = draw_rows(app, width, height);
+        rows[1..rows.len() - 1].iter().map(|row| content(row)).collect()
+    }
+
+    fn choices_at(rows: &[String]) -> usize {
+        let yes = rows
+            .iter()
+            .position(|row| row == "> Yes" || row == "  Yes")
+            .unwrap_or_else(|| panic!("no Yes row: {rows:#?}"));
+        assert!(
+            rows.get(yes + 1).is_some_and(|row| row == "  No" || row == "> No"),
+            "No is not under Yes: {rows:#?}"
+        );
+        yes
+    }
+
+    const LONG_PATH: &str = "/Users/someone/Github/a-rather-long-organisation-name/client-projects/deeply-nested-service-checkout";
+    const LONG_ERROR: &str = "Invalid trust preferences: /Users/someone/Library/Application Support/claude-profiles/a-rather-long-organisation-name/work/.claude.json";
+
+    #[test]
+    fn trusted_view_keeps_the_choices_on_very_small_screens() {
+        for (width, height) in [(30u16, 12u16), (20, 14), (12, 24), (20, 5), (20, 4), (12, 4)] {
+            for error in [None, Some(LONG_ERROR)] {
+                let mut app = App::test_default();
+                app.trust.project_key = LONG_PATH.to_owned();
+                app.trust.last_error = error.map(str::to_owned);
+
+                let rows = inner_rows(&mut app, width, height);
+
+                choices_at(&rows);
+            }
+        }
+    }
+
+    fn frame_stripped(rows: &[String]) -> String {
+        rows.iter().map(|row| row.trim_matches(|c: char| c == '\u{2502}' || c == ' ')).collect()
     }
 
     #[test]
@@ -210,35 +335,7 @@ mod tests {
         assert!(!text.contains("Unknown Project"));
         assert!(!text.contains("~/.claude.json"));
         assert!(!text.contains("hasTrustDialogAccepted"));
-        let question = rows.iter().position(|row| row.contains("Trust this project directory?"));
-        let directory = rows.iter().position(|row| row.contains("/work/project"));
-        assert_eq!(directory, question.map(|row| row + 1), "{text}");
-    }
-
-    const LONG_PATH_SEGMENTS: [&str; 6] = [
-        "Users",
-        "someone",
-        "Github",
-        "a-rather-long-organisation-name",
-        "client-projects",
-        "deeply-nested-service-checkout",
-    ];
-
-    fn frame_stripped(rows: &[String]) -> String {
-        rows.iter().map(|row| row.trim_matches(|c: char| c == '\u{2502}' || c == ' ')).collect()
-    }
-
-    #[test]
-    fn trusted_view_wraps_a_long_directory_without_losing_segments() {
-        let mut app = App::test_default();
-        app.cwd_raw = format!("/{}", LONG_PATH_SEGMENTS.join("/"));
-
-        let rows = draw_rows(&mut app, 60, 16);
-
-        // A path has no spaces, so a wrap point is a plain character break.
-        let body = frame_stripped(&rows);
-        assert!(body.contains(&app.cwd_raw), "{body}");
-        assert_eq!(rows.iter().filter(|row| row.contains("Trust this")).count(), 1);
+        assert!(text.contains("/work/project"), "{text}");
     }
 
     #[test]
@@ -247,7 +344,7 @@ mod tests {
         app.cwd_raw = ".".to_owned();
         app.trust.project_key = "/work/the-real/project".to_owned();
 
-        let text = draw_text(&mut app);
+        let text = draw_rows(&mut app, 70, 14).join("\n");
 
         assert!(text.contains("/work/the-real/project"), "{text}");
         assert!(
@@ -265,77 +362,5 @@ mod tests {
 
         let body = frame_stripped(&rows);
         assert!(body.contains(&expected.to_string_lossy().replace('\\', "/")), "{body}");
-    }
-
-    #[test]
-    fn trusted_view_keeps_the_path_tail_and_actions_on_short_screens() {
-        for (width, height) in [(30u16, 14u16), (20, 16), (12, 24)] {
-            let mut app = App::test_default();
-            app.cwd_raw = format!("/{}", LONG_PATH_SEGMENTS.join("/"));
-
-            let rows = draw_rows(&mut app, width, height);
-            let body = frame_stripped(&rows);
-
-            assert!(body.contains("service-checkout"), "{width}x{height}: {body}");
-            let text = rows.join("\n");
-            assert!(text.contains("> Yes"), "{width}x{height}: {text}");
-            assert!(text.contains("  No"), "{width}x{height}: {text}");
-        }
-    }
-
-    #[test]
-    fn trusted_view_marks_a_path_cut_to_its_tail() {
-        let mut app = App::test_default();
-        app.trust.project_key = format!("/{}", "segment/".repeat(60));
-
-        let rows = draw_rows(&mut app, 30, 14);
-        let body = frame_stripped(&rows);
-
-        assert!(body.contains('\u{2026}'), "{body}");
-        assert!(body.contains("segment"), "{body}");
-        assert!(rows.join("\n").contains("> Yes"), "{body}");
-    }
-
-    #[test]
-    fn trusted_view_keeps_the_error_in_the_message_slot() {
-        let mut app = App::test_default();
-        app.trust.last_error = Some("Invalid trust preferences: /x/.claude.json".to_owned());
-
-        let text = draw_text(&mut app);
-
-        assert!(text.contains("Invalid trust preferences: /x/.claude.json"));
-        assert!(!text.contains("Yes continues"));
-    }
-
-    #[test]
-    fn trusted_view_highlights_no_when_selected() {
-        let mut app = App::test_default();
-        app.trust.selection = TrustSelection::No;
-
-        let text = draw_text(&mut app);
-
-        assert!(text.contains("  Yes"));
-        assert!(text.contains("> No"));
-    }
-
-    #[test]
-    fn trusted_view_renders_actions_below_body_text() {
-        let mut app = App::test_default();
-        app.trust.selection = TrustSelection::Yes;
-
-        let text = draw_text(&mut app);
-        let body_idx = text.find("Trusting this directory").expect("body text");
-        let action_idx = text.find("> Yes").expect("yes action");
-
-        assert!(action_idx > body_idx);
-    }
-
-    #[test]
-    fn trusted_view_wraps_title_on_narrow_widths() {
-        let mut app = App::test_default();
-        let rows = draw_rows(&mut app, 18, 16);
-
-        assert!(rows.iter().any(|row| row.contains("Trust this")));
-        assert!(rows.iter().any(|row| row.contains("directory?")));
     }
 }

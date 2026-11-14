@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use crossterm::event::KeyModifiers;
 
@@ -78,7 +77,7 @@ fn chat_blocked_default_bindings() -> [KeyBinding; 1] {
     )]
 }
 
-fn chat_control_default_bindings() -> [KeyBinding; 11] {
+fn chat_control_default_bindings() -> [KeyBinding; 15] {
     [
         KeyBinding::default(
             KeyContext::ChatInput,
@@ -130,11 +129,11 @@ fn chat_control_default_bindings() -> [KeyBinding; 11] {
             KeySpec::new(KeyCodeSpec::Tab, KeyModifiers::NONE),
             KeyAction::App(AppAction::FocusPromptOrAcceptSuggestion),
         ),
-        KeyBinding::default(
-            KeyContext::ChatInput,
-            KeySpec::new(KeyCodeSpec::Tab, KeyModifiers::SHIFT),
-            KeyAction::App(AppAction::CycleMode),
-        ),
+        chat_app_key(KeyCodeSpec::Tab, KeyModifiers::SHIFT, AppAction::NextMode),
+        chat_app_key(KeyCodeSpec::Right, KeyModifiers::SHIFT, AppAction::NextMode),
+        chat_app_key(KeyCodeSpec::Left, KeyModifiers::SHIFT, AppAction::PreviousMode),
+        chat_app_key(KeyCodeSpec::Up, KeyModifiers::SHIFT, AppAction::IncreaseEffort),
+        chat_app_key(KeyCodeSpec::Down, KeyModifiers::SHIFT, AppAction::DecreaseEffort),
     ]
 }
 
@@ -289,6 +288,14 @@ fn chat_input(ch: char, modifiers: KeyModifiers, action: InputAction) -> KeyBind
         KeyContext::ChatInput,
         KeySpec::char(ch, modifiers),
         KeyAction::Input(action),
+    )
+}
+
+fn chat_app_key(code: KeyCodeSpec, modifiers: KeyModifiers, action: AppAction) -> KeyBinding {
+    KeyBinding::default(
+        KeyContext::ChatInput,
+        KeySpec::new(code, modifiers),
+        KeyAction::App(action),
     )
 }
 

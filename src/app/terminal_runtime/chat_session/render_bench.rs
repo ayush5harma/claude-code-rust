@@ -4,7 +4,7 @@
 //!
 //! Each frame runs the functions `ChatTerminalSession::draw` runs:
 //! `serialize_live_rows_with_boundaries_excluding`, `build_composer_surface`,
-//! `prepare_static_history_flush`, `plan_chat_frame`, `render_chat_frame`, and
+//! `prepare_static_history_flush`, `plan_chat_frame`, `render_mutable_frame`, and
 //! `record_viewport_anchor`. The inline stdout terminal is replaced by a ratatui
 //! `Terminal` on a `TestBackend`, which still diffs and flushes every frame. So the
 //! numbers cover serialization, Markdown, tool and diff rendering, layout, the composer
@@ -24,7 +24,10 @@
 //! The transcript is the shared render corpus (`tests/fixtures/render-corpus.json`).
 //! `scripts/dev/bench-render.mjs` runs this against two refs and compares medians.
 
-use super::{ChatTerminalSession, plan_chat_frame, record_viewport_anchor, render_chat_frame};
+use super::{
+    ChatTerminalSession, NativeTerminalIo, plan_chat_frame, record_viewport_anchor,
+    render_mutable_frame,
+};
 use crate::app::connect::render_corpus::RenderCorpus;
 use crate::app::{App, HistoryOutputId};
 use crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding;
@@ -70,19 +73,32 @@ impl FrameBench {
         } else {
             self.confirmed.clone()
         };
-        let serialized = serialize_live_rows_with_boundaries_excluding(app, self.width, &excluded);
+        let serialized =
+            serialize_live_rows_with_boundaries_excluding(app, self.width, &excluded, None);
         app.surface_dirty.chat.take_repaint();
-        let composer = ChatTerminalSession::build_composer_surface(app, self.width);
-        let mut history_plan = ChatTerminalSession::prepare_static_history_flush(
-            &serialized,
-            self.width,
-            self.confirmed.clone(),
-        );
-        let plan = plan_chat_frame(app, &serialized, &mut history_plan, &composer, self.height);
+        let composer =
+            ChatTerminalSession::<NativeTerminalIo>::build_composer_surface(app, self.width);
+        let mut history_plan =
+            ChatTerminalSession::<NativeTerminalIo>::prepare_static_history_flush(
+                &serialized,
+                self.width,
+                self.confirmed.clone(),
+            );
+        let plan =
+            plan_chat_frame(app, &serialized, None, &mut history_plan, &composer, self.height);
         let viewport_height = plan.requested_layout.viewport_height;
         let area = Rect::new(0, self.height - viewport_height, self.width, viewport_height);
         self.terminal
-            .draw(|frame| render_chat_frame(frame, area, app, &plan, &composer))
+            .draw(|frame| {
+                render_mutable_frame(
+                    frame,
+                    app,
+                    &composer,
+                    plan.layout,
+                    &plan.visible_live_rows,
+                    area,
+                );
+            })
             .expect("test draw");
         record_viewport_anchor(
             app,
@@ -250,7 +266,12 @@ mod tests {
         // The message layout closes a reply with one blank padding row.
         assert_eq!(rows[tail + 1], "", "{:?}", rows[tail + 1]);
         assert!(rows[tail + 2].starts_with("Reading output"), "{:?}", rows[tail + 2]);
-        assert!(rows[tail + 3].contains(&prompt_prefix_text()), "{:?}", rows[tail + 3]);
+        // The fork's ruled composer draws one rule row above the prompt.
+        assert!(
+            rows[tail + 3..=tail + 4].iter().any(|row| row.contains(&prompt_prefix_text())),
+            "{:?}",
+            &rows[tail + 3..=tail + 4]
+        );
         assert!(
             rows.last()
                 .is_some_and(|row| row.starts_with("[fixture]") && row.contains("Loc: /test")),

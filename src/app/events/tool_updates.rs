@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
-use super::super::{App, InvalidationLevel, MessageBlock, ToolCallInfo, ToolCallScope};
+use super::super::{App, MessageBlock, ToolCallInfo};
 use super::tool_calls::{
     current_session_id, json_value_size, log_terminal_spawned, parent_tool_use_id_from_meta,
     sdk_tool_name_from_meta, tool_scope_name,
@@ -21,65 +20,24 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCa
         );
         return;
     };
-    if let Some(parent_tool_use_id) = parent_tool_use_id_from_meta(tcu.meta.as_ref()) {
-        app.register_tool_call_scope(
-            id_str.clone(),
-            ToolCallScope::SubagentChild { parent_tool_use_id: parent_tool_use_id.to_owned() },
-        );
-    }
-    let tool_scope = app.tool_call_scope(&id_str);
-    let previous_status =
-        app.transcript.messages.get(mi).and_then(|message| message.blocks.get(bi)).and_then(
-            |block| match block {
-                MessageBlock::ToolCall(tc) => Some(tc.status),
-                _ => None,
-            },
-        );
-    let previous_terminal_id =
-        app.transcript.messages.get(mi).and_then(|message| message.blocks.get(bi)).and_then(
-            |block| match block {
-                MessageBlock::ToolCall(tc) => tc.terminal_id.clone(),
-                _ => None,
-            },
-        );
-    apply_tool_scope_status_update(app, &id_str, tool_scope.as_ref(), tcu.fields.status);
 
-    let update_outcome = apply_tool_call_update_to_indexed_block(app, mi, bi, tcu);
-    app.sync_tool_call_history(&id_str);
-    crate::app::tasks::refresh_task_tool_displays(app);
-    if let Some(mi) = update_outcome.layout_dirty_idx {
-        app.recompute_message_retained_bytes(mi);
-        app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
-    }
-    log_tool_call_update_applied(
-        app,
-        &id_str,
-        tcu,
-        tool_scope.as_ref(),
-        previous_status,
-        &update_outcome,
-    );
-    log_command_update_applied(app, &id_str, previous_status, previous_terminal_id.as_deref());
-}
+    let (previous_status, previous_terminal_id) = app
+        .tool_call_at(mi, bi)
+        .map_or((None, None), |tc| (Some(tc.status), tc.terminal_id.clone()));
 
-fn apply_tool_scope_status_update(
-    app: &mut App,
-    id_str: &str,
-    tool_scope: Option<&ToolCallScope>,
-    status: Option<model::ToolCallStatus>,
-) {
-    let Some(status) = status else {
+    let changed = apply_tool_call_update_to_indexed_block(app, mi, bi, tcu);
+    let history_changed = app.sync_tool_call_history(mi, bi);
+    let task_display_changed = crate::app::tasks::refresh_task_tool_display_at(app, mi, bi);
+    if changed || history_changed || task_display_changed {
+        app.sync_after_message_blocks_changed(mi);
+    }
+    let Some(tc) = app.tool_call_at(mi, bi) else {
         return;
     };
-    match tool_scope {
-        Some(ToolCallScope::SubagentRoot) => app.sync_active_task_status(id_str, status),
-        Some(ToolCallScope::SubagentChild { .. } | ToolCallScope::MainAgent) | None => {}
+    if changed {
+        log_tool_call_update_applied(app, tc, tcu, previous_status);
     }
-}
-
-struct ToolCallUpdateApplyOutcome {
-    changed: bool,
-    layout_dirty_idx: Option<usize>,
+    log_command_update_applied(app, tc, previous_status, previous_terminal_id.as_deref());
 }
 
 fn apply_tool_call_update_to_indexed_block(
@@ -87,35 +45,32 @@ fn apply_tool_call_update_to_indexed_block(
     mi: usize,
     bi: usize,
     tcu: &model::ToolCallUpdate,
-) -> ToolCallUpdateApplyOutcome {
-    let mut out = ToolCallUpdateApplyOutcome { changed: false, layout_dirty_idx: None };
-
-    if let Some(MessageBlock::ToolCall(tc)) =
+) -> bool {
+    let Some(MessageBlock::ToolCall(tc)) =
         app.transcript.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
-    {
-        let tc = tc.as_mut();
-        let mut changed = false;
-        changed |= tc.add_source_message_uuid(tcu.source_message_uuid.as_deref());
-        changed |= apply_tool_call_status_update(tc, tcu.fields.status);
-        changed |= apply_tool_call_title_update(tc, tcu.fields.title.as_deref(), &app.cwd_raw);
-        changed |= apply_tool_call_content_update(tc, tcu.fields.content.as_deref());
-        changed |= apply_tool_call_raw_input_update(tc, tcu.fields.raw_input.as_ref());
-        changed |= apply_tool_call_locations_update(tc, tcu.fields.locations.as_ref());
-        changed |= apply_tool_call_output_metadata_update(tc, tcu.fields.output_metadata.as_ref());
-        changed |= apply_tool_call_task_metadata_update(tc, tcu.fields.task_metadata.as_ref());
-        changed |= clear_subagent_retry_if_terminal(tc);
-        changed |= apply_tool_call_raw_output_update(tc, tcu.fields.raw_output.as_ref());
-        changed |= apply_tool_call_name_update(tc, tcu.meta.as_ref());
-        changed |= apply_tool_call_hidden_update(tc, tcu.meta.as_ref());
-        if changed {
-            out.changed = true;
-            tc.invalidate_render_cache();
-            app.sync_render_cache_slot(mi, bi);
-            out.layout_dirty_idx = Some(mi);
-        }
+    else {
+        return false;
+    };
+    let tc = tc.as_mut();
+    let mut changed = false;
+    changed |= tc.add_source_message_uuid(tcu.source_message_uuid.as_deref());
+    changed |= apply_tool_call_status_update(tc, tcu.fields.status);
+    changed |= apply_tool_call_title_update(tc, tcu.fields.title.as_deref(), &app.cwd_raw);
+    changed |= apply_tool_call_content_update(tc, tcu.fields.content.as_deref());
+    changed |= apply_tool_call_raw_input_update(tc, tcu.fields.raw_input.as_ref());
+    changed |= apply_tool_call_locations_update(tc, tcu.fields.locations.as_ref());
+    changed |= apply_tool_call_output_metadata_update(tc, tcu.fields.output_metadata.as_ref());
+    changed |= apply_tool_call_task_metadata_update(tc, tcu.fields.task_metadata.as_ref());
+    if let Some(kind) = tcu.fields.kind {
+        changed |= super::tool_calls::sync_if_changed(&mut tc.kind, &kind);
     }
-
-    out
+    changed |= apply_tool_call_raw_output_update(tc, tcu.fields.raw_output.as_ref());
+    changed |= apply_tool_call_name_update(tc, tcu.meta.as_ref());
+    changed |= apply_tool_call_parent_update(tc, tcu.meta.as_ref());
+    if changed {
+        tc.invalidate_render_cache();
+    }
+    changed
 }
 
 fn apply_tool_call_status_update(
@@ -207,88 +162,11 @@ fn apply_tool_call_task_metadata_update(
     let Some(task_metadata) = task_metadata else {
         return false;
     };
-    let mut merged = tc.task_metadata.clone().unwrap_or_default();
-    if task_metadata.end_time.is_some() {
-        merged.end_time = task_metadata.end_time;
-    }
-    if task_metadata.total_paused_ms.is_some() {
-        merged.total_paused_ms = task_metadata.total_paused_ms;
-    }
-    if task_metadata.error.is_some() {
-        merged.error.clone_from(&task_metadata.error);
-    }
-    if task_metadata.is_backgrounded.is_some() {
-        merged.is_backgrounded = task_metadata.is_backgrounded;
-    }
-    if task_metadata.spawn_depth.is_some() {
-        merged.spawn_depth = task_metadata.spawn_depth;
-    }
-    if task_metadata.request_id.is_some() {
-        merged.request_id.clone_from(&task_metadata.request_id);
-    }
-    if task_metadata.subagent_type.is_some() {
-        merged.subagent_type.clone_from(&task_metadata.subagent_type);
-    }
-    if task_metadata.task_description.is_some() {
-        merged.task_description.clone_from(&task_metadata.task_description);
-    }
-    if task_metadata.task_type.is_some() {
-        merged.task_type.clone_from(&task_metadata.task_type);
-    }
-    if task_metadata.workflow_name.is_some() {
-        merged.workflow_name.clone_from(&task_metadata.workflow_name);
-    }
-    if task_metadata.prompt.is_some() {
-        merged.prompt.clone_from(&task_metadata.prompt);
-    }
-    if task_metadata.output_file.is_some() {
-        merged.output_file.clone_from(&task_metadata.output_file);
-    }
-    if task_metadata.summary.is_some() {
-        merged.summary.clone_from(&task_metadata.summary);
-    }
-    if task_metadata.terminal_status.is_some() {
-        merged.terminal_status.clone_from(&task_metadata.terminal_status);
-    }
-    if task_metadata.terminal_reason.is_some() {
-        merged.terminal_reason.clone_from(&task_metadata.terminal_reason);
-    }
-    if task_metadata.blocked.is_some() {
-        merged.blocked = task_metadata.blocked;
-    }
-    if task_metadata.parent_agent_id.is_some() {
-        merged.parent_agent_id.clone_from(&task_metadata.parent_agent_id);
-    }
-    if task_metadata.ambient.is_some() {
-        merged.ambient = task_metadata.ambient;
-    }
-    match &task_metadata.subagent_retry {
-        Some(model::SubagentRetryUpdate::Waiting { .. }) => {
-            merged.subagent_retry.clone_from(&task_metadata.subagent_retry);
-        }
-        Some(model::SubagentRetryUpdate::Clear) => merged.subagent_retry = None,
-        None => {}
-    }
-    if tc.task_metadata.as_ref() == Some(&merged) {
+    if tc.task_metadata.as_ref() == Some(task_metadata) {
         return false;
     }
-    tc.task_metadata = Some(merged);
+    tc.task_metadata = Some(task_metadata.clone());
     true
-}
-
-fn clear_subagent_retry_if_terminal(tc: &mut ToolCallInfo) -> bool {
-    if !matches!(
-        tc.status,
-        model::ToolCallStatus::Completed
-            | model::ToolCallStatus::Failed
-            | model::ToolCallStatus::Killed
-    ) {
-        return false;
-    }
-    let Some(task_metadata) = tc.task_metadata.as_mut() else {
-        return false;
-    };
-    task_metadata.subagent_retry.take().is_some()
 }
 
 fn apply_tool_call_raw_output_update(
@@ -323,12 +201,11 @@ fn apply_tool_call_name_update(tc: &mut ToolCallInfo, meta: Option<&serde_json::
     true
 }
 
-fn apply_tool_call_hidden_update(tc: &mut ToolCallInfo, meta: Option<&serde_json::Value>) -> bool {
-    if parent_tool_use_id_from_meta(meta).is_none() || tc.hidden {
+fn apply_tool_call_parent_update(tc: &mut ToolCallInfo, meta: Option<&serde_json::Value>) -> bool {
+    let Some(parent) = parent_tool_use_id_from_meta(meta) else {
         return false;
-    }
-    tc.hidden = true;
-    true
+    };
+    super::tool_calls::sync_if_changed(&mut tc.parent_tool_use_id, &Some(parent.to_owned()))
 }
 
 pub(super) fn raw_output_to_terminal_text(raw_output: &serde_json::Value) -> Option<String> {
@@ -355,32 +232,13 @@ fn extract_text_field(value: &serde_json::Value) -> Option<&str> {
 
 fn log_tool_call_update_applied(
     app: &App,
-    id_str: &str,
+    tc: &ToolCallInfo,
     tcu: &model::ToolCallUpdate,
-    tool_scope: Option<&ToolCallScope>,
     previous_status: Option<model::ToolCallStatus>,
-    update_outcome: &ToolCallUpdateApplyOutcome,
 ) {
-    if !update_outcome.changed {
-        return;
-    }
-
-    let Some(tc) = app
-        .lookup_tool_call(id_str)
-        .and_then(|(mi, bi)| {
-            app.transcript.messages.get(mi).and_then(|message| message.blocks.get(bi))
-        })
-        .and_then(|block| match block {
-            MessageBlock::ToolCall(tc) => Some(tc.as_ref()),
-            _ => None,
-        })
-    else {
-        return;
-    };
-
     let session_id = current_session_id(app);
     let log_spec = tool_update_log_spec(tc, tcu, previous_status);
-    let scope_name = tool_scope.map_or("unknown", tool_scope_name);
+    let scope_name = tool_scope_name(&tc.scope());
     let raw_output_chars = tcu.fields.raw_output.as_ref().and_then(|value| match value {
         serde_json::Value::String(text) => Some(text.chars().count()),
         _ => serde_json::to_string(value).ok().map(|text| text.chars().count()),
@@ -396,7 +254,7 @@ fn log_tool_call_update_applied(
             message = log_spec.message,
             outcome = log_spec.outcome,
             session_id = %session_id,
-            tool_call_id = %id_str,
+            tool_call_id = %tc.id,
             tool_name = %tc.sdk_tool_name,
             tool_title = %tc.title,
             tool_scope = scope_name,
@@ -413,7 +271,7 @@ fn log_tool_call_update_applied(
             message = log_spec.message,
             outcome = log_spec.outcome,
             session_id = %session_id,
-            tool_call_id = %id_str,
+            tool_call_id = %tc.id,
             tool_name = %tc.sdk_tool_name,
             tool_title = %tc.title,
             tool_scope = scope_name,
@@ -430,7 +288,7 @@ fn log_tool_call_update_applied(
             message = log_spec.message,
             outcome = log_spec.outcome,
             session_id = %session_id,
-            tool_call_id = %id_str,
+            tool_call_id = %tc.id,
             tool_name = %tc.sdk_tool_name,
             tool_title = %tc.title,
             tool_scope = scope_name,
@@ -562,23 +420,10 @@ fn entered_final_status(
 
 fn log_command_update_applied(
     app: &App,
-    id_str: &str,
+    tc: &ToolCallInfo,
     previous_status: Option<model::ToolCallStatus>,
     previous_terminal_id: Option<&str>,
 ) {
-    let Some(tc) = app
-        .lookup_tool_call(id_str)
-        .and_then(|(mi, bi)| {
-            app.transcript.messages.get(mi).and_then(|message| message.blocks.get(bi))
-        })
-        .and_then(|block| match block {
-            MessageBlock::ToolCall(tc) => Some(tc.as_ref()),
-            _ => None,
-        })
-    else {
-        return;
-    };
-
     if !tc.is_execute_tool() {
         return;
     }
@@ -665,36 +510,7 @@ fn command_failure_kind(tc: &ToolCallInfo) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{App, BlockCache, ChatMessage, MessageBlock, MessageRole};
-
-    fn make_bash_tool_call(
-        id: &str,
-        status: model::ToolCallStatus,
-        terminal_id: Option<&str>,
-    ) -> ToolCallInfo {
-        ToolCallInfo {
-            id: id.to_owned(),
-            source_message_uuids: Vec::new(),
-            title: format!("tool {id}"),
-            sdk_tool_name: "Bash".to_owned(),
-            raw_input: None,
-            raw_input_bytes: 0,
-            locations: Vec::new(),
-            output_metadata: None,
-            task_metadata: None,
-            status,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: terminal_id.map(str::to_owned),
-            terminal_command: Some("echo test".to_owned()),
-            terminal_output: None,
-            terminal_output_len: 0,
-            cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
-            history: crate::app::ToolCallHistory::Live,
-        }
-    }
+    use crate::app::{App, ChatMessage, MessageBlock, MessageRole};
 
     fn terminal_content(terminal_id: &str) -> Vec<model::ToolCallContent> {
         vec![model::ToolCallContent::Terminal(model::TerminalToolCallContent::new(terminal_id))]
@@ -702,467 +518,354 @@ mod tests {
 
     fn make_task_tool_call(id: &str, status: model::ToolCallStatus) -> ToolCallInfo {
         ToolCallInfo {
-            id: id.to_owned(),
-            source_message_uuids: Vec::new(),
             title: format!("task {id}"),
-            sdk_tool_name: "Agent".to_owned(),
-            raw_input: None,
-            raw_input_bytes: 0,
-            locations: Vec::new(),
-            output_metadata: None,
-            task_metadata: None,
-            status,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: None,
-            terminal_command: None,
-            terminal_output: None,
-            terminal_output_len: 0,
-            cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
-            history: crate::app::ToolCallHistory::Live,
+            ..crate::app::test_support::named_tool_call_info(id, "Agent", status)
         }
     }
 
-    #[test]
-    fn completed_execute_update_preserves_terminal_metadata() {
-        let mut app = App::test_default();
-        let tool_id = "tool-1";
-        app.transcript.messages.push(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(make_bash_tool_call(
-                tool_id,
-                model::ToolCallStatus::InProgress,
-                Some("term-1"),
-            )))],
-            None,
-        ));
-        app.index_tool_call(tool_id.to_owned(), 0, 0);
+    fn event_tool(app: &mut App, id: &str, name: &str, title: &str, body: &str) {
+        crate::app::test_support::deliver_update(app,model::SessionUpdate::ToolCall(model::ToolCall::new(id,title)
+            .kind(if name=="Bash" {model::ToolKind::Execute} else {model::ToolKind::Fetch})
+            .status(model::ToolCallStatus::InProgress).content(vec![body.into()])
+            .raw_input(serde_json::json!({"command":title,"url":"https://example.test/evidence","prompt":"Fetch evidence"}))
+            .meta(serde_json::json!({"claudeCode":{"toolName":name}}))));
+    }
+    fn event_patch(app: &mut App, id: &str, fields: model::ToolCallUpdateFields) {
+        crate::app::test_support::deliver_update(
+            app,
+            model::SessionUpdate::ToolCallUpdate(model::ToolCallUpdate::new(id, fields)),
+        );
+    }
+    fn transcript(
+        app: &mut App,
+        excluded: &std::collections::BTreeSet<crate::app::HistoryOutputId>,
+    ) -> crate::ui::inline_chat_rows::SerializedLiveRows {
+        crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding(
+            app, 100, excluded, None,
+        )
+    }
+    fn rendered_card(app: &mut App, id: &str) -> Vec<String> {
+        let rendered = transcript(app, &std::collections::BTreeSet::new());
+        let target = crate::app::HistoryOutputId::ToolCall(id.into());
+        rendered
+            .segments()
+            .iter()
+            .filter(|segment| segment.ids.contains(&target))
+            .flat_map(|segment| rendered.segment_rows(segment).unwrap())
+            .map(ToString::to_string)
+            .collect()
+    }
+    fn event_text(app: &mut App, value: &str) {
+        crate::app::test_support::deliver_update(
+            app,
+            model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+                model::ContentBlock::Text(model::TextContent::new(value)),
+            )),
+        );
+    }
+    fn event_complete(app: &mut App) {
+        crate::app::handle_client_event(
+            app,
+            crate::agent::events::ClientEvent::TurnComplete {
+                session_id: "session-1".into(),
+                queued_turn_count: None,
+                terminal_reason: None,
+            },
+        );
+    }
 
-        let update = model::ToolCallUpdate::new(
-            tool_id,
+    #[test]
+    fn execute_patches_preserve_canonical_output_terminal_association_and_neighbor_cards() {
+        let (mut app, _commands) = crate::app::test_support::app_with_connection();
+        event_text(&mut app, "Earlier reply sentinel");
+        event_complete(&mut app);
+        let history_id = app.transcript.messages[0].id;
+        for (id, title, terminal, output) in [
+            ("alpha", "echo alpha", "term-alpha", "Alpha original"),
+            ("beta", "echo beta", "term-beta", "Beta unchanged"),
+        ] {
+            event_tool(&mut app, id, "Bash", title, "Initial command body");
+            event_patch(
+                &mut app,
+                id,
+                model::ToolCallUpdateFields::new()
+                    .content(terminal_content(terminal))
+                    .raw_output(serde_json::json!(output)),
+            );
+        }
+        let neighbor = rendered_card(&mut app, "beta");
+        let _ = rendered_card(&mut app, "alpha");
+        let output = "alpha first\nindependent \u{754c} result\nalpha last";
+        event_patch(
+            &mut app,
+            "alpha",
             model::ToolCallUpdateFields::new()
                 .status(model::ToolCallStatus::Completed)
-                .raw_output(serde_json::Value::String("done".to_owned())),
+                .raw_output(serde_json::json!(output)),
         );
-
-        handle_tool_call_update_session(&mut app, &update);
-
-        let MessageBlock::ToolCall(tc) = &app.transcript.messages[0].blocks[0] else {
-            panic!("expected tool call block");
-        };
+        let tc = app.tool_call("alpha").unwrap();
         assert_eq!(tc.status, model::ToolCallStatus::Completed);
-        assert_eq!(tc.terminal_id.as_deref(), Some("term-1"));
-        assert_eq!(tc.terminal_output.as_deref(), Some("done"));
-    }
-
-    #[test]
-    fn repeated_terminal_updates_are_idempotent() {
-        let mut app = App::test_default();
-        let tool_id = "tool-1";
-        app.transcript.messages.push(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(make_bash_tool_call(
-                tool_id,
-                model::ToolCallStatus::InProgress,
-                None,
-            )))],
-            None,
-        ));
-        app.index_tool_call(tool_id.to_owned(), 0, 0);
-
-        let update = model::ToolCallUpdate::new(
-            tool_id,
-            model::ToolCallUpdateFields::new().content(terminal_content("term-1")),
-        );
-
-        handle_tool_call_update_session(&mut app, &update);
-        handle_tool_call_update_session(&mut app, &update);
-
-        let MessageBlock::ToolCall(tc) = &app.transcript.messages[0].blocks[0] else {
-            panic!("expected tool call block");
-        };
-        assert_eq!(tc.terminal_id.as_deref(), Some("term-1"));
-        assert_eq!(tc.content.len(), 1);
-    }
-
-    #[test]
-    fn terminal_update_replaces_stale_terminal_id_for_same_tool_call() {
-        let mut app = App::test_default();
-        let tool_id = "tool-1";
-        app.transcript.messages.push(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(make_bash_tool_call(
-                tool_id,
-                model::ToolCallStatus::InProgress,
-                Some("term-1"),
-            )))],
-            None,
-        ));
-        app.index_tool_call(tool_id.to_owned(), 0, 0);
-
-        let update = model::ToolCallUpdate::new(
-            tool_id,
-            model::ToolCallUpdateFields::new().content(terminal_content("term-2")),
-        );
-
-        handle_tool_call_update_session(&mut app, &update);
-
-        let MessageBlock::ToolCall(tc) = &app.transcript.messages[0].blocks[0] else {
-            panic!("expected tool call block");
-        };
-        assert_eq!(tc.terminal_id.as_deref(), Some("term-2"));
-    }
-
-    #[test]
-    fn repeated_completed_status_update_does_not_log_a_second_completion() {
-        let tc = make_bash_tool_call("tool-1", model::ToolCallStatus::Completed, None);
-        let update = model::ToolCallUpdate::new("tool-1", model::ToolCallUpdateFields::new());
-
-        let spec = tool_update_log_spec(&tc, &update, Some(model::ToolCallStatus::Completed));
-
-        assert!(matches!(spec.level, ToolUpdateLogLevel::Debug));
-        assert_eq!(spec.event_name, "tool_call_updated");
-        assert_eq!(spec.outcome, "success");
-    }
-
-    #[test]
-    fn first_completed_status_update_logs_completion() {
-        let tc = make_bash_tool_call("tool-1", model::ToolCallStatus::Completed, None);
-        let update = model::ToolCallUpdate::new(
-            "tool-1",
+        assert_eq!(tc.terminal_id.as_deref(), Some("term-alpha"));
+        assert_eq!(tc.terminal_output.as_deref(), Some(output));
+        let completed = rendered_card(&mut app, "alpha");
+        for line in output.lines() {
+            assert_eq!(completed.iter().filter(|row| row.contains(line)).count(), 1);
+        }
+        event_patch(
+            &mut app,
+            "alpha",
             model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed),
         );
-
-        let spec = tool_update_log_spec(&tc, &update, Some(model::ToolCallStatus::InProgress));
-
-        assert!(matches!(spec.level, ToolUpdateLogLevel::Info));
-        assert_eq!(spec.event_name, "tool_call_completed");
-        assert_eq!(spec.outcome, "success");
+        assert_eq!(rendered_card(&mut app, "alpha"), completed);
+        for _ in 0..2 {
+            event_patch(
+                &mut app,
+                "alpha",
+                model::ToolCallUpdateFields::new().content(terminal_content("term-replacement")),
+            );
+            assert_eq!(
+                app.tool_call("alpha").unwrap().terminal_id.as_deref(),
+                Some("term-replacement")
+            );
+            assert_eq!(app.tool_call("alpha").unwrap().terminal_output.as_deref(), Some(output));
+            assert_eq!(rendered_card(&mut app, "alpha"), completed);
+            assert_eq!(rendered_card(&mut app, "beta"), neighbor);
+        }
+        assert_eq!(app.transcript.messages[0].id, history_id);
+        let MessageBlock::Text(old) = &app.transcript.messages[0].blocks[0] else {
+            panic!("prior reply")
+        };
+        assert_eq!(old.text, "Earlier reply sentinel");
     }
 
     #[test]
-    fn deferred_web_output_preserves_launch_and_appends_linked_result_after_turn_completion() {
-        let mut app = App::test_default();
-        let mut tool = make_task_tool_call("web-1", model::ToolCallStatus::InProgress);
-        tool.sdk_tool_name = "WebFetch".to_owned();
-        app.transcript.messages.push(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(tool))],
-            None,
-        ));
-        app.index_tool_call("web-1".to_owned(), 0, 0);
-        handle_tool_call_update_session(
-            &mut app,
-            &model::ToolCallUpdate::new(
-                "web-1",
-                model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Detached),
-            ),
-        );
-        app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Completed);
-        let MessageBlock::ToolCall(tool) = &app.transcript.messages[0].blocks[0] else {
-            panic!("expected web call")
-        };
-        assert_eq!(tool.status, model::ToolCallStatus::Detached);
-        handle_tool_call_update_session(
-            &mut app,
-            &model::ToolCallUpdate::new(
-                "web-1",
+    fn completion_diagnostics_are_emitted_once_for_the_correct_tool_while_late_content_still_arrives()
+     {
+        let (mut app, _commands) = crate::app::test_support::app_with_connection();
+        let records = crate::logging::test_capture::capture(|| {
+            event_tool(&mut app, "logged", "Bash", "echo logged", "Original body");
+            event_tool(&mut app, "neighbor", "Bash", "echo neighbor", "Neighbor body");
+            event_patch(
+                &mut app,
+                "logged",
                 model::ToolCallUpdateFields::new()
                     .status(model::ToolCallStatus::Completed)
-                    .content(vec![model::ToolCallContent::from("Actual web output")]),
-            ),
-        );
-        let MessageBlock::ToolCall(tool) = &app.transcript.messages[0].blocks[0] else {
-            panic!("expected web call")
-        };
-        assert_eq!(tool.status, model::ToolCallStatus::Completed);
-        assert_eq!(tool.content, vec![model::ToolCallContent::from("Actual web output")]);
-        assert_eq!(tool.display().status, model::ToolCallStatus::Detached);
-        assert_eq!(app.transcript.messages.len(), 2);
-        let MessageBlock::ToolResult { tool: result, .. } = &app.transcript.messages[1].blocks[0]
-        else {
-            panic!("expected linked result")
-        };
-        assert_eq!(result.id, "web-1");
-        assert_eq!(result.status, model::ToolCallStatus::Completed);
-        assert_eq!(result.content, vec![model::ToolCallContent::from("Actual web output")]);
-        assert_eq!(app.tool_call_index_len(), 1);
-    }
-
-    #[test]
-    fn task_metadata_update_is_applied_to_tool_call() {
-        let mut app = App::test_default();
-        let tool_id = "task-1";
-        app.transcript.messages.push(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(make_task_tool_call(
-                tool_id,
-                model::ToolCallStatus::InProgress,
-            )))],
-            None,
-        ));
-        app.index_tool_call(tool_id.to_owned(), 0, 0);
-
-        let update = model::ToolCallUpdate::new(
-            tool_id,
-            model::ToolCallUpdateFields::new().task_metadata(
-                model::TaskMetadata::new()
-                    .error(Some("Task paused".to_owned()))
-                    .backgrounded(Some(true)),
-            ),
-        );
-
-        handle_tool_call_update_session(&mut app, &update);
-
-        let MessageBlock::ToolCall(tc) = &app.transcript.messages[0].blocks[0] else {
-            panic!("expected tool call block");
-        };
+                    .raw_output(serde_json::json!("First output")),
+            );
+            let _ = rendered_card(&mut app, "logged");
+            event_patch(
+                &mut app,
+                "logged",
+                model::ToolCallUpdateFields::new()
+                    .status(model::ToolCallStatus::Completed)
+                    .raw_output(serde_json::json!("First output")),
+            );
+            event_patch(
+                &mut app,
+                "logged",
+                model::ToolCallUpdateFields::new()
+                    .status(model::ToolCallStatus::Completed)
+                    .raw_output(serde_json::json!("Late complete output")),
+            );
+        });
+        let completions: Vec<_> = records
+            .iter()
+            .filter(|r| {
+                r["target"] == crate::logging::targets::APP_TOOL
+                    && r["event_name"] == "tool_call_completed"
+            })
+            .collect();
         assert_eq!(
-            tc.task_metadata,
-            Some(
-                model::TaskMetadata::new()
-                    .error(Some("Task paused".to_owned()))
-                    .backgrounded(Some(true)),
-            )
+            completions.len(),
+            1,
+            "one completion event, independent of command diagnostics: {records:?}"
         );
-    }
-
-    #[test]
-    fn task_metadata_update_merges_partial_patches() {
-        let mut app = App::test_default();
-        let tool_id = "task-1";
-        app.transcript.messages.push(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(make_task_tool_call(
-                tool_id,
-                model::ToolCallStatus::InProgress,
-            )))],
-            None,
-        ));
-        app.index_tool_call(tool_id.to_owned(), 0, 0);
-
-        let backgrounded_update = model::ToolCallUpdate::new(
-            tool_id,
-            model::ToolCallUpdateFields::new().task_metadata(
-                model::TaskMetadata::new()
-                    .backgrounded(Some(true))
-                    .spawn_depth(Some(2))
-                    .request_id(Some("request-1".to_owned()))
-                    .subagent_type(Some("reviewer".to_owned()))
-                    .task_description(Some("Review branch".to_owned()))
-                    .task_type(Some("remote_agent".to_owned()))
-                    .workflow_name(Some("review-flow".to_owned()))
-                    .prompt(Some("Review the branch".to_owned()))
-                    .output_file(Some("C:/tmp/review.md".to_owned())),
-            ),
-        );
-        handle_tool_call_update_session(&mut app, &backgrounded_update);
-
-        let timing_update = model::ToolCallUpdate::new(
-            tool_id,
-            model::ToolCallUpdateFields::new().task_metadata(
-                model::TaskMetadata::new()
-                    .error(Some("Task stopped by parent agent".to_owned()))
-                    .end_time(Some(1234))
-                    .total_paused_ms(Some(250)),
-            ),
-        );
-        handle_tool_call_update_session(&mut app, &timing_update);
-
-        let terminal_update = model::ToolCallUpdate::new(
-            tool_id,
-            model::ToolCallUpdateFields::new().task_metadata(
-                model::TaskMetadata::new()
-                    .blocked(Some(true))
-                    .parent_agent_id(Some("parent-agent-1".to_owned()))
-                    .summary(Some("Stopped after validation".to_owned()))
-                    .terminal_status(Some("killed".to_owned())),
-            ),
-        );
-        handle_tool_call_update_session(&mut app, &terminal_update);
-
-        let MessageBlock::ToolCall(tc) = &app.transcript.messages[0].blocks[0] else {
-            panic!("expected tool call block");
-        };
+        let record = completions[0];
+        assert_eq!(record["session_id"], "session-1");
+        assert_eq!(record["tool_call_id"], "logged");
+        assert_eq!(record["outcome"], "success");
+        assert!(records.iter().any(|r| r["target"] == crate::logging::targets::APP_COMMAND
+            && r["event_name"] == "command_completed"));
         assert_eq!(
-            tc.task_metadata,
-            Some(
-                model::TaskMetadata::new()
-                    .error(Some("Task stopped by parent agent".to_owned()))
-                    .end_time(Some(1234))
-                    .total_paused_ms(Some(250))
-                    .backgrounded(Some(true))
-                    .spawn_depth(Some(2))
-                    .request_id(Some("request-1".to_owned()))
-                    .subagent_type(Some("reviewer".to_owned()))
-                    .task_description(Some("Review branch".to_owned()))
-                    .task_type(Some("remote_agent".to_owned()))
-                    .workflow_name(Some("review-flow".to_owned()))
-                    .prompt(Some("Review the branch".to_owned()))
-                    .output_file(Some("C:/tmp/review.md".to_owned()))
-                    .blocked(Some(true))
-                    .parent_agent_id(Some("parent-agent-1".to_owned()))
-                    .summary(Some("Stopped after validation".to_owned()))
-                    .terminal_status(Some("killed".to_owned())),
-            )
+            app.tool_call("logged").unwrap().terminal_output.as_deref(),
+            Some("Late complete output")
         );
+        assert!(rendered_card(&mut app, "logged").join("\n").contains("Late complete output"));
+        assert_eq!(app.tool_call("neighbor").unwrap().status, model::ToolCallStatus::InProgress);
     }
 
     #[test]
-    fn task_metadata_update_applies_and_clears_subagent_retry() {
+    fn detached_web_results_preserve_committed_launches_and_join_the_reply_active_at_arrival() {
+        for active_next_reply in [false, true] {
+            let (mut app, _commands) = crate::app::test_support::app_with_connection();
+            event_text(&mut app, "Launch reply text");
+            event_tool(
+                &mut app,
+                "web",
+                "WebFetch",
+                "Fetch launch sentinel",
+                "Launch payload sentinel",
+            );
+            event_patch(
+                &mut app,
+                "web",
+                model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Detached),
+            );
+            let launch = rendered_card(&mut app, "web");
+            let canonical = app.lookup_tool_call("web").unwrap();
+            let launch_id = app.transcript.messages[canonical.0].id;
+            event_complete(&mut app);
+            assert_eq!(rendered_card(&mut app, "web"), launch);
+            let history = transcript(&mut app, &std::collections::BTreeSet::new());
+            let committed = history.segments().iter().flat_map(|s| s.ids.iter().cloned()).collect();
+            if active_next_reply {
+                crate::app::test_support::deliver_update(
+                    &mut app,
+                    model::SessionUpdate::AgentResponseStarted,
+                );
+                event_text(&mut app, "New reply before late result");
+            }
+            let next_owner = app.active_turn_assistant_idx();
+            for _ in 0..2 {
+                event_patch(
+                    &mut app,
+                    "web",
+                    model::ToolCallUpdateFields::new()
+                        .status(model::ToolCallStatus::Completed)
+                        .content(vec!["Independent final web result".into()]),
+                );
+            }
+            assert_eq!(app.lookup_tool_call("web"), Some(canonical));
+            assert_eq!(app.transcript.messages[canonical.0].id, launch_id);
+            assert_eq!(rendered_card(&mut app, "web"), launch);
+            let results: Vec<_> = app
+                .transcript
+                .messages
+                .iter()
+                .enumerate()
+                .flat_map(|(mi, msg)| {
+                    msg.blocks.iter().enumerate().filter_map(move |(bi, block)| match block {
+                        MessageBlock::ToolResult { tool, .. } if tool.id == "web" => {
+                            Some((mi, bi, tool.as_ref()))
+                        }
+                        _ => None,
+                    })
+                })
+                .collect();
+            let [(owner, block, result)] = results.as_slice() else {
+                panic!("exactly one linked web result")
+            };
+            let (owner, block) = (*owner, *block);
+            assert_eq!(
+                result.content,
+                vec![model::ToolCallContent::from("Independent final web result")]
+            );
+            assert_eq!(result.status, model::ToolCallStatus::Completed);
+            assert_ne!(owner, canonical.0);
+            if active_next_reply {
+                assert_eq!(Some(owner), next_owner);
+                event_text(&mut app, "New reply after late result");
+                assert_eq!(app.active_turn_assistant_idx(), Some(owner));
+            }
+            let remaining = transcript(&mut app, &committed);
+            assert!(remaining.segments().iter().all(|s| s.msg_idx != canonical.0));
+            let result_segment = remaining
+                .segments()
+                .iter()
+                .find(|s| s.msg_idx == owner && s.block_idx == Some(block))
+                .expect("result survives excluding launch history");
+            assert!(
+                remaining
+                    .segment_rows(result_segment)
+                    .unwrap()
+                    .iter()
+                    .any(|line| line.to_string().contains("Independent final web result"))
+            );
+            if active_next_reply {
+                let rendered =
+                    remaining.rows().iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+                assert!(
+                    rendered.find("New reply before late result").unwrap()
+                        < rendered.find("Independent final web result").unwrap()
+                );
+                assert!(
+                    rendered.find("Independent final web result").unwrap()
+                        < rendered.find("New reply after late result").unwrap()
+                );
+            }
+        }
+    }
+
+    fn assert_first_task_projection() {
+        let (mut app, _commands) = crate::app::test_support::app_with_connection();
+        crate::app::test_support::deliver_update(
+            &mut app,
+            model::SessionUpdate::ToolCall(
+                model::ToolCall::new("first-agent", "Agent launch")
+                    .meta(serde_json::json!({"claudeCode":{"toolName":"Agent"}})),
+            ),
+        );
+        let projection =
+            model::TaskMetadata::new().error(Some("Task paused".into())).backgrounded(Some(true));
+        event_patch(
+            &mut app,
+            "first-agent",
+            model::ToolCallUpdateFields::new().task_metadata(projection.clone()),
+        );
+        assert_eq!(app.tool_call("first-agent").unwrap().task_metadata, Some(projection));
+    }
+
+    #[test]
+    fn present_task_metadata_replaces_the_projection_and_absence_leaves_it_alone() {
+        assert_first_task_projection();
+        let mut tc = make_task_tool_call("agent", model::ToolCallStatus::InProgress);
+        tc.task_metadata = Some(
+            model::TaskMetadata::new()
+                .error(Some("old failure".to_owned()))
+                .terminal_status(Some("failed".to_owned()))
+                .end_time(Some(1234))
+                .subagent_retry(Some(model::SubagentRetryUpdate::Waiting {
+                    agent_id: None,
+                    attempt: 1,
+                    max_retries: 3,
+                    retry_delay_ms: 500,
+                    error_status: None,
+                    error_category: None,
+                })),
+        );
+        let original = tc.task_metadata.clone();
         let mut app = App::test_default();
-        let tool_id = "task-retry";
         app.transcript.messages.push(ChatMessage::new(
             MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(make_task_tool_call(
-                tool_id,
-                model::ToolCallStatus::InProgress,
-            )))],
+            vec![MessageBlock::ToolCall(Box::new(tc))],
             None,
         ));
-        app.index_tool_call(tool_id.to_owned(), 0, 0);
-
-        let waiting = model::SubagentRetryUpdate::Waiting {
-            agent_id: Some("agent-1".to_owned()),
-            attempt: 2,
-            max_retries: 4,
-            retry_delay_ms: 1_500,
-            error_status: Some(429),
-            error_category: Some("rate_limit".to_owned()),
-        };
+        app.index_tool_call("agent".to_owned(), 0, 0);
         handle_tool_call_update_session(
             &mut app,
             &model::ToolCallUpdate::new(
-                tool_id,
-                model::ToolCallUpdateFields::new().task_metadata(
-                    model::TaskMetadata::new().subagent_retry(Some(waiting.clone())),
-                ),
-            ),
-        );
-
-        let MessageBlock::ToolCall(tc) = &app.transcript.messages[0].blocks[0] else {
-            panic!("expected tool call block");
-        };
-        assert_eq!(
-            tc.task_metadata.as_ref().and_then(|meta| meta.subagent_retry.clone()),
-            Some(waiting)
-        );
-
-        handle_tool_call_update_session(
-            &mut app,
-            &model::ToolCallUpdate::new(
-                tool_id,
-                model::ToolCallUpdateFields::new().task_metadata(
-                    model::TaskMetadata::new()
-                        .subagent_retry(Some(model::SubagentRetryUpdate::Clear)),
-                ),
-            ),
-        );
-
-        let MessageBlock::ToolCall(tc) = &app.transcript.messages[0].blocks[0] else {
-            panic!("expected tool call block");
-        };
-        assert_eq!(tc.task_metadata.as_ref().and_then(|meta| meta.subagent_retry.as_ref()), None);
-    }
-
-    #[test]
-    fn terminal_tool_update_clears_subagent_retry_without_explicit_clear() {
-        let mut app = App::test_default();
-        let tool_id = "task-retry-terminal";
-        let mut tool_call = make_task_tool_call(tool_id, model::ToolCallStatus::InProgress);
-        tool_call.task_metadata = Some(model::TaskMetadata::new().subagent_retry(Some(
-            model::SubagentRetryUpdate::Waiting {
-                agent_id: None,
-                attempt: 1,
-                max_retries: 3,
-                retry_delay_ms: 500,
-                error_status: None,
-                error_category: None,
-            },
-        )));
-        app.transcript.messages.push(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(tool_call))],
-            None,
-        ));
-        app.index_tool_call(tool_id.to_owned(), 0, 0);
-
-        handle_tool_call_update_session(
-            &mut app,
-            &model::ToolCallUpdate::new(
-                tool_id,
+                "agent",
                 model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed),
             ),
         );
-
         let MessageBlock::ToolCall(tc) = &app.transcript.messages[0].blocks[0] else {
-            panic!("expected tool call block");
+            panic!("tool call")
         };
-        assert_eq!(tc.task_metadata.as_ref().and_then(|meta| meta.subagent_retry.as_ref()), None);
-    }
-
-    #[test]
-    fn killed_task_update_clears_active_task_scope() {
-        let mut app = App::test_default();
-        let tool_id = "task-1";
-        app.transcript.messages.push(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(make_task_tool_call(
-                tool_id,
-                model::ToolCallStatus::InProgress,
-            )))],
-            None,
-        ));
-        app.index_tool_call(tool_id.to_owned(), 0, 0);
-        app.register_tool_call_scope(tool_id.to_owned(), ToolCallScope::SubagentRoot);
-        app.insert_active_task(tool_id.to_owned());
-
-        let update = model::ToolCallUpdate::new(
-            tool_id,
-            model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Killed),
+        assert_eq!(
+            tc.task_metadata, original,
+            "absent metadata is not a metadata update, even with a terminal status"
         );
-
-        handle_tool_call_update_session(&mut app, &update);
-
-        let MessageBlock::ToolCall(tc) = &app.transcript.messages[0].blocks[0] else {
-            panic!("expected tool call block");
-        };
-        assert_eq!(tc.status, model::ToolCallStatus::Killed);
-        assert!(!app.turn.active_task_ids.contains(tool_id));
-    }
-
-    #[test]
-    fn completed_tool_update_mutates_canonical_tool_block() {
-        let mut app = App::test_default();
-        let tool_id = "tool-1";
-        app.transcript.messages.push(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(make_bash_tool_call(
-                tool_id,
-                model::ToolCallStatus::InProgress,
-                Some("term-1"),
-            )))],
-            None,
-        ));
-        app.bind_active_turn_assistant(0);
-        app.index_tool_call(tool_id.to_owned(), 0, 0);
-
-        let update = model::ToolCallUpdate::new(
-            tool_id,
-            model::ToolCallUpdateFields::new()
-                .status(model::ToolCallStatus::Completed)
-                .raw_output(serde_json::Value::String("done".to_owned())),
+        let replacement = model::TaskMetadata::new().backgrounded(Some(true));
+        handle_tool_call_update_session(
+            &mut app,
+            &model::ToolCallUpdate::new(
+                "agent",
+                model::ToolCallUpdateFields::new().task_metadata(replacement.clone()),
+            ),
         );
-
-        handle_tool_call_update_session(&mut app, &update);
-
-        assert_eq!(app.active_turn_assistant_idx(), Some(0));
         let MessageBlock::ToolCall(tc) = &app.transcript.messages[0].blocks[0] else {
-            panic!("expected tool call block");
+            panic!("tool call")
         };
-        assert_eq!(tc.status, model::ToolCallStatus::Completed);
-        assert!(tc.terminal_output.as_deref().is_some_and(|output| output.contains("done")));
+        assert_eq!(tc.task_metadata, Some(replacement));
     }
 }

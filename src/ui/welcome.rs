@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use crate::app::{
     App, AppStatus, ChatMessage, MessageBlock, SurfaceMode, TerminalLifecycleState, WelcomeBlock,
@@ -337,10 +336,44 @@ mod tests {
         line.spans.iter().map(|span| span.content.as_ref()).collect()
     }
 
-    /// The terminal column `needle` starts at; the crab's block glyphs are
-    /// three bytes each, so a byte offset is not a column.
-    fn column_of(line: &str, needle: &str) -> Option<usize> {
-        line.find(needle).map(|index| display_width(&line[..index]))
+    /// The part of `row` from terminal column `column` on; the crab's block
+    /// glyphs are three bytes each, so a byte offset is not a column.
+    fn from_column(row: &str, column: usize) -> String {
+        let mut used = 0usize;
+        for (index, ch) in row.char_indices() {
+            if used >= column {
+                return row[index..].to_owned();
+            }
+            used += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        }
+        String::new()
+    }
+
+    fn field_region(rows: &[String], label: &str) -> (usize, Vec<String>) {
+        let labels = ["Version:", "Subscription:", "Cwd:", "Session ID:", "Tips:"];
+        let start = rows.iter().position(|row| row.contains(label)).expect("field label");
+        let column = display_width(&rows[start][..rows[start].find(label).unwrap()]);
+        let end = rows[start + 1..]
+            .iter()
+            .position(|row| labels.iter().any(|next| row.contains(next)))
+            .map_or(rows.len(), |offset| start + 1 + offset);
+        let mut region = vec![from_column(&rows[start], column + label.len())];
+        region.extend(rows[start + 1..end].iter().map(|row| from_column(row, column)));
+        (column, region)
+    }
+
+    fn assert_field_source(region: &[String], expected: &str) {
+        let expected = expected.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut remaining = expected.as_str();
+        for piece in region.iter().map(|row| row.trim()).filter(|row| !row.is_empty()) {
+            remaining = remaining.strip_prefix(' ').unwrap_or(remaining);
+            assert!(
+                remaining.starts_with(piece),
+                "field changed source text: {region:?}, expected {expected:?}"
+            );
+            remaining = &remaining[piece.len()..];
+        }
+        assert!(remaining.is_empty(), "field lost source text: {region:?}, missing {remaining:?}");
     }
 
     #[test]
@@ -401,43 +434,6 @@ mod tests {
     }
 
     #[test]
-    fn wide_overview_wraps_tip_below_its_value() {
-        let mut message = ChatMessage::welcome("1.2.3", "Pro", "/workspace/demo", "session-123");
-        let MessageBlock::Welcome(block) = &mut message.blocks[0] else {
-            panic!("expected welcome block");
-        };
-        block.tip_seed = 7;
-
-        let lines = overview_lines(block, None, &FERRIS_REST, 110);
-        let text = lines.iter().map(line_text).collect::<Vec<_>>();
-        let tip_row = text.iter().position(|line| line.contains("Tips: Start")).expect("tip row");
-
-        assert_eq!(column_of(&text[tip_row], "Tips:"), Some(20));
-        assert_eq!(column_of(&text[tip_row + 1], "noise"), Some(26));
-        assert!(lines.iter().all(|line| line_display_width(line) <= 110));
-    }
-
-    #[test]
-    fn wide_overview_wraps_long_metadata_below_its_value() {
-        let mut message = ChatMessage::welcome(
-            "1.2.3",
-            "Pro",
-            "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda",
-            "session-123",
-        );
-        let MessageBlock::Welcome(block) = &mut message.blocks[0] else {
-            panic!("expected welcome block");
-        };
-
-        let text =
-            overview_lines(block, None, &FERRIS_REST, 70).iter().map(line_text).collect::<Vec<_>>();
-        let cwd_row = text.iter().position(|line| line.contains("Cwd: alpha")).expect("cwd row");
-
-        assert_eq!(column_of(&text[cwd_row], "Cwd:"), Some(20));
-        assert_eq!(column_of(&text[cwd_row + 1], "iota"), Some(25));
-    }
-
-    #[test]
     fn narrow_overview_hides_ferris_and_keeps_hanging_indent() {
         let mut message = ChatMessage::welcome("1.2.3", "Pro", "/workspace/demo", "session-123");
         let MessageBlock::Welcome(block) = &mut message.blocks[0] else {
@@ -453,5 +449,77 @@ mod tests {
         assert!(!text.iter().any(|line| line.contains("▀████████▀")));
         assert_eq!(text[tip_row + 1].find(|ch: char| !ch.is_whitespace()), Some(6));
         assert!(lines.iter().all(|line| line_display_width(line) <= 36));
+    }
+
+    #[test]
+    fn overview_fields_keep_their_own_resolved_or_loading_values() {
+        for (subscription, session, cause, expected_subscription, expected_session) in [
+            (
+                "Enterprise fixture",
+                "session-saffron",
+                Some("WAIT_PROFILE"),
+                "Enterprise fixture",
+                "session-saffron",
+            ),
+            ("-", "session-saffron", Some("WAIT_PROFILE"), "WAIT_PROFILE", "session-saffron"),
+            (
+                "Enterprise fixture",
+                "  ",
+                Some("WAIT_SESSION"),
+                "Enterprise fixture",
+                "WAIT_SESSION",
+            ),
+            ("", "-", None, "Loading", "Loading"),
+        ] {
+            let message = ChatMessage::welcome("8.7.6", subscription, "/workspace/cedar", session);
+            let MessageBlock::Welcome(block) = &message.blocks[0] else { panic!("welcome block") };
+            let rows = overview_lines(block, cause, &FERRIS_REST, 120)
+                .iter()
+                .map(line_text)
+                .collect::<Vec<_>>();
+            for (label, expected) in [
+                ("Version:", "8.7.6"),
+                ("Subscription:", expected_subscription),
+                ("Cwd:", "/workspace/cedar"),
+                ("Session ID:", expected_session),
+            ] {
+                let (_, region) = field_region(&rows, label);
+                if cause.is_none() && expected == "Loading" {
+                    assert!(region.iter().any(|row| row.contains("Loading")), "{label}: {rows:?}");
+                } else {
+                    assert_field_source(&region, expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn welcome_fields_preserve_unicode_content_and_relative_wrapping() {
+        let cwd =
+            "/workspace/雪 cedar/e\u{301}clair wide directory/amber cobalt saffron/final-file";
+        let session = "session-orchid-782";
+        let mut message = ChatMessage::welcome("8.7.6", "Enterprise fixture", cwd, session);
+        let MessageBlock::Welcome(block) = &mut message.blocks[0] else { panic!("welcome block") };
+        let (index, tip) = HOST_TIPS.iter().enumerate().max_by_key(|(_, tip)| tip.len()).unwrap();
+        block.tip_seed = u64::try_from(index).unwrap();
+        for width in [100, 46, 24, 14] {
+            let lines = overview_lines(block, None, &FERRIS_REST, width);
+            assert!(lines.iter().all(|line| line_display_width(line) <= usize::from(width)));
+            let rows = lines.iter().map(line_text).collect::<Vec<_>>();
+            for (label, expected) in [("Cwd:", cwd), ("Session ID:", session), ("Tips:", *tip)] {
+                let (_, region) = field_region(&rows, label);
+                assert_field_source(&region, expected);
+                if !region[0].trim().is_empty() {
+                    let value_start = label.len() + region[0].len() - region[0].trim_start().len();
+                    for continuation in region.iter().skip(1).filter(|row| !row.trim().is_empty()) {
+                        let indent = continuation.len() - continuation.trim_start().len();
+                        assert_eq!(
+                            indent, value_start,
+                            "continuation escaped its field: {region:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

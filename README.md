@@ -146,7 +146,7 @@ claude-rs --model opus --permission-mode plan "Review this project"
 claude-rs --continue
 ```
 
-[Usage](https://srothgan.github.io/claude-code-rust/usage.html) lists the startup flags, shell completions and man pages.
+Follow [Your first session](https://srothgan.github.io/claude-code-rust/usage.html) for a complete walkthrough. The [CLI reference](https://srothgan.github.io/claude-code-rust/cli.html) lists the startup flags, shell completions and man pages.
 
 > **Agent SDK billing is unchanged.** Anthropic has paused the previously announced Agent SDK credit change. Agent SDK usage, including `claude -p` and third-party apps like this one, still draws from your normal Claude subscription limits. See [Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan).
 
@@ -163,7 +163,13 @@ The colors are Apple's system colors from the [Human Interface Guidelines](https
 
 ## Documentation
 
-The [upstream manual](https://srothgan.github.io/claude-code-rust/) covers [installation](https://srothgan.github.io/claude-code-rust/installation.html), [usage](https://srothgan.github.io/claude-code-rust/usage.html), [help](https://srothgan.github.io/claude-code-rust/help.html), [slash commands](https://srothgan.github.io/claude-code-rust/commands.html), [settings](https://srothgan.github.io/claude-code-rust/settings.html), [troubleshooting](https://srothgan.github.io/claude-code-rust/troubleshooting.html) and [development](https://srothgan.github.io/claude-code-rust/development.html). Fork additions are documented here and in the [changelog](CHANGELOG.md).
+The [upstream manual](https://srothgan.github.io/claude-code-rust/) is organized by task. Fork additions are documented here, in the [changelog](CHANGELOG.md), and on the manual's parity and presentation-gap pages in `docs/src`.
+
+- **Start using the app:** [Install](https://srothgan.github.io/claude-code-rust/installation.html) and complete [your first session](https://srothgan.github.io/claude-code-rust/usage.html).
+- **Work with it:** [Conversations](https://srothgan.github.io/claude-code-rust/conversations.html), [configuration](https://srothgan.github.io/claude-code-rust/configure.html), and [MCP servers and plugins](https://srothgan.github.io/claude-code-rust/integrations.html).
+- **Look something up:** [CLI reference](https://srothgan.github.io/claude-code-rust/cli.html), [slash commands](https://srothgan.github.io/claude-code-rust/commands.html), and [settings reference](https://srothgan.github.io/claude-code-rust/settings.html).
+- **Resolve a problem:** [Troubleshooting](https://srothgan.github.io/claude-code-rust/troubleshooting.html) and [diagnostics](https://srothgan.github.io/claude-code-rust/diagnostics.html).
+- **Contribute or maintain:** [Development](https://srothgan.github.io/claude-code-rust/development.html), [testing](https://srothgan.github.io/claude-code-rust/testing.html), [architecture](https://srothgan.github.io/claude-code-rust/architecture.html), and [contribution policy](CONTRIBUTING.md).
 
 For the design history, including the move from fullscreen to inline rendering in 0.12.0, see Simon Rothgang's [I rebuilt Claude Code's terminal UI in Rust. Then I deleted 12,000 lines of it.](https://medium.com/@simonrothgang/i-rebuilt-claude-codes-terminal-ui-in-rust-then-i-deleted-12-000-lines-of-it-e8593a200452)
 
@@ -176,6 +182,10 @@ For the design history, including the move from fullscreen to inline rendering i
 The project is pre-1.0 and under active development. It follows new Agent SDK releases and problems found in daily use, and has no fixed roadmap or 1.0 date.
 
 Startup is bounded by the Agent SDK runtime that the interface wraps. The Rust interface is fast, but a session can still take noticeable time to become available.
+
+## Billing
+
+This app uses Anthropic's Agent SDK. See the [billing note](https://srothgan.github.io/claude-code-rust/about.html#billing-note) for the current upstream policy source and account-dependent limits.
 
 ## License
 

@@ -22,6 +22,7 @@ import type {
   StructuredNamedAttribution,
   StructuredSessionUsage,
   StructuredUsageSnapshot,
+  StructuredUsageRecommendation,
   StructuredUsageWindow,
 } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
@@ -33,8 +34,11 @@ import {
   slashError,
   writeEvent,
 } from "./events.js";
+import {
+  emitHistoryExportFailure,
+  exportSessionHistory,
+} from "./history_export.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
-import { exportSessionHistory } from "./history_export.js";
 import { emitSessionTitle } from "./session_title.js";
 import { mapSdkSessions } from "./history.js";
 import {
@@ -110,10 +114,16 @@ export async function handleSessionDataCommand(
       await getRewindTargets(command, requestId, deps);
       return;
     case "export_session_history": {
-      const session = requireSession(command.session_id, requestId);
-      if (session) {
-        await exportSessionHistory(session.sessionId, session.cwd, requestId);
+      const session = sessionById(command.session_id);
+      if (!session) {
+        emitHistoryExportFailure(
+          command.session_id,
+          `unknown session: ${command.session_id}`,
+          requestId,
+        );
+        return;
       }
+      await exportSessionHistory(session.sessionId, session.cwd, requestId);
       return;
     }
     case "rewind":
@@ -453,15 +463,36 @@ function structuredActivityWindow(
   ) {
     return undefined;
   }
+  const recommendations = structuredUsageRecommendations(record?.recommendations);
   return {
     request_count: Math.trunc(requestCount),
     session_count: Math.trunc(sessionCount),
+    ...(recommendations !== undefined ? { recommendations } : {}),
     behaviors: structuredBehaviorAttributions(record?.behaviors),
     agents: structuredNamedAttributions(record?.agents),
     skills: structuredNamedAttributions(record?.skills),
     plugins: structuredNamedAttributions(record?.plugins),
     mcp_servers: structuredNamedAttributions(record?.mcp_servers),
   };
+}
+
+function structuredUsageRecommendations(
+  value: unknown,
+): StructuredUsageRecommendation[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  return value.flatMap((entry) => {
+    const record = asRecordOrNull(entry);
+    const key = typeof record?.key === "string" ? record.key.trim() : "";
+    const title = typeof record?.title === "string" ? record.title.trim() : "";
+    const pct = finiteNumber(record, "pct");
+    if (!key || !title || pct === undefined) {
+      return [];
+    }
+    const detail = typeof record?.detail === "string" ? record.detail.trim() : "";
+    return [{ key, title, pct: Math.max(0, Math.min(100, pct)), ...(detail ? { detail } : {}) }];
+  });
 }
 
 function structuredBehaviorAttributions(

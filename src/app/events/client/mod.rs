@@ -76,7 +76,8 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         | ClientEvent::TurnErrorClassified { .. }
         | ClientEvent::SlashCommandError { .. } => ClientEventFamily::Turn,
         ClientEvent::McpElicitationRequest { .. }
-        | ClientEvent::McpElicitationCompleted { .. }
+        | ClientEvent::McpElicitationSettled { .. }
+        | ClientEvent::McpElicitationResponseFailed { .. }
         | ClientEvent::McpElicitationResponseQueued { .. }
         | ClientEvent::McpAuthRedirect { .. }
         | ClientEvent::McpOperationError { .. }
@@ -105,13 +106,16 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         ClientEvent::SubagentsListed { .. }
         | ClientEvent::SubagentMessagesReceived { .. }
         | ClientEvent::SubagentStopResult { .. } => ClientEventFamily::Subagents,
-        ClientEvent::UpdateCheckCompleted { .. }
+        ClientEvent::FooterSaved { .. }
+        | ClientEvent::UpdateCheckCompleted { .. }
         | ClientEvent::TerminalReleasedToChild { .. }
         | ClientEvent::TerminalReturnedFromChild { .. }
         | ClientEvent::RuntimeReloadCompleted { .. }
+        | ClientEvent::PluginInventory { .. }
         | ClientEvent::RuntimeReloadHeld { .. }
         | ClientEvent::RuntimeReloadFailed { .. }
         | ClientEvent::SkillsAndStylesReloaded { .. }
+        | ClientEvent::SkillsAndStylesReloadExpired { .. }
         | ClientEvent::StructuredUsageReceived { .. }
         | ClientEvent::UsageRefreshStarted { .. }
         | ClientEvent::UsageSnapshotReceived { .. }

@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 pub(crate) mod activity;
 pub(crate) mod agents;
@@ -12,6 +11,7 @@ pub(crate) mod clipboard_image;
 pub(crate) mod config;
 mod connect;
 pub(crate) mod copy;
+mod cwd;
 mod dialog;
 pub(crate) mod diff_view;
 mod events;
@@ -23,6 +23,7 @@ mod git_context;
 mod inline_interactions;
 pub(crate) mod input;
 pub(crate) mod input_atoms;
+mod input_clock;
 mod input_submit;
 pub mod keymap;
 mod keys;
@@ -50,6 +51,8 @@ pub(crate) mod terminal_runtime;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub(crate) mod trust;
+#[cfg(test)]
+pub(crate) use trust::test_support as trust_test_support;
 pub(crate) mod update_check;
 mod update_install;
 mod update_prompt;
@@ -64,9 +67,8 @@ pub(crate) const AUTOCOMPLETE_VISIBLE_ROWS: usize = 5;
 pub use cache_policy::{
     CacheSplitPolicy, DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES, DEFAULT_CACHE_SPLIT_SOFT_LIMIT_BYTES,
     DEFAULT_TOOL_PREVIEW_LIMIT_BYTES, TextSplitDecision, TextSplitKind, default_cache_split_policy,
-    find_text_split, find_text_split_index,
+    find_text_split,
 };
-pub(crate) use cache_policy::{markdown_table_tail_is_open, starts_with_markdown_table_row};
 pub use config::{ConfigHelpSection, ConfigState, ConfigTab};
 pub use connect::{create_app, start_connection};
 pub use events::{handle_client_event, handle_terminal_event};
@@ -88,15 +90,15 @@ pub use state::{
     ChatMessage, ChatMessageId, ChatRenderState, CompactionState, ComposerRenderState, ExtraUsage,
     HistoryOutputId, ImageAttachmentBlock, InlinePermission, InlineQuestion, InvalidationLevel,
     LayoutInvalidation, LiveRegionRenderState, LoginHint, McpState, MessageBlock, MessageBlockId,
-    MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock, NoticeDedupKey, NoticeStage,
-    PasteSessionState, PendingCommandAck, PostExitAction, RateLimitIncidentKey, RecentSessionInfo,
-    SelectionPoint, SessionPickerMutation, SessionPickerState, SessionUsageState,
-    SessionUsageSummary, ShutdownState, SubagentPermissionContext, SystemSeverity, TerminalSize,
-    TerminalSizeChange, TextBlock, TextBlockSpacing, ToolCallInfo, ToolCallScope,
-    TurnNoticeLocation, TurnNoticeRef, UpdatePromptAction, UpdatePromptState, UsageActivitySummary,
-    UsageActivityWindow, UsageBehaviorAttribution, UsageNamedAttribution, UsageSnapshot,
-    UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, UserDialogBlock, WelcomeBlock,
-    hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
+    MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock, NoticeDedupKey, PasteSessionState,
+    PendingCommandAck, PostExitAction, RateLimitIncidentKey, RecentSessionInfo, SelectionPoint,
+    SessionPickerMutation, SessionPickerState, SessionUsageState, SessionUsageSummary,
+    ShutdownState, SubagentPermissionContext, SystemSeverity, TerminalSize, TerminalSizeChange,
+    TextBlock, TextBlockSpacing, ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef,
+    UpdatePromptAction, UpdatePromptState, UsageActivitySummary, UsageActivityWindow,
+    UsageBehaviorAttribution, UsageNamedAttribution, UsageSnapshot, UsageSourceKind, UsageState,
+    UsageWindow, UserDialogBlock, WelcomeBlock, hash_text_block_content,
+    hash_welcome_block_content,
 };
 pub(crate) use state::{
     BtwRequestState, BtwRequests, PendingUserMessage, PendingUserMessageInsertError,
@@ -168,7 +170,7 @@ async fn run_tui_loop(
         // Phase 1: wait for at least one event or the next frame tick
         tokio::select! {
             Some(Ok(event)) = next_terminal_event(&mut events) => {
-                let outcome = events::handle_terminal_event(app, event);
+                let outcome = handle_terminal_input(app, event);
                 handle_runtime_command(app, terminal_runtime, &mut events, outcome.runtime_command())?;
             }
             Some(event) = app.event_rx.recv() => {
@@ -193,6 +195,9 @@ async fn run_tui_loop(
                 app.request_shutdown();
             }
             _ = event_loop_interval.tick() => {}
+            // Continue prepared history without adding an idle tick per layout step.
+            // The next phase still drains input fairly before the next layout step.
+            () = tokio::task::yield_now(), if terminal_runtime.chat_layout_ready(app) => {}
         }
 
         // Phase 2: process a bounded, fair batch of already-ready events.
@@ -202,7 +207,7 @@ async fn run_tui_loop(
             if let Some(Some(terminal_event)) = next_terminal_event(&mut events).now_or_never() {
                 handled_ready_event = true;
                 if let Ok(event) = terminal_event {
-                    let outcome = events::handle_terminal_event(app, event);
+                    let outcome = handle_terminal_input(app, event);
                     handle_runtime_command(
                         app,
                         terminal_runtime,
@@ -244,6 +249,7 @@ async fn run_tui_loop(
         // EmitPaste feeds the accumulated burst into the paste queue.
         if !app.shutdown_requested()
             && app.surface_mode == SurfaceMode::Chat
+            && !events.as_ref().is_some_and(TerminalInput::has_pending_input)
             && let Some(action) = app.paste.burst.tick(now)
         {
             apply_paste_burst_flush(app, action);
@@ -290,7 +296,7 @@ async fn run_tui_loop(
 
         terminal_runtime.sync_surface(app)?;
 
-        // Phase 3: render once (only when something changed)
+        // Phase 3: advance layout and render only when something visible changed.
         let is_animating = schedule_animation_frame(app, now);
         schedule_agent_shelf_frame(app, now);
         if is_animating {
@@ -300,7 +306,7 @@ async fn run_tui_loop(
         if !is_animating && app.surface_dirty.active_surface_needs_draw(app.terminal_lifecycle) {
             tab_title::update_tab_title(app);
         }
-        draw_pending_surface(app, terminal_runtime)?;
+        update_pending_surface(app, terminal_runtime)?;
         if app.startup.timeline.awaiting_ready() && app.composer_access().can_submit() {
             app.startup.timeline.mark_ready(Instant::now());
         }
@@ -322,7 +328,7 @@ async fn run_tui_loop(
     Ok(())
 }
 
-fn draw_pending_surface(
+fn update_pending_surface(
     app: &mut App,
     terminal_runtime: &mut terminal_runtime::TerminalRuntime,
 ) -> anyhow::Result<()> {
@@ -330,8 +336,8 @@ fn draw_pending_surface(
         crossterm::terminal::size().context("failed to read terminal size before draw")?;
     events::reconcile_terminal_size(app, width, height);
     terminal_runtime.apply_surface_rebuilds(app)?;
-    if app.surface_dirty.active_surface_needs_draw(app.terminal_lifecycle) {
-        terminal_runtime.draw_active_surface(app)?;
+    if terminal_runtime.has_pending_surface_work(app) {
+        terminal_runtime.update_active_surface(app)?;
     }
     Ok(())
 }
@@ -343,16 +349,16 @@ async fn finish_shutdown_render(
 ) -> anyhow::Result<()> {
     let mut interval = event_loop_interval();
     let mut os_shutdown = Box::pin(wait_for_shutdown_signal().fuse());
-    // The terminal owner requests another draw when replay is incomplete or a
-    // resize interrupts a transaction. Keep its progress instead of resetting it.
+    // Preparation can continue without repainting. Drain both pending layout and
+    // terminal output before restoration, while still accepting resize and force exit.
     while !app.shutdown_forced() {
-        draw_pending_surface(app, terminal_runtime)?;
-        if !app.surface_dirty.active_surface_needs_draw(app.terminal_lifecycle) {
+        update_pending_surface(app, terminal_runtime)?;
+        if !terminal_runtime.has_pending_surface_work(app) {
             break;
         }
         tokio::select! {
             Some(Ok(event)) = next_terminal_event(events) => {
-                let _ = events::handle_terminal_event(app, event);
+                let _ = handle_terminal_input(app, event);
             }
             signal = &mut os_shutdown => {
                 match signal {
@@ -367,6 +373,7 @@ async fn finish_shutdown_render(
                 }
             }
             _ = interval.tick() => {}
+            () = tokio::task::yield_now(), if terminal_runtime.chat_layout_ready(app) => {}
         }
     }
     Ok(())
@@ -395,9 +402,7 @@ fn edit_draft_externally(
     use std::io::Write as _;
 
     app.pending_submit = None;
-    if let Some(action) = app.paste.burst.on_non_char_key(Instant::now()) {
-        apply_paste_burst_flush(app, action);
-    }
+    flush_held_input(app);
     if app.paste.has_pending_text() {
         finalize_pending_paste_event(app);
     }
@@ -432,7 +437,7 @@ fn edit_draft_externally(
     let path = file.into_temp_path();
 
     drop(events.take());
-    tab_title::restore_tab_title(&app.cwd);
+    tab_title::restore_tab_title(&app.cwd_raw);
     terminal_runtime.restore(app);
     let edit_result = std::process::Command::new(&parts[0])
         .args(&parts[1..])
@@ -470,7 +475,7 @@ fn edit_draft_externally(
 
 async fn next_terminal_event(
     events: &mut Option<TerminalInput>,
-) -> Option<std::io::Result<crossterm::event::Event>> {
+) -> Option<std::io::Result<terminal_runtime::CapturedTerminalEvent>> {
     match events.as_mut() {
         Some(events) => events.next().await,
         None => std::future::pending().await,
@@ -481,7 +486,7 @@ fn suspend_tui_process(
     app: &mut App,
     terminal_runtime: &mut terminal_runtime::TerminalRuntime,
 ) -> anyhow::Result<()> {
-    tab_title::restore_tab_title(&app.cwd);
+    tab_title::restore_tab_title(&app.cwd_raw);
     terminal_runtime.restore(app);
 
     #[cfg(unix)]
@@ -561,9 +566,8 @@ fn prepare_app_shutdown(app: &mut App) {
         view::set_chat_surface(app);
     }
     app.input.clear();
-    app.pending_images.clear();
     app.btw.clear();
-    app.paste.clear_all_sessions();
+    app.paste.discard_input();
     app.pending_submit = None;
     app.mention = None;
     app.slash.clear();
@@ -607,7 +611,7 @@ fn restore_terminal_after_shutdown(
     app: &mut App,
     terminal_runtime: &mut terminal_runtime::TerminalRuntime,
 ) {
-    tab_title::restore_tab_title(&app.cwd);
+    tab_title::restore_tab_title(&app.cwd_raw);
     terminal_runtime.restore(app);
 }
 
@@ -629,7 +633,7 @@ async fn shutdown_connection_with_interrupts(app: &mut App, events: &mut Termina
             event = events.next(), if terminal_events_open => {
                 match event {
                     Some(Ok(event)) => {
-                        let _ = events::handle_terminal_event(app, event);
+                        let _ = handle_terminal_input(app, event);
                     }
                     Some(Err(err)) => {
                         tracing::warn!(
@@ -762,8 +766,30 @@ async fn wait_for_shutdown_signal() -> std::io::Result<()> {
     }
 }
 
-/// Apply buffered input and request its paint through the same owner for timer
-/// expiry and non-character key boundaries.
+/// Read one monotonic time source for routed input and interaction activity.
+fn input_event_now() -> Instant {
+    input_clock::now()
+}
+
+fn handle_terminal_input(
+    app: &mut App,
+    captured: terminal_runtime::CapturedTerminalEvent,
+) -> events::TerminalEventOutcome {
+    let _time = input_clock::EventTime::enter(captured.received_at, input_event_now());
+    events::handle_terminal_event(app, captured.event)
+}
+
+/// Finish detector-held source at its original cursor before an action preserves the draft.
+fn flush_held_input(app: &mut App) -> bool {
+    let Some(action) = app.paste.burst.on_non_char_key(input_event_now()) else {
+        return false;
+    };
+    apply_paste_burst_flush(app, action);
+    finalize_pending_paste_event(app);
+    true
+}
+
+/// Apply buffered input through the shared timer and non-character action owner.
 fn apply_paste_burst_flush(app: &mut App, action: paste_burst::FlushAction) {
     match action {
         paste_burst::FlushAction::EmitChar(ch) => {
@@ -950,3 +976,6 @@ fn finalize_deferred_submit(app: &mut App) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod lifecycle_audit_tests;

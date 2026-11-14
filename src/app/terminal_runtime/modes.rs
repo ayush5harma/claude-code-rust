@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
+use super::chat_terminal::NativeTerminalIo;
+use super::panic_hook::restore_once;
 use crossterm::cursor::{Hide, SetCursorStyle, Show};
 use crossterm::event::{DisableFocusChange, EnableFocusChange};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use crossterm::event::{
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
@@ -11,7 +12,152 @@ use crossterm::execute;
 use crossterm::terminal::{
     DisableLineWrap, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use std::io::Stdout;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// External operations only; command selection stays in the production dispatcher.
+pub(crate) trait ModeIo: Clone + Send + Sync + 'static {
+    fn raw_mode(&self, enabled: bool) -> std::io::Result<()>;
+    fn command(&self, command: impl crossterm::Command) -> std::io::Result<()>;
+}
+
+impl ModeIo for NativeTerminalIo {
+    fn raw_mode(&self, enabled: bool) -> std::io::Result<()> {
+        if enabled { enable_raw_mode() } else { disable_raw_mode() }
+    }
+    fn command(&self, command: impl crossterm::Command) -> std::io::Result<()> {
+        execute!(std::io::stdout(), command)
+    }
+}
+
+pub(super) struct TerminalModes<I: ModeIo = NativeTerminalIo> {
+    pub(super) io: I,
+    alternate_screen: AtomicBool,
+    restored: AtomicBool,
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    keyboard_enhancement_active: AtomicBool,
+}
+
+impl<I: ModeIo> TerminalModes<I> {
+    pub(super) fn new(io: I) -> Self {
+        Self {
+            io,
+            alternate_screen: AtomicBool::new(false),
+            restored: AtomicBool::new(false),
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            keyboard_enhancement_active: AtomicBool::new(false),
+        }
+    }
+
+    pub(super) fn is_restored(&self) -> bool {
+        self.restored.load(Ordering::SeqCst)
+    }
+
+    pub(super) fn exit_fullscreen(&self) -> std::io::Result<()> {
+        if self.alternate_screen.load(Ordering::SeqCst) {
+            self.apply(exit_fullscreen_actions())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Only successful cleanup closes the ownership gate. Failed I/O remains retryable.
+    pub(super) fn restore(&self) -> std::io::Result<bool> {
+        let mut outcome = Ok(false);
+        restore_once(&self.restored, || {
+            let exit = self.exit_fullscreen();
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            let remaining = shutdown_restore_actions()
+                .iter()
+                .copied()
+                .filter(|action| {
+                    *action != TerminalModeAction::PopKeyboardEnhancement
+                        || self.keyboard_enhancement_active.load(Ordering::SeqCst)
+                })
+                .collect::<Vec<_>>();
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            let actions = remaining.as_slice();
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+            let actions = shutdown_restore_actions();
+            let shell = self.apply(actions);
+            outcome = exit.and(shell).map(|()| true);
+            if outcome.is_err() {
+                self.restored.store(false, Ordering::SeqCst);
+            }
+        });
+        outcome
+    }
+
+    pub(super) fn apply(&self, actions: &[TerminalModeAction]) -> std::io::Result<()> {
+        let mut first_error = None;
+
+        for action in actions {
+            let result = match action {
+                TerminalModeAction::EnableRawMode => self.io.raw_mode(true),
+                TerminalModeAction::DisableRawMode => self.io.raw_mode(false),
+                TerminalModeAction::EnterAlternateScreen => {
+                    // A failed write may have delivered a prefix; retain cleanup ownership.
+                    self.alternate_screen.store(true, Ordering::SeqCst);
+                    self.io.command(EnterAlternateScreen)
+                }
+                TerminalModeAction::LeaveAlternateScreen => {
+                    let result = self.io.command(LeaveAlternateScreen);
+                    if result.is_ok() {
+                        self.alternate_screen.store(false, Ordering::SeqCst);
+                    }
+                    result
+                }
+                TerminalModeAction::EnableFocusChange => self.io.command(EnableFocusChange),
+                TerminalModeAction::DisableFocusChange => self.io.command(DisableFocusChange),
+                TerminalModeAction::HideCursor => self.io.command(Hide),
+                TerminalModeAction::ShowCursor => self.io.command(Show),
+                TerminalModeAction::SetBlinkingBarCursor => {
+                    self.io.command(SetCursorStyle::BlinkingBar)
+                }
+                TerminalModeAction::RestoreDefaultCursorShape => {
+                    self.io.command(SetCursorStyle::DefaultUserShape)
+                }
+                TerminalModeAction::DisableLineWrap => self.io.command(DisableLineWrap),
+                TerminalModeAction::EnableLineWrap => {
+                    self.io.command(crossterm::terminal::EnableLineWrap)
+                }
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
+                TerminalModeAction::PushKeyboardEnhancement => {
+                    self.keyboard_enhancement_active.store(true, Ordering::SeqCst);
+                    self.io.command(PushKeyboardEnhancementFlags(
+                        KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
+                    ))
+                }
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
+                TerminalModeAction::PopKeyboardEnhancement => {
+                    let result = self.io.command(PopKeyboardEnhancementFlags);
+                    if result.is_ok() {
+                        self.keyboard_enhancement_active.store(false, Ordering::SeqCst);
+                    }
+                    result
+                }
+            };
+
+            if let Err(err) = result {
+                let err = std::io::Error::new(
+                    err.kind(),
+                    format!("terminal action {action:?} failed: {err}"),
+                );
+                // Without raw mode there is no terminal to configure, and the remaining
+                // actions would only write escape sequences into whatever stdout is
+                // (measured: 58 bytes into a pipe).
+                if *action == TerminalModeAction::EnableRawMode {
+                    return Err(err);
+                }
+                first_error.get_or_insert(err);
+            }
+        }
+
+        match first_error {
+            Some(err) => Err(err),
+            None => Ok(()),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TerminalModeAction {
@@ -27,15 +173,15 @@ pub(super) enum TerminalModeAction {
     RestoreDefaultCursorShape,
     DisableLineWrap,
     EnableLineWrap,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     PushKeyboardEnhancement,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     PopKeyboardEnhancement,
 }
 
 const CHAT_STARTUP_ACTIONS: &[TerminalModeAction] = &[
     TerminalModeAction::EnableRawMode,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     TerminalModeAction::PushKeyboardEnhancement,
     TerminalModeAction::EnableFocusChange,
     TerminalModeAction::DisableLineWrap,
@@ -62,7 +208,7 @@ const SHUTDOWN_RESTORE_ACTIONS: &[TerminalModeAction] = &[
     TerminalModeAction::ShowCursor,
     TerminalModeAction::EnableLineWrap,
     TerminalModeAction::DisableFocusChange,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     TerminalModeAction::PopKeyboardEnhancement,
     TerminalModeAction::DisableRawMode,
 ];
@@ -72,7 +218,7 @@ const RELEASE_TO_CHILD_ACTIONS: &[TerminalModeAction] = &[
     TerminalModeAction::ShowCursor,
     TerminalModeAction::EnableLineWrap,
     TerminalModeAction::DisableFocusChange,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     TerminalModeAction::PopKeyboardEnhancement,
     TerminalModeAction::DisableRawMode,
 ];
@@ -103,204 +249,26 @@ pub(super) fn return_from_child_actions() -> &'static [TerminalModeAction] {
     RETURN_FROM_CHILD_ACTIONS
 }
 
-pub(super) fn apply_actions(
-    stdout: &mut Stdout,
-    actions: &[TerminalModeAction],
-) -> std::io::Result<()> {
-    apply_actions_with(actions, |action| apply_action(stdout, action))
-}
-
-/// Runs every action and reports the first failure, so a restore sequence still undoes
-/// as much as it can. A failed `EnableRawMode` stops the sequence instead: without raw
-/// mode there is no terminal to configure, and the remaining actions would only write
-/// escape sequences into whatever stdout is (measured: 58 bytes into a pipe).
-fn apply_actions_with(
-    actions: &[TerminalModeAction],
-    mut apply: impl FnMut(TerminalModeAction) -> std::io::Result<()>,
-) -> std::io::Result<()> {
-    let mut first_error = None;
-
-    for &action in actions {
-        if let Err(err) = apply(action) {
-            let err = std::io::Error::new(
-                err.kind(),
-                format!("terminal action {action:?} failed: {err}"),
-            );
-            if action == TerminalModeAction::EnableRawMode {
-                return Err(err);
-            }
-            first_error.get_or_insert(err);
-        }
-    }
-
-    match first_error {
-        Some(err) => Err(err),
-        None => Ok(()),
-    }
-}
-
-fn apply_action(stdout: &mut Stdout, action: TerminalModeAction) -> std::io::Result<()> {
-    match action {
-        TerminalModeAction::EnableRawMode => enable_raw_mode(),
-        TerminalModeAction::DisableRawMode => disable_raw_mode(),
-        TerminalModeAction::EnterAlternateScreen => execute!(stdout, EnterAlternateScreen),
-        TerminalModeAction::LeaveAlternateScreen => execute!(stdout, LeaveAlternateScreen),
-        TerminalModeAction::EnableFocusChange => execute!(stdout, EnableFocusChange),
-        TerminalModeAction::DisableFocusChange => execute!(stdout, DisableFocusChange),
-        TerminalModeAction::HideCursor => execute!(stdout, Hide),
-        TerminalModeAction::ShowCursor => execute!(stdout, Show),
-        TerminalModeAction::SetBlinkingBarCursor => {
-            execute!(stdout, SetCursorStyle::BlinkingBar)
-        }
-        TerminalModeAction::RestoreDefaultCursorShape => {
-            execute!(stdout, SetCursorStyle::DefaultUserShape)
-        }
-        TerminalModeAction::DisableLineWrap => execute!(stdout, DisableLineWrap),
-        TerminalModeAction::EnableLineWrap => {
-            execute!(stdout, crossterm::terminal::EnableLineWrap)
-        }
-        #[cfg(target_os = "macos")]
-        TerminalModeAction::PushKeyboardEnhancement => execute!(
-            stdout,
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-        ),
-        #[cfg(target_os = "macos")]
-        TerminalModeAction::PopKeyboardEnhancement => {
-            execute!(stdout, PopKeyboardEnhancementFlags)
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
 
-    #[test]
-    fn chat_startup_actions_match_expected_order() {
-        assert_eq!(
-            chat_startup_actions(),
-            &[
-                TerminalModeAction::EnableRawMode,
-                #[cfg(target_os = "macos")]
-                TerminalModeAction::PushKeyboardEnhancement,
-                TerminalModeAction::EnableFocusChange,
-                TerminalModeAction::DisableLineWrap,
-                TerminalModeAction::SetBlinkingBarCursor,
-                TerminalModeAction::ShowCursor,
-            ]
-        );
+    #[derive(Clone)]
+    struct FailingIo {
+        failing: &'static str,
+        attempted: Arc<Mutex<Vec<String>>>,
     }
 
-    #[test]
-    fn enter_fullscreen_actions_match_expected_order() {
-        assert_eq!(
-            enter_fullscreen_actions(),
-            &[
-                TerminalModeAction::RestoreDefaultCursorShape,
-                TerminalModeAction::HideCursor,
-                TerminalModeAction::EnableLineWrap,
-                TerminalModeAction::EnterAlternateScreen,
-            ]
-        );
-    }
+    impl FailingIo {
+        fn new(failing: &'static str) -> Self {
+            Self { failing, attempted: Arc::default() }
+        }
 
-    #[test]
-    fn exit_fullscreen_actions_match_expected_order() {
-        assert_eq!(
-            exit_fullscreen_actions(),
-            &[
-                TerminalModeAction::LeaveAlternateScreen,
-                TerminalModeAction::DisableLineWrap,
-                TerminalModeAction::SetBlinkingBarCursor,
-                TerminalModeAction::ShowCursor,
-            ]
-        );
-    }
-
-    #[test]
-    fn shutdown_restore_actions_match_expected_order() {
-        assert_eq!(
-            shutdown_restore_actions(),
-            &[
-                TerminalModeAction::RestoreDefaultCursorShape,
-                TerminalModeAction::ShowCursor,
-                TerminalModeAction::EnableLineWrap,
-                TerminalModeAction::DisableFocusChange,
-                #[cfg(target_os = "macos")]
-                TerminalModeAction::PopKeyboardEnhancement,
-                TerminalModeAction::DisableRawMode,
-            ]
-        );
-    }
-
-    #[test]
-    fn release_to_child_actions_match_expected_order() {
-        assert_eq!(
-            release_to_child_actions(),
-            &[
-                TerminalModeAction::RestoreDefaultCursorShape,
-                TerminalModeAction::ShowCursor,
-                TerminalModeAction::EnableLineWrap,
-                TerminalModeAction::DisableFocusChange,
-                #[cfg(target_os = "macos")]
-                TerminalModeAction::PopKeyboardEnhancement,
-                TerminalModeAction::DisableRawMode,
-            ]
-        );
-    }
-
-    #[test]
-    fn return_from_child_actions_match_chat_startup() {
-        assert_eq!(return_from_child_actions(), chat_startup_actions());
-    }
-
-    #[test]
-    fn chat_startup_actions_disable_line_wrap_for_inline_chat() {
-        assert!(
-            chat_startup_actions().contains(&TerminalModeAction::DisableLineWrap),
-            "inline chat must explicitly disable terminal line wrapping",
-        );
-    }
-
-    #[test]
-    fn chat_startup_actions_do_not_enter_alternate_screen() {
-        assert!(!chat_startup_actions().contains(&TerminalModeAction::EnterAlternateScreen));
-    }
-
-    #[test]
-    fn shutdown_restore_actions_restore_shell_friendly_defaults() {
-        assert!(
-            shutdown_restore_actions().contains(&TerminalModeAction::RestoreDefaultCursorShape)
-        );
-        assert!(shutdown_restore_actions().contains(&TerminalModeAction::ShowCursor));
-        assert!(shutdown_restore_actions().contains(&TerminalModeAction::EnableLineWrap));
-        #[cfg(target_os = "macos")]
-        assert!(shutdown_restore_actions().contains(&TerminalModeAction::PopKeyboardEnhancement));
-    }
-
-    #[test]
-    fn chat_cursor_shape_actions_are_restored_on_surface_changes() {
-        assert!(chat_startup_actions().contains(&TerminalModeAction::SetBlinkingBarCursor));
-        assert!(return_from_child_actions().contains(&TerminalModeAction::SetBlinkingBarCursor));
-        assert!(exit_fullscreen_actions().contains(&TerminalModeAction::SetBlinkingBarCursor));
-        assert!(
-            enter_fullscreen_actions().contains(&TerminalModeAction::RestoreDefaultCursorShape)
-        );
-        assert!(
-            release_to_child_actions().contains(&TerminalModeAction::RestoreDefaultCursorShape)
-        );
-        assert!(
-            shutdown_restore_actions().contains(&TerminalModeAction::RestoreDefaultCursorShape)
-        );
-    }
-
-    fn failing_on(
-        failing: TerminalModeAction,
-        attempted: &mut Vec<TerminalModeAction>,
-    ) -> impl FnMut(TerminalModeAction) -> std::io::Result<()> + '_ {
-        move |action| {
-            attempted.push(action);
-            if action == failing {
+        fn record(&self, operation: &str) -> std::io::Result<()> {
+            let mut attempted = self.attempted.lock().expect("attempt log");
+            attempted.push(operation.to_owned());
+            if operation == self.failing {
                 Err(std::io::Error::other("Device not configured"))
             } else {
                 Ok(())
@@ -308,17 +276,26 @@ mod tests {
         }
     }
 
+    impl ModeIo for FailingIo {
+        fn raw_mode(&self, enabled: bool) -> std::io::Result<()> {
+            self.record(if enabled { "raw:on" } else { "raw:off" })
+        }
+
+        fn command(&self, command: impl crossterm::Command) -> std::io::Result<()> {
+            let mut bytes = String::new();
+            command.write_ansi(&mut bytes).expect("ANSI form");
+            self.record(&bytes)
+        }
+    }
+
     #[test]
     fn failed_raw_mode_stops_startup_before_any_escape_sequence() {
-        let mut attempted = Vec::new();
+        let io = FailingIo::new("raw:on");
+        let modes = TerminalModes::new(io.clone());
 
-        let error = apply_actions_with(
-            chat_startup_actions(),
-            failing_on(TerminalModeAction::EnableRawMode, &mut attempted),
-        )
-        .expect_err("raw mode failure");
+        let error = modes.apply(chat_startup_actions()).expect_err("raw mode failure");
 
-        assert_eq!(attempted, [TerminalModeAction::EnableRawMode]);
+        assert_eq!(*io.attempted.lock().expect("attempt log"), ["raw:on"]);
         assert_eq!(
             error.to_string(),
             "terminal action EnableRawMode failed: Device not configured"
@@ -327,21 +304,15 @@ mod tests {
 
     #[test]
     fn restore_continues_past_a_failed_action_and_reports_the_first() {
-        let mut attempted = Vec::new();
+        let io = FailingIo::new("\x1b[?25h");
+        let modes = TerminalModes::new(io.clone());
 
-        let error = apply_actions_with(
-            shutdown_restore_actions(),
-            failing_on(TerminalModeAction::ShowCursor, &mut attempted),
-        )
-        .expect_err("show cursor failure");
+        let error = modes.apply(shutdown_restore_actions()).expect_err("show cursor failure");
 
-        assert_eq!(attempted, shutdown_restore_actions());
+        assert_eq!(
+            io.attempted.lock().expect("attempt log").len(),
+            shutdown_restore_actions().len()
+        );
         assert_eq!(error.to_string(), "terminal action ShowCursor failed: Device not configured");
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn chat_startup_actions_enable_keyboard_enhancement() {
-        assert!(chat_startup_actions().contains(&TerminalModeAction::PushKeyboardEnhancement));
     }
 }
