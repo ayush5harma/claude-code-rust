@@ -62,6 +62,7 @@ fn configure_test_profiles(command: &mut CommandBuilder, root: &Path) {
 struct CapturedTerminal {
     parser: vt100::Parser,
     raw: Vec<u8>,
+    chunks: Vec<usize>,
     ended: bool,
 }
 
@@ -150,6 +151,7 @@ fn capture_output(
     let output = Arc::new(Mutex::new(CapturedTerminal {
         parser: capture_parser(SHORT_ROWS, COLS),
         raw: Vec::new(),
+        chunks: Vec::new(),
         ended: false,
     }));
     let captured = Arc::clone(&output);
@@ -165,6 +167,7 @@ fn capture_output(
             let mut captured = captured.lock().expect("output lock");
             captured.parser.process(&buffer[..read]);
             captured.raw.extend_from_slice(&buffer[..read]);
+            captured.chunks.push(read);
             if query.windows(4).any(|s| s == b"\x1b[6n") {
                 let (row, col) = captured.parser.screen().cursor_position();
                 let reply = format!("\x1b[{};{}R", row + 1, col + 1);
@@ -3561,13 +3564,52 @@ fn bash_output_shows_sgr_colours_and_ignores_other_control_sequences() {
 
     let wire = test.output.lock().ok().map(|captured| {
         let raw = &captured.raw;
-        let shown: Vec<String> = (0..raw.len().saturating_sub(11))
-            .filter(|&at| &raw[at..at + 11] == b"FIXTURE_RED")
-            .map(|at| {
-                raw[at.saturating_sub(60)..(at + 40).min(raw.len())].escape_ascii().to_string()
+        let (rows, cols) = captured.parser.screen().size();
+        let mut fresh = vt100::Parser::new(rows, cols, SCROLLBACK_ROWS);
+        fresh.process(raw);
+        let replay: Vec<_> = ["FIXTURE_RED", "FIXTURE_ORANGE", "plain"]
+            .iter()
+            .map(|needle| {
+                let screen = fresh.screen();
+                (0..rows.get()).find_map(|row| {
+                    (0..cols.get()).find_map(|col| {
+                        let text: String = (col..cols.get())
+                            .map(|c| screen.cell(row, c).map_or("", |cell| cell.contents()))
+                            .collect();
+                        text.starts_with(needle).then(|| {
+                            let cell = screen.cell(row, col)?;
+                            Some((row, col, cell.fgcolor()))
+                        })?
+                    })
+                })
             })
             .collect();
-        (shown, raw[raw.len().saturating_sub(500)..].escape_ascii().to_string())
+        let mut kinds: Vec<String> = Vec::new();
+        for (at, _) in raw.iter().enumerate().filter(|(_, b)| **b == 0x1b) {
+            let end = (at + 24).min(raw.len());
+            let seq = raw[at..end].escape_ascii().to_string();
+            let seq: String = seq.chars().take(18).collect();
+            if !seq.starts_with("\\x1b[3")
+                && !seq.starts_with("\\x1b[4")
+                && !kinds.contains(&seq)
+                && kinds.len() < 60
+            {
+                kinds.push(seq);
+            }
+        }
+        let red = raw.windows(11).position(|w| w == b"FIXTURE_RED").unwrap_or(0);
+        let mut start = 0;
+        let near: Vec<(usize, usize)> = captured
+            .chunks
+            .iter()
+            .map(|&len| {
+                let range = (start, len);
+                start += len;
+                range
+            })
+            .filter(|&(start, len)| start + len + 100 > red && start < red + 100)
+            .collect();
+        (replay, near, red, kinds)
     });
     assert_eq!(style_at(&test, "FIXTURE_RED"), Some((vt100::Color::Idx(1), false)), "{wire:?}");
     assert_eq!(style_at(&test, "FIXTURE_ORANGE"), Some((vt100::Color::Idx(208), true)), "{wire:?}");
